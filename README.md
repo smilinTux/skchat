@@ -395,7 +395,7 @@ ui:
 
 **GPL-3.0-or-later** — Because communication is a right, not a product.
 
-Copyright (C) 2026 S&K Holdings QT / smilinTux Team + Lumina
+Copyright (C) 2026 smilinTux Team + Lumina
 
 ---
 
