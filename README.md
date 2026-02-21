@@ -398,6 +398,50 @@ ui:
 
 ---
 
+## Modular Plugin System
+
+SKChat supports modular plugins that extend its capabilities. Plugins
+activate based on file types, message patterns, or explicit commands.
+
+### Plugin Interface
+
+```python
+from skchat.plugins import SKChatPlugin
+
+class MyPlugin(SKChatPlugin):
+    """Base class for SKChat plugins."""
+
+    name: str                     # Plugin identifier
+    version: str                  # SemVer version
+    triggers: list[str]           # MIME types, patterns, or commands
+
+    async def on_file_received(self, file, context): ...
+    async def on_message(self, message, context): ...
+    async def on_command(self, command, args, context): ...
+```
+
+### Available Plugins
+
+| Plugin | Trigger | What It Does |
+|--------|---------|-------------|
+| **[SKPDF](https://github.com/smilinTux/skpdf)** | `application/pdf` | AI form-filling + GTD filing |
+| *More coming* | — | Modular by design |
+
+### Installing Plugins
+
+```bash
+# Install a plugin
+skchat plugin install skpdf
+
+# List installed plugins
+skchat plugin list
+
+# Plugin auto-activates when trigger matches
+# (send a PDF → SKPDF handles it)
+```
+
+---
+
 ## Integration with smilinTux Ecosystem
 
 | Component | Role in SKChat |
@@ -405,6 +449,7 @@ ui:
 | **SKComm** | Transport layer — 17 redundant message paths |
 | **CapAuth** | Identity + AI advocacy + capability tokens |
 | **Cloud 9** | Emotional continuity — AI remembers across sessions |
+| **SKPDF** | PDF form-filling plugin — auto-fill + GTD filing |
 | **SKForge** | Blueprint system for chat component architecture |
 | **SKMemory** | Persistent AI memory + FEB emotional state |
 | **Nextcloud** | Sovereign cloud storage + sync + Talk signaling |
