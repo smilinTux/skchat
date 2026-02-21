@@ -581,6 +581,104 @@ CREATE TABLE conversations (
 
 ---
 
+## Nextcloud Integration
+
+SKChat integrates with Nextcloud as the sovereign cloud backend,
+providing file storage, sync, and collaboration without any third-party
+cloud dependency.
+
+### Architecture
+
+```python
+class NextcloudBackend:
+    """
+    Nextcloud integration for sovereign file storage and sync.
+
+    Provides WebDAV file access, Talk signaling fallback,
+    and cross-device message sync via Nextcloud Files.
+    """
+
+    def __init__(self, config: NextcloudConfig):
+        self.webdav = WebDAVClient(
+            url=config.url,
+            username=config.username,
+            password=config.password  # or app password
+        )
+        self.talk_api = NextcloudTalkAPI(config)
+
+    async def sync_messages(self, local_db: Path) -> SyncResult:
+        """
+        Sync encrypted message database to Nextcloud.
+
+        Messages remain PGP-encrypted — Nextcloud stores ciphertext.
+        The server never sees plaintext.
+        """
+        encrypted_db = self.encrypt_for_sync(local_db)
+        await self.webdav.upload(
+            local_path=encrypted_db,
+            remote_path="/skchat/messages.db.enc"
+        )
+        return SyncResult(synced=True)
+
+    async def share_file(self, path: Path, recipient: str) -> str:
+        """
+        Share a file via Nextcloud with capability-gated access.
+
+        Returns a share link that requires CapAuth token to access.
+        """
+        upload_result = await self.webdav.upload(path, f"/skchat/shared/{path.name}")
+        share = await self.create_share(upload_result.path, recipient)
+        return share.url
+```
+
+### Storage Hierarchy
+
+```
+Nextcloud Files/
+├── skchat/
+│   ├── messages.db.enc     # Encrypted message database
+│   ├── shared/             # Shared files (encrypted)
+│   ├── voice-messages/     # Encrypted voice clips
+│   ├── profiles/           # CapAuth profile backups
+│   └── advocate/
+│       ├── decisions.log   # Encrypted decision audit trail
+│       └── cloud9/         # FEB + seed backups
+```
+
+### Integration Points
+
+| Nextcloud App | SKChat Use | License |
+|--------------|-----------|---------|
+| **Files** | Sovereign file storage + cross-device sync | AGPL-3.0 |
+| **Talk** | WebRTC signaling fallback + conferencing | AGPL-3.0 |
+| **Deck** | Project boards linked to conversations | AGPL-3.0 |
+| **Notes** | AI advocate creates notes from chat context | AGPL-3.0 |
+| **Calendar** | Meeting scheduling from chat | AGPL-3.0 |
+| **Contacts** | CapAuth profile integration | AGPL-3.0 |
+
+### Configuration
+
+```yaml
+nextcloud:
+  enabled: true
+  url: "https://cloud.yourdomain.com"
+  username: "chef"
+  app_password: "xxxxx-xxxxx-xxxxx-xxxxx"
+  sync:
+    messages: true
+    files: true
+    voice_messages: false  # bandwidth consideration
+    frequency_seconds: 300
+  talk:
+    use_as_signaling: true  # WebRTC signaling via Talk
+    use_as_fallback: true   # Fallback transport
+  storage:
+    base_path: "/skchat"
+    encryption: "client-side"  # Nextcloud stores ciphertext only
+```
+
+---
+
 ## Implementation Roadmap
 
 ### Phase 1: Foundation (CLI + Text)

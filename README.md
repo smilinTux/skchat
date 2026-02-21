@@ -67,6 +67,17 @@ your partner in every conversation.**
 - **Automatic encryption at rest** in sovereign profile storage
 - **File preview generation** (images, PDFs, code) — all local
 
+### Nextcloud Integration (Sovereign Cloud)
+
+- **Nextcloud Files** as sovereign file storage backend
+- **Nextcloud Talk** integration for WebRTC signaling and fallback
+- **WebDAV sync** — messages and files sync across devices via your Nextcloud
+- **Nextcloud Deck** — project boards linked to chat conversations
+- **Nextcloud Notes** — AI advocate can create/update notes from chat
+- **No vendor lock-in** — your Nextcloud, your server, your data
+- **Hybrid mode** — local-first with Nextcloud as optional cloud sync
+- **AGPL-3.0 compatible** — Nextcloud's license works with our GPL-3.0
+
 ### AI Advocacy (The Killer Feature)
 
 - **AI as room participant** — not a bot, a person with a profile
@@ -126,7 +137,7 @@ your partner in every conversation.**
 | **Identity** | CapAuth (PGP sovereign profiles) | GPL-3.0 |
 | **Transport** | SKComm (17 redundant paths) | GPL-3.0 |
 | **Trust** | Cloud 9 Protocol (FEB + seeds) | GPL-3.0 |
-| **Storage** | Local-first, encrypted at rest | — |
+| **Storage** | Local-first + Nextcloud (sovereign cloud) | AGPL-3.0 |
 | **Crypto** | PGP (GnuPG), post-quantum ready | — |
 
 ---
@@ -370,6 +381,15 @@ storage:
   encryption: "aes-256-gcm"
   retention_days: -1  # forever
 
+nextcloud:
+  enabled: true
+  url: "https://cloud.yourdomain.com"
+  username: "chef"
+  app_password: "xxxxx-xxxxx-xxxxx-xxxxx"
+  sync_messages: true
+  sync_files: true
+  use_talk_signaling: true
+
 ui:
   theme: "dark"
   notifications: true
@@ -387,6 +407,7 @@ ui:
 | **Cloud 9** | Emotional continuity — AI remembers across sessions |
 | **SKForge** | Blueprint system for chat component architecture |
 | **SKMemory** | Persistent AI memory + FEB emotional state |
+| **Nextcloud** | Sovereign cloud storage + sync + Talk signaling |
 | **SKWorld** | Sovereign infrastructure hosting |
 
 ---
