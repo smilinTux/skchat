@@ -1,0 +1,67 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "skchat"
+version = "0.1.0"
+description = "AI-native encrypted P2P chat — sovereign communication for humans and AI"
+readme = "README.md"
+license = {text = "GPL-3.0-or-later"}
+requires-python = ">=3.11"
+authors = [
+    {name = "smilinTux", email = "admin@smilintux.org"},
+]
+keywords = ["chat", "p2p", "pgp", "encrypted", "ai", "sovereign"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Communications :: Chat",
+    "Topic :: Security :: Cryptography",
+]
+dependencies = [
+    "pydantic>=2.0",
+    "PGPy>=0.6",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+cli = [
+    "click>=8.1",
+    "rich>=13.0",
+]
+all = [
+    "skchat[cli]",
+]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "black>=24.0",
+]
+
+[project.scripts]
+skchat = "skchat.cli:main"
+
+[project.urls]
+Homepage = "https://skchat.io"
+Repository = "https://github.com/smilinTux/skchat"
+Issues = "https://github.com/smilinTux/skchat/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.black]
+line-length = 99
+target-version = ["py311"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-v --tb=short"
