@@ -36,6 +36,11 @@ except ImportError:
 
 from . import __version__
 from .models import ChatMessage, ContentType, DeliveryStatus, Thread
+from .identity_bridge import (
+    get_sovereign_identity,
+    resolve_peer_name,
+    PeerResolutionError,
+)
 
 
 SKCHAT_HOME = "~/.skchat"
@@ -103,32 +108,36 @@ def _print(msg: str) -> None:
 
 
 def _get_identity() -> str:
-    """Load the local user's identity URI from config or env.
+    """Load the local user's identity URI from CapAuth sovereign profile.
 
-    Falls back to a default if no config is found. In production
-    this will read from the CapAuth sovereign profile.
+    First checks environment variable SKCHAT_IDENTITY, then reads from
+    ~/.skcapstone/identity/identity.json (CapAuth sovereign profile),
+    then falls back to ~/.skchat/config.yml, and finally to a default.
 
     Returns:
         str: CapAuth identity URI for the local user.
     """
-    import os
+    try:
+        return get_sovereign_identity()
+    except Exception:
+        import os
 
-    identity = os.environ.get("SKCHAT_IDENTITY")
-    if identity:
-        return identity
+        identity = os.environ.get("SKCHAT_IDENTITY")
+        if identity:
+            return identity
 
-    config_path = Path(SKCHAT_HOME).expanduser() / "config.yml"
-    if config_path.exists():
-        try:
-            import yaml
+        config_path = Path(SKCHAT_HOME).expanduser() / "config.yml"
+        if config_path.exists():
+            try:
+                import yaml
 
-            with open(config_path) as f:
-                cfg = yaml.safe_load(f)
-            return cfg.get("skchat", {}).get("identity", {}).get("uri", "capauth:local@skchat")
-        except Exception:
-            pass
+                with open(config_path) as f:
+                    cfg = yaml.safe_load(f)
+                return cfg.get("skchat", {}).get("identity", {}).get("uri", "capauth:local@skchat")
+            except Exception:
+                pass
 
-    return "capauth:local@skchat"
+        return "capauth:local@skchat"
 
 
 def _get_history() -> "ChatHistory":
@@ -245,20 +254,32 @@ def send(
     Composes a ChatMessage, stores it in local history, and
     (when transport is available) queues it for delivery via SKComm.
 
+    The recipient can be either a full capauth URI or a friendly peer name
+    that will be resolved from the peer registry (e.g., "lumina" resolves
+    to "capauth:lumina@capauth.local").
+
     Examples:
 
         skchat send capauth:bob@skworld.io "Hey Bob!"
 
-        skchat send capauth:lumina@skworld.io "Check this out" --thread abc123
+        skchat send lumina "Check this out" --thread abc123
 
-        skchat send capauth:bob@skworld.io "Secret" --ttl 60
+        skchat send bob "Secret" --ttl 60
     """
     sender = _get_identity()
+    
+    try:
+        resolved_recipient = resolve_peer_name(recipient)
+    except PeerResolutionError as exc:
+        _print(f"\n  [red]Error:[/] {exc}")
+        _print(f"  [yellow]Hint:[/] Using '{recipient}' as-is. Add peer with: skcapstone peer add {recipient}\n")
+        resolved_recipient = recipient
+    
     content_type = ContentType.PLAIN if ctype == "plain" else ContentType.MARKDOWN
 
     msg = ChatMessage(
         sender=sender,
-        recipient=recipient,
+        recipient=resolved_recipient,
         content=message,
         content_type=content_type,
         thread_id=thread,
@@ -278,8 +299,11 @@ def send(
             status_str = f"[green]sent[/] via {transport_info['transport']}"
         else:
             status_str = f"[yellow]stored locally[/] ({transport_info.get('error', 'no transport')})"
+        
+        display_recipient = recipient if recipient == resolved_recipient else f"{recipient} ({resolved_recipient})"
+        
         console.print(Panel(
-            f"[bold]To:[/] [cyan]{recipient}[/]\n"
+            f"[bold]To:[/] [cyan]{display_recipient}[/]\n"
             f"[bold]Content:[/] {message[:120]}\n"
             f"[bold]Thread:[/] {thread or '[dim]none[/]'}\n"
             f"[bold]TTL:[/] {f'{ttl}s' if ttl else '[dim]permanent[/]'}\n"
@@ -289,7 +313,7 @@ def send(
             border_style="green",
         ))
     else:
-        _print(f"  Sent to {recipient}: {message[:80]}")
+        _print(f"  Sent to {resolved_recipient}: {message[:80]}")
         if transport_info["delivered"]:
             _print(f"  Delivered via {transport_info['transport']}")
         else:
@@ -382,15 +406,26 @@ def history(participant: str, limit: int) -> None:
     Displays the message exchange between you and the specified
     participant, sorted newest first.
 
+    The participant can be either a full capauth URI or a friendly peer name
+    that will be resolved from the peer registry.
+
     Examples:
 
         skchat history capauth:bob@skworld.io
 
-        skchat history capauth:lumina@skworld.io --limit 10
+        skchat history lumina --limit 10
+
+        skchat history jarvis
     """
     identity = _get_identity()
+    
+    try:
+        resolved_participant = resolve_peer_name(participant)
+    except PeerResolutionError:
+        resolved_participant = participant
+    
     chat_history = _get_history()
-    messages = chat_history.get_conversation(identity, participant, limit=limit)
+    messages = chat_history.get_conversation(identity, resolved_participant, limit=limit)
 
     _print("")
     if not messages:
@@ -399,8 +434,9 @@ def history(participant: str, limit: int) -> None:
         return
 
     if HAS_RICH and console:
+        display_participant = participant if participant == resolved_participant else f"{participant} ({resolved_participant})"
         console.print(Panel(
-            f"Conversation with [bold cyan]{participant}[/]\n"
+            f"Conversation with [bold cyan]{display_participant}[/]\n"
             f"[dim]{len(messages)} message{'s' if len(messages) != 1 else ''}[/]",
             border_style="cyan",
         ))

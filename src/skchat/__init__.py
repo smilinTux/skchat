@@ -32,6 +32,13 @@ from .presence import (
 )
 from .history import ChatHistory
 from .transport import ChatTransport
+from .identity_bridge import (
+    get_sovereign_identity,
+    resolve_peer_name,
+    get_peer_transport_address,
+    IdentityResolutionError,
+    PeerResolutionError,
+)
 
 __all__ = [
     "ChatMessage",
@@ -51,5 +58,10 @@ __all__ = [
     "PresenceTracker",
     "ChatHistory",
     "ChatTransport",
+    "get_sovereign_identity",
+    "resolve_peer_name",
+    "get_peer_transport_address",
+    "IdentityResolutionError",
+    "PeerResolutionError",
     "__version__",
 ]
