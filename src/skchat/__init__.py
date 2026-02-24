@@ -39,6 +39,7 @@ from .identity_bridge import (
     IdentityResolutionError,
     PeerResolutionError,
 )
+from .daemon import ChatDaemon, run_daemon
 
 __all__ = [
     "ChatMessage",
@@ -63,5 +64,7 @@ __all__ = [
     "get_peer_transport_address",
     "IdentityResolutionError",
     "PeerResolutionError",
+    "ChatDaemon",
+    "run_daemon",
     "__version__",
 ]

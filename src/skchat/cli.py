@@ -728,6 +728,40 @@ def _build_watch_table(recent_messages: list, total: int) -> "Panel":
 
 
 @main.command()
+@click.option("--interval", "-i", type=float, default=5.0, help="Poll interval in seconds (default: 5).")
+@click.option("--log-file", "-l", default=None, help="Path to log file (default: stdout).")
+@click.option("--quiet", "-q", is_flag=True, help="Suppress console output, log to file only.")
+def daemon(interval: float, log_file: Optional[str], quiet: bool) -> None:
+    """Run receive daemon as a background service.
+
+    Continuously polls SKComm for incoming messages and stores them
+    in local history. Runs until stopped with Ctrl+C or SIGTERM.
+
+    For production use, consider running as a systemd service or
+    in a tmux/screen session.
+
+    Examples:
+
+        skchat daemon
+
+        skchat daemon --interval 10 --log-file ~/.skchat/daemon.log
+
+        skchat daemon --quiet --log-file /var/log/skchat.log
+    """
+    try:
+        from .daemon import run_daemon
+        run_daemon(interval=interval, log_file=log_file, quiet=quiet)
+    except ImportError:
+        _print("\n  [red]Error:[/] Daemon module not available.\n")
+        sys.exit(1)
+    except KeyboardInterrupt:
+        _print("\n  [dim]Daemon stopped.[/]\n")
+    except Exception as exc:
+        _print(f"\n  [red]Error:[/] {exc}\n")
+        sys.exit(1)
+
+
+@main.command()
 def status() -> None:
     """Show SKChat status and statistics.
 
