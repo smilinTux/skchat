@@ -1,0 +1,2 @@
+[console_scripts]
+skchat = skchat.cli:main
