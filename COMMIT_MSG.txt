@@ -1,0 +1,8 @@
+feat: SKChat encrypted P2P chat platform — complete package
+
+Core: models, crypto, history, presence, transport bridge,
+group chat (AES-256-GCM + PGP key distribution), encrypted
+chunked file transfer, ephemeral message TTL enforcer,
+reactions with P2P sync, Click CLI with Rich Live watch mode.
+
+130+ tests across 10 test files.
