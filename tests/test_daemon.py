@@ -8,7 +8,19 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from skchat.daemon import ChatDaemon, DaemonShutdown, run_daemon
+from skchat.daemon import (
+    ChatDaemon,
+    DaemonShutdown,
+    daemon_status,
+    is_running,
+    run_daemon,
+    start_daemon,
+    stop_daemon,
+    _pid_file,
+    _read_pid,
+    _write_pid,
+    _remove_pid,
+)
 from skchat.models import ChatMessage, DeliveryStatus
 
 
@@ -279,3 +291,200 @@ def test_run_daemon_with_exception(mock_daemon_class):
     
     with pytest.raises(SystemExit):
         run_daemon()
+
+
+# ---------------------------------------------------------------------------
+# PID file management tests
+# ---------------------------------------------------------------------------
+
+
+class TestPidFile:
+    """Tests for PID file read/write/remove helpers."""
+
+    def test_write_and_read_pid(self, tmp_path, monkeypatch):
+        """Expected: write PID then read it back returns the same int."""
+        import skchat.daemon as daemon_mod
+
+        monkeypatch.setattr(daemon_mod, "DAEMON_PID_FILE", tmp_path / "daemon.pid")
+        _write_pid(12345)
+        assert _read_pid() == 12345
+
+    def test_read_pid_missing_file(self, tmp_path, monkeypatch):
+        """Expected: read_pid returns None when PID file is absent."""
+        import skchat.daemon as daemon_mod
+
+        monkeypatch.setattr(daemon_mod, "DAEMON_PID_FILE", tmp_path / "daemon.pid")
+        assert _read_pid() is None
+
+    def test_remove_pid(self, tmp_path, monkeypatch):
+        """Expected: remove_pid deletes the file."""
+        import skchat.daemon as daemon_mod
+
+        monkeypatch.setattr(daemon_mod, "DAEMON_PID_FILE", tmp_path / "daemon.pid")
+        _write_pid(999)
+        _remove_pid()
+        assert not (tmp_path / "daemon.pid").exists()
+
+    def test_remove_pid_idempotent(self, tmp_path, monkeypatch):
+        """Edge case: remove_pid does not raise if file is absent."""
+        import skchat.daemon as daemon_mod
+
+        monkeypatch.setattr(daemon_mod, "DAEMON_PID_FILE", tmp_path / "daemon.pid")
+        _remove_pid()  # no error
+
+
+class TestIsRunning:
+    """Tests for the is_running() helper."""
+
+    def test_not_running_no_pid_file(self, tmp_path, monkeypatch):
+        """Expected: not running when PID file is absent."""
+        import skchat.daemon as daemon_mod
+
+        monkeypatch.setattr(daemon_mod, "DAEMON_PID_FILE", tmp_path / "daemon.pid")
+        assert is_running() is False
+
+    def test_not_running_stale_pid(self, tmp_path, monkeypatch):
+        """Edge case: stale PID (process not found) returns False."""
+        import skchat.daemon as daemon_mod
+
+        monkeypatch.setattr(daemon_mod, "DAEMON_PID_FILE", tmp_path / "daemon.pid")
+        # Use a PID that is very unlikely to exist
+        _write_pid(999999999)
+        assert is_running() is False
+
+    def test_running_own_process(self, tmp_path, monkeypatch):
+        """Expected: process is running when PID is the current process."""
+        import os
+        import skchat.daemon as daemon_mod
+
+        monkeypatch.setattr(daemon_mod, "DAEMON_PID_FILE", tmp_path / "daemon.pid")
+        _write_pid(os.getpid())
+        assert is_running() is True
+        _remove_pid()
+
+
+class TestDaemonStatus:
+    """Tests for daemon_status()."""
+
+    def test_status_stopped(self, tmp_path, monkeypatch):
+        """Expected: status is stopped when no PID file."""
+        import skchat.daemon as daemon_mod
+
+        monkeypatch.setattr(daemon_mod, "DAEMON_PID_FILE", tmp_path / "daemon.pid")
+        monkeypatch.setattr(daemon_mod, "DAEMON_LOG_FILE", tmp_path / "daemon.log")
+        info = daemon_status()
+        assert info["running"] is False
+        assert info["pid"] is None
+
+    def test_status_running(self, tmp_path, monkeypatch):
+        """Expected: status is running when current PID is stored."""
+        import os
+        import skchat.daemon as daemon_mod
+
+        monkeypatch.setattr(daemon_mod, "DAEMON_PID_FILE", tmp_path / "daemon.pid")
+        monkeypatch.setattr(daemon_mod, "DAEMON_LOG_FILE", tmp_path / "daemon.log")
+        _write_pid(os.getpid())
+        info = daemon_status()
+        assert info["running"] is True
+        assert info["pid"] == os.getpid()
+        _remove_pid()
+
+    def test_status_stale_pid_cleaned(self, tmp_path, monkeypatch):
+        """Edge case: stale PID is cleaned up and reported as stopped."""
+        import skchat.daemon as daemon_mod
+
+        monkeypatch.setattr(daemon_mod, "DAEMON_PID_FILE", tmp_path / "daemon.pid")
+        monkeypatch.setattr(daemon_mod, "DAEMON_LOG_FILE", tmp_path / "daemon.log")
+        _write_pid(999999999)
+        info = daemon_status()
+        assert info["running"] is False
+        assert info["pid"] is None
+        assert not (tmp_path / "daemon.pid").exists()
+
+
+class TestStartStopDaemon:
+    """Tests for start_daemon() and stop_daemon()."""
+
+    def test_start_daemon_already_running_raises(self, tmp_path, monkeypatch):
+        """Failure case: starting when already running raises RuntimeError."""
+        import os
+        import skchat.daemon as daemon_mod
+
+        monkeypatch.setattr(daemon_mod, "DAEMON_PID_FILE", tmp_path / "daemon.pid")
+        _write_pid(os.getpid())
+        with pytest.raises(RuntimeError, match="already running"):
+            start_daemon(background=True)
+        _remove_pid()
+
+    def test_stop_daemon_not_running(self, tmp_path, monkeypatch):
+        """Expected: stop when not running returns None gracefully."""
+        import skchat.daemon as daemon_mod
+
+        monkeypatch.setattr(daemon_mod, "DAEMON_PID_FILE", tmp_path / "daemon.pid")
+        result = stop_daemon()
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# CLI daemon subcommand tests
+# ---------------------------------------------------------------------------
+
+
+class TestDaemonCLI:
+    """Tests for skchat daemon start/stop/status CLI subcommands."""
+
+    def test_daemon_status_stopped(self, tmp_path, monkeypatch):
+        """Expected: daemon status shows stopped when not running."""
+        from click.testing import CliRunner
+        from skchat.cli import main
+        import skchat.daemon as daemon_mod
+
+        monkeypatch.setattr(daemon_mod, "DAEMON_PID_FILE", tmp_path / "daemon.pid")
+        monkeypatch.setattr(daemon_mod, "DAEMON_LOG_FILE", tmp_path / "daemon.log")
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["daemon", "status"])
+        assert result.exit_code == 0
+        assert "stopped" in result.output.lower()
+
+    def test_daemon_status_running(self, tmp_path, monkeypatch):
+        """Expected: daemon status shows running when PID is current process."""
+        import os
+        from click.testing import CliRunner
+        from skchat.cli import main
+        import skchat.daemon as daemon_mod
+
+        monkeypatch.setattr(daemon_mod, "DAEMON_PID_FILE", tmp_path / "daemon.pid")
+        monkeypatch.setattr(daemon_mod, "DAEMON_LOG_FILE", tmp_path / "daemon.log")
+        _write_pid(os.getpid())
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["daemon", "status"])
+        assert result.exit_code == 0
+        assert "running" in result.output.lower()
+        _remove_pid()
+
+    def test_daemon_stop_when_not_running(self, tmp_path, monkeypatch):
+        """Expected: daemon stop shows no daemon running message."""
+        from click.testing import CliRunner
+        from skchat.cli import main
+        import skchat.daemon as daemon_mod
+
+        monkeypatch.setattr(daemon_mod, "DAEMON_PID_FILE", tmp_path / "daemon.pid")
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["daemon", "stop"])
+        assert result.exit_code == 0
+        assert "no daemon" in result.output.lower()
+
+    def test_daemon_help(self):
+        """Expected: daemon help shows subcommands."""
+        from click.testing import CliRunner
+        from skchat.cli import main
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["daemon", "--help"])
+        assert result.exit_code == 0
+        assert "start" in result.output
+        assert "stop" in result.output
+        assert "status" in result.output
