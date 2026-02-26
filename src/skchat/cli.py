@@ -727,38 +727,145 @@ def _build_watch_table(recent_messages: list, total: int) -> "Panel":
     )
 
 
-@main.command()
-@click.option("--interval", "-i", type=float, default=5.0, help="Poll interval in seconds (default: 5).")
-@click.option("--log-file", "-l", default=None, help="Path to log file (default: stdout).")
-@click.option("--quiet", "-q", is_flag=True, help="Suppress console output, log to file only.")
-def daemon(interval: float, log_file: Optional[str], quiet: bool) -> None:
-    """Run receive daemon as a background service.
+@main.group()
+def daemon() -> None:
+    """Manage the SKChat receive daemon.
 
-    Continuously polls SKComm for incoming messages and stores them
-    in local history. Runs until stopped with Ctrl+C or SIGTERM.
-
-    For production use, consider running as a systemd service or
-    in a tmux/screen session.
+    The daemon polls SKComm transports in the background and
+    stores incoming messages in local history automatically.
+    PID is tracked at ~/.skchat/daemon.pid.
 
     Examples:
 
-        skchat daemon
+        skchat daemon start
 
-        skchat daemon --interval 10 --log-file ~/.skchat/daemon.log
+        skchat daemon start --interval 10 --log-file ~/.skchat/daemon.log
 
-        skchat daemon --quiet --log-file /var/log/skchat.log
+        skchat daemon status
+
+        skchat daemon stop
+    """
+
+
+@daemon.command("start")
+@click.option("--interval", "-i", type=float, default=5.0, help="Poll interval in seconds (default: 5).")
+@click.option("--log-file", "-l", default=None, help="Path to log file (default: ~/.skchat/daemon.log).")
+@click.option("--quiet", "-q", is_flag=True, help="Suppress console output in daemon process.")
+@click.option("--foreground", "-f", is_flag=True, help="Run in foreground (blocking, for debugging).")
+def daemon_start(interval: float, log_file: Optional[str], quiet: bool, foreground: bool) -> None:
+    """Start the receive daemon in the background.
+
+    Spawns a background process that polls SKComm every INTERVAL
+    seconds. PID is written to ~/.skchat/daemon.pid.
+
+    Examples:
+
+        skchat daemon start
+
+        skchat daemon start --interval 10
+
+        skchat daemon start --foreground
     """
     try:
-        from .daemon import run_daemon
-        run_daemon(interval=interval, log_file=log_file, quiet=quiet)
-    except ImportError:
-        _print("\n  [red]Error:[/] Daemon module not available.\n")
+        from .daemon import start_daemon, is_running, _read_pid
+
+        if is_running():
+            pid = _read_pid()
+            _print(f"\n  [yellow]Daemon already running[/] (PID {pid})\n")
+            return
+
+        if foreground:
+            _print(f"\n  [cyan]Starting daemon in foreground[/] (Ctrl+C to stop)...\n")
+            from .daemon import run_daemon
+            try:
+                run_daemon(interval=interval, log_file=log_file, quiet=quiet)
+            except KeyboardInterrupt:
+                _print("\n  [dim]Daemon stopped.[/]\n")
+            return
+
+        pid = start_daemon(interval=interval, log_file=log_file, quiet=quiet, background=True)
+        from .daemon import DAEMON_LOG_FILE
+        log_path = Path(log_file).expanduser() if log_file else DAEMON_LOG_FILE.expanduser()
+
+        _print(f"\n  [green]Daemon started[/] (PID {pid})")
+        _print(f"  Poll interval: [cyan]{interval}s[/]")
+        _print(f"  Log: [dim]{log_path}[/]")
+        _print(f"  PID file: [dim]~/.skchat/daemon.pid[/]")
+        _print(f"  Stop with: [cyan]skchat daemon stop[/]\n")
+
+    except RuntimeError as exc:
+        _print(f"\n  [red]Error:[/] {exc}\n")
         sys.exit(1)
-    except KeyboardInterrupt:
-        _print("\n  [dim]Daemon stopped.[/]\n")
     except Exception as exc:
         _print(f"\n  [red]Error:[/] {exc}\n")
         sys.exit(1)
+
+
+@daemon.command("stop")
+def daemon_stop() -> None:
+    """Stop the running daemon.
+
+    Sends SIGTERM to the daemon process and removes the PID file.
+
+    Examples:
+
+        skchat daemon stop
+    """
+    try:
+        from .daemon import stop_daemon, is_running
+
+        if not is_running():
+            _print("\n  [dim]No daemon running.[/]\n")
+            return
+
+        pid = stop_daemon()
+        if pid:
+            _print(f"\n  [green]Daemon stopped[/] (was PID {pid})\n")
+        else:
+            _print("\n  [dim]Daemon was not running.[/]\n")
+
+    except Exception as exc:
+        _print(f"\n  [red]Error:[/] {exc}\n")
+        sys.exit(1)
+
+
+@daemon.command("status")
+def daemon_status_cmd() -> None:
+    """Show the daemon status.
+
+    Checks the PID file and reports whether the daemon is running.
+
+    Examples:
+
+        skchat daemon status
+    """
+    from .daemon import daemon_status
+
+    info = daemon_status()
+    _print("")
+
+    if HAS_RICH and console:
+        from rich.panel import Panel as _Panel
+
+        running_str = "[green]running[/]" if info["running"] else "[red]stopped[/]"
+        pid_str = str(info["pid"]) if info["pid"] else "[dim]none[/]"
+
+        console.print(_Panel(
+            f"[bold]Status:[/]   {running_str}\n"
+            f"[bold]PID:[/]      {pid_str}\n"
+            f"[bold]PID file:[/] [dim]{info['pid_file']}[/]\n"
+            f"[bold]Log file:[/] [dim]{info['log_file']}[/]",
+            title="SKChat Daemon",
+            border_style="bright_blue",
+        ))
+    else:
+        status_str = "running" if info["running"] else "stopped"
+        _print(f"  Status:   {status_str}")
+        _print(f"  PID:      {info['pid'] or 'none'}")
+        _print(f"  PID file: {info['pid_file']}")
+        _print(f"  Log file: {info['log_file']}")
+
+    _print("")
 
 
 @main.command()

@@ -230,14 +230,193 @@ class ChatDaemon:
         )
 
 
+DAEMON_PID_FILE = Path("~/.skchat/daemon.pid")
+DAEMON_LOG_FILE = Path("~/.skchat/daemon.log")
+
+
+def _pid_file() -> Path:
+    """Return the expanded path to the daemon PID file."""
+    return DAEMON_PID_FILE.expanduser()
+
+
+def _read_pid() -> Optional[int]:
+    """Read the daemon PID from the PID file.
+
+    Returns:
+        int: The PID if the file exists and is valid, else None.
+    """
+    pid_path = _pid_file()
+    if not pid_path.exists():
+        return None
+    try:
+        return int(pid_path.read_text().strip())
+    except (ValueError, OSError):
+        return None
+
+
+def _write_pid(pid: int) -> None:
+    """Write the daemon PID to the PID file.
+
+    Args:
+        pid: Process ID to write.
+    """
+    pid_path = _pid_file()
+    pid_path.parent.mkdir(parents=True, exist_ok=True)
+    pid_path.write_text(str(pid))
+
+
+def _remove_pid() -> None:
+    """Remove the daemon PID file if it exists."""
+    pid_path = _pid_file()
+    pid_path.unlink(missing_ok=True)
+
+
+def is_running() -> bool:
+    """Check if the daemon process is currently running.
+
+    Reads the PID file and checks if the process exists.
+
+    Returns:
+        bool: True if daemon is alive, False otherwise.
+    """
+    import os
+
+    pid = _read_pid()
+    if pid is None:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except (ProcessLookupError, PermissionError):
+        return False
+
+
+def daemon_status() -> dict:
+    """Get the current daemon status.
+
+    Returns:
+        dict with keys: running (bool), pid (int|None), pid_file (str).
+    """
+    pid = _read_pid()
+    running = is_running()
+    if not running and pid is not None:
+        _remove_pid()
+        pid = None
+    return {
+        "running": running,
+        "pid": pid,
+        "pid_file": str(_pid_file()),
+        "log_file": str(DAEMON_LOG_FILE.expanduser()),
+    }
+
+
+def start_daemon(
+    interval: float = 5.0,
+    log_file: Optional[str] = None,
+    quiet: bool = False,
+    background: bool = True,
+) -> int:
+    """Start the daemon as a background process.
+
+    Forks a subprocess that writes its PID to ~/.skchat/daemon.pid
+    and runs the polling loop. Returns immediately if background=True.
+
+    Args:
+        interval: Poll interval in seconds.
+        log_file: Optional log file path.
+        quiet: Suppress console output in daemon process.
+        background: If True, daemonize (default). If False, run in foreground.
+
+    Returns:
+        int: PID of the daemon process.
+
+    Raises:
+        RuntimeError: If daemon is already running.
+    """
+    import os
+    import subprocess
+
+    if is_running():
+        pid = _read_pid()
+        raise RuntimeError(f"Daemon already running (PID {pid})")
+
+    if not background:
+        log_path = Path(log_file).expanduser() if log_file else None
+        d = ChatDaemon(interval=interval, log_file=log_path, quiet=quiet)
+        _write_pid(os.getpid())
+        try:
+            d.start()
+        finally:
+            _remove_pid()
+        return os.getpid()
+
+    # Resolve log file
+    log_path = Path(log_file).expanduser() if log_file else DAEMON_LOG_FILE.expanduser()
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+
+    cmd = [
+        sys.executable, "-m", "skchat._daemon_entry",
+        "--interval", str(interval),
+        "--log-file", str(log_path),
+    ]
+    if quiet:
+        cmd.append("--quiet")
+
+    with open(log_path, "a") as logf:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=logf,
+            stderr=logf,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+
+    _write_pid(proc.pid)
+    logger.info("Started skchat daemon with PID %d", proc.pid)
+    return proc.pid
+
+
+def stop_daemon() -> Optional[int]:
+    """Stop the running daemon by sending SIGTERM.
+
+    Returns:
+        int: The PID that was stopped, or None if nothing was running.
+    """
+    import os
+    import time
+
+    pid = _read_pid()
+    if pid is None or not is_running():
+        _remove_pid()
+        return None
+
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        _remove_pid()
+        return None
+
+    # Wait up to 5 seconds for it to exit
+    for _ in range(50):
+        time.sleep(0.1)
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            break
+
+    _remove_pid()
+    logger.info("Stopped skchat daemon (PID %d)", pid)
+    return pid
+
+
 def run_daemon(
     interval: float = 5.0,
     log_file: Optional[str] = None,
     quiet: bool = False,
 ) -> None:
-    """Run the chat daemon with the specified configuration.
+    """Run the chat daemon in the foreground (blocking).
 
-    This is the main entry point for the daemon functionality.
+    Writes PID to ~/.skchat/daemon.pid on start, removes it on exit.
 
     Args:
         interval: Poll interval in seconds
@@ -247,11 +426,16 @@ def run_daemon(
     Examples:
         >>> run_daemon(interval=10, log_file="~/.skchat/daemon.log")
     """
+    import os
+
     log_path = Path(log_file).expanduser() if log_file else None
     daemon = ChatDaemon(interval=interval, log_file=log_path, quiet=quiet)
-    
+
+    _write_pid(os.getpid())
     try:
         daemon.start()
     except Exception as exc:
         logger.error(f"Daemon failed to start: {exc}")
         sys.exit(1)
+    finally:
+        _remove_pid()
