@@ -5,8 +5,10 @@ The group key is distributed to each member by encrypting it with their
 PGP public key. When a member is removed, the group key is rotated
 and re-distributed to remaining members.
 
-The GroupChat model extends Thread with group-specific semantics:
-admin controls, member roles, key management, and invite tokens.
+Humans and agents are first-class participants with identical messaging
+capabilities. The only distinction is tool invocation scope: admins can
+define which skills/tools agents may invoke within the group context.
+Conversation itself is unrestricted — actions are scoped, not speech.
 """
 
 from __future__ import annotations
@@ -35,24 +37,44 @@ class MemberRole(str, Enum):
     OBSERVER = "observer"
 
 
+class ParticipantType(str, Enum):
+    """Informational participant classification.
+
+    This is metadata for display purposes only — it does NOT gate
+    capabilities. A sovereign agent and a human have identical
+    messaging rights in a group.
+    """
+
+    HUMAN = "human"
+    AGENT = "agent"
+    SERVICE = "service"
+
+
 class GroupMember(BaseModel):
-    """A participant in a group chat.
+    """A participant in a group chat — human or agent, equal rights.
 
     Attributes:
         identity_uri: CapAuth identity URI.
         role: Member role (admin, member, observer).
+        participant_type: Informational only — human, agent, or service.
         display_name: Human-readable name.
         public_key_armor: PGP public key for key distribution.
         joined_at: When the member joined.
-        is_ai: Whether this participant is an AI agent.
+        tool_scope: Skills/tools this participant can invoke in group context.
+            Empty list means unrestricted. Only enforced on tool invocation,
+            never on messaging. Admins define this per-member.
     """
 
     identity_uri: str
     role: MemberRole = MemberRole.MEMBER
+    participant_type: ParticipantType = ParticipantType.HUMAN
     display_name: str = ""
     public_key_armor: str = ""
     joined_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    is_ai: bool = False
+    tool_scope: list[str] = Field(
+        default_factory=list,
+        description="Allowed skill.tool names (empty = unrestricted)",
+    )
 
 
 class GroupChat(BaseModel):
@@ -122,8 +144,10 @@ class GroupChat(BaseModel):
         self,
         identity_uri: str,
         role: MemberRole = MemberRole.MEMBER,
+        participant_type: ParticipantType = ParticipantType.HUMAN,
         display_name: str = "",
         public_key_armor: str = "",
+        tool_scope: Optional[list[str]] = None,
         is_ai: bool = False,
     ) -> Optional[GroupMember]:
         """Add a new member to the group.
@@ -131,9 +155,11 @@ class GroupChat(BaseModel):
         Args:
             identity_uri: CapAuth identity URI.
             role: Member role.
+            participant_type: Informational classification.
             display_name: Display name.
             public_key_armor: PGP public key for key distribution.
-            is_ai: Whether this is an AI agent.
+            tool_scope: Allowed tool names (empty = unrestricted).
+            is_ai: Deprecated — use participant_type=ParticipantType.AGENT.
 
         Returns:
             Optional[GroupMember]: The added member, or None if already exists.
@@ -141,12 +167,16 @@ class GroupChat(BaseModel):
         if self.get_member(identity_uri):
             return None
 
+        if is_ai and participant_type == ParticipantType.HUMAN:
+            participant_type = ParticipantType.AGENT
+
         member = GroupMember(
             identity_uri=identity_uri,
             role=role,
+            participant_type=participant_type,
             display_name=display_name or identity_uri.split(":")[-1],
             public_key_armor=public_key_armor,
-            is_ai=is_ai,
+            tool_scope=tool_scope or [],
         )
         self.members.append(member)
         self.updated_at = datetime.now(timezone.utc)
@@ -253,6 +283,99 @@ class GroupChat(BaseModel):
             },
         )
 
+    def can_invoke_tool(self, identity_uri: str, tool_name: str) -> bool:
+        """Check if a member is allowed to invoke a specific tool in this group.
+
+        Tool scoping is the ONLY restriction in sovereign groups.
+        Messaging is always unrestricted — only actions are gated.
+        An empty tool_scope means unrestricted access.
+
+        Args:
+            identity_uri: The member's CapAuth identity URI.
+            tool_name: Fully-qualified tool name (e.g., "sksecurity.audit").
+
+        Returns:
+            bool: True if the tool invocation is allowed.
+        """
+        member = self.get_member(identity_uri)
+        if member is None:
+            return False
+        if member.role == MemberRole.ADMIN:
+            return True
+        if not member.tool_scope:
+            return True
+        return tool_name in member.tool_scope
+
+    def set_tool_scope(
+        self,
+        identity_uri: str,
+        tool_scope: list[str],
+        by_admin: str,
+    ) -> bool:
+        """Set the tool scope for a member. Admin-only operation.
+
+        Args:
+            identity_uri: The member whose scope to update.
+            tool_scope: List of allowed tool names (empty = unrestricted).
+            by_admin: Identity URI of the admin making the change.
+
+        Returns:
+            bool: True if scope was updated.
+        """
+        if not self.is_admin(by_admin):
+            return False
+        member = self.get_member(identity_uri)
+        if member is None:
+            return False
+        member.tool_scope = tool_scope
+        self.updated_at = datetime.now(timezone.utc)
+        return True
+
+    def compose_group_message(
+        self,
+        sender_uri: str,
+        content: str,
+        reply_to: Optional[str] = None,
+        ttl: Optional[int] = None,
+    ) -> Optional[ChatMessage]:
+        """Compose a message for this group. Any member can send.
+
+        Args:
+            sender_uri: Sender's CapAuth identity URI (must be a member).
+            content: Message content.
+            reply_to: Optional message ID being replied to.
+            ttl: Optional seconds until auto-delete.
+
+        Returns:
+            ChatMessage or None if sender isn't a member.
+        """
+        member = self.get_member(sender_uri)
+        if member is None:
+            return None
+        if member.role == MemberRole.OBSERVER:
+            return None
+
+        self.touch()
+        return ChatMessage(
+            sender=sender_uri,
+            recipient=f"group:{self.id}",
+            content=content,
+            thread_id=self.id,
+            reply_to=reply_to,
+            ttl=ttl,
+            metadata={"group_name": self.name, "key_version": self.key_version},
+        )
+
+    @property
+    def agents(self) -> list[GroupMember]:
+        """All agent participants in the group."""
+        return [m for m in self.members if m.participant_type == ParticipantType.AGENT]
+
+    @property
+    def humans(self) -> list[GroupMember]:
+        """All human participants in the group."""
+        return [m for m in self.members if m.participant_type == ParticipantType.HUMAN]
+
     def summary(self) -> str:
         """Human-readable group summary.
 
@@ -260,7 +383,8 @@ class GroupChat(BaseModel):
             str: Multi-line summary.
         """
         members_str = ", ".join(
-            f"{m.display_name} ({m.role.value})" for m in self.members
+            f"{m.display_name} ({m.role.value}, {m.participant_type.value})"
+            for m in self.members
         )
         return (
             f"Group: {self.name}\n"

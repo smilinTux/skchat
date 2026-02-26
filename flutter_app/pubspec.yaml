@@ -1,0 +1,83 @@
+name: skchat_mobile
+description: Sovereign Glass messaging app with end-to-end encryption
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.5.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  
+  # State Management
+  flutter_riverpod: ^2.6.0
+  freezed_annotation: ^2.4.0
+  json_annotation: ^4.9.0
+  
+  # Routing
+  go_router: ^14.0.0
+  
+  # HTTP Client
+  dio: ^5.7.0
+  
+  # Local Storage
+  hive_flutter: ^1.1.0
+  path_provider: ^2.1.0
+  
+  # Notifications & Background
+  flutter_local_notifications: ^18.0.0
+  workmanager: ^0.5.2
+  
+  # Security
+  local_auth: ^2.3.0
+  flutter_secure_storage: ^9.2.2
+  
+  # QR Code
+  qr_flutter: ^4.1.0
+  mobile_scanner: ^6.0.0
+  
+  # Utilities
+  share_plus: ^10.0.0
+  url_launcher: ^6.3.0
+  intl: ^0.19.0
+  
+  # UI Enhancements
+  shimmer: ^3.0.0
+  lottie: ^3.1.0
+  flutter_svg: ^2.0.0
+  
+  # Logging
+  logger: ^2.4.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+  
+  # Code Generation
+  build_runner: ^2.4.0
+  freezed: ^2.5.0
+  json_serializable: ^6.8.0
+  riverpod_generator: ^2.6.0
+  
+  # Testing
+  mocktail: ^1.0.0
+
+flutter:
+  uses-material-design: true
+  
+  fonts:
+    - family: Inter
+      fonts:
+        - asset: assets/fonts/Inter-Variable.ttf
+    - family: JetBrainsMono
+      fonts:
+        - asset: assets/fonts/JetBrainsMono-Regular.ttf
+          weight: 400
+        - asset: assets/fonts/JetBrainsMono-Bold.ttf
+          weight: 700
+  
+  assets:
+    - assets/images/
+    - assets/animations/

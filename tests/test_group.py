@@ -17,6 +17,7 @@ from skchat.group import (
     GroupMember,
     GroupMessageEncryptor,
     MemberRole,
+    ParticipantType,
 )
 
 PASSPHRASE = "group-test-2026"
@@ -128,15 +129,154 @@ class TestGroupChatCreation:
         assert "Dev Team" in summary
         assert "admin" in summary
 
-    def test_add_ai_member(self, group: GroupChat) -> None:
-        """AI agents can be added as members."""
+    def test_add_agent_member(self, group: GroupChat) -> None:
+        """Agents join as first-class participants."""
         member = group.add_member(
             identity_uri="capauth:lumina@skworld.io",
-            is_ai=True,
+            participant_type=ParticipantType.AGENT,
             role=MemberRole.MEMBER,
         )
         assert member is not None
-        assert member.is_ai is True
+        assert member.participant_type == ParticipantType.AGENT
+
+    def test_legacy_is_ai_sets_agent_type(self, group: GroupChat) -> None:
+        """Deprecated is_ai=True should set participant_type to AGENT."""
+        member = group.add_member(
+            identity_uri="capauth:jarvis@skworld.io",
+            is_ai=True,
+        )
+        assert member is not None
+        assert member.participant_type == ParticipantType.AGENT
+
+
+class TestToolScoping:
+    """Tests for capability scoping — actions are gated, not speech."""
+
+    def test_admin_always_allowed(self, group: GroupChat) -> None:
+        """Admins can invoke any tool regardless of scope."""
+        assert group.can_invoke_tool("capauth:alice@skworld.io", "sksecurity.audit")
+
+    def test_unrestricted_member(self, group: GroupChat) -> None:
+        """Members with empty tool_scope have unrestricted access."""
+        group.add_member(
+            identity_uri="capauth:agent-free@test",
+            participant_type=ParticipantType.AGENT,
+        )
+        assert group.can_invoke_tool("capauth:agent-free@test", "any.tool")
+
+    def test_scoped_member_allowed(self, group: GroupChat) -> None:
+        """Members with a scope can invoke listed tools."""
+        group.add_member(
+            identity_uri="capauth:scoped@test",
+            participant_type=ParticipantType.AGENT,
+            tool_scope=["sksecurity.audit", "skcomm.send"],
+        )
+        assert group.can_invoke_tool("capauth:scoped@test", "sksecurity.audit")
+
+    def test_scoped_member_blocked(self, group: GroupChat) -> None:
+        """Members with a scope cannot invoke unlisted tools."""
+        group.add_member(
+            identity_uri="capauth:limited@test",
+            participant_type=ParticipantType.AGENT,
+            tool_scope=["sksecurity.audit"],
+        )
+        assert not group.can_invoke_tool("capauth:limited@test", "skmemory.delete")
+
+    def test_nonmember_cannot_invoke(self, group: GroupChat) -> None:
+        """Non-members cannot invoke any tools."""
+        assert not group.can_invoke_tool("capauth:stranger@test", "any.tool")
+
+    def test_admin_can_set_scope(self, group: GroupChat) -> None:
+        """Admins can change a member's tool scope."""
+        group.add_member(identity_uri="capauth:target@test")
+        result = group.set_tool_scope(
+            "capauth:target@test",
+            ["skcomm.send"],
+            by_admin="capauth:alice@skworld.io",
+        )
+        assert result is True
+        member = group.get_member("capauth:target@test")
+        assert member.tool_scope == ["skcomm.send"]
+
+    def test_nonadmin_cannot_set_scope(self, group: GroupChat) -> None:
+        """Non-admins cannot change tool scopes."""
+        group.add_member(identity_uri="capauth:regular@test")
+        group.add_member(identity_uri="capauth:wannabe-admin@test")
+        result = group.set_tool_scope(
+            "capauth:regular@test",
+            ["restricted.tool"],
+            by_admin="capauth:wannabe-admin@test",
+        )
+        assert result is False
+
+
+class TestGroupMessaging:
+    """Tests for group message composition — humans and agents equal."""
+
+    def test_member_can_compose(self, group: GroupChat) -> None:
+        """Any member can compose a group message."""
+        msg = group.compose_group_message(
+            sender_uri="capauth:alice@skworld.io",
+            content="Hello team!",
+        )
+        assert msg is not None
+        assert msg.recipient == f"group:{group.id}"
+        assert msg.thread_id == group.id
+
+    def test_agent_can_compose(self, group: GroupChat) -> None:
+        """Agents compose messages identically to humans."""
+        group.add_member(
+            identity_uri="capauth:lumina-msg@test",
+            participant_type=ParticipantType.AGENT,
+        )
+        msg = group.compose_group_message(
+            sender_uri="capauth:lumina-msg@test",
+            content="I have a suggestion for the architecture.",
+        )
+        assert msg is not None
+        assert msg.sender == "capauth:lumina-msg@test"
+
+    def test_nonmember_cannot_compose(self, group: GroupChat) -> None:
+        """Non-members cannot compose messages."""
+        msg = group.compose_group_message(
+            sender_uri="capauth:outsider@test",
+            content="Let me in!",
+        )
+        assert msg is None
+
+    def test_observer_cannot_compose(self, group: GroupChat) -> None:
+        """Observers can watch but not speak."""
+        group.add_member(
+            identity_uri="capauth:watcher@test",
+            role=MemberRole.OBSERVER,
+        )
+        msg = group.compose_group_message(
+            sender_uri="capauth:watcher@test",
+            content="I shouldn't be able to say this.",
+        )
+        assert msg is None
+
+    def test_compose_increments_count(self, group: GroupChat) -> None:
+        """Composing a message increments the message count."""
+        before = group.message_count
+        group.compose_group_message(
+            sender_uri="capauth:alice@skworld.io",
+            content="Counting messages.",
+        )
+        assert group.message_count == before + 1
+
+    def test_agents_and_humans_properties(self, group: GroupChat) -> None:
+        """Group can list agents and humans separately."""
+        group.add_member(
+            identity_uri="capauth:human-check@test",
+            participant_type=ParticipantType.HUMAN,
+        )
+        group.add_member(
+            identity_uri="capauth:agent-check@test",
+            participant_type=ParticipantType.AGENT,
+        )
+        assert any(m.identity_uri == "capauth:agent-check@test" for m in group.agents)
+        assert any(m.identity_uri == "capauth:human-check@test" for m in group.humans)
 
 
 class TestGroupKeyDistribution:
