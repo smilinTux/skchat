@@ -867,6 +867,50 @@ def group() -> None:
     """
 
 
+def _store_group(grp: "GroupChat") -> str:
+    """Persist a GroupChat by storing its full state in thread metadata.
+
+    The GroupChat is serialized into the Thread's metadata dict under
+    the ``group_data`` key so it can be fully reconstructed later.
+
+    Args:
+        grp: The GroupChat to persist.
+
+    Returns:
+        str: The memory ID assigned to this group record.
+    """
+    history = _get_history()
+    thread = grp.to_thread()
+    thread.metadata["group_data"] = grp.model_dump(mode="json")
+    return history.store_thread(thread)
+
+
+def _load_group(group_id: str) -> "Optional[GroupChat]":
+    """Load a GroupChat from storage by its ID.
+
+    Searches thread metadata for a serialized GroupChat matching
+    the given ID. Returns None if not found.
+
+    Args:
+        group_id: The group UUID (or prefix).
+
+    Returns:
+        Optional[GroupChat]: The reconstructed group, or None.
+    """
+    from .group import GroupChat
+
+    history = _get_history()
+    thread_data = history.get_thread(group_id)
+    if thread_data is None:
+        return None
+
+    group_data = thread_data.get("group_data")
+    if group_data is None:
+        return None
+
+    return GroupChat.model_validate(group_data)
+
+
 @group.command("create")
 @click.argument("name")
 @click.option("--description", "-d", default="", help="Group description.")
@@ -891,9 +935,7 @@ def group_create(name: str, description: str) -> None:
         description=description,
     )
 
-    history = _get_history()
-    thread = grp.to_thread()
-    history.store_thread(thread)
+    _store_group(grp)
 
     _print("")
     if HAS_RICH and console:
@@ -1002,6 +1044,404 @@ def group_send(group_id: str, message: str, ttl: Optional[int]) -> None:
         _print(f"  [green]Sent to group {group_id[:12]}[/] via {transport_info.get('transport')}")
     else:
         _print(f"  [yellow]Stored locally[/] ({transport_info.get('error', 'no transport')})")
+    _print("")
+
+
+@group.command("add-member")
+@click.argument("group_id")
+@click.argument("identity")
+@click.option(
+    "--role",
+    type=click.Choice(["admin", "member", "observer"], case_sensitive=False),
+    default="member",
+    help="Member role (default: member).",
+)
+@click.option(
+    "--type",
+    "ptype",
+    type=click.Choice(["human", "agent", "service"], case_sensitive=False),
+    default="human",
+    help="Participant type (default: human).",
+)
+@click.option("--display-name", "-n", default="", help="Display name for the member.")
+def group_add_member(
+    group_id: str, identity: str, role: str, ptype: str, display_name: str,
+) -> None:
+    """Add a member to an existing group.
+
+    The identity can be a full capauth URI or a friendly peer name.
+
+    Examples:
+
+        skchat group add-member abc123 capauth:bob@skworld.io
+
+        skchat group add-member abc123 lumina --type agent
+
+        skchat group add-member abc123 alice --role admin
+    """
+    from .group import MemberRole, ParticipantType
+
+    try:
+        resolved = resolve_peer_name(identity)
+    except PeerResolutionError:
+        resolved = identity
+
+    grp = _load_group(group_id)
+    if grp is None:
+        _print(f"\n  [red]Error:[/] Group '{group_id[:12]}' not found.\n")
+        sys.exit(1)
+
+    role_map = {"admin": MemberRole.ADMIN, "member": MemberRole.MEMBER, "observer": MemberRole.OBSERVER}
+    type_map = {"human": ParticipantType.HUMAN, "agent": ParticipantType.AGENT, "service": ParticipantType.SERVICE}
+
+    member = grp.add_member(
+        identity_uri=resolved,
+        role=role_map[role],
+        participant_type=type_map[ptype],
+        display_name=display_name,
+    )
+
+    if member is None:
+        _print(f"\n  [yellow]Already a member:[/] {resolved}\n")
+        return
+
+    _store_group(grp)
+
+    _print("")
+    if HAS_RICH and console:
+        console.print(Panel(
+            f"[bold]Group:[/] [cyan]{grp.name}[/]\n"
+            f"[bold]Added:[/] {resolved}\n"
+            f"[bold]Role:[/] {role}\n"
+            f"[bold]Type:[/] {ptype}\n"
+            f"[bold]Members:[/] {grp.member_count}",
+            title="Member Added",
+            border_style="green",
+        ))
+    else:
+        _print(f"  Added {resolved} to '{grp.name}' as {role}")
+    _print("")
+
+
+@group.command("remove-member")
+@click.argument("group_id")
+@click.argument("identity")
+def group_remove_member(group_id: str, identity: str) -> None:
+    """Remove a member from a group and rotate the group key.
+
+    Forward secrecy: the group key is automatically rotated so the
+    removed member cannot decrypt future messages.
+
+    Examples:
+
+        skchat group remove-member abc123 capauth:bob@skworld.io
+
+        skchat group remove-member abc123 bob
+    """
+    try:
+        resolved = resolve_peer_name(identity)
+    except PeerResolutionError:
+        resolved = identity
+
+    grp = _load_group(group_id)
+    if grp is None:
+        _print(f"\n  [red]Error:[/] Group '{group_id[:12]}' not found.\n")
+        sys.exit(1)
+
+    removed = grp.remove_member(resolved)
+    if not removed:
+        _print(f"\n  [yellow]Not a member:[/] {resolved}\n")
+        return
+
+    _store_group(grp)
+
+    _print("")
+    if HAS_RICH and console:
+        console.print(Panel(
+            f"[bold]Group:[/] [cyan]{grp.name}[/]\n"
+            f"[bold]Removed:[/] {resolved}\n"
+            f"[bold]Key rotated:[/] v{grp.key_version}\n"
+            f"[bold]Remaining:[/] {grp.member_count}",
+            title="Member Removed",
+            border_style="yellow",
+        ))
+    else:
+        _print(f"  Removed {resolved} from '{grp.name}' (key rotated to v{grp.key_version})")
+    _print("")
+
+
+@group.command("info")
+@click.argument("group_id")
+def group_info(group_id: str) -> None:
+    """Show detailed information about a group.
+
+    Examples:
+
+        skchat group info abc123
+    """
+    grp = _load_group(group_id)
+    if grp is None:
+        _print(f"\n  [red]Error:[/] Group '{group_id[:12]}' not found.\n")
+        sys.exit(1)
+
+    _print("")
+    if HAS_RICH and console:
+        members_list = "\n".join(
+            f"  {m.display_name} [{m.role.value}] ({m.participant_type.value})"
+            for m in grp.members
+        )
+        console.print(Panel(
+            f"[bold]Name:[/] [cyan]{grp.name}[/]\n"
+            f"[bold]ID:[/] [dim]{grp.id}[/]\n"
+            f"[bold]Description:[/] {grp.description or '[dim]none[/]'}\n"
+            f"[bold]Created by:[/] {grp.created_by}\n"
+            f"[bold]Created:[/] {grp.created_at.strftime('%Y-%m-%d %H:%M')}\n"
+            f"[bold]Updated:[/] {grp.updated_at.strftime('%Y-%m-%d %H:%M')}\n"
+            f"[bold]Messages:[/] {grp.message_count}\n"
+            f"[bold]Key version:[/] {grp.key_version}\n"
+            f"[bold]Members ({grp.member_count}):[/]\n{members_list}",
+            title="Group Info",
+            border_style="cyan",
+        ))
+    else:
+        _print(grp.summary())
+    _print("")
+
+
+@group.command("members")
+@click.argument("group_id")
+def group_members(group_id: str) -> None:
+    """List members of a group with roles and types.
+
+    Examples:
+
+        skchat group members abc123
+    """
+    grp = _load_group(group_id)
+    if grp is None:
+        _print(f"\n  [red]Error:[/] Group '{group_id[:12]}' not found.\n")
+        sys.exit(1)
+
+    _print("")
+    if HAS_RICH and console:
+        table = Table(
+            show_header=True,
+            header_style="bold",
+            box=None,
+            padding=(0, 2),
+            title=f"Members of {grp.name} ({grp.member_count})",
+        )
+        table.add_column("Name", style="bold", max_width=25)
+        table.add_column("Identity", style="cyan", max_width=35)
+        table.add_column("Role", max_width=10)
+        table.add_column("Type", max_width=10)
+        table.add_column("Scope", style="dim", max_width=30)
+
+        for m in grp.members:
+            role_style = "green" if m.role.value == "admin" else ""
+            scope_str = ", ".join(m.tool_scope) if m.tool_scope else "unrestricted"
+            table.add_row(
+                m.display_name,
+                m.identity_uri,
+                Text(m.role.value, style=role_style),
+                m.participant_type.value,
+                scope_str,
+            )
+
+        console.print(table)
+    else:
+        for m in grp.members:
+            scope_str = ", ".join(m.tool_scope) if m.tool_scope else "unrestricted"
+            _print(f"  {m.display_name} ({m.role.value}, {m.participant_type.value}) scope={scope_str}")
+    _print("")
+
+
+@group.command("set-role")
+@click.argument("group_id")
+@click.argument("identity")
+@click.argument("role", type=click.Choice(["admin", "member", "observer"], case_sensitive=False))
+def group_set_role(group_id: str, identity: str, role: str) -> None:
+    """Change a member's role in a group.
+
+    Only admins can change roles. Roles: admin, member, observer.
+
+    Examples:
+
+        skchat group set-role abc123 capauth:bob@skworld.io admin
+
+        skchat group set-role abc123 alice observer
+    """
+    from .group import MemberRole
+
+    try:
+        resolved = resolve_peer_name(identity)
+    except PeerResolutionError:
+        resolved = identity
+
+    grp = _load_group(group_id)
+    if grp is None:
+        _print(f"\n  [red]Error:[/] Group '{group_id[:12]}' not found.\n")
+        sys.exit(1)
+
+    caller = _get_identity()
+    if not grp.is_admin(caller):
+        _print(f"\n  [red]Error:[/] You are not an admin of this group.\n")
+        sys.exit(1)
+
+    member = grp.get_member(resolved)
+    if member is None:
+        _print(f"\n  [red]Error:[/] '{resolved}' is not a member of this group.\n")
+        sys.exit(1)
+
+    role_map = {"admin": MemberRole.ADMIN, "member": MemberRole.MEMBER, "observer": MemberRole.OBSERVER}
+    member.role = role_map[role]
+    grp.updated_at = datetime.now(timezone.utc)
+    _store_group(grp)
+
+    _print("")
+    if HAS_RICH and console:
+        console.print(Panel(
+            f"[bold]Group:[/] [cyan]{grp.name}[/]\n"
+            f"[bold]Member:[/] {resolved}\n"
+            f"[bold]New role:[/] {role}",
+            title="Role Updated",
+            border_style="green",
+        ))
+    else:
+        _print(f"  Set {resolved} role to {role} in '{grp.name}'")
+    _print("")
+
+
+@group.command("set-tool-scope")
+@click.argument("group_id")
+@click.argument("identity")
+@click.argument("tools", nargs=-1)
+@click.option("--clear", is_flag=True, help="Clear scope (unrestricted access).")
+def group_set_tool_scope(
+    group_id: str, identity: str, tools: tuple[str, ...], clear: bool,
+) -> None:
+    """Set the tool scope for a member in a group.
+
+    Tool scope controls which skills/tools a member can invoke.
+    An empty scope means unrestricted access. Only admins can set scope.
+    Scope gates actions, never speech.
+
+    Examples:
+
+        skchat group set-tool-scope abc123 lumina skseal.sign skmemory.search
+
+        skchat group set-tool-scope abc123 jarvis --clear
+    """
+    try:
+        resolved = resolve_peer_name(identity)
+    except PeerResolutionError:
+        resolved = identity
+
+    grp = _load_group(group_id)
+    if grp is None:
+        _print(f"\n  [red]Error:[/] Group '{group_id[:12]}' not found.\n")
+        sys.exit(1)
+
+    caller = _get_identity()
+    scope = [] if clear else list(tools)
+
+    ok = grp.set_tool_scope(resolved, scope, by_admin=caller)
+    if not ok:
+        if not grp.is_admin(caller):
+            _print(f"\n  [red]Error:[/] You are not an admin of this group.\n")
+        else:
+            _print(f"\n  [red]Error:[/] '{resolved}' is not a member of this group.\n")
+        sys.exit(1)
+
+    _store_group(grp)
+
+    scope_display = ", ".join(scope) if scope else "unrestricted"
+    _print("")
+    if HAS_RICH and console:
+        console.print(Panel(
+            f"[bold]Group:[/] [cyan]{grp.name}[/]\n"
+            f"[bold]Member:[/] {resolved}\n"
+            f"[bold]Tool scope:[/] {scope_display}",
+            title="Tool Scope Updated",
+            border_style="green",
+        ))
+    else:
+        _print(f"  Set tool scope for {resolved}: {scope_display}")
+    _print("")
+
+
+@group.command("quick-start")
+@click.argument("name")
+@click.argument("members", nargs=-1, required=True)
+@click.option("--description", "-d", default="", help="Group description.")
+def group_quick_start(name: str, members: tuple[str, ...], description: str) -> None:
+    """Create a group and add members in one step.
+
+    Resolves peer names automatically. The creator is added as admin;
+    all other members join as regular members.
+
+    Examples:
+
+        skchat group quick-start "Sovereign Squad" lumina opus
+
+        skchat group quick-start "Dev Team" jarvis lumina --type agent
+
+        skchat group quick-start "Three-way" lumina user@skworld.io -d "Main chat"
+    """
+    from .group import GroupChat, ParticipantType
+
+    identity = _get_identity()
+    grp = GroupChat.create(
+        name=name,
+        creator_uri=identity,
+        description=description,
+    )
+
+    resolved_members = []
+    for member_name in members:
+        try:
+            resolved = resolve_peer_name(member_name)
+        except PeerResolutionError:
+            resolved = member_name
+
+        if resolved == identity:
+            continue
+
+        # Heuristic: names containing common agent identifiers get AGENT type
+        agent_hints = {"jarvis", "lumina", "opus", "sonnet", "ava", "cursor-agent"}
+        base_name = resolved.split(":")[-1].split("@")[0].lower()
+        ptype = ParticipantType.AGENT if base_name in agent_hints else ParticipantType.HUMAN
+
+        member = grp.add_member(
+            identity_uri=resolved,
+            participant_type=ptype,
+            display_name=member_name if member_name != resolved else "",
+        )
+        if member:
+            resolved_members.append((member_name, resolved, ptype.value))
+
+    _store_group(grp)
+
+    _print("")
+    if HAS_RICH and console:
+        members_list = "\n".join(
+            f"  + {name} ({uri}) [{ptype}]"
+            for name, uri, ptype in resolved_members
+        )
+        console.print(Panel(
+            f"[bold]Name:[/] [cyan]{grp.name}[/]\n"
+            f"[bold]ID:[/] [dim]{grp.id}[/]\n"
+            f"[bold]Admin:[/] {identity}\n"
+            f"[bold]Members ({grp.member_count}):[/]\n{members_list}\n"
+            f"[bold]Description:[/] {description or '[dim]none[/]'}\n\n"
+            f"[dim]Send a message: skchat group send {grp.id[:12]} \"Hello team!\"[/]",
+            title="Group Ready",
+            border_style="green",
+        ))
+    else:
+        _print(f"  Created group '{name}' with {grp.member_count} members (ID: {grp.id[:12]})")
+        for name, uri, ptype in resolved_members:
+            _print(f"    + {name} ({ptype})")
     _print("")
 
 
