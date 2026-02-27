@@ -93,7 +93,7 @@ class SKSealPlugin(ChatPlugin):
     checking status of documents. Signing requests in message metadata
     are rendered as rich message bubbles.
 
-    Commands: sign, decline, doc-status, doc-create, doc-list
+    Commands: sign, decline, doc-status, doc-create, doc-list, doc-send
     """
 
     name = "skseal"
@@ -103,7 +103,7 @@ class SKSealPlugin(ChatPlugin):
 
     @property
     def commands(self) -> list[str]:
-        return ["sign", "decline", "doc-status", "doc-create", "doc-list"]
+        return ["sign", "decline", "doc-status", "doc-create", "doc-list", "doc-send"]
 
     def activate(self) -> None:
         """Verify SKSeal is available on activation."""
@@ -151,6 +151,8 @@ class SKSealPlugin(ChatPlugin):
             return self._handle_doc_status(args, context)
         elif command == "doc-create":
             return self._handle_doc_create(args, context)
+        elif command == "doc-send":
+            return self._handle_doc_send(args, context)
         elif command == "doc-list":
             return self._handle_doc_list(args, context)
         return None
@@ -414,3 +416,133 @@ class SKSealPlugin(ChatPlugin):
 
         except Exception as exc:
             return f"Error listing documents: {exc}"
+
+    def _handle_doc_send(self, args: str, context: dict) -> str:
+        """Handle /doc-send <document_id> <recipient> — send signing request via SKComm.
+
+        Delivers a signing request as a ChatMessage with signing_request
+        metadata. The document ID and signer details are embedded so the
+        recipient can /sign it directly.
+        """
+        parts = args.strip().split(None, 1)
+        if len(parts) < 2:
+            return "Usage: /doc-send <document_id> <recipient>"
+
+        document_id = parts[0]
+        recipient = parts[1].strip()
+
+        engine, store = _get_skseal()
+        if engine is None:
+            return "Error: skseal not installed."
+
+        try:
+            document = store.load_document(document_id)
+        except Exception as exc:
+            return f"Error: Could not load document '{document_id[:12]}': {exc}"
+
+        # Resolve recipient peer name
+        try:
+            from .identity_bridge import resolve_peer_name
+            resolved_recipient = resolve_peer_name(recipient)
+        except Exception:
+            resolved_recipient = recipient
+
+        sender = context.get("sender", "unknown")
+
+        # Build signing request metadata
+        signers_info = [
+            {
+                "signer_id": s.signer_id,
+                "name": s.name,
+                "fingerprint": s.fingerprint,
+                "role": s.role.value,
+                "status": s.status.value,
+            }
+            for s in document.signers
+        ]
+
+        signing_request = {
+            "document_id": document_id,
+            "title": document.title,
+            "status": document.status.value,
+            "signers": signers_info,
+            "sent_by": sender,
+            "sent_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+        # Compose the signing request message
+        msg = ChatMessage(
+            sender=sender,
+            recipient=resolved_recipient,
+            content=(
+                f"**Signing Request**\n\n"
+                f"Document: {document.title}\n"
+                f"ID: {document_id[:12]}\n"
+                f"Signers: {', '.join(s.name for s in document.signers)}\n\n"
+                f"Use `/sign {document_id}` to sign or `/decline {document_id}` to decline."
+            ),
+            metadata={
+                "signing_request": signing_request,
+                "display_type": "signing_request",
+            },
+        )
+
+        # Store locally
+        try:
+            from .history import ChatHistory
+            history = ChatHistory.from_config()
+            history.store_message(msg)
+        except Exception:
+            pass
+
+        # Deliver via SKComm transport
+        delivered = False
+        transport_name = None
+        try:
+            from skcomm import SKComm
+            from .transport import ChatTransport
+
+            skcomm = SKComm.from_config()
+            history = ChatHistory.from_config()
+            transport = ChatTransport(
+                skcomm=skcomm,
+                history=history,
+                identity=sender,
+            )
+            result = transport.send_message(msg)
+            delivered = result.get("delivered", False)
+            transport_name = result.get("transport")
+        except Exception:
+            pass
+
+        # Add audit entry for send
+        try:
+            from skseal.models import AuditEntry, AuditAction
+
+            entry = AuditEntry(
+                document_id=document_id,
+                action=AuditAction.SENT,
+                actor_fingerprint=context.get("fingerprint", sender),
+                details=f"Signing request sent to {resolved_recipient} via SKComm",
+            )
+            store.append_audit(entry)
+        except Exception:
+            pass
+
+        display_recipient = recipient if recipient == resolved_recipient else f"{recipient} ({resolved_recipient})"
+
+        if delivered:
+            return (
+                f"**Signing Request Sent**\n"
+                f"Document: {document.title}\n"
+                f"To: {display_recipient}\n"
+                f"Transport: {transport_name}\n"
+                f"Status: delivered"
+            )
+        else:
+            return (
+                f"**Signing Request Queued**\n"
+                f"Document: {document.title}\n"
+                f"To: {display_recipient}\n"
+                f"Status: stored locally (will deliver when transport available)"
+            )

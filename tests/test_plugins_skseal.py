@@ -28,7 +28,7 @@ class TestSKSealPluginMeta:
         assert "doc-status" in cmds
         assert "doc-create" in cmds
         assert "doc-list" in cmds
-        assert len(cmds) == 5
+        assert len(cmds) == 6
 
 
 class TestInboundHook:
@@ -285,3 +285,66 @@ class TestDocCreateCommand:
             # Will try to import skseal.models — if not available,
             # returns an error which is fine for testing
             assert isinstance(result, str)
+
+
+class TestDocSendCommand:
+    def test_missing_args(self):
+        plugin = SKSealPlugin()
+        result = plugin.on_command("doc-send", "doc-123", {})
+        assert "Usage" in result
+
+    def test_missing_all_args(self):
+        plugin = SKSealPlugin()
+        result = plugin.on_command("doc-send", "", {})
+        assert "Usage" in result
+
+    @patch("skchat.plugins_skseal._get_skseal")
+    def test_skseal_not_installed(self, mock_skseal):
+        mock_skseal.return_value = (None, None)
+        plugin = SKSealPlugin()
+        result = plugin.on_command("doc-send", "doc-123 lumina", {"sender": "alice"})
+        assert "not installed" in result
+
+    @patch("skchat.plugins_skseal._get_skseal")
+    def test_document_not_found(self, mock_skseal):
+        engine = MagicMock()
+        store = MagicMock()
+        store.load_document.side_effect = FileNotFoundError("not found")
+        mock_skseal.return_value = (engine, store)
+
+        plugin = SKSealPlugin()
+        result = plugin.on_command("doc-send", "doc-bad lumina", {"sender": "alice"})
+        assert "Could not load" in result
+
+    @patch("skchat.plugins_skseal._get_skseal")
+    def test_doc_send_queued(self, mock_skseal):
+        engine = MagicMock()
+        store = MagicMock()
+
+        mock_signer = MagicMock()
+        mock_signer.signer_id = "s1"
+        mock_signer.name = "Bob"
+        mock_signer.fingerprint = "BBCC"
+        mock_signer.role.value = "signer"
+        mock_signer.status.value = "pending"
+
+        mock_doc = MagicMock()
+        mock_doc.title = "Employment Agreement"
+        mock_doc.status.value = "pending"
+        mock_doc.signers = [mock_signer]
+        store.load_document.return_value = mock_doc
+        mock_skseal.return_value = (engine, store)
+
+        plugin = SKSealPlugin()
+        result = plugin.on_command(
+            "doc-send", "doc-123 capauth:bob@skworld.io",
+            {"sender": "capauth:alice@test", "fingerprint": "AABB"},
+        )
+        assert "Signing Request" in result
+        assert "Employment Agreement" in result
+        assert "bob@skworld.io" in result
+
+    @patch("skchat.plugins_skseal._get_skseal")
+    def test_commands_includes_doc_send(self, mock_skseal):
+        plugin = SKSealPlugin()
+        assert "doc-send" in plugin.commands
