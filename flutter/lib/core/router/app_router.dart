@@ -8,6 +8,7 @@ import '../../features/activity/activity_screen.dart';
 import '../../features/profile/profile_screen.dart';
 import '../../features/conversation/conversation_screen.dart';
 import '../../features/identity/identity_card_screen.dart';
+import '../../features/groups/group_info_screen.dart';
 
 /// Named route paths.
 class AppRoutes {
@@ -24,8 +25,12 @@ class AppRoutes {
   /// Agent/peer identity card: /identity/:peerId
   static const identity = '/identity/:peerId';
 
+  /// Group info & member management: /groups/:groupId/info
+  static const groupInfo = '/groups/:groupId/info';
+
   static String conversationPath(String peerId) => '/chats/$peerId';
   static String identityPath(String peerId) => '/identity/$peerId';
+  static String groupInfoPath(String groupId) => '/groups/$groupId/info';
 }
 
 /// GoRouter provider — uses shell routes for the bottom nav structure.
@@ -59,6 +64,15 @@ final appRouterProvider = Provider<GoRouter>((ref) {
               state,
               const GroupsScreen(),
             ),
+            routes: [
+              GoRoute(
+                path: ':groupId/info',
+                builder: (context, state) {
+                  final groupId = state.pathParameters['groupId']!;
+                  return GroupInfoScreen(groupId: groupId);
+                },
+              ),
+            ],
           ),
           GoRoute(
             path: AppRoutes.activity,
