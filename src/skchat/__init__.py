@@ -52,6 +52,8 @@ from .ephemeral import MessageReaper
 from .files import FileChunk, FileReceiver, FileSender, FileTransfer
 from .reactions import ReactionEvent, ReactionManager, ReactionSummary
 from .plugins import ChatPlugin, PluginMeta, PluginRegistry, PluginState
+from .agent_comm import AgentMessenger
+from .encrypted_store import EncryptedChatHistory
 
 __all__ = [
     "ChatMessage",
@@ -96,5 +98,7 @@ __all__ = [
     "PluginMeta",
     "PluginRegistry",
     "PluginState",
+    "AgentMessenger",
+    "EncryptedChatHistory",
     "__version__",
 ]
