@@ -40,6 +40,18 @@ from .identity_bridge import (
     PeerResolutionError,
 )
 from .daemon import ChatDaemon, run_daemon
+from .group import (
+    GroupChat,
+    GroupKeyDistributor,
+    GroupMember,
+    GroupMessageEncryptor,
+    MemberRole,
+    ParticipantType,
+)
+from .ephemeral import MessageReaper
+from .files import FileChunk, FileReceiver, FileSender, FileTransfer
+from .reactions import ReactionEvent, ReactionManager, ReactionSummary
+from .plugins import ChatPlugin, PluginMeta, PluginRegistry, PluginState
 
 __all__ = [
     "ChatMessage",
@@ -66,5 +78,23 @@ __all__ = [
     "PeerResolutionError",
     "ChatDaemon",
     "run_daemon",
+    "GroupChat",
+    "GroupKeyDistributor",
+    "GroupMember",
+    "GroupMessageEncryptor",
+    "MemberRole",
+    "ParticipantType",
+    "MessageReaper",
+    "FileChunk",
+    "FileReceiver",
+    "FileSender",
+    "FileTransfer",
+    "ReactionEvent",
+    "ReactionManager",
+    "ReactionSummary",
+    "ChatPlugin",
+    "PluginMeta",
+    "PluginRegistry",
+    "PluginState",
     "__version__",
 ]

@@ -91,6 +91,8 @@ class ChatDaemon:
         """Start the daemon polling loop.
 
         Continuously polls for messages until stopped via signal or error.
+        Also runs the ephemeral message reaper and drains the outbox queue
+        on each cycle for full E2E P2P messaging.
 
         Raises:
             ImportError: If required dependencies are not available.
@@ -119,7 +121,7 @@ class ChatDaemon:
             history = ChatHistory(store=MemoryStore())
 
         identity = get_sovereign_identity()
-        
+
         try:
             transport = ChatTransport(
                 skcomm=skcomm,
@@ -130,23 +132,45 @@ class ChatDaemon:
             self._log(f"Failed to initialize transport: {exc}", "error")
             raise
 
+        # Initialize ephemeral reaper for TTL enforcement
+        reaper = self._init_reaper(history)
+
+        # Initialize presence tracker
+        presence = self._init_presence(identity)
+
+        # Initialize outbox queue drain
+        queue = self._init_queue(skcomm)
+
+        subsystems = []
+        if reaper:
+            subsystems.append("reaper")
+        if presence:
+            subsystems.append("presence")
+        if queue:
+            subsystems.append("queue")
+        subsys_str = ", ".join(subsystems) if subsystems else "none"
+
         self._log(f"SKChat daemon starting (identity: {identity})")
-        self._log(f"Polling every {self.interval}s, Ctrl+C to stop")
+        self._log(f"Polling every {self.interval}s, subsystems: {subsys_str}, Ctrl+C to stop")
 
         self.running = True
+        reap_counter = 0
+        queue_counter = 0
+        presence_counter = 0
 
         try:
             while self.running:
                 self.poll_count += 1
                 self.last_poll_time = datetime.now(timezone.utc)
 
+                # --- Poll for incoming messages ---
                 try:
                     messages = transport.poll_inbox()
-                    
+
                     if messages:
                         self.total_received += len(messages)
                         self._log(f"Received {len(messages)} message(s) (total: {self.total_received})")
-                        
+
                         for msg in messages:
                             sender_short = msg.sender.split("@")[0].replace("capauth:", "")
                             preview = msg.content[:60] + ("..." if len(msg.content) > 60 else "")
@@ -158,6 +182,41 @@ class ChatDaemon:
                 except Exception as exc:
                     self._log(f"Poll error: {exc}", "warning")
 
+                # --- Reap expired ephemeral messages (every 6 cycles ~30s) ---
+                reap_counter += 1
+                if reaper and reap_counter >= 6:
+                    reap_counter = 0
+                    try:
+                        result = reaper.sweep(create_tombstones=True)
+                        if result.expired > 0:
+                            self._log(f"Reaper: {result.expired} expired, {result.active_ephemeral} still active")
+                    except Exception as exc:
+                        self._log(f"Reaper error: {exc}", "warning")
+
+                # --- Drain outbox queue (every 3 cycles ~15s) ---
+                queue_counter += 1
+                if queue and queue_counter >= 3:
+                    queue_counter = 0
+                    try:
+                        delivered, failed = queue.drain(
+                            lambda env_bytes, recipient: skcomm.router.route(
+                                __import__("skcomm.models", fromlist=["MessageEnvelope"]).MessageEnvelope.from_bytes(env_bytes)
+                            ).delivered
+                        )
+                        if delivered > 0 or failed > 0:
+                            self._log(f"Queue drain: {delivered} delivered, {failed} failed")
+                    except Exception as exc:
+                        self._log(f"Queue drain error: {exc}", "warning")
+
+                # --- Broadcast presence (every 12 cycles ~60s) ---
+                presence_counter += 1
+                if presence and presence_counter >= 12:
+                    presence_counter = 0
+                    try:
+                        self._broadcast_presence(skcomm, identity, presence)
+                    except Exception as exc:
+                        self._log(f"Presence broadcast error: {exc}", "warning")
+
                 time.sleep(self.interval)
 
         except DaemonShutdown:
@@ -165,7 +224,94 @@ class ChatDaemon:
         except KeyboardInterrupt:
             pass
         finally:
+            # Send offline presence on shutdown
+            if presence:
+                try:
+                    self._broadcast_presence(skcomm, identity, presence, going_offline=True)
+                except Exception:
+                    pass
             self._log(f"Daemon stopped. Received {self.total_received} message(s) total.")
+
+    def _init_reaper(self, history: object) -> object:
+        """Initialize the ephemeral message reaper.
+
+        Args:
+            history: ChatHistory instance.
+
+        Returns:
+            MessageReaper or None if initialization fails.
+        """
+        try:
+            from .ephemeral import MessageReaper
+            return MessageReaper(store=history._store)
+        except Exception as exc:
+            self._log(f"Reaper init skipped: {exc}", "warning")
+            return None
+
+    def _init_presence(self, identity: str) -> object:
+        """Initialize the presence tracker.
+
+        Args:
+            identity: Local identity URI.
+
+        Returns:
+            PresenceTracker or None if initialization fails.
+        """
+        try:
+            from .presence import PresenceTracker
+            return PresenceTracker()
+        except Exception:
+            return None
+
+    def _init_queue(self, skcomm: object) -> object:
+        """Initialize the outbox message queue for retry delivery.
+
+        Args:
+            skcomm: SKComm instance.
+
+        Returns:
+            MessageQueue or None if initialization fails.
+        """
+        try:
+            from skcomm.queue import MessageQueue
+            return MessageQueue()
+        except Exception:
+            return None
+
+    def _broadcast_presence(
+        self,
+        skcomm: object,
+        identity: str,
+        tracker: object,
+        going_offline: bool = False,
+    ) -> None:
+        """Broadcast presence state over SKComm.
+
+        Args:
+            skcomm: SKComm instance.
+            identity: Local identity URI.
+            tracker: PresenceTracker instance.
+            going_offline: If True, send offline status.
+        """
+        from .presence import PresenceIndicator, PresenceState
+
+        state = PresenceState.OFFLINE if going_offline else PresenceState.ONLINE
+        indicator = PresenceIndicator(
+            identity_uri=identity,
+            state=state,
+        )
+        tracker.update(indicator)
+
+        try:
+            payload = indicator.model_dump_json()
+            from skcomm.models import MessageType
+            skcomm.send(
+                recipient="*",
+                message=payload,
+                message_type=MessageType.HEARTBEAT,
+            )
+        except Exception:
+            pass
 
     def _uptime(self) -> str:
         """Calculate daemon uptime.

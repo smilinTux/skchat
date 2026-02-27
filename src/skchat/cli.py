@@ -73,28 +73,6 @@ def _get_chat_transport():
         return None
 
 
-def _try_deliver(msg) -> dict:
-    """Attempt to deliver a message via SKComm transport.
-
-    Args:
-        msg: ChatMessage to deliver.
-
-    Returns:
-        dict: Delivery result with 'delivered', 'transport', and 'error' keys.
-    """
-    transport = _get_chat_transport()
-    if transport is None:
-        return {"delivered": False, "error": "no transport configured"}
-
-    result = transport.send_message(msg)
-    return {
-        "delivered": result.get("delivered", False),
-        "transport": result.get("transport"),
-        "error": result.get("error"),
-        "envelope_id": None,
-    }
-
-
 def _print(msg: str) -> None:
     """Print using Rich if available, else plain click.echo.
 
@@ -865,6 +843,165 @@ def daemon_status_cmd() -> None:
         _print(f"  PID file: {info['pid_file']}")
         _print(f"  Log file: {info['log_file']}")
 
+    _print("")
+
+
+@main.group()
+def group() -> None:
+    """Manage group chats.
+
+    Create groups, add/remove members, and send group messages.
+    Groups use AES-256-GCM encryption with PGP key distribution.
+
+    Examples:
+
+        skchat group create "Project Alpha"
+
+        skchat group add-member GROUP_ID capauth:bob@skworld.io
+
+        skchat group send GROUP_ID "Hello team!"
+
+        skchat group list
+
+        skchat group info GROUP_ID
+    """
+
+
+@group.command("create")
+@click.argument("name")
+@click.option("--description", "-d", default="", help="Group description.")
+def group_create(name: str, description: str) -> None:
+    """Create a new group chat.
+
+    You become the admin of the new group. Add members with
+    'skchat group add-member'.
+
+    Examples:
+
+        skchat group create "Project Alpha"
+
+        skchat group create "Sovereign Squad" -d "Core team chat"
+    """
+    from .group import GroupChat
+
+    identity = _get_identity()
+    grp = GroupChat.create(
+        name=name,
+        creator_uri=identity,
+        description=description,
+    )
+
+    history = _get_history()
+    thread = grp.to_thread()
+    history.store_thread(thread)
+
+    _print("")
+    if HAS_RICH and console:
+        console.print(Panel(
+            f"[bold]Name:[/] [cyan]{grp.name}[/]\n"
+            f"[bold]ID:[/] [dim]{grp.id}[/]\n"
+            f"[bold]Admin:[/] {identity}\n"
+            f"[bold]Description:[/] {description or '[dim]none[/]'}\n"
+            f"[bold]Key version:[/] {grp.key_version}",
+            title="Group Created",
+            border_style="green",
+        ))
+    else:
+        _print(f"  Created group '{name}' (ID: {grp.id[:12]})")
+        _print(f"  Admin: {identity}")
+    _print("")
+
+
+@group.command("list")
+@click.option("--limit", "-n", default=20, help="Max groups to show.")
+def group_list(limit: int) -> None:
+    """List all known group chats.
+
+    Examples:
+
+        skchat group list
+    """
+    history = _get_history()
+    threads = history.list_threads(limit=limit)
+
+    group_threads = [
+        t for t in threads
+        if t.get("participants") and len(t.get("participants", [])) > 0
+    ]
+
+    _print("")
+    if not group_threads:
+        _print("  [dim]No groups found.[/]")
+        _print("")
+        return
+
+    if HAS_RICH and console:
+        table = Table(
+            show_header=True,
+            header_style="bold",
+            box=None,
+            padding=(0, 2),
+            title=f"Groups ({len(group_threads)})",
+        )
+        table.add_column("ID", style="dim", max_width=12)
+        table.add_column("Name", style="bold", max_width=30)
+        table.add_column("Members", justify="right")
+        table.add_column("Messages", justify="right")
+
+        for t in group_threads:
+            tid = (t.get("thread_id") or "")[:12]
+            title = t.get("title", "Untitled")
+            members = str(len(t.get("participants", [])))
+            count = str(t.get("message_count", 0))
+            table.add_row(tid, title, members, count)
+
+        console.print(table)
+    else:
+        for t in group_threads:
+            title = t.get("title", "Untitled")
+            count = t.get("message_count", 0)
+            members = len(t.get("participants", []))
+            _print(f"  {title} ({members} members, {count} messages)")
+
+    _print("")
+
+
+@group.command("send")
+@click.argument("group_id")
+@click.argument("message")
+@click.option("--ttl", type=int, default=None, help="Seconds until auto-delete.")
+def group_send(group_id: str, message: str, ttl: Optional[int]) -> None:
+    """Send a message to a group.
+
+    Examples:
+
+        skchat group send abc123 "Hello team!"
+
+        skchat group send abc123 "Secret" --ttl 60
+    """
+    from .models import ChatMessage, ContentType
+
+    identity = _get_identity()
+    msg = ChatMessage(
+        sender=identity,
+        recipient=f"group:{group_id}",
+        content=message,
+        content_type=ContentType.MARKDOWN,
+        thread_id=group_id,
+        ttl=ttl,
+        metadata={"group_message": True},
+    )
+
+    history = _get_history()
+    mem_id = history.store_message(msg)
+
+    transport_info = _try_deliver(msg)
+
+    _print("")
+    if transport_info.get("delivered"):
+        _print(f"  [green]Sent to group {group_id[:12]}[/] via {transport_info.get('transport')}")
+    else:
+        _print(f"  [yellow]Stored locally[/] ({transport_info.get('error', 'no transport')})")
     _print("")
 
 

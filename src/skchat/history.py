@@ -34,6 +34,35 @@ class ChatHistory:
     def __init__(self, store: object) -> None:
         self._store = store
 
+    @classmethod
+    def from_config(cls, store_path: Optional[str] = None) -> "ChatHistory":
+        """Create a ChatHistory from config, backed by SKMemory SQLite.
+
+        Args:
+            store_path: Override store directory. Defaults to ~/.skchat/memory/.
+
+        Returns:
+            ChatHistory backed by persistent SQLite storage.
+        """
+        from pathlib import Path
+
+        if store_path is None:
+            store_path = str(Path("~/.skchat/memory").expanduser())
+
+        Path(store_path).mkdir(parents=True, exist_ok=True)
+
+        try:
+            from skmemory import MemoryStore, SQLiteBackend
+
+            backend = SQLiteBackend(base_path=store_path)
+            store = MemoryStore(primary=backend)
+        except ImportError:
+            from skmemory import MemoryStore
+
+            store = MemoryStore()
+
+        return cls(store=store)
+
     def store_message(self, message: ChatMessage) -> str:
         """Store a chat message as an SKMemory memory.
 
