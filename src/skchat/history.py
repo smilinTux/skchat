@@ -236,6 +236,34 @@ class ChatHistory:
         ]
         return chat_results[:limit]
 
+    def get_thread(self, thread_id: str) -> Optional[dict]:
+        """Retrieve a specific thread's full metadata by ID.
+
+        Args:
+            thread_id: The thread identifier.
+
+        Returns:
+            Optional[dict]: Full thread metadata including all stored fields,
+                or None if not found.
+        """
+        tag = f"{self.THREAD_TAG_PREFIX}{thread_id}"
+        memories = self._store.list_memories(
+            tags=["skchat:thread_meta", tag],
+            limit=1,
+        )
+        if not memories:
+            return None
+        m = memories[0]
+        result = {
+            "thread_id": m.metadata.get("thread_id"),
+            "title": m.title,
+            "participants": m.metadata.get("participants", []),
+            "message_count": m.metadata.get("message_count", 0),
+            "parent_thread_id": m.metadata.get("parent_thread_id"),
+        }
+        result.update(m.metadata)
+        return result
+
     def list_threads(self, limit: int = 50) -> list[dict]:
         """List all known chat threads.
 
