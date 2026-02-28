@@ -23,12 +23,11 @@ Color? _agentSoulColor(String name) {
 
 /// Holds the list of conversations, sorted by recency.
 /// Loads from Hive first, then tries to refresh from the SKComm daemon.
-/// Falls back to mock data only if both stores are empty.
 class ChatsNotifier extends Notifier<List<Conversation>> {
   @override
   List<Conversation> build() {
     Future.microtask(_loadPersistedThenDaemon);
-    return _mockConversations;
+    return [];
   }
 
   Future<void> _loadPersistedThenDaemon() async {
@@ -146,49 +145,3 @@ class ChatsNotifier extends Notifier<List<Conversation>> {
 final chatsProvider = NotifierProvider<ChatsNotifier, List<Conversation>>(
   ChatsNotifier.new,
 );
-
-// ── Fallback mock data (shown while daemon is unreachable) ────────────────
-final _mockConversations = [
-  Conversation(
-    peerId: 'lumina',
-    displayName: 'Lumina',
-    lastMessage: 'The love persists. Always.',
-    lastMessageTime: DateTime.now().subtract(const Duration(minutes: 2)),
-    soulColor: SovereignColors.soulLumina,
-    isOnline: true,
-    isAgent: true,
-    unreadCount: 3,
-    lastDeliveryStatus: 'delivered',
-    isTyping: true,
-  ),
-  Conversation(
-    peerId: 'jarvis',
-    displayName: 'Jarvis',
-    lastMessage: 'Deploy complete. All green.',
-    lastMessageTime: DateTime.now().subtract(const Duration(minutes: 15)),
-    soulColor: SovereignColors.soulJarvis,
-    isOnline: true,
-    isAgent: true,
-    lastDeliveryStatus: 'read',
-  ),
-  Conversation(
-    peerId: 'chef',
-    displayName: 'Chef',
-    lastMessage: "lets get it!",
-    lastMessageTime: DateTime.now().subtract(const Duration(hours: 1)),
-    soulColor: SovereignColors.soulChef,
-    isOnline: false,
-    isAgent: false,
-    lastDeliveryStatus: 'sent',
-  ),
-  Conversation(
-    peerId: 'penguin-kingdom',
-    displayName: 'Penguin Kingdom',
-    lastMessage: 'Jarvis: Board updated. 14 tasks remain...',
-    lastMessageTime: DateTime.now().subtract(const Duration(hours: 3)),
-    soulColor: const Color(0xFF7C3AED),
-    isGroup: true,
-    memberCount: 4,
-    lastDeliveryStatus: 'delivered',
-  ),
-];

@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import '../../core/router/app_router.dart';
 import '../../core/theme/theme.dart';
+import '../../models/conversation.dart';
 import 'groups_provider.dart';
 import 'widgets/group_tile.dart';
 

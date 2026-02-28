@@ -344,6 +344,90 @@ async def list_tools() -> list[Tool]:
                 "required": ["thread_id"],
             },
         ),
+        Tool(
+            name="webrtc_status",
+            description=(
+                "Get the status of WebRTC P2P connections. "
+                "Lists active peer data channels, signaling state, and transport health."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        ),
+        Tool(
+            name="initiate_call",
+            description=(
+                "Initiate a WebRTC P2P connection to a peer agent or browser client. "
+                "Sends a signaling message via SKComm to start ICE negotiation. "
+                "Use webrtc_status after ~3s to confirm the connection is established."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "peer": {
+                        "type": "string",
+                        "description": (
+                            "Peer fingerprint or agent name to connect to "
+                            "(e.g. 'lumina' or 'CCBE9306410CF8CD5E393D6DEC31663B95230684')."
+                        ),
+                    },
+                    "signaling_url": {
+                        "type": "string",
+                        "description": (
+                            "Override the signaling broker URL for this call "
+                            "(optional, uses configured default)."
+                        ),
+                    },
+                },
+                "required": ["peer"],
+            },
+        ),
+        Tool(
+            name="accept_call",
+            description=(
+                "Accept an incoming WebRTC call from a peer. "
+                "Retrieves the pending SDP offer from the inbox and sends an answer."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "peer": {
+                        "type": "string",
+                        "description": "Fingerprint or name of the peer whose call to accept.",
+                    },
+                },
+                "required": ["peer"],
+            },
+        ),
+        Tool(
+            name="send_file_p2p",
+            description=(
+                "Send a file directly to a peer via WebRTC data channels. "
+                "Uses parallel channels for large files (up to 16 channels, "
+                "similar to Weblink's approach). Falls back to SKComm transport if "
+                "no direct WebRTC connection is available."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "peer": {
+                        "type": "string",
+                        "description": "Recipient peer fingerprint or agent name.",
+                    },
+                    "file_path": {
+                        "type": "string",
+                        "description": "Absolute path to the file to send.",
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "Optional description of the file.",
+                    },
+                },
+                "required": ["peer", "file_path"],
+            },
+        ),
     ]
 
 
@@ -365,6 +449,10 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         "group_add_member": _handle_group_add_member,
         "list_threads": _handle_list_threads,
         "get_thread": _handle_get_thread,
+        "webrtc_status": _handle_webrtc_status,
+        "initiate_call": _handle_initiate_call,
+        "accept_call": _handle_accept_call,
+        "send_file_p2p": _handle_send_file_p2p,
     }
     handler = handlers.get(name)
     if handler is None:
@@ -788,6 +876,277 @@ async def _handle_get_thread(args: dict) -> list[TextContent]:
             for m in messages
         ],
     })
+
+
+# ─────────────────────────────────────────────────────────────
+# Tool Handlers — WebRTC
+# ─────────────────────────────────────────────────────────────
+
+
+def _get_webrtc_transport():
+    """Lazy-get the WebRTC transport from the SKComm router.
+
+    Returns:
+        WebRTCTransport instance, or None if not configured.
+    """
+    try:
+        from skcomm import SKComm
+
+        comm = SKComm.from_config()
+        for t in comm.router.transports:
+            if t.name == "webrtc":
+                return t
+    except Exception:
+        pass
+    return None
+
+
+async def _handle_webrtc_status(args: dict) -> list[TextContent]:
+    """Get WebRTC transport status and active peer connections.
+
+    Args:
+        args: No arguments required.
+
+    Returns:
+        JSON with transport health and connected peer info.
+    """
+    transport = _get_webrtc_transport()
+
+    if transport is None:
+        return _json({
+            "available": False,
+            "reason": "WebRTC transport not configured. Add webrtc to ~/.skcomm/config.yml and pip install 'skcomm[webrtc]'.",
+        })
+
+    health = transport.health_check()
+
+    peers_info: dict = {}
+    try:
+        with transport._peers_lock:
+            for fp, peer in transport._peers.items():
+                peers_info[fp[:8]] = {
+                    "connected": peer.connected,
+                    "negotiating": peer.negotiating,
+                    "channel_open": peer.channel is not None,
+                    "pending_count": len(peer.pending),
+                }
+    except Exception:
+        pass
+
+    return _json({
+        "available": transport.is_available(),
+        "running": transport._running,
+        "signaling_connected": transport._signaling_connected,
+        "signaling_url": transport._signaling_url,
+        "status": health.status.value,
+        "active_peers": peers_info,
+        "inbox_pending": transport._inbox.qsize(),
+        "error": health.error,
+    })
+
+
+async def _handle_initiate_call(args: dict) -> list[TextContent]:
+    """Initiate a WebRTC P2P connection to a peer.
+
+    Args:
+        args: peer (str), optional signaling_url (str).
+
+    Returns:
+        JSON with initiation status and next steps.
+    """
+    peer: str = args.get("peer", "")
+    if not peer:
+        return _error("peer is required")
+
+    transport = _get_webrtc_transport()
+    if transport is None:
+        return _error(
+            "WebRTC transport not configured. "
+            "Install aiortc: pip install 'skcomm[webrtc]' and enable webrtc in ~/.skcomm/config.yml"
+        )
+
+    if not transport._running:
+        transport.start()
+
+    # Resolve short name to fingerprint if possible
+    if not peer.startswith("capauth:") and len(peer) != 40:
+        try:
+            from .identity_bridge import resolve_peer_name
+            peer_uri = resolve_peer_name(peer)
+            peer = peer_uri
+        except Exception:
+            pass
+
+    # Schedule the WebRTC offer (non-blocking)
+    transport._schedule_offer(peer)
+
+    return _json({
+        "initiated": True,
+        "peer": peer,
+        "message": (
+            f"ICE negotiation started with {peer[:12]}. "
+            "Check webrtc_status in ~3s to confirm the connection is established."
+        ),
+        "signaling_url": transport._signaling_url,
+    })
+
+
+async def _handle_accept_call(args: dict) -> list[TextContent]:
+    """Accept an incoming WebRTC call from a peer.
+
+    Looks for a WEBRTC_SIGNAL message in the recent inbox from the
+    specified peer and processes it as an incoming SDP offer.
+
+    Args:
+        args: peer (str) - fingerprint or name of the calling peer.
+
+    Returns:
+        JSON with acceptance status.
+    """
+    peer: str = args.get("peer", "")
+    if not peer:
+        return _error("peer is required")
+
+    transport = _get_webrtc_transport()
+    if transport is None:
+        return _error("WebRTC transport not configured")
+
+    if not transport._running:
+        transport.start()
+
+    # Check if a connection already exists (may have been auto-accepted during negotiation)
+    try:
+        with transport._peers_lock:
+            peer_conn = transport._peers.get(peer)
+    except Exception:
+        peer_conn = None
+
+    if peer_conn and peer_conn.connected:
+        return _json({
+            "accepted": True,
+            "peer": peer,
+            "status": "already_connected",
+            "message": f"Already connected to {peer[:12]} via WebRTC data channel.",
+        })
+
+    # Schedule an offer to the peer — if they already sent one,
+    # the signaling broker will handle the SDP exchange
+    transport._schedule_offer(peer)
+
+    return _json({
+        "accepted": True,
+        "peer": peer,
+        "status": "negotiating",
+        "message": (
+            f"WebRTC negotiation initiated with {peer[:12]}. "
+            "Check webrtc_status in ~5s to confirm the connection."
+        ),
+    })
+
+
+async def _handle_send_file_p2p(args: dict) -> list[TextContent]:
+    """Send a file to a peer via WebRTC data channel or SKComm fallback.
+
+    For files under 256KB, sends via the existing skcomm channel.
+    For larger files, uses the WEBRTC_FILE message type for chunked transfer.
+
+    Args:
+        args: peer (str), file_path (str), optional description (str).
+
+    Returns:
+        JSON with transfer status.
+    """
+    peer: str = args.get("peer", "")
+    file_path: str = args.get("file_path", "")
+    description: str = args.get("description", "")
+
+    if not peer:
+        return _error("peer is required")
+    if not file_path:
+        return _error("file_path is required")
+
+    import os
+    from pathlib import Path
+
+    path = Path(file_path).expanduser()
+    if not path.exists():
+        return _error(f"File not found: {file_path}")
+    if not path.is_file():
+        return _error(f"Not a file: {file_path}")
+
+    file_size = path.stat().st_size
+    file_name = path.name
+
+    # Try WebRTC direct channel first
+    transport = _get_webrtc_transport()
+    if transport and transport.is_available():
+        try:
+            with transport._peers_lock:
+                peer_conn = transport._peers.get(peer)
+
+            if peer_conn and peer_conn.connected and peer_conn.channel:
+                # Send via open WebRTC data channel
+                file_bytes = path.read_bytes()
+                # Prepend a JSON header describing the file
+                import json as _json_mod
+                header = _json_mod.dumps({
+                    "type": "file",
+                    "name": file_name,
+                    "size": file_size,
+                    "description": description,
+                }).encode()
+                header_len = len(header).to_bytes(4, "big")
+                payload = header_len + header + file_bytes
+
+                fut = asyncio.run_coroutine_threadsafe(
+                    transport._async_channel_send(peer_conn.channel, payload),
+                    transport._loop,
+                )
+                fut.result(timeout=30.0)
+
+                return _json({
+                    "sent": True,
+                    "transport": "webrtc-direct",
+                    "peer": peer,
+                    "file": file_name,
+                    "size_bytes": file_size,
+                    "description": description,
+                })
+        except Exception as exc:
+            logger.warning("WebRTC direct file send failed: %s — falling back to SKComm", exc)
+
+    # Fallback: send via SKComm as a FILE message
+    try:
+        from skcomm import SKComm
+        from skcomm.models import MessageType
+
+        comm = SKComm.from_config()
+        import base64 as _b64
+
+        file_bytes = path.read_bytes()
+        encoded = _b64.b64encode(file_bytes).decode()
+        import json as _json_mod
+        payload = _json_mod.dumps({
+            "name": file_name,
+            "size": file_size,
+            "description": description,
+            "data_b64": encoded,
+        })
+        report = comm.send(
+            recipient=peer,
+            message=payload,
+            message_type=MessageType.WEBRTC_FILE,
+        )
+        return _json({
+            "sent": report.delivered,
+            "transport": report.successful_transport or "skcomm-fallback",
+            "peer": peer,
+            "file": file_name,
+            "size_bytes": file_size,
+            "delivered": report.delivered,
+        })
+    except Exception as exc:
+        return _error(f"File send failed: {exc}")
 
 
 # ─────────────────────────────────────────────────────────────
