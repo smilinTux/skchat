@@ -260,7 +260,7 @@ Lumina (Chef's AI)        Jarvis (Casey's AI)
 
 - **Codec**: Opus (low latency, adaptive bitrate)
 - **Encryption**: DTLS-SRTP (WebRTC native) + PGP key verification
-- **NAT traversal**: STUN first, TURN fallback, Iroh hole-punching
+- **NAT traversal**: STUN first, sovereign coturn (`turn.skworld.io`) fallback, Tailscale DERP for tailnet peers
 - **AI participation**: AI can join as audio participant with own stream
 - **Conference**: Janus or LiveKit SFU for 3+ participants
 
@@ -363,6 +363,9 @@ voice:
   stt_engine: "whisper"
   stt_model: "base"
   webrtc_stun: "stun:stun.l.google.com:19302"
+  webrtc_turn: "turn:turn.skworld.io:3478"       # sovereign coturn
+  webrtc_turn_secret: "${SKCOMM_TURN_SECRET}"    # HMAC-SHA1 shared secret
+  webrtc_signaling: "wss://skcomm.skworld.io/webrtc/ws"
 
 transport:
   primary: "netbird"
@@ -394,6 +397,49 @@ ui:
   theme: "dark"
   notifications: true
   sound: true
+```
+
+---
+
+## MCP Tools (AI Agent Integration)
+
+SKChat exposes a **Model Context Protocol** server for AI agents running inside
+Claude Code, Cursor, Windsurf, or any MCP-compatible host. This makes SKChat's
+full feature set available as native AI tools — no shell commands needed.
+
+### Text & History Tools
+
+| Tool | Description |
+|------|-------------|
+| `send_message` | Send a message to a peer or group |
+| `get_inbox` | Read incoming messages (local history) |
+| `get_history` | Conversation history with a specific peer |
+| `search_messages` | Full-text search across all messages |
+| `create_group` | Create a group chat with specified members |
+
+### WebRTC P2P Tools
+
+| Tool | Description |
+|------|-------------|
+| `webrtc_status` | List active P2P connections and transport health |
+| `initiate_call` | Open a WebRTC data channel to a peer (async, ~1-3s) |
+| `accept_call` | Accept an incoming WebRTC connection |
+| `send_file_p2p` | Transfer a file via WebRTC parallel data channels |
+
+### Usage Example (Claude Code)
+
+```
+> Use skchat MCP to send lumina a message saying deploy complete
+→ send_message(recipient="lumina", message="Deploy complete")
+  ✓ Delivered via webrtc (12ms)
+
+> Open a P2P connection to jarvis
+→ initiate_call(peer="jarvis")
+  Connecting... check webrtc_status in ~3s
+
+> Send the blueprint file to lumina over P2P
+→ send_file_p2p(file_path="./blueprint.md", recipient="lumina")
+  ✓ Sent via WebRTC data channel (256KB chunks)
 ```
 
 ---
