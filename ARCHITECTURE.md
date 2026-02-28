@@ -426,6 +426,56 @@ class Cloud9Integration:
 
 ---
 
+## MCP Server (Agent Integration)
+
+SKChat exposes a **Model Context Protocol** server (`skchat mcp`) that allows AI agents
+running inside Claude Code, Cursor, or any MCP-compatible host to interact with the full
+SKChat feature set as native tools.
+
+### Available MCP Tools
+
+| Tool | Description |
+|------|-------------|
+| `send_message` | Send a text message to a peer via SKComm |
+| `get_inbox` | Read locally-stored incoming messages |
+| `get_history` | Conversation history with a specific peer |
+| `search_messages` | Full-text search across message history |
+| `create_group` | Create a group chat and add members |
+| `webrtc_status` | List active WebRTC P2P connections and transport health |
+| `initiate_call` | Open a WebRTC data channel connection to a peer |
+| `accept_call` | Accept an incoming WebRTC connection from a peer |
+| `send_file_p2p` | Transfer a file via WebRTC parallel data channels |
+
+### WebRTC MCP Flow
+
+```
+Claude Code / Cursor
+     │ MCP tool: initiate_call {peer: "lumina"}
+     ▼
+skchat/mcp_server.py  _handle_initiate_call()
+     │
+     ▼
+SKComm WebRTC transport  _schedule_offer("lumina")
+     │ (async, background asyncio loop)
+     ▼
+WebRTC signaling broker  → SDP offer → Lumina
+     │ ICE negotiation (~1-3s)
+     ▼
+P2P data channel open
+     │
+     ▼
+MCP tool: webrtc_status → {peer: "lumina", connected: true, channel: "skcomm"}
+```
+
+### Daemon WebRTC Init
+
+On `skchat daemon start`, the daemon calls `_init_webrtc(skcomm, identity)` which:
+1. Finds the `"webrtc"` transport in the SKComm router
+2. Calls `.start()` on it if not already running (starts background asyncio loop)
+3. Sets `self._webrtc_active = True` for subsystem reporting
+
+---
+
 ## Voice Pipeline Details
 
 ### Piper TTS Integration
@@ -463,26 +513,50 @@ whisper:
     min_silence_ms: 500
 ```
 
-### WebRTC Signaling via SKComm
+### WebRTC Signaling via SKComm Broker
 
-WebRTC needs a signaling channel to exchange SDP offers/answers and ICE
-candidates. SKChat uses SKComm as the signaling transport:
+SKChat uses the **SKComm signaling broker** (`WS /webrtc/ws`) for SDP and ICE exchange.
+Each peer authenticates with a CapAuth PGP bearer token; the broker uses the fingerprint
+from the token as the peer_id (client-claimed values are ignored — anti-spoofing).
 
 ```
-Alice                    SKComm                    Bob
-  │                        │                        │
-  │── SDP Offer ──────────→│────── SDP Offer ──────→│
-  │                        │                        │
-  │←── SDP Answer ─────────│←───── SDP Answer ──────│
-  │                        │                        │
-  │── ICE Candidates ─────→│───── ICE Candidates ──→│
-  │←── ICE Candidates ─────│←──── ICE Candidates ───│
-  │                        │                        │
-  │══════ P2P Media (direct, no relay) ═════════════│
+Alice                  SKComm Signaling Broker        Bob
+  │  wss://.../webrtc/ws?room=R&peer=FP_A              │
+  │─── connect (Bearer CapAuth token) ──────────────→  │  ← WS upgrade validated
+  │←── welcome {peers:[]}                              │
+  │                        │  ←── connect (FP_B) ─────│
+  │←── peer_joined {FP_B}  │  ←── welcome {peers:[FP_A]}
+  │                        │                           │
+  │─── signal {to:FP_B,    │                           │
+  │     sdp:{type:offer},  │                           │
+  │     capauth:{pgp_sig}}─→│──── relay to FP_B ──────→│
+  │                        │                           │
+  │←── signal {from:FP_B,  │←─── signal {answer} ─────│
+  │     sdp:{type:answer}} │                           │
+  │                        │                           │
+  │══════════════ P2P Data/Media (DTLS-SRTP) ══════════│
 ```
 
-After the signaling handshake, media flows directly P2P via WebRTC.
-SKComm is not in the media path — only signaling.
+**Security**: SDP offer/answer carries a `capauth` field:
+- `fingerprint` — sender's PGP fingerprint
+- `signed_at` — timestamp (reject if > 5 min old, replay protection)
+- `signature` — PGP sig over `sdp + signed_at`
+
+DTLS fingerprint is embedded in the SDP and covered by the PGP signature —
+a compromised signaling relay **cannot** substitute its own DTLS fingerprint.
+
+**Sovereign deployment options**:
+1. `skcomm serve` (in-process broker) exposed via Tailscale Funnel
+2. `weblink-signaling/` Cloudflare Worker + Durable Objects (no VPS, free tier)
+
+**ICE infrastructure**:
+- STUN: `stun:stun.l.google.com:19302` (public fallback)
+- TURN: `turn:turn.skworld.io:3478` (sovereign coturn, HMAC-SHA1 auth)
+- Tailscale peers: ICE discovers 100.x Tailscale IPs as host candidates —
+  DERP becomes the relay; no coturn config needed for tailnet agents
+
+After the signaling handshake, media and data flow directly P2P.
+SKComm is not in the media path — only the initial signaling exchange.
 
 ---
 
@@ -698,11 +772,16 @@ nextcloud:
 - [ ] Cloud 9 integration for AI continuity
 - [ ] Access request screening
 
-### Phase 3: Voice
+### Phase 3: Voice + P2P
 
 - [ ] Piper TTS integration
 - [ ] Whisper STT integration
-- [ ] WebRTC P2P voice calls
+- [x] WebRTC P2P data channels (SKComm WebRTC transport — aiortc)
+- [x] Sovereign signaling broker (SKComm API `/webrtc/ws`)
+- [x] Sovereign TURN server (coturn at `turn.skworld.io`)
+- [x] Tailscale P2P transport (direct TCP over mesh IPs)
+- [x] MCP tools: `webrtc_status`, `initiate_call`, `accept_call`, `send_file_p2p`
+- [ ] WebRTC voice/audio streams (aiortc RTCPeerConnection audio tracks)
 - [ ] AI voice participation
 - [ ] Voice message recording/playback
 
