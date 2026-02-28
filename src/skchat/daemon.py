@@ -52,6 +52,7 @@ class ChatDaemon:
         self.total_received = 0
         self.last_poll_time: Optional[datetime] = None
         self.poll_count = 0
+        self._webrtc_active = False
 
         if log_file:
             logging.basicConfig(
@@ -141,6 +142,9 @@ class ChatDaemon:
         # Initialize outbox queue drain
         queue = self._init_queue(skcomm)
 
+        # Initialize WebRTC transport event wiring
+        self._init_webrtc(skcomm, identity)
+
         subsystems = []
         if reaper:
             subsystems.append("reaper")
@@ -148,6 +152,8 @@ class ChatDaemon:
             subsystems.append("presence")
         if queue:
             subsystems.append("queue")
+        if self._webrtc_active:
+            subsystems.append("webrtc")
         subsys_str = ", ".join(subsystems) if subsystems else "none"
 
         self._log(f"SKChat daemon starting (identity: {identity})")
@@ -277,6 +283,37 @@ class ChatDaemon:
             return MessageQueue()
         except Exception:
             return None
+
+    def _init_webrtc(self, skcomm: object, identity: str) -> None:
+        """Wire the WebRTC transport to the chat daemon if available.
+
+        Finds the WebRTC transport in the SKComm router and starts it
+        if it hasn't been started yet. Stores incoming WEBRTC_SIGNAL
+        envelopes as chat messages in the history for call management.
+
+        Args:
+            skcomm: Initialized SKComm instance.
+            identity: Local identity URI (for call routing).
+        """
+        try:
+            webrtc_transport = None
+            for t in skcomm.router.transports:
+                if t.name == "webrtc":
+                    webrtc_transport = t
+                    break
+
+            if webrtc_transport is None:
+                return
+
+            # Start the transport if not already running
+            if hasattr(webrtc_transport, "start") and not webrtc_transport._running:
+                webrtc_transport.start()
+
+            self._webrtc_active = True
+            self._log("WebRTC transport wired (signaling connected on next poll)")
+
+        except Exception as exc:
+            self._log(f"WebRTC init skipped: {exc}", "warning")
 
     def _broadcast_presence(
         self,

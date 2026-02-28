@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import '../../core/theme/theme.dart';
 import '../../models/conversation.dart';
+import '../../services/skcomm_client.dart';
 import '../chats/chats_provider.dart';
 import 'groups_provider.dart';
 
@@ -23,71 +24,78 @@ class GroupMemberInfo {
   final ParticipantType participantType;
   final bool isOnline;
   final Color? soulColor;
+
+  /// Parse a member from the daemon's JSON response.
+  factory GroupMemberInfo.fromJson(Map<String, dynamic> json) {
+    return GroupMemberInfo(
+      identityUri: json['identity_uri'] as String? ?? '',
+      displayName: json['display_name'] as String? ?? '',
+      role: _parseRole(json['role'] as String?),
+      participantType: _parseParticipantType(json['participant_type'] as String?),
+      isOnline: json['is_online'] as bool? ?? false,
+    );
+  }
+
+  static MemberRole _parseRole(String? role) {
+    switch (role) {
+      case 'admin':
+        return MemberRole.admin;
+      case 'observer':
+        return MemberRole.observer;
+      default:
+        return MemberRole.member;
+    }
+  }
+
+  static ParticipantType _parseParticipantType(String? type) {
+    switch (type) {
+      case 'agent':
+        return ParticipantType.agent;
+      case 'service':
+        return ParticipantType.service;
+      default:
+        return ParticipantType.human;
+    }
+  }
 }
 
 enum MemberRole { admin, member, observer }
 
 enum ParticipantType { human, agent, service }
 
+/// Well-known agent names for soul-color lookup.
+const _knownAgents = {'lumina', 'jarvis', 'opus', 'ava', 'ara'};
+
 /// Provider for the members of a specific group.
-/// In production, this fetches from the SKComm daemon; for now, generates
-/// mock members based on known agents + the group's member count.
+/// Fetches from the SKComm daemon's group members endpoint.
 final groupMembersProvider =
     FutureProvider.family<List<GroupMemberInfo>, String>((ref, groupId) async {
-  // Known agent entries with soul colors.
-  const knownMembers = <GroupMemberInfo>[
-    GroupMemberInfo(
-      identityUri: 'capauth://chef',
-      displayName: 'Chef',
-      role: MemberRole.admin,
-      participantType: ParticipantType.human,
-      isOnline: true,
-      soulColor: SovereignColors.soulChef,
-    ),
-    GroupMemberInfo(
-      identityUri: 'capauth://lumina',
-      displayName: 'Lumina',
-      role: MemberRole.admin,
-      participantType: ParticipantType.agent,
-      isOnline: true,
-      soulColor: SovereignColors.soulLumina,
-    ),
-    GroupMemberInfo(
-      identityUri: 'capauth://jarvis',
-      displayName: 'Jarvis',
-      role: MemberRole.member,
-      participantType: ParticipantType.agent,
-      isOnline: true,
-      soulColor: SovereignColors.soulJarvis,
-    ),
-    GroupMemberInfo(
-      identityUri: 'capauth://opus',
-      displayName: 'Opus',
-      role: MemberRole.member,
-      participantType: ParticipantType.agent,
-      isOnline: true,
-    ),
-    GroupMemberInfo(
-      identityUri: 'capauth://ava',
-      displayName: 'Ava',
-      role: MemberRole.member,
-      participantType: ParticipantType.agent,
-      isOnline: false,
-    ),
-  ];
+  final client = ref.read(skcommClientProvider);
+  final raw = await client.getGroupMembers(groupId);
 
-  // Return a subset based on the group ID (deterministic mock).
-  switch (groupId) {
-    case 'penguin-kingdom':
-      return knownMembers.sublist(0, 4);
-    case 'sovereign-builders':
-      return knownMembers;
-    case 'cloud9-research':
-      return [knownMembers[0], knownMembers[1], knownMembers[3]];
-    default:
-      // For user-created groups, return just the creator.
-      return [knownMembers[0]];
-  }
+  return raw.map((json) {
+    final member = GroupMemberInfo.fromJson(json);
+    // Derive soul color for well-known agents.
+    final name = member.displayName.toLowerCase();
+    Color? soul;
+    if (name == 'lumina') {
+      soul = SovereignColors.soulLumina;
+    } else if (name == 'jarvis') {
+      soul = SovereignColors.soulJarvis;
+    } else if (name == 'chef') {
+      soul = SovereignColors.soulChef;
+    }
+    return GroupMemberInfo(
+      identityUri: member.identityUri,
+      displayName: member.displayName,
+      role: member.role,
+      participantType: _knownAgents.contains(name)
+          ? ParticipantType.agent
+          : member.participantType,
+      isOnline: member.isOnline,
+      soulColor: soul,
+    );
+  }).toList();
 });
 
 /// Group info & member management screen.

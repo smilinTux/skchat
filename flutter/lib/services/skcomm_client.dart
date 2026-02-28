@@ -100,6 +100,16 @@ class SKCommClient {
         .toList();
   }
 
+  // ── Groups ──────────────────────────────────────────────────────────────
+
+  /// GET /api/v1/groups/:groupId/members — list members of a group.
+  Future<List<Map<String, dynamic>>> getGroupMembers(String groupId) async {
+    final resp = await _dio.get('/api/v1/groups/$groupId/members');
+    return (resp.data as List<dynamic>)
+        .map((e) => e as Map<String, dynamic>)
+        .toList();
+  }
+
   // ── Presence ──────────────────────────────────────────────────────────────
 
   /// POST /api/v1/presence — broadcast presence status.

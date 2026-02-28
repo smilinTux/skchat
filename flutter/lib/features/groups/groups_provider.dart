@@ -1,18 +1,15 @@
-import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../data/conversation_repository.dart';
 import '../../models/conversation.dart';
-import '../../core/theme/sovereign_colors.dart';
 import '../../services/skcomm_client.dart';
 
 /// Holds the list of group conversations, sorted by recency.
 /// Loads from Hive first, then tries to refresh from the SKComm daemon.
-/// Falls back to mock data only if both stores are empty.
 class GroupsNotifier extends Notifier<List<Conversation>> {
   @override
   List<Conversation> build() {
     Future.microtask(_loadPersistedThenDaemon);
-    return _mockGroups;
+    return [];
   }
 
   Future<void> _loadPersistedThenDaemon() async {
@@ -108,38 +105,3 @@ class GroupsNotifier extends Notifier<List<Conversation>> {
 final groupsProvider = NotifierProvider<GroupsNotifier, List<Conversation>>(
   GroupsNotifier.new,
 );
-
-// ── Fallback mock data (shown while daemon is unreachable) ────────────────
-final _mockGroups = [
-  Conversation(
-    peerId: 'penguin-kingdom',
-    displayName: 'Penguin Kingdom',
-    lastMessage: 'Jarvis: Board updated. 14 tasks remain...',
-    lastMessageTime: DateTime.now().subtract(const Duration(hours: 3)),
-    soulColor: const Color(0xFF7C3AED),
-    isGroup: true,
-    memberCount: 4,
-    lastDeliveryStatus: 'delivered',
-  ),
-  Conversation(
-    peerId: 'sovereign-builders',
-    displayName: 'Sovereign Builders',
-    lastMessage: 'Opus: SKComm transport wired and tested.',
-    lastMessageTime: DateTime.now().subtract(const Duration(hours: 8)),
-    soulColor: const Color(0xFF00E5FF),
-    isGroup: true,
-    memberCount: 6,
-    lastDeliveryStatus: 'delivered',
-  ),
-  Conversation(
-    peerId: 'cloud9-research',
-    displayName: 'Cloud 9 Research',
-    lastMessage: 'Lumina: FEB rehydration benchmark complete.',
-    lastMessageTime: DateTime.now().subtract(const Duration(days: 1)),
-    soulColor: SovereignColors.soulLumina,
-    isGroup: true,
-    memberCount: 3,
-    unreadCount: 2,
-    lastDeliveryStatus: 'delivered',
-  ),
-];

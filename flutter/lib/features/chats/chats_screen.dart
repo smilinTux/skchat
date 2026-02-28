@@ -24,9 +24,7 @@ class ChatsScreen extends ConsumerWidget {
           ? _buildEmpty(context, tt)
           : _buildList(conversations, context),
       floatingActionButton: FloatingActionButton(
-        onPressed: () {
-          // New conversation — TODO: open peer picker
-        },
+        onPressed: () => context.push(AppRoutes.peerPicker),
         tooltip: 'New message',
         child: const Icon(Icons.edit_rounded),
       ),
@@ -46,7 +44,7 @@ class ChatsScreen extends ConsumerWidget {
         IconButton(
           icon: const Icon(Icons.edit_outlined),
           tooltip: 'New message',
-          onPressed: () {},
+          onPressed: () => context.push(AppRoutes.peerPicker),
         ),
         const SizedBox(width: 4),
       ],
