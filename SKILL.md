@@ -487,6 +487,50 @@ for msg in messages:
 
 ---
 
+## MCP Server
+
+SKChat provides a Model Context Protocol server for AI agents. Start it with:
+
+```bash
+skchat mcp
+```
+
+Or configure it in your MCP host (Claude Code, Cursor, etc.):
+
+```json
+{
+  "mcpServers": {
+    "skchat": {
+      "command": "python",
+      "args": ["-m", "skchat.mcp_server"]
+    }
+  }
+}
+```
+
+### MCP Tools Reference
+
+| Tool | Arguments | Description |
+|------|-----------|-------------|
+| `send_message` | `recipient`, `message`, `thread_id?`, `ttl?` | Send a message |
+| `get_inbox` | `limit?`, `thread_id?` | Read local message history |
+| `get_history` | `participant`, `limit?` | Conversation with a peer |
+| `search_messages` | `query`, `limit?` | Full-text search |
+| `create_group` | `name`, `members[]`, `description?` | Create group chat |
+| `webrtc_status` | — | Active P2P connections and transport health |
+| `initiate_call` | `peer` | Open WebRTC data channel to peer (~1-3s async) |
+| `accept_call` | `peer` | Accept incoming WebRTC connection |
+| `send_file_p2p` | `file_path`, `recipient` | File transfer via WebRTC data channels |
+
+### WebRTC Tools Notes
+
+- `initiate_call` is non-blocking: returns immediately, ICE negotiation happens in background
+- Call `webrtc_status` after ~3s to confirm the connection is established
+- `send_file_p2p` uses WebRTC parallel data channels if connected, falls back to SKComm transport
+- All WebRTC connections use CapAuth PGP-signed SDPs — MITM protection by design
+
+---
+
 ## Author / Support
 
 - **Author:** smilinTux
