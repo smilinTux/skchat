@@ -127,7 +127,7 @@ class GroupInfoScreen extends ConsumerWidget {
       backgroundColor: SovereignColors.surfaceBase,
       body: CustomScrollView(
         slivers: [
-          _buildSliverAppBar(context, group, tt),
+          _buildSliverAppBar(context, ref, group, tt),
           SliverToBoxAdapter(child: _buildGroupHeader(group, tt)),
           SliverToBoxAdapter(
             child: _buildEncryptionBanner(tt),
@@ -166,6 +166,7 @@ class GroupInfoScreen extends ConsumerWidget {
 
   SliverAppBar _buildSliverAppBar(
     BuildContext context,
+    WidgetRef ref,
     Conversation group,
     TextTheme tt,
   ) {
@@ -210,7 +211,7 @@ class GroupInfoScreen extends ConsumerWidget {
         IconButton(
           icon: const Icon(Icons.edit_rounded),
           tooltip: 'Edit group',
-          onPressed: () => _showEditDialog(context),
+          onPressed: () => _showEditDialogWithRef(context, ref),
         ),
       ],
     );
@@ -386,10 +387,48 @@ class GroupInfoScreen extends ConsumerWidget {
 
   // ── Dialogs ───────────────────────────────────────────────────────────────
 
-  void _showEditDialog(BuildContext context) {
-    // Placeholder — edit group name/description
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Edit group — coming soon')),
+  void _showEditDialogWithRef(BuildContext context, WidgetRef ref) {
+    final groups = ref.read(groupsProvider);
+    final current = groups.cast<Conversation?>().firstWhere(
+          (c) => c?.peerId == groupId,
+          orElse: () => null,
+        );
+
+    final nameController =
+        TextEditingController(text: current?.displayName ?? '');
+
+    showDialog<void>(
+      context: context,
+      builder: (dialogCtx) => AlertDialog(
+        backgroundColor: SovereignColors.surfaceRaised,
+        title: const Text('Edit Group'),
+        content: TextField(
+          controller: nameController,
+          autofocus: true,
+          textCapitalization: TextCapitalization.words,
+          decoration: const InputDecoration(
+            labelText: 'Group name',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogCtx).pop(),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () async {
+              final newName = nameController.text.trim();
+              if (newName.isEmpty) {
+                Navigator.of(dialogCtx).pop();
+                return;
+              }
+              Navigator.of(dialogCtx).pop();
+              await _renameGroup(context, ref, newName);
+            },
+            child: const Text('Save'),
+          ),
+        ],
+      ),
     );
   }
 
@@ -456,20 +495,33 @@ class GroupInfoScreen extends ConsumerWidget {
     );
   }
 
-  void _addMember(BuildContext context, WidgetRef ref, Conversation peer) {
-    // Update the group's member count.
+  Future<void> _addMember(
+    BuildContext context,
+    WidgetRef ref,
+    Conversation peer,
+  ) async {
+    final client = ref.read(skcommClientProvider);
+    final notifier = ref.read(groupsProvider.notifier);
+
+    try {
+      await client.addGroupMember(groupId, identity: peer.peerId);
+    } on Object {
+      // Daemon offline — proceed locally so UX isn't blocked.
+    }
+
+    // Update local member count and refresh member list.
     final groups = ref.read(groupsProvider);
     final group = groups.firstWhere((c) => c.peerId == groupId);
-    ref.read(groupsProvider.notifier).updateGroup(
-          group.copyWith(memberCount: group.memberCount + 1),
-        );
-
-    // Invalidate the members provider to refresh.
+    await notifier.updateGroup(
+      group.copyWith(memberCount: group.memberCount + 1),
+    );
     ref.invalidate(groupMembersProvider(groupId));
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('${peer.displayName} added to group')),
-    );
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('${peer.displayName} added to group')),
+      );
+    }
   }
 
   void _confirmRemoveMember(
@@ -506,25 +558,61 @@ class GroupInfoScreen extends ConsumerWidget {
     );
   }
 
-  void _removeMember(
+  Future<void> _removeMember(
     BuildContext context,
     WidgetRef ref,
     GroupMemberInfo member,
-  ) {
+  ) async {
+    final client = ref.read(skcommClientProvider);
+    final notifier = ref.read(groupsProvider.notifier);
+
+    try {
+      await client.removeGroupMember(groupId, member.identityUri);
+    } on Object {
+      // Daemon offline — proceed locally.
+    }
+
     final groups = ref.read(groupsProvider);
     final group = groups.firstWhere((c) => c.peerId == groupId);
-    ref.read(groupsProvider.notifier).updateGroup(
-          group.copyWith(
-            memberCount: (group.memberCount - 1).clamp(1, 999),
-          ),
-        );
-    ref.invalidate(groupMembersProvider(groupId));
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('${member.displayName} removed. Key rotated.'),
+    await notifier.updateGroup(
+      group.copyWith(
+        memberCount: (group.memberCount - 1).clamp(1, 999),
       ),
     );
+    ref.invalidate(groupMembersProvider(groupId));
+
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('${member.displayName} removed. Key rotated.'),
+        ),
+      );
+    }
+  }
+
+  Future<void> _renameGroup(
+    BuildContext context,
+    WidgetRef ref,
+    String newName,
+  ) async {
+    final client = ref.read(skcommClientProvider);
+    final notifier = ref.read(groupsProvider.notifier);
+
+    try {
+      await client.updateGroupInfo(groupId, name: newName);
+    } on Object {
+      // Daemon offline — update locally.
+    }
+
+    final groups = ref.read(groupsProvider);
+    final group = groups.firstWhere((c) => c.peerId == groupId);
+    await notifier.updateGroup(group.copyWith(displayName: newName));
+
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Group name updated')),
+      );
+    }
   }
 
   void _showRoleDialog(
@@ -549,15 +637,29 @@ class GroupInfoScreen extends ConsumerWidget {
                 ),
                 value: role,
                 groupValue: member.role,
-                onChanged: (value) {
+                onChanged: (value) async {
                   Navigator.of(dialogContext).pop();
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text(
-                        '${member.displayName} is now ${_roleLabel(value!)}',
+                  final roleName = value!.name; // 'admin', 'member', 'observer'
+                  final client = ref.read(skcommClientProvider);
+                  try {
+                    await client.addGroupMember(
+                      groupId,
+                      identity: member.identityUri,
+                      role: roleName,
+                    );
+                  } on Object {
+                    // Daemon offline — show optimistic feedback.
+                  }
+                  ref.invalidate(groupMembersProvider(groupId));
+                  if (context.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text(
+                          '${member.displayName} is now ${_roleLabel(value)}',
+                        ),
                       ),
-                    ),
-                  );
+                    );
+                  }
                 },
               ),
           ],
@@ -585,10 +687,16 @@ class GroupInfoScreen extends ConsumerWidget {
             style: FilledButton.styleFrom(
               backgroundColor: SovereignColors.accentDanger,
             ),
-            onPressed: () {
+            onPressed: () async {
               Navigator.of(dialogContext).pop();
-              ref.read(groupsProvider.notifier).removeGroup(groupId);
-              context.go('/groups');
+              final client = ref.read(skcommClientProvider);
+              try {
+                await client.leaveGroup(groupId);
+              } on Object {
+                // Daemon offline — remove locally.
+              }
+              await ref.read(groupsProvider.notifier).removeGroup(groupId);
+              if (context.mounted) context.go('/groups');
             },
             child: const Text('Leave'),
           ),

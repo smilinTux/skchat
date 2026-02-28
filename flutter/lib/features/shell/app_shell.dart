@@ -3,6 +3,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import '../../core/theme/theme.dart';
 import '../../core/router/app_router.dart';
+import '../../features/calls/call_provider.dart';
+import '../../features/calls/widgets/pip_overlay.dart';
+import '../../models/call_state.dart';
 import '../../services/skcomm_sync.dart';
 
 /// AppShell wraps all main tab screens with the Sovereign Glass bottom nav bar.
@@ -53,7 +56,20 @@ class AppShell extends ConsumerWidget {
     final daemonState = ref.watch(skcommSyncProvider);
     final isOffline = daemonState.status == DaemonStatus.offline;
 
-    return Scaffold(
+    // Navigate to incoming call screen when a call arrives from any tab.
+    ref.listen<CallState?>(callProvider, (prev, next) {
+      if (next == null) return;
+      if (next.status == CallStatus.ringing && next.isIncoming) {
+        // Only push if not already on a call screen.
+        final location = GoRouterState.of(context).matchedLocation;
+        if (!location.startsWith('/call/')) {
+          context.push(AppRoutes.incomingCallPath(next.peerId));
+        }
+      }
+    });
+
+    return PiPOverlay(
+      child: Scaffold(
       backgroundColor: SovereignColors.surfaceBase,
       extendBody: true,
       body: Column(
@@ -139,7 +155,8 @@ class AppShell extends ConsumerWidget {
           }),
         ),
       ),
-    );
+      ),  // end Scaffold
+    );    // end PiPOverlay
   }
 }
 

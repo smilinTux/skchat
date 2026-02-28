@@ -4,6 +4,8 @@ import 'package:go_router/go_router.dart';
 import '../../core/router/app_router.dart';
 import '../../core/theme/theme.dart';
 import '../../models/chat_message.dart';
+import '../../models/call_state.dart';
+import '../calls/call_provider.dart';
 import '../chats/chats_provider.dart';
 import '../identity/identity_card_screen.dart';
 import '../../services/skcomm_sync.dart';
@@ -146,10 +148,47 @@ class ConversationScreen extends ConsumerWidget {
       actions: [
         const EncryptBadge(size: 16),
         const SizedBox(width: 4),
-        IconButton(
-          icon: const Icon(Icons.call_outlined),
-          onPressed: () {},
-          tooltip: 'Voice call',
+        // Voice call button — initiates call and navigates to outgoing screen.
+        Consumer(
+          builder: (context, ref, _) => IconButton(
+            icon: const Icon(Icons.call_outlined),
+            tooltip: 'Voice call',
+            onPressed: () {
+              final conversations = ref.read(chatsProvider);
+              final conv = conversations.firstWhere(
+                (c) => c.peerId == peerId,
+                orElse: () => conversations.first,
+              );
+              ref.read(callProvider.notifier).initiateCall(
+                peerId: peerId,
+                peerName: conv.displayName,
+                peerSoulColor: conv.resolvedSoulColor,
+                type: CallType.voice,
+              );
+              context.push(AppRoutes.outgoingCallPath(peerId));
+            },
+          ),
+        ),
+        // Video call button.
+        Consumer(
+          builder: (context, ref, _) => IconButton(
+            icon: const Icon(Icons.videocam_outlined),
+            tooltip: 'Video call',
+            onPressed: () {
+              final conversations = ref.read(chatsProvider);
+              final conv = conversations.firstWhere(
+                (c) => c.peerId == peerId,
+                orElse: () => conversations.first,
+              );
+              ref.read(callProvider.notifier).initiateCall(
+                peerId: peerId,
+                peerName: conv.displayName,
+                peerSoulColor: conv.resolvedSoulColor,
+                type: CallType.video,
+              );
+              context.push(AppRoutes.outgoingCallPath(peerId));
+            },
+          ),
         ),
         IconButton(
           icon: const Icon(Icons.more_vert_rounded),
