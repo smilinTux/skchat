@@ -9,6 +9,7 @@ import '../../features/profile/profile_screen.dart';
 import '../../features/conversation/conversation_screen.dart';
 import '../../features/identity/identity_card_screen.dart';
 import '../../features/groups/group_info_screen.dart';
+import '../../features/chats/peer_picker_screen.dart';
 
 /// Named route paths.
 class AppRoutes {
@@ -18,6 +19,9 @@ class AppRoutes {
   static const groups = '/groups';
   static const activity = '/activity';
   static const profile = '/profile';
+
+  /// Peer picker: /chats/new
+  static const peerPicker = '/chats/new';
 
   /// Conversation detail: /chats/:peerId
   static const conversation = '/chats/:peerId';
@@ -49,6 +53,10 @@ final appRouterProvider = Provider<GoRouter>((ref) {
               const ChatsScreen(),
             ),
             routes: [
+              GoRoute(
+                path: 'new',
+                builder: (context, state) => const PeerPickerScreen(),
+              ),
               GoRoute(
                 path: ':peerId',
                 builder: (context, state) {
