@@ -13,8 +13,12 @@ Tools:
     group_send         — Send a message to a group
     group_members      — List members of a group
     group_add_member   — Add a member to a group
+    list_groups        — List all group chats
     list_threads       — List conversation threads
     get_thread         — Get messages in a thread
+    add_reaction       — Add an emoji reaction to a message
+    remove_reaction    — Remove a reaction from a message
+    daemon_status      — Get SKChat background daemon status
 
 Invocation:
     python -m skchat.mcp_server
@@ -29,6 +33,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import pathlib
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -41,6 +46,7 @@ from .group import GroupChat, GroupMember, MemberRole, ParticipantType
 from .history import ChatHistory
 from .identity_bridge import get_sovereign_identity
 from .models import ChatMessage, ContentType, DeliveryStatus
+from .reactions import ReactionManager
 
 logger = logging.getLogger("skchat.mcp")
 
@@ -48,7 +54,11 @@ logger = logging.getLogger("skchat.mcp")
 _identity: Optional[str] = None
 _history: Optional[ChatHistory] = None
 _messenger: Optional[AgentMessenger] = None
-_groups: dict[str, GroupChat] = {}  # In-memory group registry
+_groups: dict[str, GroupChat] = {}
+_groups_loaded: bool = False
+_reactions: Optional[ReactionManager] = None
+
+_GROUPS_DIR = pathlib.Path.home() / ".skchat" / "groups"
 
 server = Server("skchat")
 
@@ -86,6 +96,53 @@ def _get_messenger() -> AgentMessenger:
             history=_get_history(),
         )
     return _messenger
+
+
+def _get_reactions() -> ReactionManager:
+    """Get or initialize the ReactionManager."""
+    global _reactions
+    if _reactions is None:
+        _reactions = ReactionManager()
+    return _reactions
+
+
+# ─────────────────────────────────────────────────────────────
+# Group persistence
+# ─────────────────────────────────────────────────────────────
+
+
+def _get_groups() -> dict[str, GroupChat]:
+    """Return the group registry, loading from disk on first call."""
+    global _groups, _groups_loaded
+    if not _groups_loaded:
+        _groups_loaded = True
+        _load_groups_from_disk()
+    return _groups
+
+
+def _load_groups_from_disk() -> None:
+    """Populate _groups from ~/.skchat/groups/*.json."""
+    global _groups
+    try:
+        _GROUPS_DIR.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        return
+    for path in _GROUPS_DIR.glob("*.json"):
+        try:
+            group = GroupChat.model_validate_json(path.read_text(encoding="utf-8"))
+            _groups[group.id] = group
+        except Exception:
+            logger.warning("Failed to load group from %s", path)
+
+
+def _save_group(group: GroupChat) -> None:
+    """Write a group to ~/.skchat/groups/{group_id}.json."""
+    try:
+        _GROUPS_DIR.mkdir(parents=True, exist_ok=True)
+        path = _GROUPS_DIR / f"{group.id}.json"
+        path.write_text(group.model_dump_json(indent=2), encoding="utf-8")
+    except Exception:
+        logger.warning("Failed to save group %s to disk", group.id[:8])
 
 
 # ─────────────────────────────────────────────────────────────
@@ -428,6 +485,86 @@ async def list_tools() -> list[Tool]:
                 "required": ["peer", "file_path"],
             },
         ),
+        Tool(
+            name="add_reaction",
+            description=(
+                "Add an emoji or text reaction to a message. "
+                "Deduplicates: the same sender+emoji on the same message is only counted once."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "message_id": {
+                        "type": "string",
+                        "description": "ID of the message to react to.",
+                    },
+                    "emoji": {
+                        "type": "string",
+                        "description": "Reaction emoji or short text (e.g. 'thumbsup', '❤️').",
+                    },
+                    "sender": {
+                        "type": "string",
+                        "description": (
+                            "CapAuth identity URI of the reactor "
+                            "(defaults to the sovereign identity if omitted)."
+                        ),
+                    },
+                },
+                "required": ["message_id", "emoji"],
+            },
+        ),
+        Tool(
+            name="remove_reaction",
+            description=(
+                "Remove an existing reaction from a message. "
+                "Returns whether the reaction was found and removed."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "message_id": {
+                        "type": "string",
+                        "description": "ID of the message to remove the reaction from.",
+                    },
+                    "emoji": {
+                        "type": "string",
+                        "description": "The emoji or text reaction to remove.",
+                    },
+                    "sender": {
+                        "type": "string",
+                        "description": (
+                            "CapAuth identity URI of the reactor "
+                            "(defaults to the sovereign identity if omitted)."
+                        ),
+                    },
+                },
+                "required": ["message_id", "emoji"],
+            },
+        ),
+        Tool(
+            name="list_groups",
+            description=(
+                "List all group chats. Returns group IDs, names, "
+                "descriptions, member counts, and creation times."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        ),
+        Tool(
+            name="daemon_status",
+            description=(
+                "Get the status of the SKChat background daemon. "
+                "Returns whether it is running, its PID, and log file path."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        ),
     ]
 
 
@@ -453,6 +590,10 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         "initiate_call": _handle_initiate_call,
         "accept_call": _handle_accept_call,
         "send_file_p2p": _handle_send_file_p2p,
+        "add_reaction": _handle_add_reaction,
+        "remove_reaction": _handle_remove_reaction,
+        "list_groups": _handle_list_groups,
+        "daemon_status": _handle_daemon_status,
     }
     handler = handlers.get(name)
     if handler is None:
@@ -648,8 +789,9 @@ async def _handle_create_group(args: dict) -> list[TextContent]:
         if member:
             added_members.append(identity)
 
-    # Store in memory
-    _groups[group.id] = group
+    # Register and persist
+    _get_groups()[group.id] = group
+    _save_group(group)
 
     logger.info("Created group '%s' with %d members", name, len(group.members))
 
@@ -673,6 +815,9 @@ async def _handle_create_group(args: dict) -> list[TextContent]:
 async def _handle_group_send(args: dict) -> list[TextContent]:
     """Send a message to a group.
 
+    Stores the composed message in local history, then delivers it
+    to every group member (excluding the sender) via SKComm.
+
     Args:
         args: group_id, content.
 
@@ -687,7 +832,7 @@ async def _handle_group_send(args: dict) -> list[TextContent]:
     if not content:
         return _error("content is required")
 
-    group = _groups.get(group_id)
+    group = _get_groups().get(group_id)
     if group is None:
         return _error(f"Group not found: {group_id}")
 
@@ -700,18 +845,53 @@ async def _handle_group_send(args: dict) -> list[TextContent]:
     if message is None:
         return _error("Failed to compose group message (not a member?)")
 
-    # Store in history
+    # Store in local history
     history = _get_history()
     memory_id = history.store_message(message)
 
-    return _json({
+    # Deliver to each member via SKComm
+    messenger = _get_messenger()
+    delivered = 0
+    failed = 0
+    delivery_errors: list[str] = []
+
+    for member in group.members:
+        if member.identity_uri == sender:
+            continue  # skip self
+        try:
+            result = messenger.send(
+                recipient=member.identity_uri,
+                content=content,
+                message_type="text",
+                thread_id=group.id,
+            )
+            if result.get("delivered"):
+                delivered += 1
+            else:
+                failed += 1
+                err = result.get("error")
+                if err:
+                    delivery_errors.append(f"{member.identity_uri[:24]}: {err}")
+        except Exception as exc:
+            failed += 1
+            delivery_errors.append(f"{member.identity_uri[:24]}: {exc}")
+
+    # Persist updated message_count
+    _save_group(group)
+
+    response: dict[str, Any] = {
         "sent": True,
         "message_id": message.id,
         "group_id": group_id,
         "group_name": group.name,
-        "recipient_count": len(group.members),
+        "recipient_count": len(group.members) - 1,  # excludes self
+        "delivered": delivered,
+        "failed": failed,
         "memory_id": memory_id,
-    })
+    }
+    if delivery_errors:
+        response["errors"] = delivery_errors
+    return _json(response)
 
 
 async def _handle_group_members(args: dict) -> list[TextContent]:
@@ -727,7 +907,7 @@ async def _handle_group_members(args: dict) -> list[TextContent]:
     if not group_id:
         return _error("group_id is required")
 
-    group = _groups.get(group_id)
+    group = _get_groups().get(group_id)
     if group is None:
         return _error(f"Group not found: {group_id}")
 
@@ -766,7 +946,7 @@ async def _handle_group_add_member(args: dict) -> list[TextContent]:
     if not identity:
         return _error("identity is required")
 
-    group = _groups.get(group_id)
+    group = _get_groups().get(group_id)
     if group is None:
         return _error(f"Group not found: {group_id}")
 
@@ -798,6 +978,8 @@ async def _handle_group_add_member(args: dict) -> list[TextContent]:
 
     if member is None:
         return _error(f"Could not add member (already exists?): {identity}")
+
+    _save_group(group)
 
     return _json({
         "added": True,
@@ -1047,8 +1229,9 @@ async def _handle_accept_call(args: dict) -> list[TextContent]:
 async def _handle_send_file_p2p(args: dict) -> list[TextContent]:
     """Send a file to a peer via WebRTC data channel or SKComm fallback.
 
-    For files under 256KB, sends via the existing skcomm channel.
-    For larger files, uses the WEBRTC_FILE message type for chunked transfer.
+    Uses FileSender (skchat.files) for 256KB-chunked, encrypted transfer so
+    the full file is never loaded into memory at once.  Each FileChunk is sent
+    as an individual message, preceded by a transfer-manifest message.
 
     Args:
         args: peer (str), file_path (str), optional description (str).
@@ -1065,8 +1248,10 @@ async def _handle_send_file_p2p(args: dict) -> list[TextContent]:
     if not file_path:
         return _error("file_path is required")
 
-    import os
+    import json as _json_mod
     from pathlib import Path
+
+    from .files import FileSender
 
     path = Path(file_path).expanduser()
     if not path.exists():
@@ -1077,6 +1262,21 @@ async def _handle_send_file_p2p(args: dict) -> list[TextContent]:
     file_size = path.stat().st_size
     file_name = path.name
 
+    # Prepare chunked transfer metadata (reads file once, in 256KB blocks)
+    sender = FileSender(sender_identity=_get_identity())
+    transfer = sender.prepare(str(path), recipient=peer)
+    chunks = sender.chunks(transfer, str(path))
+
+    manifest_dict = {
+        "type": "file_transfer",
+        "transfer_id": transfer.transfer_id,
+        "name": file_name,
+        "size": file_size,
+        "total_chunks": transfer.total_chunks,
+        "sha256": transfer.sha256,
+        "description": description,
+    }
+
     # Try WebRTC direct channel first
     transport = _get_webrtc_transport()
     if transport and transport.is_available():
@@ -1085,24 +1285,22 @@ async def _handle_send_file_p2p(args: dict) -> list[TextContent]:
                 peer_conn = transport._peers.get(peer)
 
             if peer_conn and peer_conn.connected and peer_conn.channel:
-                # Send via open WebRTC data channel
-                file_bytes = path.read_bytes()
-                # Prepend a JSON header describing the file
-                import json as _json_mod
-                header = _json_mod.dumps({
-                    "type": "file",
-                    "name": file_name,
-                    "size": file_size,
-                    "description": description,
-                }).encode()
-                header_len = len(header).to_bytes(4, "big")
-                payload = header_len + header + file_bytes
-
+                # Send manifest then each chunk over the open data channel
+                manifest_bytes = _json_mod.dumps(manifest_dict).encode()
+                manifest_frame = len(manifest_bytes).to_bytes(4, "big") + manifest_bytes
                 fut = asyncio.run_coroutine_threadsafe(
-                    transport._async_channel_send(peer_conn.channel, payload),
+                    transport._async_channel_send(peer_conn.channel, manifest_frame),
                     transport._loop,
                 )
-                fut.result(timeout=30.0)
+                fut.result(timeout=10.0)
+
+                for chunk in chunks:
+                    chunk_bytes = chunk.to_json().encode()
+                    fut = asyncio.run_coroutine_threadsafe(
+                        transport._async_channel_send(peer_conn.channel, chunk_bytes),
+                        transport._loop,
+                    )
+                    fut.result(timeout=30.0)
 
                 return _json({
                     "sent": True,
@@ -1110,43 +1308,168 @@ async def _handle_send_file_p2p(args: dict) -> list[TextContent]:
                     "peer": peer,
                     "file": file_name,
                     "size_bytes": file_size,
+                    "chunks": len(chunks),
+                    "transfer_id": transfer.transfer_id,
                     "description": description,
                 })
         except Exception as exc:
             logger.warning("WebRTC direct file send failed: %s — falling back to SKComm", exc)
 
-    # Fallback: send via SKComm as a FILE message
+    # Fallback: send via SKComm as chunked WEBRTC_FILE messages
     try:
         from skcomm import SKComm
         from skcomm.models import MessageType
 
         comm = SKComm.from_config()
-        import base64 as _b64
 
-        file_bytes = path.read_bytes()
-        encoded = _b64.b64encode(file_bytes).decode()
-        import json as _json_mod
-        payload = _json_mod.dumps({
-            "name": file_name,
-            "size": file_size,
-            "description": description,
-            "data_b64": encoded,
-        })
-        report = comm.send(
+        # Send manifest (includes encrypted_key for the receiver)
+        manifest_dict["encrypted_key"] = transfer.encrypted_key
+        comm.send(
             recipient=peer,
-            message=payload,
+            message=_json_mod.dumps(manifest_dict),
             message_type=MessageType.WEBRTC_FILE,
         )
+
+        for chunk in chunks:
+            comm.send(
+                recipient=peer,
+                message=chunk.to_json(),
+                message_type=MessageType.WEBRTC_FILE,
+            )
+
         return _json({
-            "sent": report.delivered,
-            "transport": report.successful_transport or "skcomm-fallback",
+            "sent": True,
+            "transport": "skcomm-chunked",
             "peer": peer,
             "file": file_name,
             "size_bytes": file_size,
-            "delivered": report.delivered,
+            "chunks": len(chunks),
+            "transfer_id": transfer.transfer_id,
         })
     except Exception as exc:
         return _error(f"File send failed: {exc}")
+
+
+# ─────────────────────────────────────────────────────────────
+# Tool Handlers — Reactions
+# ─────────────────────────────────────────────────────────────
+
+
+async def _handle_add_reaction(args: dict) -> list[TextContent]:
+    """Add a reaction to a message.
+
+    Args:
+        args: message_id, emoji, optional sender.
+
+    Returns:
+        JSON with the reaction summary for that message.
+    """
+    message_id: str = args.get("message_id", "")
+    emoji: str = args.get("emoji", "")
+
+    if not message_id:
+        return _error("message_id is required")
+    if not emoji:
+        return _error("emoji is required")
+
+    sender: str = args.get("sender") or _get_identity()
+
+    manager = _get_reactions()
+    added = manager.add_reaction(message_id, emoji, sender)
+    summary = manager.summarize(message_id)
+
+    return _json({
+        "added": added,
+        "message_id": message_id,
+        "emoji": emoji,
+        "sender": sender,
+        "reactions": summary.reactions,
+        "total_count": summary.total_count,
+    })
+
+
+async def _handle_remove_reaction(args: dict) -> list[TextContent]:
+    """Remove a reaction from a message.
+
+    Args:
+        args: message_id, emoji, optional sender.
+
+    Returns:
+        JSON with removal status and updated reaction summary.
+    """
+    message_id: str = args.get("message_id", "")
+    emoji: str = args.get("emoji", "")
+
+    if not message_id:
+        return _error("message_id is required")
+    if not emoji:
+        return _error("emoji is required")
+
+    sender: str = args.get("sender") or _get_identity()
+
+    manager = _get_reactions()
+    removed = manager.remove_reaction(message_id, emoji, sender)
+    summary = manager.summarize(message_id)
+
+    return _json({
+        "removed": removed,
+        "message_id": message_id,
+        "emoji": emoji,
+        "sender": sender,
+        "reactions": summary.reactions,
+        "total_count": summary.total_count,
+    })
+
+
+# ─────────────────────────────────────────────────────────────
+# Tool Handlers — Groups listing
+# ─────────────────────────────────────────────────────────────
+
+
+async def _handle_list_groups(args: dict) -> list[TextContent]:
+    """List all group chats.
+
+    Args:
+        args: No arguments required.
+
+    Returns:
+        JSON list of group summaries.
+    """
+    groups = _get_groups()
+
+    return _json({
+        "count": len(groups),
+        "groups": [
+            {
+                "id": g.id,
+                "name": g.name,
+                "description": g.description,
+                "member_count": len(g.members),
+                "created_at": g.created_at.isoformat() if hasattr(g, "created_at") and g.created_at else None,
+            }
+            for g in groups.values()
+        ],
+    })
+
+
+# ─────────────────────────────────────────────────────────────
+# Tool Handlers — Daemon
+# ─────────────────────────────────────────────────────────────
+
+
+async def _handle_daemon_status(args: dict) -> list[TextContent]:
+    """Get the SKChat daemon status.
+
+    Args:
+        args: No arguments required.
+
+    Returns:
+        JSON with running state, PID, and file paths.
+    """
+    from .daemon import daemon_status
+
+    status = daemon_status()
+    return _json(status)
 
 
 # ─────────────────────────────────────────────────────────────
