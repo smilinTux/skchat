@@ -110,6 +110,61 @@ class SKCommClient {
         .toList();
   }
 
+  /// POST /api/v1/groups — create a new group chat.
+  ///
+  /// [name] is required. [description] and [memberUris] are optional.
+  /// Returns a [CreateGroupResult] with the group ID and AES-256-GCM key info.
+  Future<CreateGroupResult> createGroup({
+    required String name,
+    String? description,
+    List<String> memberUris = const [],
+  }) async {
+    final body = <String, dynamic>{'name': name};
+    if (description != null && description.isNotEmpty) {
+      body['description'] = description;
+    }
+    if (memberUris.isNotEmpty) {
+      body['members'] =
+          memberUris.map((u) => <String, dynamic>{'identity': u}).toList();
+    }
+    final resp = await _dio.post('/api/v1/groups', data: body);
+    return CreateGroupResult.fromJson(resp.data as Map<String, dynamic>);
+  }
+
+  /// POST /api/v1/groups/:groupId/members — add a member.
+  Future<void> addGroupMember(
+    String groupId, {
+    required String identity,
+    String role = 'member',
+  }) async {
+    await _dio.post(
+      '/api/v1/groups/$groupId/members',
+      data: {'identity': identity, 'role': role},
+    );
+  }
+
+  /// DELETE /api/v1/groups/:groupId/members/:identity — remove a member.
+  Future<void> removeGroupMember(String groupId, String identity) async {
+    await _dio.delete('/api/v1/groups/$groupId/members/$identity');
+  }
+
+  /// PUT /api/v1/groups/:groupId — update group name or description.
+  Future<void> updateGroupInfo(
+    String groupId, {
+    String? name,
+    String? description,
+  }) async {
+    final body = <String, dynamic>{};
+    if (name != null) body['name'] = name;
+    if (description != null) body['description'] = description;
+    await _dio.put('/api/v1/groups/$groupId', data: body);
+  }
+
+  /// DELETE /api/v1/groups/:groupId/members/self — leave a group.
+  Future<void> leaveGroup(String groupId) async {
+    await _dio.delete('/api/v1/groups/$groupId/members/self');
+  }
+
   // ── Presence ──────────────────────────────────────────────────────────────
 
   /// POST /api/v1/presence — broadcast presence status.
@@ -121,6 +176,61 @@ class SKCommClient {
       'status': status,
       'message': message,
     });
+  }
+
+  // ── Identity ──────────────────────────────────────────────────────────────
+
+  /// GET /api/v1/identity — return this node's PGP fingerprint and name.
+  Future<IdentityInfo> getIdentity() async {
+    final resp = await _dio.get<Map<String, dynamic>>('/api/v1/identity');
+    return IdentityInfo.fromJson(resp.data ?? {});
+  }
+
+  // ── WebRTC ────────────────────────────────────────────────────────────────
+
+  /// GET /api/v1/webrtc/ice-config — ICE server list with TURN credentials.
+  ///
+  /// Returns the list ready to pass to RTCPeerConnection config['iceServers'].
+  /// Falls back to Google STUN when the daemon is unreachable.
+  Future<List<Map<String, dynamic>>> getIceConfig() async {
+    try {
+      final resp = await _dio.get<Map<String, dynamic>>(
+        '/api/v1/webrtc/ice-config',
+      );
+      final data = resp.data ?? {};
+      final servers = data['ice_servers'] as List<dynamic>? ?? [];
+      return servers
+          .whereType<Map>()
+          .map((s) => Map<String, dynamic>.from(s))
+          .toList();
+    } catch (_) {
+      return [
+        {'urls': 'stun:stun.l.google.com:19302'},
+      ];
+    }
+  }
+
+  /// GET /api/v1/webrtc/peers — list peers in a signaling room.
+  Future<Map<String, dynamic>> getWebRTCPeers({String? room}) async {
+    final resp = await _dio.get<Map<String, dynamic>>(
+      '/api/v1/webrtc/peers',
+      queryParameters: room != null ? {'room': room} : null,
+    );
+    return resp.data ?? {};
+  }
+
+  // ── Signing ───────────────────────────────────────────────────────────────
+
+  /// POST /api/v1/sign — ask the daemon to sign [nonce] with the local PGP key.
+  ///
+  /// The private key never leaves the daemon; the app only receives the
+  /// armored PGP signature.
+  Future<String> signNonce(String nonce) async {
+    final resp = await _dio.post<Map<String, dynamic>>(
+      '/api/v1/sign',
+      data: {'nonce': nonce},
+    );
+    return (resp.data ?? {})['signature'] as String? ?? '';
   }
 }
 
@@ -202,6 +312,64 @@ class PeerInfo {
           ? DateTime.tryParse(json['last_seen'] as String)
           : null,
       transports: transports,
+    );
+  }
+}
+
+class CreateGroupResult {
+  const CreateGroupResult({
+    required this.groupId,
+    required this.name,
+    this.description,
+    this.memberCount = 0,
+    this.keyId,
+    this.keyAlgorithm = 'AES-256-GCM',
+    this.members = const [],
+  });
+
+  final String groupId;
+  final String name;
+  final String? description;
+  final int memberCount;
+  /// Short identifier of the group encryption key.
+  final String? keyId;
+  final String keyAlgorithm;
+  final List<String> members;
+
+  factory CreateGroupResult.fromJson(Map<String, dynamic> json) {
+    final rawMembers = json['members'] as List<dynamic>? ?? [];
+    return CreateGroupResult(
+      groupId: json['group_id'] as String? ?? '',
+      name: json['name'] as String? ?? '',
+      description: json['description'] as String?,
+      memberCount: json['member_count'] as int? ?? 0,
+      keyId: json['key_id'] as String?,
+      keyAlgorithm: json['key_algorithm'] as String? ?? 'AES-256-GCM',
+      members: rawMembers
+          .map((e) =>
+              (e is Map ? e['identity'] as String? : e as String?) ?? '')
+          .where((s) => s.isNotEmpty)
+          .toList(),
+    );
+  }
+}
+
+class IdentityInfo {
+  const IdentityInfo({
+    required this.fingerprint,
+    this.name,
+    this.email,
+  });
+
+  final String fingerprint;
+  final String? name;
+  final String? email;
+
+  factory IdentityInfo.fromJson(Map<String, dynamic> json) {
+    return IdentityInfo(
+      fingerprint: json['fingerprint'] as String? ?? '',
+      name: json['name'] as String?,
+      email: json['email'] as String?,
     );
   }
 }

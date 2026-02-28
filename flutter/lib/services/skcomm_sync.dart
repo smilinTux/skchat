@@ -1,5 +1,8 @@
 import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../core/theme/sovereign_colors.dart';
+import '../features/calls/call_provider.dart';
+import '../models/call_state.dart';
 import '../models/chat_message.dart';
 import '../models/conversation.dart';
 import '../features/chats/chats_provider.dart';
@@ -146,6 +149,12 @@ class SKCommSyncNotifier extends Notifier<DaemonState> {
   // ── Routing incoming messages into state ──────────────────────────────────
 
   void _dispatchIncoming(InboxMessage msg) {
+    // Intercept call-request sentinel before showing in chat.
+    if (msg.content.startsWith('__CALL_REQUEST__:')) {
+      _handleIncomingCallRequest(msg);
+      return;
+    }
+
     final chatMsg = ChatMessage(
       id: msg.envelopeId,
       peerId: msg.sender,
@@ -191,6 +200,27 @@ class SKCommSyncNotifier extends Notifier<DaemonState> {
         ),
       );
     }
+  }
+
+  void _handleIncomingCallRequest(InboxMessage msg) {
+    // Derive call type from sentinel suffix: __CALL_REQUEST__:video or :voice
+    final suffix = msg.content.split(':').elementAtOrNull(1) ?? 'voice';
+    final callType = suffix == 'video' ? CallType.video : CallType.voice;
+
+    // Look up conversation for display name and soul color.
+    final chats = ref.read(chatsProvider);
+    final conv = chats.cast<Conversation?>().firstWhere(
+          (c) => c?.peerId == msg.sender,
+          orElse: () => null,
+        );
+
+    ref.read(callProvider.notifier).incomingCall(
+      peerId: msg.sender,
+      peerName: conv?.displayName ?? msg.sender,
+      peerSoulColor: conv?.resolvedSoulColor ??
+          SovereignColors.fromFingerprint(msg.sender),
+      type: callType,
+    );
   }
 }
 
