@@ -9,7 +9,12 @@ import '../../features/profile/profile_screen.dart';
 import '../../features/conversation/conversation_screen.dart';
 import '../../features/identity/identity_card_screen.dart';
 import '../../features/groups/group_info_screen.dart';
+import '../../features/groups/create_group_screen.dart';
 import '../../features/chats/peer_picker_screen.dart';
+import '../../features/profile/qr_login_screen.dart';
+import '../../features/calls/outgoing_call_screen.dart';
+import '../../features/calls/incoming_call_screen.dart';
+import '../../features/calls/in_call_screen.dart';
 
 /// Named route paths.
 class AppRoutes {
@@ -32,9 +37,27 @@ class AppRoutes {
   /// Group info & member management: /groups/:groupId/info
   static const groupInfo = '/groups/:groupId/info';
 
+  /// Create new group: /groups/new
+  static const createGroup = '/groups/new';
+
+  /// CapAuth QR login screen: /login/qr
+  static const qrLogin = '/login/qr';
+
+  /// Outgoing call screen: /call/outgoing/:peerId
+  static const outgoingCall = '/call/outgoing/:peerId';
+
+  /// Incoming call screen: /call/incoming/:peerId
+  static const incomingCall = '/call/incoming/:peerId';
+
+  /// Active in-call screen: /call/active/:peerId
+  static const inCall = '/call/active/:peerId';
+
   static String conversationPath(String peerId) => '/chats/$peerId';
   static String identityPath(String peerId) => '/identity/$peerId';
   static String groupInfoPath(String groupId) => '/groups/$groupId/info';
+  static String outgoingCallPath(String peerId) => '/call/outgoing/$peerId';
+  static String incomingCallPath(String peerId) => '/call/incoming/$peerId';
+  static String inCallPath(String peerId) => '/call/active/$peerId';
 }
 
 /// GoRouter provider — uses shell routes for the bottom nav structure.
@@ -74,6 +97,10 @@ final appRouterProvider = Provider<GoRouter>((ref) {
             ),
             routes: [
               GoRoute(
+                path: 'new',
+                builder: (context, state) => const CreateGroupScreen(),
+              ),
+              GoRoute(
                 path: ':groupId/info',
                 builder: (context, state) {
                   final groupId = state.pathParameters['groupId']!;
@@ -105,6 +132,42 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           return IdentityCardScreen(
             conversation: args.conversation,
             onSendMessage: args.onSendMessage,
+          );
+        },
+      ),
+      GoRoute(
+        path: AppRoutes.qrLogin,
+        builder: (context, state) => const QrLoginScreen(),
+      ),
+
+      // ── Call screens ────────────────────────────────────────────────────
+      GoRoute(
+        path: AppRoutes.outgoingCall,
+        pageBuilder: (context, state) {
+          final peerId = state.pathParameters['peerId']!;
+          return MaterialPage(
+            fullscreenDialog: true,
+            child: OutgoingCallScreen(peerId: peerId),
+          );
+        },
+      ),
+      GoRoute(
+        path: AppRoutes.incomingCall,
+        pageBuilder: (context, state) {
+          final peerId = state.pathParameters['peerId']!;
+          return MaterialPage(
+            fullscreenDialog: true,
+            child: IncomingCallScreen(peerId: peerId),
+          );
+        },
+      ),
+      GoRoute(
+        path: AppRoutes.inCall,
+        pageBuilder: (context, state) {
+          final peerId = state.pathParameters['peerId']!;
+          return MaterialPage(
+            fullscreenDialog: true,
+            child: InCallScreen(peerId: peerId),
           );
         },
       ),

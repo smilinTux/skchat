@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../../../core/crypto/pgp_bridge.dart';
 import '../../../core/theme/sovereign_colors.dart';
 import '../../../core/theme/glass_widgets.dart';
 import '../onboarding_provider.dart';
@@ -20,17 +21,28 @@ class IdentityPage extends ConsumerStatefulWidget {
 class _IdentityPageState extends ConsumerState<IdentityPage> {
   bool _generating = false;
 
-  /// Stub — simulates generating a new keypair and returning a fingerprint.
+  /// Generate a fresh RSA-2048 keypair via [PgpBridge] and store the
+  /// fingerprint in [OnboardingNotifier].
+  ///
+  /// Key material is held in-memory for the duration of the onboarding flow;
+  /// TODO: persist the private key to flutter_secure_storage before shipping.
   Future<void> _generateIdentity() async {
     setState(() => _generating = true);
-    // Actual PGP keygen will be wired in a later task.
-    await Future.delayed(const Duration(milliseconds: 800));
-    const stubFingerprint = 'A1B2 C3D4 E5F6 0718 29AA  BB3C DD4E EF56 7890 ABCD';
-    await ref.read(onboardingProvider.notifier).setIdentityChoice(
-          'generate',
-          fingerprint: stubFingerprint,
+    try {
+      final keyPair = await PgpBridge.generateKeyPair();
+      await ref.read(onboardingProvider.notifier).setIdentityChoice(
+            'generate',
+            fingerprint: keyPair.fingerprint,
+          );
+    } on Exception catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Key generation failed: $e')),
         );
-    setState(() => _generating = false);
+      }
+    } finally {
+      if (mounted) setState(() => _generating = false);
+    }
   }
 
   Future<void> _importKey() async {

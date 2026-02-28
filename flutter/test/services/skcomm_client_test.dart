@@ -157,4 +157,85 @@ void main() {
       expect(client, isNotNull);
     });
   });
+
+  group('CreateGroupResult', () {
+    test('fromJson parses complete group creation response', () {
+      final json = {
+        'group_id': 'grp-abc123',
+        'name': 'Penguin Kingdom',
+        'description': 'A group for penguins',
+        'member_count': 3,
+        'key_id': 'key-7f3a9b',
+        'key_algorithm': 'AES-256-GCM',
+        'members': [
+          {'identity': 'capauth://lumina'},
+          {'identity': 'capauth://jarvis'},
+          {'identity': 'capauth://opus'},
+        ],
+      };
+
+      final result = CreateGroupResult.fromJson(json);
+
+      expect(result.groupId, 'grp-abc123');
+      expect(result.name, 'Penguin Kingdom');
+      expect(result.description, 'A group for penguins');
+      expect(result.memberCount, 3);
+      expect(result.keyId, 'key-7f3a9b');
+      expect(result.keyAlgorithm, 'AES-256-GCM');
+      expect(result.members, [
+        'capauth://lumina',
+        'capauth://jarvis',
+        'capauth://opus',
+      ]);
+    });
+
+    test('fromJson handles missing optional fields', () {
+      final json = {
+        'group_id': 'grp-min',
+        'name': 'Minimal',
+      };
+
+      final result = CreateGroupResult.fromJson(json);
+
+      expect(result.groupId, 'grp-min');
+      expect(result.name, 'Minimal');
+      expect(result.description, isNull);
+      expect(result.memberCount, 0);
+      expect(result.keyId, isNull);
+      expect(result.keyAlgorithm, 'AES-256-GCM'); // default
+      expect(result.members, isEmpty);
+    });
+
+    test('fromJson handles empty members list', () {
+      final json = {
+        'group_id': 'grp-solo',
+        'name': 'Solo',
+        'members': <dynamic>[],
+      };
+
+      final result = CreateGroupResult.fromJson(json);
+
+      expect(result.members, isEmpty);
+    });
+
+    test('fromJson handles string members list', () {
+      final json = {
+        'group_id': 'grp-strings',
+        'name': 'String Members',
+        'members': ['capauth://a', 'capauth://b'],
+      };
+
+      final result = CreateGroupResult.fromJson(json);
+
+      expect(result.members, ['capauth://a', 'capauth://b']);
+    });
+
+    test('fromJson handles missing group_id gracefully', () {
+      final result = CreateGroupResult.fromJson({});
+
+      expect(result.groupId, '');
+      expect(result.name, '');
+      expect(result.keyAlgorithm, 'AES-256-GCM');
+    });
+  });
 }

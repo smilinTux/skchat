@@ -4,6 +4,7 @@ import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import '../../../core/theme/sovereign_colors.dart';
 import '../../../core/theme/glass_widgets.dart';
+import '../onboarding_provider.dart';
 
 /// Onboarding step 4 — display a QR code for this node and optionally scan
 /// another device to establish an initial peer pairing.
@@ -20,15 +21,26 @@ class _PairPageState extends ConsumerState<PairPage> {
   bool _scanning = false;
   String? _scannedPeerId;
 
-  /// Stub peer ID — replaced by the real CapAuth node ID once identity is wired.
-  static const _stubPeerId =
-      'skchat://peer/smilintux/00112233-4455-6677-8899-aabbccddeeff';
+  /// Build the peer ID URI from the fingerprint stored by [OnboardingNotifier].
+  ///
+  /// Format: `skchat://peer/<compact-fingerprint>` where the fingerprint is the
+  /// 40-char uppercase hex without spaces.  Falls back to the placeholder string
+  /// if the identity step has not been completed yet (e.g. user chose "import").
+  String _buildPeerId(String? fingerprint) {
+    if (fingerprint == null || fingerprint.isEmpty) {
+      return 'skchat://peer/unknown';
+    }
+    final compact = fingerprint.replaceAll(RegExp(r'\s'), '').toLowerCase();
+    return 'skchat://peer/$compact';
+  }
 
   void _startScan() => setState(() => _scanning = true);
   void _stopScan() => setState(() => _scanning = false);
 
   @override
   Widget build(BuildContext context) {
+    final fingerprint = ref.watch(onboardingProvider).generatedFingerprint;
+    final peerId = _buildPeerId(fingerprint);
     return SafeArea(
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32),
@@ -77,7 +89,7 @@ class _PairPageState extends ConsumerState<PairPage> {
                   child: Column(
                     children: [
                       QrImageView(
-                        data: _stubPeerId,
+                        data: peerId,
                         version: QrVersions.auto,
                         size: 200,
                         backgroundColor: Colors.white,
