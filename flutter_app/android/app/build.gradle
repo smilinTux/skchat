@@ -48,9 +48,35 @@ android {
         versionName flutterVersionName
     }
 
+    // Load keystore properties for release signing.
+    // Create android/keystore.properties with: storeFile, storePassword, keyAlias, keyPassword
+    def keystorePropertiesFile = rootProject.file("keystore.properties")
+    def keystoreProperties = new Properties()
+    if (keystorePropertiesFile.exists()) {
+        keystoreProperties.load(new FileInputStream(keystorePropertiesFile))
+    }
+
+    if (keystorePropertiesFile.exists()) {
+        signingConfigs {
+            release {
+                storeFile file(keystoreProperties['storeFile'])
+                storePassword keystoreProperties['storePassword']
+                keyAlias keystoreProperties['keyAlias']
+                keyPassword keystoreProperties['keyPassword']
+            }
+        }
+    }
+
     buildTypes {
         release {
-            signingConfig signingConfigs.debug
+            // TODO(release): Replace debug signing with a proper release keystore.
+            // Create android/keystore.properties to enable release signing automatically.
+            if (keystorePropertiesFile.exists()) {
+                signingConfig signingConfigs.release
+            } else {
+                // WARN: Using debug keys — not suitable for production/Play Store
+                signingConfig signingConfigs.debug
+            }
         }
     }
 }
