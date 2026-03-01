@@ -3,6 +3,7 @@ import 'dart:isolate';
 import 'dart:math';
 import 'dart:typed_data';
 
+import 'package:asn1lib/asn1lib.dart';
 import 'package:pointycastle/export.dart';
 
 /// RSA keypair with a PGP-style SHA-1 fingerprint.

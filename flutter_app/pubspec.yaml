@@ -37,6 +37,9 @@ dependencies:
   qr_flutter: ^4.1.0
   mobile_scanner: ^6.0.0
   
+  # File picking
+  file_picker: ^8.0.0
+
   # Utilities
   share_plus: ^10.0.0
   url_launcher: ^6.3.0
