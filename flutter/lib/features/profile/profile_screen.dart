@@ -4,10 +4,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import '../../core/theme/theme.dart';
 import '../../core/providers/theme_provider.dart';
+import '../../services/skcomm_client.dart';
 import '../../services/skcomm_sync.dart';
 
 // ── Local identity provider ────────────────────────────────────────────────
-// In the real app this is populated from the CapAuth keychain.
+// Identity is fetched from the SKComm daemon at /api/v1/identity.
 // Exposed as a Notifier so it can be updated at runtime.
 
 class LocalIdentity {
@@ -44,15 +45,39 @@ class LocalIdentity {
 
 class LocalIdentityNotifier extends Notifier<LocalIdentity> {
   @override
-  LocalIdentity build() => const LocalIdentity(
-        displayName: 'Sovereign Node',
-        fingerprint: 'CCBE9306410CF8CD5E393D6DEC31663B95230684',
-        pgpKeyId: '95230684',
-        pgpKeySize: 4096,
-        daemonUrl: 'localhost:9384',
+  LocalIdentity build() {
+    // Start with a placeholder, then fetch from daemon.
+    Future.microtask(_fetchFromDaemon);
+    return const LocalIdentity(
+      displayName: 'Sovereign Node',
+      daemonUrl: 'localhost:9384',
+    );
+  }
+
+  /// Fetch identity from the SKComm daemon's /api/v1/identity endpoint.
+  Future<void> _fetchFromDaemon() async {
+    final client = ref.read(skcommClientProvider);
+    try {
+      final alive = await client.isAlive();
+      if (!alive) return;
+
+      final info = await client.getIdentity();
+      state = state.copyWith(
+        displayName: info.name ?? state.displayName,
+        fingerprint: info.fingerprint,
+        pgpKeyId: info.fingerprint.length >= 8
+            ? info.fingerprint.substring(info.fingerprint.length - 8)
+            : info.fingerprint,
       );
+    } catch (_) {
+      // Daemon offline — keep placeholder.
+    }
+  }
 
   void update(LocalIdentity identity) => state = identity;
+
+  /// Re-fetch identity from the daemon.
+  Future<void> refresh() async => _fetchFromDaemon();
 }
 
 final localIdentityProvider =
