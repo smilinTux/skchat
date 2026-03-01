@@ -129,6 +129,7 @@ class GlassDecorations {
   /// Glass app bar with blur
   static PreferredSizeWidget appBar({
     required String title,
+    Widget? titleWidget,
     List<Widget>? actions,
     Widget? leading,
     PreferredSizeWidget? bottom,
@@ -138,7 +139,7 @@ class GlassDecorations {
       elevation: 0,
       surfaceTintColor: Colors.transparent,
       leading: leading,
-      title: Text(title),
+      title: titleWidget ?? Text(title),
       actions: actions,
       bottom: bottom,
       flexibleSpace: ClipRect(

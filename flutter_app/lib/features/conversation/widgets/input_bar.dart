@@ -1,16 +1,19 @@
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
-import '../../core/theme/glass_decorations.dart';
-import '../../core/theme/sovereign_glass.dart';
+import '../../../core/theme/glass_decorations.dart';
+import '../../../core/theme/sovereign_glass.dart';
 
 class InputBar extends StatefulWidget {
   final Color soulColor;
   final Function(String) onSend;
+  final Function(String path, String name)? onAttachFile;
 
   const InputBar({
     super.key,
     required this.soulColor,
     required this.onSend,
+    this.onAttachFile,
   });
 
   @override
@@ -37,6 +40,57 @@ class _InputBarState extends State<InputBar> {
     }
   }
 
+  Future<void> _handleAttachFile() async {
+    try {
+      final result = await FilePicker.platform.pickFiles();
+      if (result == null || result.files.isEmpty) return;
+
+      final file = result.files.single;
+      final path = file.path;
+      final name = file.name;
+
+      if (path == null) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Could not read file path')),
+          );
+        }
+        return;
+      }
+
+      if (widget.onAttachFile != null) {
+        widget.onAttachFile!(path, name);
+      } else {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Selected: $name'),
+              action: SnackBarAction(
+                label: 'OK',
+                onPressed: () {},
+              ),
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Failed to pick file')),
+        );
+      }
+    }
+  }
+
+  void _handleVoiceMessage() {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Voice messages coming soon'),
+        duration: Duration(seconds: 2),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return GlassDecorations.bottomBar(
@@ -53,9 +107,7 @@ class _InputBarState extends State<InputBar> {
           children: [
             IconButton(
               icon: const Icon(Icons.attach_file),
-              onPressed: () {
-                // TODO: Attach file
-              },
+              onPressed: _handleAttachFile,
               padding: EdgeInsets.zero,
               constraints: const BoxConstraints(),
             ),
@@ -105,9 +157,7 @@ class _InputBarState extends State<InputBar> {
             const SizedBox(width: 8),
             GestureDetector(
               onTap: _hasText ? _handleSend : null,
-              onLongPress: () {
-                // TODO: Voice message
-              },
+              onLongPress: _handleVoiceMessage,
               child: Container(
                 width: 40,
                 height: 40,

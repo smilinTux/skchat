@@ -45,6 +45,9 @@ dependencies:
   # Cryptography — pure-Dart RSA / AES primitives
   pointycastle: ^3.7.3
 
+  # ASN1 encoding/decoding for DER key serialization
+  asn1lib: ^1.5.0
+
   # Secure key storage (OS keychain / Keystore)
   flutter_secure_storage: ^9.0.0
 
