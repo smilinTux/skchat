@@ -117,7 +117,8 @@ class ChatDaemon:
 
         try:
             history = ChatHistory.from_config()
-        except Exception:
+        except Exception as exc:
+            logger.warning("ChatHistory.from_config() failed, using default MemoryStore: %s", exc)
             from skmemory import MemoryStore
             history = ChatHistory(store=MemoryStore())
 
@@ -240,8 +241,8 @@ class ChatDaemon:
             if presence:
                 try:
                     self._broadcast_presence(skcomm, identity, presence, going_offline=True)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning("Failed to send offline presence on shutdown: %s", exc)
             self._log(f"Daemon stopped. Received {self.total_received} message(s) total.")
 
     def _init_reaper(self, history: object) -> object:
@@ -272,7 +273,8 @@ class ChatDaemon:
         try:
             from .presence import PresenceTracker
             return PresenceTracker()
-        except Exception:
+        except Exception as exc:
+            self._log(f"Presence init skipped: {exc}", "warning")
             return None
 
     def _init_queue(self, skcomm: object) -> object:
@@ -287,7 +289,8 @@ class ChatDaemon:
         try:
             from skcomm.queue import MessageQueue
             return MessageQueue()
-        except Exception:
+        except Exception as exc:
+            self._log(f"Queue init skipped: {exc}", "warning")
             return None
 
     def _init_webrtc(self, skcomm: object, identity: str) -> None:
@@ -353,8 +356,8 @@ class ChatDaemon:
                 message=payload,
                 message_type=MessageType.HEARTBEAT,
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("Presence broadcast failed: %s", exc)
 
     def _uptime(self) -> str:
         """Calculate daemon uptime.
@@ -402,13 +405,13 @@ class ChatDaemon:
                 import yaml
                 with open(config_path) as f:
                     cfg = yaml.safe_load(f) or {}
-                
+
                 daemon_cfg = cfg.get("daemon", {})
                 interval = daemon_cfg.get("poll_interval", interval)
                 log_file = daemon_cfg.get("log_file", log_file)
                 quiet = daemon_cfg.get("quiet", quiet)
-            except Exception:
-                pass
+            except (ImportError, OSError, yaml.YAMLError) as exc:
+                logger.warning("Failed to read config %s: %s", config_path, exc)
 
         log_path = Path(log_file).expanduser() if log_file else None
 
