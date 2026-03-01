@@ -204,9 +204,9 @@ class PgpBridge {
   /// PKCS#1 RSAPublicKey DER (RFC 3447 Appendix A.1.1).
   static Uint8List _encodePublicKeyDer(RSAPublicKey key) {
     final seq = ASN1Sequence()
-      ..add(ASN1Integer(key.modulus))
-      ..add(ASN1Integer(key.exponent));
-    return seq.encode();
+      ..add(ASN1Integer(key.modulus!))
+      ..add(ASN1Integer(key.exponent!));
+    return seq.encodedBytes;
   }
 
   /// PKCS#1 RSAPrivateKey DER (RFC 3447 Appendix A.1.2).
@@ -219,15 +219,15 @@ class PgpBridge {
     final qInv = q.modInverse(p);
     final seq = ASN1Sequence()
       ..add(ASN1Integer(BigInt.zero)) // version = 0
-      ..add(ASN1Integer(key.modulus))
-      ..add(ASN1Integer(key.publicExponent))
+      ..add(ASN1Integer(key.modulus!))
+      ..add(ASN1Integer(key.publicExponent!))
       ..add(ASN1Integer(d))
       ..add(ASN1Integer(p))
       ..add(ASN1Integer(q))
       ..add(ASN1Integer(dp))
       ..add(ASN1Integer(dq))
       ..add(ASN1Integer(qInv));
-    return seq.encode();
+    return seq.encodedBytes;
   }
 
   /// SHA-1 fingerprint over DER bytes, formatted as `AAAA BBBB … JJJJ` with
@@ -267,8 +267,8 @@ class PgpBridge {
     final seq =
         ASN1Parser(base64.decode(b64)).nextObject() as ASN1Sequence;
     return RSAPublicKey(
-      (seq.elements![0] as ASN1Integer).integer!,
-      (seq.elements![1] as ASN1Integer).integer!,
+      (seq.elements[0] as ASN1Integer).valueAsBigInteger,
+      (seq.elements[1] as ASN1Integer).valueAsBigInteger,
     );
   }
 
@@ -278,13 +278,13 @@ class PgpBridge {
         .replaceAll(RegExp(r'\s'), '');
     final seq =
         ASN1Parser(base64.decode(b64)).nextObject() as ASN1Sequence;
-    final e = seq.elements!;
+    final e = seq.elements;
     // Indices per RFC 3447 A.1.2: 0=version, 1=n, 2=e, 3=d, 4=p, 5=q, …
     return RSAPrivateKey(
-      (e[1] as ASN1Integer).integer!, // modulus
-      (e[3] as ASN1Integer).integer!, // privateExponent
-      (e[4] as ASN1Integer).integer!, // prime1 (p)
-      (e[5] as ASN1Integer).integer!, // prime2 (q)
+      (e[1] as ASN1Integer).valueAsBigInteger, // modulus
+      (e[3] as ASN1Integer).valueAsBigInteger, // privateExponent
+      (e[4] as ASN1Integer).valueAsBigInteger, // prime1 (p)
+      (e[5] as ASN1Integer).valueAsBigInteger, // prime2 (q)
     );
   }
 }
