@@ -32,7 +32,7 @@ class SoulAvatar extends StatelessWidget {
           ),
           child: Center(
             child: Text(
-              name[0].toUpperCase(),
+              name.isNotEmpty ? name[0].toUpperCase() : '?',
               style: TextStyle(
                 fontSize: size * 0.4,
                 fontWeight: FontWeight.w600,
