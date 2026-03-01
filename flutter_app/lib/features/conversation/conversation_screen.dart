@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../core/theme/glass_decorations.dart';
 import '../core/theme/sovereign_glass.dart';
 import '../core/theme/soul_color.dart';
+import '../core/transport/skcomm_client.dart';
 import '../models/chat_message.dart';
 import '../models/conversation.dart';
 import 'widgets/message_bubble.dart';
@@ -88,8 +89,22 @@ class ConversationScreen extends ConsumerWidget {
           ),
           InputBar(
             soulColor: soulColor,
-            onSend: (text) {
-              // TODO: Send message
+            onSend: (text) async {
+              final client = ref.read(skcommClientProvider);
+              try {
+                await client.sendMessage(
+                  recipientId: conversation.participantId,
+                  content: text,
+                );
+              } on SKCommException catch (_) {
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('Failed to send message'),
+                    ),
+                  );
+                }
+              }
             },
           ),
         ],

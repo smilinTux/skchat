@@ -201,7 +201,9 @@ class _SoulAvatarState extends State<SoulAvatar>
                     child: widget.imageUrl == null
                         ? Center(
                             child: Text(
-                              widget.initials ?? '?',
+                              (widget.initials != null && widget.initials!.isNotEmpty)
+                                  ? widget.initials!
+                                  : '?',
                               style: TextStyle(
                                 color: widget.soulColor,
                                 fontSize: innerSize * 0.36,

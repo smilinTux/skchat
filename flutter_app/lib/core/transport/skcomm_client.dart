@@ -4,8 +4,13 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../models/chat_message.dart';
 import '../../models/conversation.dart';
 
+/// Default base URL for the SKComm daemon.
+/// Override at runtime via the SKCOMM_URL environment variable
+/// or by passing [baseUrl] to the constructor.
+const _kDefaultBaseUrl = 'http://localhost:9384';
+
 /// HTTP client for SKComm daemon communication
-/// Talks to localhost:9384 for all messaging operations
+/// Talks to the SKComm daemon for all messaging operations
 class SKCommClient {
   final Dio _dio;
   final String baseUrl;
@@ -13,7 +18,9 @@ class SKCommClient {
   SKCommClient({
     String? baseUrl,
     Dio? dio,
-  })  : baseUrl = baseUrl ?? 'http://localhost:9384',
+  })  : baseUrl = baseUrl ??
+            const String.fromEnvironment('SKCOMM_URL',
+                defaultValue: _kDefaultBaseUrl),
         _dio = dio ??
             Dio(BaseOptions(
               connectTimeout: const Duration(seconds: 5),
