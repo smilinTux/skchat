@@ -133,6 +133,26 @@ class PgpBridge {
     return utf8.decode(out);
   }
 
+  // ── Import ──────────────────────────────────────────────────────────────
+
+  /// Reconstruct a [PgpKeyPair] from a PKCS#1 PEM-encoded RSA private key.
+  ///
+  /// The private key already contains the public parameters (n, e), so this
+  /// re-encodes the public key and recomputes the fingerprint — no separate
+  /// public key file is needed.
+  ///
+  /// Throws [FormatException] if [privateKeyPem] cannot be parsed.
+  static PgpKeyPair importPrivateKey(String privateKeyPem) {
+    final priv = _parsePrivateKey(privateKeyPem);
+    final pub = RSAPublicKey(priv.modulus!, priv.publicExponent!);
+    final pubDer = _encodePublicKeyDer(pub);
+    return PgpKeyPair(
+      fingerprint: _computeFingerprint(pubDer),
+      publicKeyPem: _toPem('RSA PUBLIC KEY', pubDer),
+      privateKeyPem: privateKeyPem,
+    );
+  }
+
   // ── Internals ────────────────────────────────────────────────────────────
 
   /// Fortuna PRNG seeded from [Random.secure].
