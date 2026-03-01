@@ -7,6 +7,7 @@ import 'core/router/app_router.dart';
 import 'core/providers/theme_provider.dart';
 import 'data/hive_adapters.dart';
 import 'services/skcomm_sync.dart';
+import 'services/identity_service.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -43,6 +44,9 @@ class SKChatApp extends ConsumerWidget {
 
     // Eagerly start the sync service so polling begins immediately.
     ref.watch(skcommSyncProvider);
+
+    // Eagerly load the local PGP identity from secure storage.
+    ref.watch(identityKeyPairProvider);
 
     return MaterialApp.router(
       title: 'SKChat',

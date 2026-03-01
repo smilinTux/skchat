@@ -204,9 +204,15 @@ class ChatDaemon:
                 if queue and queue_counter >= 3:
                     queue_counter = 0
                     try:
+                        try:
+                            from skcomm.models import MessageEnvelope
+                        except ImportError:
+                            MessageEnvelope = None
+                        if MessageEnvelope is None:
+                            raise RuntimeError("skcomm.models.MessageEnvelope unavailable; skipping queue drain")
                         delivered, failed = queue.drain(
                             lambda env_bytes, recipient: skcomm.router.route(
-                                __import__("skcomm.models", fromlist=["MessageEnvelope"]).MessageEnvelope.from_bytes(env_bytes)
+                                MessageEnvelope.from_bytes(env_bytes)
                             ).delivered
                         )
                         if delivered > 0 or failed > 0:
