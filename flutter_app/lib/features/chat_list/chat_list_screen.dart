@@ -75,31 +75,202 @@ class ChatListNotifier extends AsyncNotifier<List<Conversation>> {
   }
 }
 
-class ChatListScreen extends ConsumerWidget {
+class ChatListScreen extends ConsumerStatefulWidget {
   const ChatListScreen({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final conversationsAsync = ref.watch(chatListProvider);
+  ConsumerState<ChatListScreen> createState() => _ChatListScreenState();
+}
 
-    return Scaffold(
-      appBar: GlassDecorations.appBar(
-        title: 'SKChat',
+class _ChatListScreenState extends ConsumerState<ChatListScreen> {
+  bool _isSearching = false;
+  final _searchController = TextEditingController();
+  String _searchQuery = '';
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  /// Filter conversations by agent name matching the search query.
+  List<Conversation> _filterConversations(List<Conversation> conversations) {
+    if (_searchQuery.isEmpty) return conversations;
+    final query = _searchQuery.toLowerCase();
+    return conversations.where((c) {
+      return c.participantName.toLowerCase().contains(query) ||
+          c.participantId.toLowerCase().contains(query);
+    }).toList();
+  }
+
+  /// Show a dialog to pick an agent for a new conversation.
+  Future<void> _showNewMessageDialog(BuildContext context) async {
+    final client = ref.read(skcommClientProvider);
+    List<Map<String, dynamic>> agents = [];
+    try {
+      agents = await client.getAgents();
+    } catch (_) {
+      // Daemon offline -- show manual entry instead.
+    }
+
+    if (!context.mounted) return;
+
+    final recipientController = TextEditingController();
+
+    final selected = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: const Color(0xFF1A1A2E),
+        title: const Text('New Message'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: recipientController,
+              style: const TextStyle(color: SovereignGlassTheme.textPrimary),
+              decoration: const InputDecoration(
+                hintText: 'Agent name...',
+                hintStyle: TextStyle(color: SovereignGlassTheme.textSecondary),
+                prefixIcon: Icon(Icons.person_search,
+                    color: SovereignGlassTheme.textSecondary),
+              ),
+            ),
+            if (agents.isNotEmpty) ...[
+              const SizedBox(height: 16),
+              const Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  'Known agents',
+                  style: TextStyle(
+                    color: SovereignGlassTheme.textSecondary,
+                    fontSize: 12,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 8),
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxHeight: 200),
+                child: ListView.builder(
+                  shrinkWrap: true,
+                  itemCount: agents.length,
+                  itemBuilder: (context, index) {
+                    final name = agents[index]['name'] as String? ?? '';
+                    return ListTile(
+                      dense: true,
+                      leading: Icon(
+                        _knownAgents.contains(name.toLowerCase())
+                            ? Icons.smart_toy
+                            : Icons.person,
+                        color: SovereignGlassTheme.textSecondary,
+                        size: 20,
+                      ),
+                      title: Text(
+                        name,
+                        style: const TextStyle(
+                          color: SovereignGlassTheme.textPrimary,
+                        ),
+                      ),
+                      onTap: () => Navigator.of(dialogContext).pop(name),
+                    );
+                  },
+                ),
+              ),
+            ],
+          ],
+        ),
         actions: [
-          IconButton(
-            icon: const Icon(Icons.search),
-            onPressed: () {
-              // TODO: Implement search
-            },
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(null),
+            child: const Text('Cancel'),
           ),
-          IconButton(
-            icon: const Icon(Icons.edit),
+          TextButton(
             onPressed: () {
-              // TODO: Implement new message
+              final text = recipientController.text.trim();
+              if (text.isNotEmpty) {
+                Navigator.of(dialogContext).pop(text);
+              }
             },
+            child: const Text('Start Chat'),
           ),
         ],
       ),
+    );
+
+    recipientController.dispose();
+
+    if (selected != null && selected.isNotEmpty && context.mounted) {
+      context.go('/conversation/$selected');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final conversationsAsync = ref.watch(chatListProvider);
+
+    return Scaffold(
+      appBar: _isSearching
+          ? GlassDecorations.appBar(
+              title: '',
+              titleWidget: TextField(
+                controller: _searchController,
+                autofocus: true,
+                style: const TextStyle(
+                  color: SovereignGlassTheme.textPrimary,
+                  fontSize: 16,
+                ),
+                decoration: const InputDecoration(
+                  hintText: 'Search agents...',
+                  hintStyle: TextStyle(
+                    color: SovereignGlassTheme.textSecondary,
+                  ),
+                  border: InputBorder.none,
+                ),
+                onChanged: (value) {
+                  setState(() {
+                    _searchQuery = value;
+                  });
+                },
+              ),
+              leading: IconButton(
+                icon: const Icon(Icons.arrow_back),
+                onPressed: () {
+                  setState(() {
+                    _isSearching = false;
+                    _searchQuery = '';
+                    _searchController.clear();
+                  });
+                },
+              ),
+              actions: [
+                if (_searchController.text.isNotEmpty)
+                  IconButton(
+                    icon: const Icon(Icons.clear),
+                    onPressed: () {
+                      setState(() {
+                        _searchQuery = '';
+                        _searchController.clear();
+                      });
+                    },
+                  ),
+              ],
+            )
+          : GlassDecorations.appBar(
+              title: 'SKChat',
+              actions: [
+                IconButton(
+                  icon: const Icon(Icons.search),
+                  onPressed: () {
+                    setState(() {
+                      _isSearching = true;
+                    });
+                  },
+                ),
+                IconButton(
+                  icon: const Icon(Icons.edit),
+                  onPressed: () => _showNewMessageDialog(context),
+                ),
+              ],
+            ),
       body: conversationsAsync.when(
         loading: () => const Center(
           child: CircularProgressIndicator(),
@@ -123,45 +294,69 @@ class ChatListScreen extends ConsumerWidget {
             ],
           ),
         ),
-        data: (conversations) => conversations.isEmpty
-            ? Center(
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(
-                      Icons.chat_bubble_outline,
-                      size: 48,
+        data: (conversations) {
+          final filtered = _filterConversations(conversations);
+          if (filtered.isEmpty && conversations.isEmpty) {
+            return Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(
+                    Icons.chat_bubble_outline,
+                    size: 48,
+                    color: SovereignGlassTheme.textSecondary,
+                  ),
+                  const SizedBox(height: 16),
+                  const Text('No conversations yet'),
+                  const SizedBox(height: 8),
+                  TextButton(
+                    onPressed: () =>
+                        ref.read(chatListProvider.notifier).refresh(),
+                    child: const Text('Refresh'),
+                  ),
+                ],
+              ),
+            );
+          }
+          if (filtered.isEmpty && _searchQuery.isNotEmpty) {
+            return Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(
+                    Icons.search_off,
+                    size: 48,
+                    color: SovereignGlassTheme.textSecondary,
+                  ),
+                  const SizedBox(height: 16),
+                  Text(
+                    'No results for "$_searchQuery"',
+                    style: const TextStyle(
                       color: SovereignGlassTheme.textSecondary,
                     ),
-                    const SizedBox(height: 16),
-                    const Text('No conversations yet'),
-                    const SizedBox(height: 8),
-                    TextButton(
-                      onPressed: () =>
-                          ref.read(chatListProvider.notifier).refresh(),
-                      child: const Text('Refresh'),
-                    ),
-                  ],
-                ),
-              )
-            : RefreshIndicator(
-                onRefresh: () =>
-                    ref.read(chatListProvider.notifier).refresh(),
-                child: ListView.builder(
-                  itemCount: conversations.length,
-                  padding: const EdgeInsets.symmetric(vertical: 8),
-                  itemBuilder: (context, index) {
-                    return ConversationTile(
-                      conversation: conversations[index],
-                      onTap: () {
-                        context.go(
-                          '/conversation/${conversations[index].participantId}',
-                        );
-                      },
+                  ),
+                ],
+              ),
+            );
+          }
+          return RefreshIndicator(
+            onRefresh: () => ref.read(chatListProvider.notifier).refresh(),
+            child: ListView.builder(
+              itemCount: filtered.length,
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              itemBuilder: (context, index) {
+                return ConversationTile(
+                  conversation: filtered[index],
+                  onTap: () {
+                    context.go(
+                      '/conversation/${filtered[index].participantId}',
                     );
                   },
-                ),
-              ),
+                );
+              },
+            ),
+          );
+        },
       ),
       bottomNavigationBar: GlassDecorations.bottomBar(
         child: Row(
