@@ -1,13 +1,21 @@
 import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+/// Default base URL for the SKComm daemon.
+/// Override at runtime via the SKCOMM_URL environment variable
+/// (pass --dart-define=SKCOMM_URL=http://host:port at build time)
+/// or by passing [baseUrl] to the constructor.
+const _kDefaultBaseUrl = 'http://localhost:9384';
+
 /// Low-level HTTP client wrapping the SKComm daemon REST API.
 /// Default base URL is localhost:9384 — the daemon runs on the same device.
 class SKCommClient {
   SKCommClient({String? baseUrl})
     : _dio = Dio(
         BaseOptions(
-          baseUrl: baseUrl ?? 'http://localhost:9384',
+          baseUrl: baseUrl ??
+              const String.fromEnvironment('SKCOMM_URL',
+                  defaultValue: _kDefaultBaseUrl),
           connectTimeout: const Duration(seconds: 5),
           receiveTimeout: const Duration(seconds: 10),
           headers: {'Content-Type': 'application/json'},
