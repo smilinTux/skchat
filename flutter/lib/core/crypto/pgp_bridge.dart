@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:isolate';
 import 'dart:math';
 import 'dart:typed_data';
 
@@ -34,9 +35,12 @@ class PgpKeyPair {
 /// ## Typical usage
 /// ```dart
 /// final keyPair = await PgpBridge.generateKeyPair();
-/// final sig = PgpBridge.sign(payload, keyPair.privateKeyPem);
-/// final ok  = PgpBridge.verify(payload, sig, keyPair.publicKeyPem);
+/// final sig = await PgpBridge.signAsync(payload, keyPair.privateKeyPem);
+/// final ok  = await PgpBridge.verifyAsync(payload, sig, keyPair.publicKeyPem);
 /// ```
+///
+/// All heavy operations provide both synchronous and async (isolate-backed)
+/// variants.  Prefer the `*Async` methods from the UI layer to avoid jank.
 class PgpBridge {
   PgpBridge._();
 
@@ -44,9 +48,14 @@ class PgpBridge {
 
   /// Generate a fresh RSA-[bits] keypair and return it with a fingerprint.
   ///
-  /// RSA keygen is CPU-intensive (~1–3 s for 2048 bits on mobile).
-  /// TODO(security): move to [Isolate.run] to avoid jank on lower-end devices.
+  /// RSA keygen is CPU-intensive (~1-3 s for 2048 bits on mobile).
+  /// Runs in a background isolate to avoid blocking the UI thread.
   static Future<PgpKeyPair> generateKeyPair({int bits = 2048}) async {
+    return Isolate.run(() => _generateKeyPairSync(bits: bits));
+  }
+
+  /// Synchronous key generation (runs inside an isolate).
+  static PgpKeyPair _generateKeyPairSync({int bits = 2048}) {
     final secureRandom = _buildSecureRandom();
     final keyGen = RSAKeyGenerator()
       ..init(
@@ -75,6 +84,12 @@ class PgpBridge {
   /// Sign UTF-8 [data] with [privateKeyPem] using PKCS#1 v1.5 + SHA-256.
   ///
   /// Returns a base64-encoded signature.
+  /// Runs in a background isolate to avoid blocking the UI thread.
+  static Future<String> signAsync(String data, String privateKeyPem) {
+    return Isolate.run(() => sign(data, privateKeyPem));
+  }
+
+  /// Synchronous sign -- prefer [signAsync] from the UI layer.
   static String sign(String data, String privateKeyPem) {
     final key = _parsePrivateKey(privateKeyPem);
     // DigestInfo header for SHA-256 (RFC 3447, Appendix B.1).
@@ -92,6 +107,13 @@ class PgpBridge {
   /// Verify a base64 [signature] over UTF-8 [data] using [publicKeyPem].
   ///
   /// Returns `false` on any error (invalid key, tampered data, bad padding).
+  /// Runs in a background isolate to avoid blocking the UI thread.
+  static Future<bool> verifyAsync(
+      String data, String signature, String publicKeyPem) {
+    return Isolate.run(() => verify(data, signature, publicKeyPem));
+  }
+
+  /// Synchronous verify -- prefer [verifyAsync] from the UI layer.
   static bool verify(String data, String signature, String publicKeyPem) {
     final key = _parsePublicKey(publicKeyPem);
     const sha256DigestInfo = '3031300d060960864801650304020105000420';
@@ -112,8 +134,14 @@ class PgpBridge {
   /// Encrypt [plaintext] for the owner of [publicKeyPem] using RSA-OAEP.
   ///
   /// Returns base64 ciphertext.  Note: RSA encryption is limited to
-  /// `(keyBits / 8) − 42` bytes of plaintext; use hybrid encryption for
+  /// `(keyBits / 8) - 42` bytes of plaintext; use hybrid encryption for
   /// larger payloads.
+  /// Runs in a background isolate to avoid blocking the UI thread.
+  static Future<String> encryptAsync(String plaintext, String publicKeyPem) {
+    return Isolate.run(() => encrypt(plaintext, publicKeyPem));
+  }
+
+  /// Synchronous encrypt -- prefer [encryptAsync] from the UI layer.
   static String encrypt(String plaintext, String publicKeyPem) {
     final key = _parsePublicKey(publicKeyPem);
     final cipher = OAEPEncoding(RSAEngine())
@@ -125,6 +153,13 @@ class PgpBridge {
   // ── Decrypt ─────────────────────────────────────────────────────────────
 
   /// Decrypt base64 [ciphertext] using [privateKeyPem].
+  /// Runs in a background isolate to avoid blocking the UI thread.
+  static Future<String> decryptAsync(
+      String ciphertext, String privateKeyPem) {
+    return Isolate.run(() => decrypt(ciphertext, privateKeyPem));
+  }
+
+  /// Synchronous decrypt -- prefer [decryptAsync] from the UI layer.
   static String decrypt(String ciphertext, String privateKeyPem) {
     final key = _parsePrivateKey(privateKeyPem);
     final cipher = OAEPEncoding(RSAEngine())
