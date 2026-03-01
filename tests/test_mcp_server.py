@@ -519,6 +519,7 @@ class TestWebRTCStatus:
     @pytest.mark.asyncio
     async def test_status_includes_peer_info(self):
         """Expected: active_peers includes info for connected peers."""
+        pytest.importorskip("aiortc")
         from skcomm.transports.webrtc import PeerConnection
         mock_pc = MagicMock()
         peer = PeerConnection(
@@ -616,6 +617,7 @@ class TestAcceptCall:
     @pytest.mark.asyncio
     async def test_already_connected_returns_connected_status(self):
         """Expected: status=already_connected when peer is already connected."""
+        pytest.importorskip("aiortc")
         from skcomm.transports.webrtc import PeerConnection
         peer = PeerConnection(peer_fingerprint=PEER_FP, pc=MagicMock(), connected=True)
         transport = _mock_webrtc_transport(peers={PEER_FP: peer})
@@ -727,6 +729,7 @@ class TestSendFileP2P:
     @pytest.mark.asyncio
     async def test_webrtc_direct_send_when_connected(self, tmp_path):
         """Expected: uses WebRTC data channel when peer is connected."""
+        pytest.importorskip("aiortc")
         test_file = tmp_path / "direct.txt"
         test_file.write_bytes(b"direct transfer")
 
