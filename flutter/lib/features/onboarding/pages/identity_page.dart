@@ -4,11 +4,14 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/crypto/pgp_bridge.dart';
 import '../../../core/theme/sovereign_colors.dart';
 import '../../../core/theme/glass_widgets.dart';
+import '../../../services/identity_service.dart';
 import '../onboarding_provider.dart';
 
 /// Onboarding step 2 — import an existing PGP key or generate a new identity.
 ///
-/// Actual PGP operations are stubbed; state is stored in [OnboardingNotifier].
+/// On first render, checks [identityKeyPairProvider] for a key already stored
+/// in the OS keychain (e.g. from a previous install) and pre-fills the UI.
+/// After generation or import the key is persisted via [IdentityService].
 class IdentityPage extends ConsumerStatefulWidget {
   const IdentityPage({super.key, this.onNext});
 
@@ -20,16 +23,35 @@ class IdentityPage extends ConsumerStatefulWidget {
 
 class _IdentityPageState extends ConsumerState<IdentityPage> {
   bool _generating = false;
+  bool _importing = false;
 
-  /// Generate a fresh RSA-2048 keypair via [PgpBridge] and store the
-  /// fingerprint in [OnboardingNotifier].
-  ///
-  /// Key material is held in-memory for the duration of the onboarding flow;
-  /// TODO: persist the private key to flutter_secure_storage before shipping.
+  @override
+  void initState() {
+    super.initState();
+    // Load any persisted key and pre-fill onboarding state.
+    Future.microtask(_loadExistingKey);
+  }
+
+  /// If a key already lives in secure storage, restore it into [OnboardingNotifier]
+  /// so the "Continue" button is enabled without the user having to re-generate.
+  Future<void> _loadExistingKey() async {
+    final existing = await ref.read(identityServiceProvider).load();
+    if (existing == null || !mounted) return;
+    await ref.read(onboardingProvider.notifier).setIdentityChoice(
+          'generate',
+          fingerprint: existing.fingerprint,
+        );
+  }
+
+  /// Generate a fresh RSA-2048 keypair, persist it, and update onboarding state.
   Future<void> _generateIdentity() async {
     setState(() => _generating = true);
     try {
       final keyPair = await PgpBridge.generateKeyPair();
+
+      // Persist both keys to the OS keychain.
+      await ref.read(identityServiceProvider).save(keyPair);
+
       await ref.read(onboardingProvider.notifier).setIdentityChoice(
             'generate',
             fingerprint: keyPair.fingerprint,
@@ -45,11 +67,35 @@ class _IdentityPageState extends ConsumerState<IdentityPage> {
     }
   }
 
+  /// Show a dialog for the user to paste their PEM private key, then import
+  /// and persist it.
   Future<void> _importKey() async {
-    // File-picker integration is wired in a later task; store choice for now.
-    await ref
-        .read(onboardingProvider.notifier)
-        .setIdentityChoice('import');
+    final pem = await showDialog<String>(
+      context: context,
+      builder: (ctx) => _ImportKeyDialog(),
+    );
+    if (pem == null || !mounted) return;
+
+    setState(() => _importing = true);
+    try {
+      final keyPair = PgpBridge.importPrivateKey(pem);
+
+      // Persist both keys to the OS keychain.
+      await ref.read(identityServiceProvider).save(keyPair);
+
+      await ref.read(onboardingProvider.notifier).setIdentityChoice(
+            'import',
+            fingerprint: keyPair.fingerprint,
+          );
+    } on Exception catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Import failed: $e')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _importing = false);
+    }
   }
 
   @override
@@ -103,10 +149,10 @@ class _IdentityPageState extends ConsumerState<IdentityPage> {
               icon: Icons.file_upload_outlined,
               iconColor: SovereignColors.soulJarvis,
               title: 'Import existing PGP key',
-              subtitle: 'Load your key from a file or clipboard.',
+              subtitle: 'Paste your RSA private key (PEM format).',
               selected: chosen == 'import',
-              onTap:
-                  chosen == null || chosen == 'import' ? _importKey : null,
+              loading: _importing,
+              onTap: chosen == null || chosen == 'import' ? _importKey : null,
             ),
             const SizedBox(height: 24),
             // Fingerprint display.
@@ -196,6 +242,116 @@ class _IdentityPageState extends ConsumerState<IdentityPage> {
     );
   }
 }
+
+// ── Import key dialog ─────────────────────────────────────────────────────────
+
+class _ImportKeyDialog extends StatefulWidget {
+  @override
+  State<_ImportKeyDialog> createState() => _ImportKeyDialogState();
+}
+
+class _ImportKeyDialogState extends State<_ImportKeyDialog> {
+  final _ctrl = TextEditingController();
+  String? _error;
+
+  void _validate() {
+    final text = _ctrl.text.trim();
+    if (!text.contains('-----BEGIN RSA PRIVATE KEY-----') ||
+        !text.contains('-----END RSA PRIVATE KEY-----')) {
+      setState(() {
+        _error = 'Must be a PKCS#1 PEM block '
+            '(-----BEGIN RSA PRIVATE KEY-----)';
+      });
+      return;
+    }
+    try {
+      PgpBridge.importPrivateKey(text); // dry-run parse
+    } catch (_) {
+      setState(() => _error = 'Could not parse the key — check formatting.');
+      return;
+    }
+    Navigator.of(context).pop(text);
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      backgroundColor: SovereignColors.surfaceCard,
+      title: const Text(
+        'Import PGP Key',
+        style: TextStyle(color: SovereignColors.textPrimary),
+      ),
+      content: SizedBox(
+        width: double.maxFinite,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Paste your RSA private key in PEM format.',
+              style: TextStyle(
+                fontSize: 13,
+                color: SovereignColors.textSecondary,
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _ctrl,
+              maxLines: 10,
+              style: const TextStyle(
+                fontFamily: 'monospace',
+                fontSize: 12,
+                color: SovereignColors.textPrimary,
+              ),
+              decoration: InputDecoration(
+                hintText: '-----BEGIN RSA PRIVATE KEY-----\n...',
+                hintStyle: const TextStyle(
+                  color: SovereignColors.textSecondary,
+                  fontSize: 12,
+                ),
+                filled: true,
+                fillColor: SovereignColors.surfaceGlass,
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(8),
+                  borderSide: BorderSide.none,
+                ),
+                errorText: _error,
+              ),
+              onChanged: (_) {
+                if (_error != null) setState(() => _error = null);
+              },
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text(
+            'Cancel',
+            style: TextStyle(color: SovereignColors.textSecondary),
+          ),
+        ),
+        FilledButton(
+          onPressed: _validate,
+          style: FilledButton.styleFrom(
+            backgroundColor: SovereignColors.soulJarvis,
+            foregroundColor: Colors.black,
+          ),
+          child: const Text('Import'),
+        ),
+      ],
+    );
+  }
+}
+
+// ── Option card ───────────────────────────────────────────────────────────────
 
 class _OptionCard extends StatelessWidget {
   const _OptionCard({

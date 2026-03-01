@@ -45,6 +45,9 @@ dependencies:
   # Cryptography — pure-Dart RSA / AES primitives
   pointycastle: ^3.7.3
 
+  # Secure key storage (OS keychain / Keystore)
+  flutter_secure_storage: ^9.0.0
+
   # Icons
   cupertino_icons: ^1.0.8
 
