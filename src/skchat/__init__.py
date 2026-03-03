@@ -5,7 +5,7 @@ Chat should be sovereign. Your AI should be in the room.
 SK = staycuriousANDkeepsmilin
 """
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 __author__ = "smilinTux Team"
 __license__ = "GPL-3.0-or-later"
 
