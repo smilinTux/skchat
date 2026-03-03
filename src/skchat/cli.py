@@ -46,11 +46,41 @@ from .identity_bridge import (
     PeerResolutionError,
 )
 from .reactions import ReactionStore
+from .peer_discovery import PeerDiscovery
 
 
 SKCHAT_HOME = "~/.skchat"
 
 _reaction_store = ReactionStore()
+
+
+def _suppress_pgp_warnings_if_configured() -> None:
+    """Suppress PGPy UserWarnings if crypto.suppress_passphrase_warning is set.
+
+    Reads ~/.skcomm/config.yml for::
+
+        crypto:
+          suppress_passphrase_warning: true
+
+    Silently skips if the config is absent, unreadable, or PyYAML is missing.
+    """
+    import warnings
+
+    try:
+        import yaml  # type: ignore[import-untyped]
+
+        config_path = Path.home() / ".skcomm" / "config.yml"
+        if config_path.exists():
+            with open(config_path) as _f:
+                cfg = yaml.safe_load(_f) or {}
+            if cfg.get("crypto", {}).get("suppress_passphrase_warning"):
+                warnings.filterwarnings("ignore", category=UserWarning, module="pgpy")
+    except Exception:
+        pass
+
+
+_suppress_pgp_warnings_if_configured()
+
 
 def _get_chat_transport():
     """Create a ChatTransport instance for message delivery.
@@ -303,14 +333,18 @@ def send(
         sys.exit(1)
 
     sender = _get_identity()
-    
-    try:
-        resolved_recipient = resolve_peer_name(recipient)
-    except PeerResolutionError as exc:
-        _print(f"\n  [red]Error:[/] {exc}")
-        _print(f"  [yellow]Hint:[/] Using '{recipient}' as-is. Add peer with: skcapstone peer add {recipient}\n")
-        resolved_recipient = recipient
-    
+
+    # Resolve short name / @handle to a full identity URI.
+    # PeerDiscovery searches all fields (name, handle, email, contact_uris).
+    # Falls back to "{name}@skworld.io" if no peer record is found.
+    resolved_recipient = PeerDiscovery().resolve_identity(recipient) or recipient
+
+    # Guard: must look like an identity address (has "@" or a scheme ":")
+    if "@" not in resolved_recipient and ":" not in resolved_recipient:
+        _print(f"\n  [red]Error:[/] Cannot resolve [cyan]'{recipient}'[/] to a valid identity.")
+        _print(f"  [yellow]Hint:[/] Register the peer with: [cyan]skcapstone peer add {recipient}[/]\n")
+        sys.exit(1)
+
     content_type = ContentType.PLAIN if ctype == "plain" else ContentType.MARKDOWN
 
     msg = ChatMessage(
@@ -354,6 +388,109 @@ def send(
             _print(f"  Delivered via {transport_info['transport']}")
         else:
             _print(f"  Stored locally ({transport_info.get('error', 'no transport')})")
+        _print(f"  Memory ID: {mem_id}")
+    _print("")
+
+
+def _find_message_by_id(history: "ChatHistory", message_id: str) -> Optional[dict]:
+    """Find a stored message by its memory ID or chat_message_id.
+
+    Supports full UUID or a unique prefix (≥4 chars).
+
+    Args:
+        history: The ChatHistory to search.
+        message_id: Full or prefix of memory_id or chat_message_id.
+
+    Returns:
+        Optional[dict]: Chat message dict, or None if not found.
+    """
+    try:
+        all_mems = history._store.list_memories(tags=["skchat:message"], limit=5000)
+    except Exception:
+        return None
+    for m in all_mems:
+        if m.id == message_id or m.id.startswith(message_id):
+            return history._memory_to_chat_dict(m)
+        cid = m.metadata.get("chat_message_id", "")
+        if cid and (cid == message_id or cid.startswith(message_id)):
+            return history._memory_to_chat_dict(m)
+    return None
+
+
+@main.command()
+@click.argument("message_id")
+@click.argument("content")
+@click.option("--thread", "-t", default=None, help="Thread ID (defaults to original thread).")
+@click.option(
+    "--content-type",
+    "ctype",
+    type=click.Choice(["plain", "markdown"], case_sensitive=False),
+    default="markdown",
+    help="Content type (default: markdown).",
+)
+def reply(message_id: str, content: str, thread: Optional[str], ctype: str) -> None:
+    """Reply to a specific message.
+
+    Looks up MESSAGE_ID in local history (memory ID or chat_message_id
+    prefix), sets the original sender as recipient, and stores with
+    reply_to_id set so clients can thread the conversation.
+
+    Examples:
+
+        skchat reply abc12345 "Good point, agreed!"
+
+        skchat reply abc12345 "Follow-up question" --thread proj-alpha
+    """
+    history = _get_history()
+    orig = _find_message_by_id(history, message_id)
+
+    if orig is None:
+        _print(f"\n  [red]Error:[/] Message [dim]{message_id}[/] not found in local history.")
+        _print("  [yellow]Hint:[/] Get the Memory ID from [cyan]skchat send[/] output or [cyan]skchat inbox[/].\n")
+        sys.exit(1)
+
+    # Reply goes to whoever sent the original message
+    recipient_uri = orig.get("sender") or ""
+    if not recipient_uri:
+        _print(f"\n  [red]Error:[/] Cannot determine sender of message {message_id}.\n")
+        sys.exit(1)
+
+    sender = _get_identity()
+    thread_id = thread or orig.get("thread_id")
+    content_type = ContentType.PLAIN if ctype == "plain" else ContentType.MARKDOWN
+
+    msg = ChatMessage(
+        sender=sender,
+        recipient=recipient_uri,
+        content=content,
+        content_type=content_type,
+        thread_id=thread_id,
+        reply_to_id=orig.get("memory_id") or message_id,
+        delivery_status=DeliveryStatus.PENDING,
+    )
+
+    mem_id = history.store_message(msg)
+    transport_info = _try_deliver(msg)
+
+    _print("")
+    if HAS_RICH and console:
+        status_str = (
+            f"[green]sent[/] via {transport_info['transport']}"
+            if transport_info["delivered"]
+            else f"[yellow]stored locally[/] ({transport_info.get('error', 'no transport')})"
+        )
+        orig_preview = (orig.get("content") or "")[:60]
+        console.print(Panel(
+            f"[bold]Reply to:[/] [dim]{message_id[:12]}…[/] {orig_preview}\n"
+            f"[bold]To:[/]       [cyan]{recipient_uri}[/]\n"
+            f"[bold]Content:[/]  {content[:120]}\n"
+            f"[bold]Status:[/]   {status_str}\n"
+            f"[dim]Memory ID: {mem_id}[/]",
+            title="Reply Sent",
+            border_style="green",
+        ))
+    else:
+        _print(f"  Reply to {message_id[:12]} → {recipient_uri}: {content[:80]}")
         _print(f"  Memory ID: {mem_id}")
     _print("")
 
@@ -1430,6 +1567,16 @@ def chat(peer: str, interval: float, thread: Optional[str]) -> None:
         skchat chat lumina --thread proj-alpha
     """
     import threading
+    import time
+
+    try:
+        import readline as _readline
+        _HAS_READLINE = True
+    except ImportError:
+        _readline = None  # type: ignore[assignment]
+        _HAS_READLINE = False
+
+    from .presence import PresenceIndicator, PresenceState
 
     try:
         peer_uri = resolve_peer_name(peer)
@@ -1440,6 +1587,76 @@ def chat(peer: str, interval: float, thread: Optional[str]) -> None:
     peer_label = peer if peer == peer_uri else f"{peer} ({peer_uri})"
     identity = _get_identity()
     messenger = AgentMessenger.from_identity(identity=identity)
+
+    # ── Presence broadcasting ────────────────────────────────────────────────
+    def _send_presence(state: PresenceState) -> None:
+        """Fire-and-forget presence signal to the peer via SKComm or file."""
+        indicator = PresenceIndicator(
+            identity_uri=identity,
+            state=state,
+            thread_id=thread,
+        )
+        payload = indicator.model_dump_json()
+        try:
+            from skcomm.models import MessageType
+            xport = messenger._transport
+            if xport is not None and hasattr(xport, "_skcomm"):
+                xport._skcomm.send(
+                    recipient=peer_uri,
+                    message=payload,
+                    message_type=MessageType.HEARTBEAT,
+                )
+                return
+        except Exception:
+            pass
+        # File-transport fallback: drop JSON in shared inbox dir
+        try:
+            import uuid as _uuid
+            inbox_dir = Path("~/.skchat/inbox").expanduser()
+            inbox_dir.mkdir(parents=True, exist_ok=True)
+            (inbox_dir / f"presence-{_uuid.uuid4().hex[:8]}.json").write_text(payload)
+        except Exception:
+            pass
+
+    # Throttle: at most 1 TYPING broadcast per 2 s using threading.Timer
+    _TYPING_THROTTLE = 2.0
+    _typing_timer: list[Optional[threading.Timer]] = [None]
+    _typing_lock = threading.Lock()
+
+    def _clear_typing_throttle() -> None:
+        with _typing_lock:
+            _typing_timer[0] = None
+
+    def _on_typing() -> None:
+        with _typing_lock:
+            if _typing_timer[0] is not None:
+                return  # throttled: a broadcast was sent recently
+            t = threading.Timer(_TYPING_THROTTLE, _clear_typing_throttle)
+            t.daemon = True
+            t.start()
+            _typing_timer[0] = t
+        threading.Thread(
+            target=_send_presence, args=(PresenceState.TYPING,), daemon=True
+        ).start()
+
+    # Readline-buffer polling thread: detects when the user starts typing
+    _stop_poller = threading.Event()
+    _prev_buf: list[str] = [""]
+
+    def _poll_readline() -> None:
+        while not _stop_poller.is_set():
+            if _HAS_READLINE:
+                try:
+                    buf = _readline.get_line_buffer()
+                    if buf and buf != _prev_buf[0]:
+                        _prev_buf[0] = buf
+                        _on_typing()
+                except Exception:
+                    pass
+            _stop_poller.wait(0.3)
+
+    _poller = threading.Thread(target=_poll_readline, daemon=True)
+    _poller.start()
 
     _print("")
     if HAS_RICH and console:
@@ -1482,6 +1699,9 @@ def chat(peer: str, interval: float, thread: Optional[str]) -> None:
         else:
             click.echo("\u2500\u2500\u2500 live \u2500\u2500\u2500\n")
 
+    # Announce ONLINE presence on session start
+    threading.Thread(target=_send_presence, args=(PresenceState.ONLINE,), daemon=True).start()
+
     stop_event = threading.Event()
 
     def _poll_loop() -> None:
@@ -1523,6 +1743,7 @@ def chat(peer: str, interval: float, thread: Optional[str]) -> None:
             text = user_input.strip()
             if not text:
                 continue
+            _prev_buf[0] = ""  # reset buffer tracker so next typed char fires
             result = messenger.send(peer_uri, text, thread_id=thread)
             delivered = result.get("delivered", False)
             ts_str = datetime.now(timezone.utc).strftime("%H:%M")
@@ -1532,10 +1753,16 @@ def chat(peer: str, interval: float, thread: Optional[str]) -> None:
             else:
                 tag = " (delivered)" if delivered else " (stored)"
                 click.echo(f"  [{ts_str}] You: {text}{tag}")
+            # Signal ONLINE (done typing) after message is sent
+            threading.Thread(
+                target=_send_presence, args=(PresenceState.ONLINE,), daemon=True
+            ).start()
     except KeyboardInterrupt:
         pass
     finally:
         stop_event.set()
+        _stop_poller.set()
+        _send_presence(PresenceState.OFFLINE)
 
     _print("\n  [dim]Chat session ended.[/]\n")
 
