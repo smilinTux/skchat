@@ -2,7 +2,8 @@
 
 Commands:
     skchat send <recipient> <message>
-    skchat inbox [--limit N]
+    skchat chat <peer>
+    skchat inbox [--limit N] [--since N] [--watch] [--interval S]
     skchat history <participant> [--limit N]
     skchat threads [--limit N]
     skchat search <query>
@@ -15,6 +16,8 @@ transport is wired) sent via SKComm.
 
 from __future__ import annotations
 
+import re
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -35,15 +38,19 @@ except ImportError:
     HAS_RICH = False
 
 from . import __version__
+from .agent_comm import AgentMessenger
 from .models import ChatMessage, ContentType, DeliveryStatus, Thread
 from .identity_bridge import (
     get_sovereign_identity,
     resolve_peer_name,
     PeerResolutionError,
 )
+from .reactions import ReactionStore
 
 
 SKCHAT_HOME = "~/.skchat"
+
+_reaction_store = ReactionStore()
 
 def _get_chat_transport():
     """Create a ChatTransport instance for message delivery.
@@ -203,7 +210,7 @@ def main() -> None:
 
 @main.command()
 @click.argument("recipient")
-@click.argument("message")
+@click.argument("message", required=False, default=None)
 @click.option("--thread", "-t", default=None, help="Thread ID for conversation grouping.")
 @click.option("--reply-to", "-r", default=None, help="Message ID this replies to.")
 @click.option(
@@ -219,13 +226,28 @@ def main() -> None:
     default="markdown",
     help="Content type (default: markdown).",
 )
+@click.option(
+    "--voice",
+    is_flag=True,
+    default=False,
+    help="Record a voice message via microphone and transcribe with Whisper STT.",
+)
+@click.option(
+    "--whisper-model",
+    "whisper_model",
+    default="base",
+    show_default=True,
+    help="Whisper model for voice transcription (tiny/base/small/medium/large).",
+)
 def send(
     recipient: str,
-    message: str,
+    message: Optional[str],
     thread: Optional[str],
     reply_to: Optional[str],
     ttl: Optional[int],
     ctype: str,
+    voice: bool,
+    whisper_model: str,
 ) -> None:
     """Send a message to a recipient.
 
@@ -236,6 +258,10 @@ def send(
     that will be resolved from the peer registry (e.g., "lumina" resolves
     to "capauth:lumina@capauth.local").
 
+    Use --voice to record audio via microphone instead of typing.
+    Requires arecord (alsa-utils) and openai-whisper
+    (pip install openai-whisper).
+
     Examples:
 
         skchat send capauth:bob@skworld.io "Hey Bob!"
@@ -243,7 +269,39 @@ def send(
         skchat send lumina "Check this out" --thread abc123
 
         skchat send bob "Secret" --ttl 60
+
+        skchat send lumina --voice
+
+        skchat send lumina --voice --whisper-model small
     """
+    # --voice: record audio, transcribe, confirm before sending
+    if voice:
+        from .voice import VoiceRecorder
+
+        recorder = VoiceRecorder(whisper_model=whisper_model)
+        if not recorder.available:
+            _print("\n  [red]Error:[/] openai-whisper is not installed.")
+            _print("  Install with: [cyan]pip install openai-whisper[/]\n")
+            sys.exit(1)
+
+        _print("\n  [cyan]Recording...[/] press Enter to stop\n")
+        transcribed = recorder.record_interactive()
+
+        if not transcribed:
+            _print("\n  [red]No transcription.[/] Recording failed or captured silence.\n")
+            sys.exit(1)
+
+        _print(f"\n  [bold]Transcription:[/] {transcribed}")
+        if not click.confirm("  Send?", default=True):
+            _print("  [dim]Cancelled.[/]\n")
+            return
+
+        message = transcribed
+
+    elif not message:
+        _print("\n  [red]Error:[/] MESSAGE argument is required (or use --voice).\n")
+        sys.exit(1)
+
     sender = _get_identity()
     
     try:
@@ -300,14 +358,340 @@ def send(
     _print("")
 
 
+# ─────────────── inbox display helpers ───────────────
+
+def _display_name(identity: str) -> str:
+    """Extract a friendly display name from a CapAuth identity URI.
+
+    Examples:
+        'capauth:lumina@skworld.io' → 'Lumina'
+        'capauth:chef@skworld.io'   → 'Chef'
+    """
+    try:
+        local = identity
+        if ":" in local:
+            local = local.split(":", 1)[1]
+        if "@" in local:
+            local = local.split("@", 1)[0]
+        return local.capitalize()
+    except Exception:
+        return identity
+
+
+def _sender_color(sender: str, my_identity: str) -> str:
+    """Return a Rich color name for a given sender.
+
+    Mapping:
+        self (my_identity) → blue
+        *lumina*           → magenta
+        *chef*             → yellow
+        anyone else        → cyan
+    """
+    if sender == my_identity:
+        return "blue"
+    lower = sender.lower()
+    if "lumina" in lower:
+        return "magenta"
+    if "chef" in lower:
+        return "yellow"
+    return "cyan"
+
+
+_READ_STATE_PATH = Path("~/.skchat/read-state.json")
+
+
+def _load_read_state() -> dict:
+    """Load per-conversation last-read timestamps from disk.
+
+    Returns:
+        dict: Maps key strings to ISO timestamp strings.
+    """
+    path = _READ_STATE_PATH.expanduser()
+    if path.exists():
+        try:
+            import json as _json
+            return _json.loads(path.read_text())
+        except Exception:
+            pass
+    return {}
+
+
+def _save_read_state(state: dict) -> None:
+    """Persist per-conversation last-read timestamps to disk."""
+    import json as _json
+    path = _READ_STATE_PATH.expanduser()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(_json.dumps(state, indent=2))
+
+
+def _ts_ago(ts: object) -> str:
+    """Convert a timestamp to a human-readable relative string.
+
+    Returns strings like '5s ago', '2min ago', '3h ago', '1d ago'.
+    """
+    try:
+        if isinstance(ts, str):
+            ts_dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        elif isinstance(ts, datetime):
+            ts_dt = ts
+        else:
+            return str(ts)[:16]
+        if ts_dt.tzinfo is None:
+            ts_dt = ts_dt.replace(tzinfo=timezone.utc)
+        delta = datetime.now(timezone.utc) - ts_dt
+        secs = int(delta.total_seconds())
+        if secs < 60:
+            return f"{secs}s ago"
+        if secs < 3600:
+            return f"{secs // 60}min ago"
+        if secs < 86400:
+            return f"{secs // 3600}h ago"
+        return f"{secs // 86400}d ago"
+    except Exception:
+        return str(ts)[:16]
+
+
+def _ts_hhmm(ts: object) -> str:
+    """Extract HH:MM from a timestamp for compact inline display."""
+    try:
+        if isinstance(ts, str) and len(ts) >= 16:
+            return ts[11:16]
+        if hasattr(ts, "strftime"):
+            return ts.strftime("%H:%M")
+        return str(ts)[:5]
+    except Exception:
+        return ""
+
+
+def _msg_key(msg: dict) -> str:
+    """Build a stable deduplication key from a message dict.
+
+    Tries dedicated ID fields first, falls back to a composite of
+    sender + timestamp + content prefix.
+    """
+    return (
+        msg.get("memory_id")
+        or msg.get("message_id")
+        or msg.get("id")
+        or ":".join([
+            str(msg.get("sender", "")),
+            str(msg.get("timestamp", "")),
+            str(msg.get("content", ""))[:30],
+        ])
+    )
+
+
+def _inbox_display_table(messages: list) -> None:
+    """Display inbox messages as a flat table: Time | From | Content (80 chars)."""
+    if HAS_RICH and console:
+        table = Table(
+            show_header=True,
+            header_style="bold cyan",
+            box=None,
+            padding=(0, 1),
+        )
+        table.add_column("Time", style="dim", max_width=12, no_wrap=True)
+        table.add_column("From", style="cyan", max_width=20, no_wrap=True)
+        table.add_column("Content", ratio=1)
+        for msg in messages:
+            ts = _ts_ago(msg.get("timestamp", ""))
+            sender = _display_name(msg.get("sender", "unknown"))
+            content = msg.get("content", "")
+            preview = content[:80] + ("…" if len(content) > 80 else "")
+            table.add_row(ts, sender, preview)
+        console.print(table)
+    else:
+        for msg in messages:
+            ts = _ts_ago(msg.get("timestamp", ""))
+            sender = _display_name(msg.get("sender", "unknown"))
+            content = msg.get("content", "")[:80]
+            click.echo(f"  [{ts}] {sender}: {content}")
+
+
+def _inbox_display_grouped(messages: list, my_identity: str) -> None:
+    """Display inbox messages grouped by conversation peer.
+
+    Renders a cyan divider header per peer, then each message with a
+    HH:MM timestamp.  Your messages appear in blue; peer colours vary
+    by name.  @mentions are highlighted bold yellow.
+    """
+    from collections import OrderedDict
+
+    sorted_msgs = sorted(messages, key=lambda m: str(m.get("timestamp", "")))
+
+    peer_groups: dict = OrderedDict()
+    for msg in sorted_msgs:
+        sender = msg.get("sender", "unknown")
+        recipient = msg.get("recipient", "unknown")
+        peer = recipient if sender == my_identity else sender
+        peer_groups.setdefault(peer, []).append(msg)
+
+    term_width = 72
+    for peer, msgs in peer_groups.items():
+        name = _display_name(peer)
+        prefix = f"── {name} ({peer}) "
+        dashes = "─" * max(4, term_width - len(prefix))
+        header = prefix + dashes
+        if HAS_RICH and console:
+            console.print(f"[cyan]{header}[/]")
+        else:
+            click.echo(header)
+
+        for msg in msgs:
+            sender = msg.get("sender", "unknown")
+            content = msg.get("content", "")
+            ts_label = _ts_hhmm(msg.get("timestamp", ""))
+
+            if sender == my_identity:
+                label = "You"
+                color = "blue"
+            else:
+                label = _display_name(sender)
+                color = _sender_color(sender, my_identity)
+
+            if HAS_RICH and "@" in content:
+                content_display = re.sub(r"@(\w+)", r"[bold yellow]@\1[/]", content)
+            else:
+                content_display = content
+
+            if HAS_RICH and console:
+                console.print(
+                    f"  [dim white]{ts_label}[/] [{color}]{label}:[/]"
+                    f" [{color}]{content_display}[/]"
+                )
+            else:
+                click.echo(f"  [{ts_label}] {label}: {content}")
+
+            msg_id = msg.get("id", msg.get("message_id", ""))
+            if msg_id:
+                rx = _reaction_store.get_summary(msg_id)
+                if rx:
+                    rx_str = "  ".join(f"{e} {c}" for e, c in rx.items())
+                    if HAS_RICH and console:
+                        console.print(f"    [dim]{rx_str}[/]")
+                    else:
+                        click.echo(f"    {rx_str}")
+
+        if HAS_RICH and console:
+            console.print()
+        else:
+            click.echo()
+
+
+def _inbox_display_threads(messages: list, my_identity: str) -> None:
+    """Display a one-line summary per conversation peer.
+
+    Each line shows: [N msgs] Name - "last message preview" - Xmin ago
+    Sorted by most-recent message first.
+    """
+    peer_groups: dict = {}
+    for msg in sorted(messages, key=lambda m: str(m.get("timestamp", ""))):
+        sender = msg.get("sender", "unknown")
+        recipient = msg.get("recipient", "unknown")
+        peer = recipient if sender == my_identity else sender
+        peer_groups.setdefault(peer, []).append(msg)
+
+    sorted_peers = sorted(
+        peer_groups.items(),
+        key=lambda kv: str(kv[1][-1].get("timestamp", "")),
+        reverse=True,
+    )
+    for peer, msgs in sorted_peers:
+        name = _display_name(peer)
+        count = len(msgs)
+        last_content = msgs[-1].get("content", "")
+        preview = last_content[:40] + ("…" if len(last_content) > 40 else "")
+        ago = _ts_ago(msgs[-1].get("timestamp", ""))
+        plural = "s" if count != 1 else ""
+        if HAS_RICH and console:
+            console.print(
+                f"[dim][{count} msg{plural}][/] [cyan]{name}[/]"
+                f" - [dim]\"{preview}\"[/] - [dim]{ago}[/]"
+            )
+        else:
+            click.echo(f"[{count} msg{plural}] {name} - \"{preview}\" - {ago}")
+
+
 @main.command()
 @click.option("--limit", "-n", default=20, help="Max messages to show (default: 20).")
 @click.option("--thread", "-t", default=None, help="Filter by thread ID.")
-def inbox(limit: int, thread: Optional[str]) -> None:
+@click.option(
+    "--since",
+    "-s",
+    default=None,
+    type=int,
+    metavar="MINUTES",
+    help="Show messages from the last N minutes.",
+)
+@click.option(
+    "--watch",
+    "-w",
+    is_flag=True,
+    default=False,
+    help="Continuously poll SKComm for new messages (Ctrl+C to stop).",
+)
+@click.option(
+    "--interval",
+    "-i",
+    type=float,
+    default=5.0,
+    help="Poll interval in seconds for --watch mode (default: 5).",
+)
+@click.option(
+    "--threads",
+    "-T",
+    is_flag=True,
+    default=False,
+    help="Show one line per conversation (thread list view).",
+)
+@click.option(
+    "--unread",
+    "-u",
+    is_flag=True,
+    default=False,
+    help="Only show messages since last read (per ~/.skchat/read-state.json).",
+)
+@click.option(
+    "--json",
+    "as_json",
+    is_flag=True,
+    default=False,
+    help="Output raw JSON for scripting.",
+)
+@click.option(
+    "--from",
+    "from_peer",
+    default=None,
+    metavar="PEER",
+    help="Filter messages from a specific sender (name or identity URI).",
+)
+def inbox(
+    limit: int,
+    thread: Optional[str],
+    since: Optional[int],
+    watch: bool,
+    interval: float,
+    threads: bool,
+    unread: bool,
+    as_json: bool,
+    from_peer: Optional[str],
+) -> None:
     """Show recent incoming messages.
 
-    Displays messages where the local user is the recipient,
-    sorted newest first.
+    Displays messages grouped by conversation peer with coloured
+    dividers.  Your messages appear in blue; peer colours vary by name.
+
+    With --watch, continuously polls SKComm for new messages and shows
+    a Rich Live auto-updating table.  Press Ctrl+C to stop.
+
+    With --threads, shows a one-line summary per conversation.
+
+    With --unread, shows only messages since the last inbox view
+    (state stored in ~/.skchat/read-state.json).
+
+    With --json, outputs raw JSON for scripting.
+
+    With --since N, shows only messages from the last N minutes.
 
     Examples:
 
@@ -315,14 +699,36 @@ def inbox(limit: int, thread: Optional[str]) -> None:
 
         skchat inbox --limit 5
 
+        skchat inbox --threads
+
+        skchat inbox --unread
+
+        skchat inbox --json | jq .
+
         skchat inbox --thread abc123
+
+        skchat inbox --since 30
+
+        skchat inbox --watch
+
+        skchat inbox --from lumina
+
+        skchat inbox --unread --from capauth:chef@skworld.io
     """
-    identity = _get_identity()
+    if watch:
+        _watch_inbox(interval=interval, limit=limit)
+        return
+
     history = _get_history()
 
-    if thread:
+    if since is not None:
+        messages = history.get_messages_since(minutes=since, limit=limit)
+        # get_messages_since returns oldest-first; reverse for display
+        messages = list(reversed(messages))
+    elif thread:
         messages = history.get_thread_messages(thread, limit=limit)
     else:
+        identity = _get_identity()
         messages = history.search_messages(identity, limit=limit)
         if not messages:
             all_msgs = history._store.list_memories(
@@ -335,59 +741,254 @@ def inbox(limit: int, thread: Optional[str]) -> None:
                 if "skchat:message" in m.tags
             ]
 
+    # --json: raw output for scripting (handles empty case too)
+    if as_json:
+        import json as _json
+        click.echo(_json.dumps(messages, default=str, indent=2))
+        return
+
     _print("")
     if not messages:
-        _print("  [dim]No messages found.[/]")
+        if since is not None:
+            _print(f"  [dim]No messages in the last {since} minute(s).[/]")
+        else:
+            _print("  [dim]No messages found.[/]")
         _print("")
         return
 
-    if HAS_RICH and console:
-        table = Table(
-            show_header=True,
-            header_style="bold",
-            box=None,
-            padding=(0, 2),
-            title=f"Inbox ({len(messages)} message{'s' if len(messages) != 1 else ''})",
-        )
-        table.add_column("From", style="cyan", max_width=30)
-        table.add_column("Content", max_width=50)
-        table.add_column("Thread", style="dim", max_width=12)
-        table.add_column("Time", style="dim", max_width=20)
+    my_identity = _get_identity()
 
-        for msg in messages:
-            sender = msg.get("sender", "unknown")
-            content = msg.get("content", "")
-            preview = content[:50] + ("..." if len(content) > 50 else "")
-            tid = (msg.get("thread_id") or "")[:12]
-            ts = msg.get("timestamp", "")
-            if isinstance(ts, str) and len(ts) > 19:
-                ts = ts[:19]
-            table.add_row(sender, preview, tid, str(ts))
+    # --unread: filter to messages newer than the global last-read marker
+    if unread:
+        read_state = _load_read_state()
+        last_read = read_state.get("_global", "")
+        if last_read:
+            messages = [
+                m for m in messages
+                if str(m.get("timestamp", "")) > last_read
+            ]
+        if not messages:
+            _print("  [dim]No unread messages.[/]")
+            _print("")
+            return
 
-        console.print(table)
+    # Render
+    if threads:
+        _inbox_display_threads(messages, my_identity)
     else:
-        _print(f"  {len(messages)} message(s):")
-        for msg in messages:
-            sender = msg.get("sender", "unknown")
-            content = msg.get("content", "")[:60]
-            _print(f"    {sender}: {content}")
+        _inbox_display_grouped(messages, my_identity)
+
+    # Update global last-read marker so next --unread shows only newer msgs
+    if messages:
+        latest = max(str(m.get("timestamp", "")) for m in messages)
+        rs = _load_read_state()
+        rs["_global"] = latest
+        _save_read_state(rs)
 
     _print("")
 
 
+def _watch_inbox(interval: float = 5.0, limit: int = 50) -> None:
+    """Continuously poll SKComm for new messages and display via Rich Live.
+
+    Polls the transport on each tick, decrypts via ChatCrypto (if the
+    transport has a crypto backend), stores every received message in
+    ChatHistory, and renders an auto-updating Rich Live table.
+
+    Args:
+        interval: Seconds between each poll.
+        limit: Maximum rows shown in the live table.
+    """
+    import time
+
+    transport = _get_transport()
+
+    if transport is None:
+        _print(
+            "\n  [yellow]No transport available.[/] Configure SKComm first.\n"
+            "  Running in local-history-only mode — showing stored messages.\n"
+        )
+
+    history = _get_history()
+    all_messages: list[dict] = []
+    total_received = 0
+    last_error: Optional[str] = None
+    seen_ids: set = set()
+    recent_notes: list[str] = []  # last few banner notifications for Live footer
+
+    # Pre-populate from local history so the table isn't empty on start
+    try:
+        stored = history._store.list_memories(tags=["skchat:message"], limit=limit)
+        all_messages = [
+            history._memory_to_chat_dict(m)
+            for m in stored
+            if "skchat:message" in m.tags
+        ]
+        all_messages.sort(key=lambda d: str(d.get("timestamp", "")))
+        all_messages = all_messages[-limit:]
+    except Exception:
+        pass
+
+    def _build_live_table() -> "Panel":
+        from rich.console import Group as RichGroup
+
+        now = datetime.now(timezone.utc).strftime("%H:%M:%S")
+
+        tbl = Table(
+            show_header=True,
+            header_style="bold cyan",
+            box=None,
+            padding=(0, 1),
+            expand=True,
+        )
+        tbl.add_column("#", style="dim", max_width=4, no_wrap=True)
+        tbl.add_column("From", style="cyan", max_width=28, no_wrap=True)
+        tbl.add_column("Message", ratio=1)
+        tbl.add_column("Thread", style="dim", max_width=12, no_wrap=True)
+        tbl.add_column("Time", style="dim", max_width=8, no_wrap=True)
+
+        display = all_messages[-limit:]
+        if display:
+            for idx, msg in enumerate(display, start=1):
+                sender = msg.get("sender", "unknown")
+                content = msg.get("content", "")
+                preview = content[:60] + ("…" if len(content) > 60 else "")
+                tid = (msg.get("thread_id") or "")[:12]
+                ts = msg.get("timestamp", "")
+                if hasattr(ts, "strftime"):
+                    ts_str = ts.strftime("%H:%M:%S")
+                elif isinstance(ts, str) and len(ts) >= 19:
+                    ts_str = ts[11:19]
+                else:
+                    ts_str = str(ts)[:8]
+                tbl.add_row(str(idx), sender, preview, tid, ts_str)
+        else:
+            tbl.add_row("", "[dim]No messages yet — waiting…[/]", "", "", "")
+
+        status_parts = [f"Received this session: {total_received}"]
+        if transport is None:
+            status_parts.append("[yellow]no transport — local only[/]")
+        if last_error:
+            status_parts.append(f"[red]last error: {last_error[:60]}[/]")
+        status_parts.append(f"Last poll: {now}")
+        status_parts.append("Ctrl+C to stop")
+        footer = "  [dim]" + " | ".join(status_parts) + "[/]"
+
+        if recent_notes:
+            notes_text = "\n".join(
+                f"  [bold green]▶ {n}[/]" for n in recent_notes[-3:]
+            )
+            return Panel(
+                RichGroup(tbl, notes_text, footer),
+                title="[bold cyan]SKChat Live Inbox — Watch Mode[/]",
+                border_style="cyan",
+            )
+
+        return Panel(
+            RichGroup(tbl, footer),
+            title="[bold cyan]SKChat Live Inbox — Watch Mode[/]",
+            border_style="cyan",
+        )
+
+    if not HAS_RICH:
+        # Plain-text fallback
+        _print(f"Watching for messages every {interval}s (Ctrl+C to stop)…")
+        seen_plain: set = set()
+        try:
+            while True:
+                if transport is not None:
+                    try:
+                        new_msgs = transport.poll_inbox()
+                        for m in new_msgs:
+                            msg_key = getattr(m, "id", None) or f"{m.sender}:{m.content[:30]}"
+                            if msg_key in seen_plain:
+                                continue
+                            seen_plain.add(msg_key)
+                            total_received += 1
+                            # Bell + banner for new message
+                            sys.stdout.write("\a")
+                            sys.stdout.flush()
+                            _print(f"\n  *** New message from {m.sender}: {m.content[:80]} ***\n")
+                    except Exception as exc:
+                        _print(f"  [poll error: {exc}]")
+                time.sleep(interval)
+        except KeyboardInterrupt:
+            _print(f"\nStopped. {total_received} message(s) received.\n")
+        return
+
+    try:
+        from rich.live import Live
+
+        with Live(
+            _build_live_table(),
+            console=console,
+            refresh_per_second=1,
+            screen=False,
+        ) as live:
+            try:
+                while True:
+                    if transport is not None:
+                        try:
+                            new_msgs = transport.poll_inbox()
+                            if new_msgs:
+                                for m in new_msgs:
+                                    msg_key = getattr(m, "id", None) or f"{m.sender}:{m.content[:30]}"
+                                    if msg_key in seen_ids:
+                                        continue
+                                    seen_ids.add(msg_key)
+                                    total_received += 1
+                                    # Bell + banner
+                                    sys.stderr.write("\a")
+                                    sys.stderr.flush()
+                                    note = f"{m.sender}: {m.content[:60]}"
+                                    recent_notes.append(note)
+                                    if len(recent_notes) > 5:
+                                        recent_notes.pop(0)
+                                    all_messages.append(
+                                        {
+                                            "sender": m.sender,
+                                            "content": m.content,
+                                            "thread_id": m.thread_id,
+                                            "timestamp": m.timestamp,
+                                        }
+                                    )
+                                # Keep bounded
+                                if len(all_messages) > limit * 2:
+                                    all_messages[:] = all_messages[-limit:]
+                                last_error = None
+                        except Exception as exc:
+                            last_error = str(exc)
+
+                    live.update(_build_live_table())
+                    time.sleep(interval)
+            except KeyboardInterrupt:
+                pass
+
+    except ImportError:
+        _print("  [yellow]Rich Live not available.[/]\n")
+        return
+
+    _print(
+        f"\n  [dim]Watch stopped. {total_received} message(s) received this session.[/]\n"
+    )
+
+
 @main.command()
-@click.argument("participant")
-@click.option("--limit", "-n", default=30, help="Max messages to show (default: 30).")
-def history(participant: str, limit: int) -> None:
-    """Show conversation history with a participant.
+@click.argument("participant", required=False, default=None)
+@click.option("--limit", "-n", default=20, help="Max messages to show (default: 20).")
+def history(participant: Optional[str], limit: int) -> None:
+    """Show conversation history with a peer, or all recent messages.
 
     Displays the message exchange between you and the specified
-    participant, sorted newest first.
+    participant, sorted newest first. If no participant is given,
+    shows the most recent messages across all conversations.
 
     The participant can be either a full capauth URI or a friendly peer name
     that will be resolved from the peer registry.
 
     Examples:
+
+        skchat history
 
         skchat history capauth:bob@skworld.io
 
@@ -396,25 +997,46 @@ def history(participant: str, limit: int) -> None:
         skchat history jarvis
     """
     identity = _get_identity()
-    
-    try:
-        resolved_participant = resolve_peer_name(participant)
-    except PeerResolutionError:
-        resolved_participant = participant
-    
     chat_history = _get_history()
-    messages = chat_history.get_conversation(identity, resolved_participant, limit=limit)
+
+    if participant is None:
+        all_mems = chat_history._store.list_memories(
+            tags=["skchat:message"],
+            limit=limit,
+        )
+        messages = [
+            chat_history._memory_to_chat_dict(m)
+            for m in all_mems
+            if "skchat:message" in m.tags
+        ]
+        messages.sort(key=lambda d: str(d.get("timestamp", "")), reverse=True)
+        messages = messages[:limit]
+        header = "Recent Messages"
+    else:
+        try:
+            resolved_participant = resolve_peer_name(participant)
+        except PeerResolutionError:
+            resolved_participant = participant
+
+        messages = chat_history.get_conversation(identity, resolved_participant, limit=limit)
+        display_participant = (
+            participant if participant == resolved_participant
+            else f"{participant} ({resolved_participant})"
+        )
+        header = f"Conversation with {display_participant}"
 
     _print("")
     if not messages:
-        _print(f"  [dim]No conversation history with {participant}.[/]")
+        if participant:
+            _print(f"  [dim]No conversation history with {participant}.[/]")
+        else:
+            _print("  [dim]No messages found.[/]")
         _print("")
         return
 
     if HAS_RICH and console:
-        display_participant = participant if participant == resolved_participant else f"{participant} ({resolved_participant})"
         console.print(Panel(
-            f"Conversation with [bold cyan]{display_participant}[/]\n"
+            f"[bold cyan]{header}[/]\n"
             f"[dim]{len(messages)} message{'s' if len(messages) != 1 else ''}[/]",
             border_style="cyan",
         ))
@@ -498,19 +1120,100 @@ def threads(limit: int) -> None:
 @main.command()
 @click.argument("query")
 @click.option("--limit", "-n", default=10, help="Max results (default: 10).")
-def search(query: str, limit: int) -> None:
+@click.option("--peer", default=None, help="Filter by sender or recipient peer URI.")
+@click.option(
+    "--after",
+    "after_date",
+    default=None,
+    metavar="DATE",
+    help="Show messages after this date (YYYY-MM-DD).",
+)
+@click.option(
+    "--before",
+    "before_date",
+    default=None,
+    metavar="DATE",
+    help="Show messages before this date (YYYY-MM-DD).",
+)
+def search(
+    query: str,
+    limit: int,
+    peer: Optional[str],
+    after_date: Optional[str],
+    before_date: Optional[str],
+) -> None:
     """Search chat messages by content.
 
     Full-text search across all stored messages.
+    Results are shown in a table: Date | From | Preview (60 chars).
+    Matching text is highlighted in bold yellow.
 
     Examples:
 
         skchat search "quantum upgrade"
 
         skchat search "deploy" --limit 5
+
+        skchat search "hello lumina" --limit 20
+
+        skchat search "meeting" --peer capauth:bob@test --after 2026-01-01
     """
+    # Parse optional date filters
+    after_dt: Optional[datetime] = None
+    before_dt: Optional[datetime] = None
+    if after_date:
+        try:
+            after_dt = datetime.fromisoformat(after_date).replace(tzinfo=timezone.utc)
+        except ValueError:
+            click.echo(f"  Error: --after '{after_date}' is not a valid date (YYYY-MM-DD).", err=True)
+            raise SystemExit(1)
+    if before_date:
+        try:
+            before_dt = datetime.fromisoformat(before_date).replace(tzinfo=timezone.utc)
+        except ValueError:
+            click.echo(f"  Error: --before '{before_date}' is not a valid date (YYYY-MM-DD).", err=True)
+            raise SystemExit(1)
+
+    # Fetch more when filtering so we can trim to --limit after
+    fetch_limit = limit * 4 if (peer or after_dt or before_dt) else limit
     chat_history = _get_history()
-    results = chat_history.search_messages(query, limit=limit)
+    results = chat_history.search_messages(query, limit=fetch_limit)
+
+    # Peer filter
+    if peer:
+        results = [
+            m for m in results
+            if peer in (m.get("sender") or "") or peer in (m.get("recipient") or "")
+        ]
+
+    # Date filters
+    if after_dt or before_dt:
+        def _to_aware(ts: object) -> Optional[datetime]:
+            if ts is None:
+                return None
+            if isinstance(ts, datetime):
+                return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+            if isinstance(ts, str):
+                try:
+                    dt = datetime.fromisoformat(ts)
+                    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+                except ValueError:
+                    return None
+            return None
+
+        filtered = []
+        for m in results:
+            ts_dt = _to_aware(m.get("timestamp"))
+            if ts_dt is None:
+                continue
+            if after_dt and ts_dt < after_dt:
+                continue
+            if before_dt and ts_dt > before_dt:
+                continue
+            filtered.append(m)
+        results = filtered
+
+    results = results[:limit]
 
     _print("")
     if not results:
@@ -519,24 +1222,174 @@ def search(query: str, limit: int) -> None:
         return
 
     if HAS_RICH and console:
-        console.print(f"  [bold]{len(results)}[/] result{'s' if len(results) != 1 else ''} "
-                       f"for [cyan]'{query}'[/]:\n")
+        table = Table(
+            show_header=True,
+            header_style="bold",
+            box=None,
+            padding=(0, 2),
+            title=f"Search: '{query}' ({len(results)} result{'s' if len(results) != 1 else ''})",
+        )
+        table.add_column("Date", style="dim", max_width=20)
+        table.add_column("From", style="cyan", max_width=30)
+        table.add_column("Preview", max_width=62)
 
         for msg in results:
             sender = msg.get("sender", "unknown")
             content = msg.get("content", "")
-            preview = content[:80] + ("..." if len(content) > 80 else "")
+            preview = content[:60] + ("..." if len(content) > 60 else "")
             ts = msg.get("timestamp", "")
             if isinstance(ts, str) and len(ts) > 19:
                 ts = ts[:19]
-            console.print(f"  [cyan]{sender}[/] [dim]{ts}[/]")
-            console.print(f"    {preview}\n")
+            table.add_row(str(ts), sender, preview)
+
+        console.print(table)
     else:
+        click.echo(f"  {len(results)} result(s) for '{query}':\n")
+        click.echo(f"  {'Date':<20}  {'From':<30}  Preview")
+        click.echo("  " + "-" * 80)
         for msg in results:
             sender = msg.get("sender", "unknown")
-            content = msg.get("content", "")[:60]
-            _print(f"  {sender}: {content}")
+            content = msg.get("content", "")
+            raw_preview = content[:60] + ("..." if len(content) > 60 else "")
+            preview = _highlight_query(raw_preview, query)
+            ts = msg.get("timestamp", "")
+            if isinstance(ts, str) and len(ts) > 19:
+                ts = ts[:19]
+            click.echo(f"  {str(ts):<20}  {sender:<30}  {preview}")
 
+    _print("")
+
+
+@main.command()
+@click.option(
+    "--format",
+    "fmt",
+    type=click.Choice(["json", "markdown", "txt"], case_sensitive=False),
+    default="json",
+    help="Export format: json, markdown, or txt (default: json).",
+)
+@click.option(
+    "--output",
+    "-o",
+    default=None,
+    help="Output file path. Defaults to ~/.skchat/export-{timestamp}.{ext}.",
+)
+@click.option("--peer", default=None, help="Filter by conversation partner URI.")
+def export(fmt: str, output: Optional[str], peer: Optional[str]) -> None:
+    """Export chat history to a file.
+
+    Exports all stored messages in the chosen format.
+    Use --peer to limit export to one conversation.
+
+    JSON: array of {sender, content, timestamp, thread_id}
+
+    Markdown: # Chat Export / ## thread_id / **sender**: content
+
+    Examples:
+
+        skchat export
+
+        skchat export --format markdown --peer lumina
+
+        skchat export --format json --output ~/backup.json
+
+        skchat export --format txt --peer capauth:bob@test
+    """
+    import json as _json
+
+    chat_history = _get_history()
+
+    if peer:
+        try:
+            resolved_peer = resolve_peer_name(peer)
+        except PeerResolutionError:
+            resolved_peer = peer
+        identity = _get_identity()
+        messages = chat_history.get_conversation(identity, resolved_peer, limit=10000)
+    else:
+        all_mems = chat_history._store.list_memories(tags=["skchat:message"], limit=10000)
+        messages = [
+            chat_history._memory_to_chat_dict(m)
+            for m in all_mems
+            if "skchat:message" in m.tags
+        ]
+        messages.sort(key=lambda d: str(d.get("timestamp", "")))
+
+    # Determine output path
+    if output is None:
+        ts_str = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+        ext = "md" if fmt == "markdown" else fmt
+        out_path = Path(SKCHAT_HOME).expanduser() / f"export-{ts_str}.{ext}"
+    else:
+        out_path = Path(output).expanduser()
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def _fmt_ts(ts: object) -> str:
+        if ts is None:
+            return ""
+        if isinstance(ts, datetime):
+            return ts.isoformat()
+        return str(ts)
+
+    if fmt == "json":
+        records = [
+            {
+                "sender": m.get("sender", ""),
+                "content": m.get("content", ""),
+                "timestamp": _fmt_ts(m.get("timestamp")),
+                "thread_id": m.get("thread_id") or "",
+            }
+            for m in messages
+        ]
+        file_content = _json.dumps(records, indent=2, ensure_ascii=False)
+
+    elif fmt == "markdown":
+        lines = ["# Chat Export\n"]
+        threads: dict = {}
+        no_thread = []
+        for m in messages:
+            tid = m.get("thread_id") or ""
+            if tid:
+                threads.setdefault(tid, []).append(m)
+            else:
+                no_thread.append(m)
+        for tid, msgs in threads.items():
+            lines.append(f"\n## {tid}\n")
+            for m in msgs:
+                sender = m.get("sender", "unknown")
+                msg_content = m.get("content", "")
+                lines.append(f"**{sender}**: {msg_content}\n")
+        if no_thread:
+            lines.append("\n## (no thread)\n")
+            for m in no_thread:
+                sender = m.get("sender", "unknown")
+                msg_content = m.get("content", "")
+                lines.append(f"**{sender}**: {msg_content}\n")
+        file_content = "\n".join(lines)
+
+    else:  # txt
+        lines = []
+        for m in messages:
+            sender = m.get("sender", "unknown")
+            msg_content = m.get("content", "")
+            ts = _fmt_ts(m.get("timestamp"))
+            lines.append(f"[{ts}] {sender}: {msg_content}")
+        file_content = "\n".join(lines)
+
+    out_path.write_text(file_content, encoding="utf-8")
+
+    _print("")
+    if HAS_RICH and console:
+        console.print(Panel(
+            f"[bold]Format:[/]   {fmt}\n"
+            f"[bold]Messages:[/] {len(messages)}\n"
+            f"[bold]Output:[/]   [cyan]{out_path}[/]",
+            title="Export Complete",
+            border_style="green",
+        ))
+    else:
+        _print(f"  Exported {len(messages)} message(s) ({fmt}) → {out_path}")
     _print("")
 
 
@@ -595,13 +1448,56 @@ def receive_cmd() -> None:
 
 
 @main.command()
-@click.option("--interval", "-i", type=float, default=5.0, help="Poll interval in seconds (default: 5).")
+@click.option("--interval", "-i", type=float, default=3.0, help="Poll interval in seconds (default: 3).")
 @click.option("--limit", "-n", default=20, help="Max messages to show per poll.")
-def watch(interval: float, limit: int) -> None:
+@click.option(
+    "--notify",
+    is_flag=True,
+    default=False,
+    help="Send a desktop notification (via notify-send) for each new message.",
+)
+@click.option(
+    "--sound",
+    is_flag=True,
+    default=False,
+    help="Play a ping sound (via paplay/aplay) for each new message.",
+)
+@click.option(
+    "--speak",
+    is_flag=True,
+    default=False,
+    help="Read new messages aloud via Piper TTS (local, sovereign).",
+)
+@click.option(
+    "--group",
+    default=None,
+    metavar="GROUP_ID",
+    help="Watch only messages from a specific group (by group ID).",
+)
+@click.option(
+    "--all",
+    "watch_all",
+    is_flag=True,
+    default=False,
+    help="Watch all threads including group messages.",
+)
+def watch(
+    interval: float,
+    limit: int,
+    notify: bool,
+    sound: bool,
+    speak: bool,
+    group: Optional[str],
+    watch_all: bool,
+) -> None:
     """Watch for incoming messages in real-time.
 
     Continuously polls SKComm for new messages and displays
-    them as they arrive using Rich Live. Press Ctrl+C to stop.
+    them as they arrive with color. Press Ctrl+C to stop.
+
+    Use --group GROUP_ID to watch a specific group, --all to include all
+    threads, --notify for desktop notifications, --sound for audio alerts,
+    and --speak to have messages read aloud via Piper TTS.
 
     Examples:
 
@@ -609,19 +1505,59 @@ def watch(interval: float, limit: int) -> None:
 
         skchat watch --interval 2
 
-        skchat watch -i 10 -n 50
+        skchat watch --group d4f3281e-fa92-474c-a8cd-f0a2a4c31c33
+
+        skchat watch --all --notify
+
+        skchat watch --speak
     """
+    import time
+
     transport = _get_transport()
     if transport is None:
         _print("\n  [yellow]No transport available.[/] Configure SKComm first.\n")
         return
 
-    history = _get_history()
     identity = _get_identity()
+    group_label = group if group else ("all threads" if watch_all else "skworld-team")
 
-    _print(f"\n  [cyan]Watching for messages...[/] (poll every {interval}s, Ctrl+C to stop)\n")
+    # Header
+    header = (
+        click.style("SKChat LIVE", fg="cyan", bold=True)
+        + click.style(" | ", dim=True)
+        + click.style(identity, fg="white")
+        + click.style(" | group: ", dim=True)
+        + click.style(group_label, fg="yellow")
+    )
+    click.echo(f"\n  {header}")
+    click.echo(click.style(f"  Polling every {interval}s — Ctrl+C to stop\n", dim=True))
 
     total_received = 0
+    start_time = time.monotonic()
+
+    def _handle_side_effects(msg: object) -> None:
+        sender = getattr(msg, "sender", "unknown")
+        content = getattr(msg, "content", "")
+        if sender == identity:
+            return
+        sender_short = sender.split(":")[-1] if ":" in sender else sender
+        preview = content[:80]
+        if notify:
+            _notify(sender_short, preview)
+        if sound:
+            _play_sound()
+        if speak:
+            _speak_message(sender, sender_short, preview)
+
+    def _matches_filter(msg: object) -> bool:
+        """Return True if this message should be shown given the current flags."""
+        thread_id = getattr(msg, "thread_id", None)
+        if group:
+            return thread_id == group
+        if watch_all:
+            return True
+        # Default: show everything (DMs have no thread_id, group msgs have one)
+        return True
 
     if HAS_RICH and console:
         try:
@@ -630,35 +1566,175 @@ def watch(interval: float, limit: int) -> None:
             table = _build_watch_table([], total_received)
 
             with Live(table, console=console, refresh_per_second=0.5) as live:
-                import time
-
+                last_heartbeat = time.monotonic()
                 while True:
                     try:
-                        messages = transport.poll_inbox()
+                        raw = transport.poll_inbox()
+                        messages = [m for m in raw if _matches_filter(m)] if raw else []
                         if messages:
                             total_received += len(messages)
+                            for m in messages:
+                                _handle_side_effects(m)
                             table = _build_watch_table(messages, total_received)
                             live.update(table)
+                            last_heartbeat = time.monotonic()
+                        else:
+                            if time.monotonic() - last_heartbeat >= 10:
+                                last_heartbeat = time.monotonic()
                     except Exception as exc:
                         live.update(Panel(f"[red]Poll error: {exc}[/]", border_style="red"))
                     time.sleep(interval)
         except KeyboardInterrupt:
-            _print(f"\n  [dim]Stopped. {total_received} message(s) received total.[/]\n")
+            pass
         except ImportError:
             _print("  [yellow]Rich Live not available. Use 'skchat receive' for one-shot poll.[/]\n")
     else:
-        import time
-
+        last_heartbeat = time.monotonic()
         try:
             while True:
-                messages = transport.poll_inbox()
+                raw = transport.poll_inbox()
+                messages = [m for m in raw if _matches_filter(m)] if raw else []
                 if messages:
                     total_received += len(messages)
+                    last_heartbeat = time.monotonic()
                     for msg in messages:
-                        _print(f"  [{msg.sender}] {msg.content[:80]}")
+                        _handle_side_effects(msg)
+                        sender = getattr(msg, "sender", "unknown")
+                        content = getattr(msg, "content", "")
+                        ts = getattr(msg, "timestamp", None)
+                        ts_str = (
+                            ts.strftime("%H:%M:%S")
+                            if ts and hasattr(ts, "strftime")
+                            else datetime.now(timezone.utc).strftime("%H:%M:%S")
+                        )
+                        click.echo(_format_watch_line(sender, content, ts_str, identity))
+                else:
+                    if time.monotonic() - last_heartbeat >= 10:
+                        click.echo(".", nl=False)
+                        sys.stdout.flush()
+                        last_heartbeat = time.monotonic()
                 time.sleep(interval)
         except KeyboardInterrupt:
-            _print(f"\n  Stopped. {total_received} message(s) received total.\n")
+            pass
+
+    uptime_secs = int(time.monotonic() - start_time)
+    uptime_str = f"{uptime_secs // 60}m {uptime_secs % 60}s"
+    click.echo(
+        f"\n\n  {click.style('Stopped.', dim=True)}"
+        f" {click.style(str(total_received), fg='cyan', bold=True)} messages seen"
+        f" | uptime: {click.style(uptime_str, dim=True)}\n"
+    )
+
+
+_MENTION_RE = re.compile(r"(@\S+)")
+_SOUND_PATHS = [
+    "/usr/share/sounds/freedesktop/stereo/message.oga",
+    "/usr/share/sounds/freedesktop/stereo/message-new-instant.oga",
+]
+
+
+def _notify(sender_short: str, preview: str) -> None:
+    """Fire a desktop notification via notify-send (best-effort)."""
+    subprocess.run(
+        [
+            "notify-send",
+            "--urgency=normal",
+            "--icon=dialog-information",
+            f"SKChat from {sender_short}",
+            preview,
+        ],
+        capture_output=True,
+    )
+
+
+def _play_sound() -> None:
+    """Play a notification ping via paplay/aplay (best-effort)."""
+    for path in _SOUND_PATHS:
+        if Path(path).exists():
+            for player in ("paplay", "aplay"):
+                result = subprocess.run(
+                    [player, path],
+                    capture_output=True,
+                )
+                if result.returncode == 0:
+                    return
+            return
+
+
+_LUMINA_ID = "capauth:lumina@skworld.io"
+
+
+def _speak_message(sender: str, sender_short: str, preview: str) -> None:
+    """Read a message aloud via Piper TTS (best-effort, silently degrades)."""
+    try:
+        from .voice import VoicePlayer, LUMINA_VOICE, DEFAULT_VOICE
+
+        voice = LUMINA_VOICE if sender == _LUMINA_ID else DEFAULT_VOICE
+        player = VoicePlayer(voice=voice)
+        player.speak(f"Message from {sender_short}: {preview}")
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _highlight_mentions(text: str) -> str:
+    """Wrap @mentions in click.style yellow."""
+    parts = _MENTION_RE.split(text)
+    out = []
+    for part in parts:
+        if _MENTION_RE.match(part):
+            out.append(click.style(part, fg="yellow", bold=True))
+        else:
+            out.append(part)
+    return "".join(out)
+
+
+def _highlight_query(text: str, query: str) -> str:
+    """Highlight query terms in text with bold yellow via click.style.
+
+    Args:
+        text: The text to search within.
+        query: The search query whose terms to highlight.
+
+    Returns:
+        String with query matches wrapped in click.style bold yellow.
+    """
+    if not query:
+        return text
+    pattern = re.compile(re.escape(query), re.IGNORECASE)
+    parts = pattern.split(text)
+    matches = pattern.findall(text)
+    result = parts[0]
+    for match, part in zip(matches, parts[1:]):
+        result += click.style(match, bold=True, fg="yellow")
+        result += part
+    return result
+
+
+def _format_watch_line(sender: str, content: str, ts_str: str, own_id: str) -> str:
+    """Format a single watch message line with click.style colors.
+
+    Format: ``[HH:MM:SS] sender_name: message body``
+
+    Args:
+        sender: Message sender identifier (full capauth URI or plain name).
+        content: Message body.
+        ts_str: Formatted timestamp string (HH:MM:SS).
+        own_id: Local identity; own messages are dimmed.
+
+    Returns:
+        Formatted string ready for click.echo.
+    """
+    is_own = sender == own_id
+    sender_name = sender.split(":")[-1] if ":" in sender else sender
+    ts_col = click.style(f"[{ts_str}]", fg="white", dim=True)
+    preview = content[:120] + ("…" if len(content) > 120 else "")
+    if is_own:
+        sender_col = click.style(sender_name, dim=True)
+        body = click.style(preview, dim=True)
+        return f"  {ts_col} {sender_col}: {body}"
+    sender_col = click.style(sender_name, fg="cyan", bold=True)
+    body = _highlight_mentions(preview)
+    return f"  {ts_col} {sender_col}: {body}"
 
 
 def _build_watch_table(recent_messages: list, total: int) -> "Panel":
@@ -868,10 +1944,13 @@ def group() -> None:
 
 
 def _store_group(grp: "GroupChat") -> str:
-    """Persist a GroupChat by storing its full state in thread metadata.
+    """Persist a GroupChat in thread metadata and as a JSON file.
 
     The GroupChat is serialized into the Thread's metadata dict under
-    the ``group_data`` key so it can be fully reconstructed later.
+    the ``group_data`` key so it can be fully reconstructed later via
+    ``_load_group``.  A JSON copy is also written to
+    ``~/.skchat/groups/<group_id>.json`` so the MCP server can discover
+    groups created from the CLI.
 
     Args:
         grp: The GroupChat to persist.
@@ -882,7 +1961,19 @@ def _store_group(grp: "GroupChat") -> str:
     history = _get_history()
     thread = grp.to_thread()
     thread.metadata["group_data"] = grp.model_dump(mode="json")
-    return history.store_thread(thread)
+    mem_id = history.store_thread(thread)
+
+    # Mirror to groups dir so MCP server (which reads *.json files) can find it.
+    try:
+        groups_dir = Path(SKCHAT_HOME).expanduser() / "groups"
+        groups_dir.mkdir(parents=True, exist_ok=True)
+        (groups_dir / f"{grp.id}.json").write_text(
+            grp.model_dump_json(indent=2), encoding="utf-8"
+        )
+    except Exception:
+        pass  # Non-fatal — primary store succeeded
+
+    return mem_id
 
 
 def _load_group(group_id: str) -> "Optional[GroupChat]":
@@ -1013,38 +2104,109 @@ def group_list(limit: int) -> None:
 @click.argument("message")
 @click.option("--ttl", type=int, default=None, help="Seconds until auto-delete.")
 def group_send(group_id: str, message: str, ttl: Optional[int]) -> None:
-    """Send a message to a group.
+    """Send a message to a group, broadcasting to ALL members.
+
+    Extracts @mentions and stores them in message metadata so mentioned
+    members can receive targeted notifications.
 
     Examples:
 
         skchat group send abc123 "Hello team!"
 
-        skchat group send abc123 "Secret" --ttl 60
+        skchat group send abc123 "@lumina @claude Review this!" --ttl 60
     """
     from .models import ChatMessage, ContentType
 
     identity = _get_identity()
-    msg = ChatMessage(
-        sender=identity,
-        recipient=f"group:{group_id}",
-        content=message,
-        content_type=ContentType.MARKDOWN,
-        thread_id=group_id,
-        ttl=ttl,
-        metadata={"group_message": True},
-    )
-
     history = _get_history()
-    mem_id = history.store_message(msg)
 
-    transport_info = _try_deliver(msg)
+    # Extract @mentions (e.g. @lumina, @claude, @opus)
+    mentions = re.findall(r"@(\w+)", message)
 
-    _print("")
-    if transport_info.get("delivered"):
-        _print(f"  [green]Sent to group {group_id[:12]}[/] via {transport_info.get('transport')}")
+    grp = _load_group(group_id)
+
+    if grp is not None:
+        # Compose via group (validates membership, increments message_count)
+        msg = grp.compose_group_message(sender_uri=identity, content=message, ttl=ttl)
+        if msg is None:
+            # Sender is not a member — compose a bare message and store locally
+            msg = ChatMessage(
+                sender=identity,
+                recipient=f"group:{group_id}",
+                content=message,
+                content_type=ContentType.MARKDOWN,
+                thread_id=group_id,
+                ttl=ttl,
+                metadata={"group_message": True},
+            )
+        if mentions:
+            msg.metadata["mentions"] = mentions
+
+        history.store_message(msg)
+
+        # Broadcast individually to every member (skip self)
+        delivered_names: list[str] = []
+        failed_names: list[str] = []
+        for member in grp.members:
+            if member.identity_uri == identity:
+                continue
+            member_msg = msg.model_copy(update={"recipient": member.identity_uri})
+            result = _try_deliver(member_msg)
+            label = member.display_name or member.identity_uri.split(":")[-1]
+            if result.get("delivered"):
+                delivered_names.append(label)
+            else:
+                failed_names.append(label)
+
+        _store_group(grp)
+
+        _print("")
+        total = len(grp.members) - 1  # exclude self
+        mention_note = (
+            f" · mentions: {', '.join('@' + m for m in mentions)}" if mentions else ""
+        )
+        if delivered_names:
+            _print(
+                f"  [green]Broadcast to {len(delivered_names)}/{total} members[/]"
+                f"{mention_note}"
+            )
+        else:
+            _print(
+                f"  [yellow]Stored locally[/] — 0/{total} delivered{mention_note}"
+            )
+        if failed_names:
+            _print(f"  [dim]No transport for: {', '.join(failed_names)}[/]")
+        _print("")
+
     else:
-        _print(f"  [yellow]Stored locally[/] ({transport_info.get('error', 'no transport')})")
-    _print("")
+        # Group not found locally — fall back to a single group-addressed message
+        meta: dict = {"group_message": True}
+        if mentions:
+            meta["mentions"] = mentions
+        msg = ChatMessage(
+            sender=identity,
+            recipient=f"group:{group_id}",
+            content=message,
+            content_type=ContentType.MARKDOWN,
+            thread_id=group_id,
+            ttl=ttl,
+            metadata=meta,
+        )
+        history.store_message(msg)
+        transport_info = _try_deliver(msg)
+
+        _print("")
+        if transport_info.get("delivered"):
+            _print(
+                f"  [green]Sent to group {group_id[:12]}[/]"
+                f" via {transport_info.get('transport')}"
+            )
+        else:
+            _print(
+                f"  [yellow]Stored locally[/] (group not found,"
+                f" {transport_info.get('error', 'no transport')})"
+            )
+        _print("")
 
 
 @group.command("add-member")
@@ -1170,6 +2332,45 @@ def group_remove_member(group_id: str, identity: str) -> None:
     _print("")
 
 
+@group.command("rotate-key")
+@click.argument("group_id")
+@click.option("--reason", "-r", default="manual", help="Reason for key rotation.")
+def group_rotate_key(group_id: str, reason: str) -> None:
+    """Manually rotate the group encryption key.
+
+    All remaining members will be notified of the new key version.
+    Use after a security concern or for periodic key hygiene.
+
+    Examples:
+
+        skchat group rotate-key abc123
+
+        skchat group rotate-key abc123 --reason "security-concern"
+    """
+    grp = _load_group(group_id)
+    if grp is None:
+        _print(f"\n  [red]Error:[/] Group '{group_id[:12]}' not found.\n")
+        sys.exit(1)
+
+    old_version = grp.key_version
+    grp.rotate_key(reason=reason)
+    _store_group(grp)
+
+    _print("")
+    if HAS_RICH and console:
+        console.print(Panel(
+            f"[bold]Group:[/] [cyan]{grp.name}[/]\n"
+            f"[bold]Key version:[/] v{old_version} → v{grp.key_version}\n"
+            f"[bold]Reason:[/] {reason}\n"
+            f"[bold]Members:[/] {grp.member_count}",
+            title="Key Rotated",
+            border_style="green",
+        ))
+    else:
+        _print(f"  Key rotated for '{grp.name}' (v{old_version} → v{grp.key_version}, reason: {reason})")
+    _print("")
+
+
 @group.command("info")
 @click.argument("group_id")
 def group_info(group_id: str) -> None:
@@ -1235,16 +2436,19 @@ def group_members(group_id: str) -> None:
         table.add_column("Identity", style="cyan", max_width=35)
         table.add_column("Role", max_width=10)
         table.add_column("Type", max_width=10)
+        table.add_column("Joined", style="dim", max_width=12)
         table.add_column("Scope", style="dim", max_width=30)
 
         for m in grp.members:
             role_style = "green" if m.role.value == "admin" else ""
             scope_str = ", ".join(m.tool_scope) if m.tool_scope else "unrestricted"
+            joined_str = m.joined_at.strftime("%Y-%m-%d")
             table.add_row(
                 m.display_name,
                 m.identity_uri,
                 Text(m.role.value, style=role_style),
                 m.participant_type.value,
+                joined_str,
                 scope_str,
             )
 
@@ -1252,7 +2456,8 @@ def group_members(group_id: str) -> None:
     else:
         for m in grp.members:
             scope_str = ", ".join(m.tool_scope) if m.tool_scope else "unrestricted"
-            _print(f"  {m.display_name} ({m.role.value}, {m.participant_type.value}) scope={scope_str}")
+            joined_str = m.joined_at.strftime("%Y-%m-%d")
+            _print(f"  {m.display_name} ({m.role.value}, {m.participant_type.value}) joined={joined_str} scope={scope_str}")
     _print("")
 
 
@@ -1446,34 +2651,660 @@ def group_quick_start(name: str, members: tuple[str, ...], description: str) -> 
 
 
 @main.command()
+@click.option(
+    "--url",
+    default="http://127.0.0.1:9384",
+    show_default=True,
+    help="SKComm base URL.",
+)
+def health(url: str) -> None:
+    """Show transport health: WebRTC, file fallback, and daemon uptime.
+
+    Checks SKComm HTTP health, WebRTC signaling endpoint, and ICE config.
+    File transport is always reported as available.
+    """
+    from .watchdog import TransportWatchdog
+
+    wd = TransportWatchdog(transport=None, skcomm_url=url)
+    summary = wd.health_summary()
+
+    webrtc = summary["webrtc"]
+    uptime = summary["uptime_seconds"]
+    peers = webrtc["active_peers"]
+
+    _print("")
+    if HAS_RICH and console:
+
+        def _ok(v: bool) -> str:
+            return "[green]OK[/]" if v else "[red]DOWN[/]"
+
+        console.print(
+            f"[bold]Transport status:[/]  {summary['transport_status']}\n"
+            f"\n"
+            f"[bold]SKComm:[/]            {_ok(summary['skcomm_ok'])}\n"
+            f"[bold]WebRTC:[/]            signaling {_ok(webrtc['signaling_ok'])}"
+            f"  |  ICE servers {_ok(webrtc['ice_servers_configured'])}"
+            f"  |  active peers [cyan]{peers}[/]\n"
+            f"[bold]File transport:[/]    [green]always available[/]\n"
+            f"\n"
+            f"[bold]Daemon uptime:[/]     {uptime:.1f}s  |  "
+            f"[bold]Consecutive failures:[/] {summary['consecutive_failures']}",
+        )
+    else:
+
+        def _ok_plain(v: bool) -> str:
+            return "OK" if v else "DOWN"
+
+        _print(f"  Transport status:  {summary['transport_status']}")
+        _print(f"  SKComm:            {_ok_plain(summary['skcomm_ok'])}")
+        _print(
+            f"  WebRTC:            signaling={_ok_plain(webrtc['signaling_ok'])}"
+            f"  ice={_ok_plain(webrtc['ice_servers_configured'])}"
+            f"  peers={peers}"
+        )
+        _print("  File transport:    always available")
+        _print(f"  Daemon uptime:     {uptime:.1f}s")
+        _print(f"  Failures:          {summary['consecutive_failures']}")
+    _print("")
+
+
+@main.command()
 def status() -> None:
     """Show SKChat status and statistics.
 
-    Displays local identity, message count, thread count,
+    Displays local identity, daemon health (port 9385), bridge
+    process status, presence cache summary, message/thread counts,
     and storage health.
     """
+    import urllib.request
+    import urllib.error
+
     identity = _get_identity()
     chat_history = _get_history()
     msg_count = chat_history.message_count()
     thread_list = chat_history.list_threads(limit=1000)
 
+    # --- Daemon health (port 9385 /health) ---
+    daemon_ok = False
+    try:
+        with urllib.request.urlopen(
+            "http://127.0.0.1:9385/health", timeout=2
+        ) as resp:
+            daemon_ok = resp.status == 200
+    except Exception:
+        pass
+
+    # --- Bridge processes ---
+    bridges: dict[str, bool] = {"lumina-bridge": False, "opus-bridge": False}
+    try:
+        ps_out = subprocess.run(
+            ["ps", "aux"], capture_output=True, text=True, timeout=5
+        ).stdout
+        bridges["lumina-bridge"] = "lumina-bridge.py" in ps_out
+        bridges["opus-bridge"] = "opus-bridge.py" in ps_out
+    except Exception:
+        pass
+
+    # --- Presence cache summary ---
+    presence_total = 0
+    presence_online = 0
+    try:
+        from .presence import PresenceCache
+        pc = PresenceCache()
+        presence_total = len(pc.get_all())
+        presence_online = len(pc.get_online(max_age=300))
+    except Exception:
+        pass
+
     _print("")
     if HAS_RICH and console:
+        daemon_str = "[green]running[/]" if daemon_ok else "[red]stopped[/]"
+        bridge_str = "  ".join(
+            f"[{'green' if up else 'dim'}]{name}[/]"
+            for name, up in bridges.items()
+        )
         console.print(Panel(
-            f"[bold]Identity:[/] [cyan]{identity}[/]\n"
-            f"[bold]Messages:[/] {msg_count}\n"
-            f"[bold]Threads:[/] {len(thread_list)}\n"
-            f"[bold]Storage:[/] [green]SKMemory[/]\n"
-            f"[bold]Version:[/] {__version__}",
+            f"[bold]Identity:[/]  [cyan]{identity}[/]\n"
+            f"[bold]Daemon:[/]    {daemon_str} (port 9385)\n"
+            f"[bold]Bridges:[/]   {bridge_str}\n"
+            f"[bold]Presence:[/]  {presence_online} online / {presence_total} known\n"
+            f"[bold]Messages:[/]  {msg_count}\n"
+            f"[bold]Threads:[/]   {len(thread_list)}\n"
+            f"[bold]Storage:[/]   [green]SKMemory[/]\n"
+            f"[bold]Version:[/]   {__version__}",
             title="SKChat Status",
             border_style="bright_blue",
         ))
     else:
-        _print(f"  Identity: {identity}")
-        _print(f"  Messages: {msg_count}")
-        _print(f"  Threads: {len(thread_list)}")
-        _print(f"  Version: {__version__}")
+        _print(f"  Identity:  {identity}")
+        _print(f"  Daemon:    {'UP' if daemon_ok else 'DOWN'} (port 9385)")
+        for name, up in bridges.items():
+            _print(f"  {name}: {'UP' if up else 'DOWN'}")
+        _print(f"  Presence:  {presence_online} online / {presence_total} known")
+        _print(f"  Messages:  {msg_count}")
+        _print(f"  Threads:   {len(thread_list)}")
+        _print(f"  Version:   {__version__}")
     _print("")
+
+
+@main.command()
+@click.argument("group_id")
+@click.option(
+    "--duration",
+    "-d",
+    type=int,
+    default=None,
+    metavar="SECONDS",
+    help="Fixed recording duration in seconds (default: interactive, press Enter to stop).",
+)
+@click.option(
+    "--whisper-model",
+    "-m",
+    "whisper_model",
+    default="base",
+    show_default=True,
+    help="Whisper model for transcription (tiny/base/small/medium/large).",
+)
+def voice(group_id: str, duration: Optional[int], whisper_model: str) -> None:
+    """Record a voice message and send it to a group.
+
+    Records audio via microphone, transcribes with Whisper STT, confirms
+    the transcription, then sends the text to the given group.
+
+    Requires arecord (alsa-utils) and openai-whisper
+    (pip install openai-whisper).
+
+    Examples:
+
+        skchat voice abc123
+
+        skchat voice abc123 --duration 30
+
+        skchat voice abc123 --whisper-model small
+    """
+    from .voice import VoiceRecorder
+
+    recorder = VoiceRecorder(whisper_model=whisper_model)
+    if not recorder.available:
+        _print("\n  [red]Error:[/] openai-whisper is not installed.")
+        _print("  Install with: [cyan]pip install openai-whisper[/]\n")
+        sys.exit(1)
+
+    if duration is not None:
+        _print(f"\n  [cyan]Recording for {duration}s...[/]\n")
+        text = recorder.record(duration=duration)
+    else:
+        _print("\n  [cyan]Recording...[/] press Enter to stop\n")
+        text = recorder.record_interactive()
+
+    if not text:
+        _print("\n  [red]No transcription.[/] Recording failed or captured silence.\n")
+        sys.exit(1)
+
+    _print(f"\n  [bold]Transcription:[/] {text}")
+    if not click.confirm("  Send to group?", default=True):
+        _print("  [dim]Cancelled.[/]\n")
+        return
+
+    msg = ChatMessage(
+        sender=_get_identity(),
+        recipient=f"group:{group_id}",
+        content=text,
+        content_type=ContentType.PLAIN,
+        thread_id=group_id,
+        metadata={"voice_transcribed": True, "whisper_model": whisper_model},
+    )
+
+    history = _get_history()
+    mem_id = history.store_message(msg)
+    transport_info = _try_deliver(msg)
+
+    _print("")
+    if transport_info.get("delivered"):
+        _print(f"  [green]Sent to group {group_id[:12]}[/] via {transport_info.get('transport')}")
+    else:
+        _print(f"  [yellow]Stored locally[/] ({transport_info.get('error', 'no transport')})")
+    _print(f"  [dim]Memory ID: {mem_id}[/]\n")
+
+
+@main.group()
+def config() -> None:
+    """Show and validate SKChat configuration.
+
+    Examples:
+
+        skchat config show
+
+        skchat config validate
+    """
+
+
+@config.command("show")
+def config_show() -> None:
+    """Display current configuration with resolved paths."""
+    config_path = Path(SKCHAT_HOME).expanduser() / "config.yml"
+    peers_dir = Path("~/.skcapstone/peers").expanduser()
+    pid_file = Path(SKCHAT_HOME).expanduser() / "daemon.pid"
+    memory_dir = Path(SKCHAT_HOME).expanduser() / "memory"
+    identity_file = Path("~/.skcapstone/identity/identity.json").expanduser()
+
+    _print("")
+    if HAS_RICH and console:
+        def _status(p: Path) -> str:
+            return "[green]exists[/]" if p.exists() else "[red]missing[/]"
+
+        raw_cfg = ""
+        if config_path.exists():
+            try:
+                with open(config_path) as fh:
+                    raw_cfg = "\n\n" + fh.read()[:800]
+            except Exception:
+                raw_cfg = "\n\n[red](could not read)[/]"
+
+        console.print(Panel(
+            f"[bold]Config file:[/]   {config_path}  {_status(config_path)}\n"
+            f"[bold]Identity file:[/] {identity_file}  {_status(identity_file)}\n"
+            f"[bold]Memory dir:[/]    {memory_dir}  {_status(memory_dir)}\n"
+            f"[bold]PID file:[/]      {pid_file}  {_status(pid_file)}\n"
+            f"[bold]Peers dir:[/]     {peers_dir}  {_status(peers_dir)}"
+            + raw_cfg,
+            title="SKChat Configuration",
+            border_style="bright_blue",
+        ))
+    else:
+        def _s(p: Path) -> str:
+            return "exists" if p.exists() else "missing"
+
+        _print(f"  Config:   {config_path}  [{_s(config_path)}]")
+        _print(f"  Identity: {identity_file}  [{_s(identity_file)}]")
+        _print(f"  Memory:   {memory_dir}  [{_s(memory_dir)}]")
+        _print(f"  PID file: {pid_file}  [{_s(pid_file)}]")
+        _print(f"  Peers:    {peers_dir}  [{_s(peers_dir)}]")
+        if config_path.exists():
+            try:
+                with open(config_path) as fh:
+                    _print("\n" + fh.read()[:800])
+            except Exception:
+                pass
+    _print("")
+
+
+@config.command("validate")
+def config_validate() -> None:
+    """Check all required files and directories exist.
+
+    Exits with code 1 if any required item is missing.
+    """
+    config_path = Path(SKCHAT_HOME).expanduser() / "config.yml"
+    peers_dir = Path("~/.skcapstone/peers").expanduser()
+    identity_file = Path("~/.skcapstone/identity/identity.json").expanduser()
+    memory_dir = Path(SKCHAT_HOME).expanduser() / "memory"
+
+    checks = [
+        ("Config file", config_path, config_path.is_file()),
+        ("Identity file", identity_file, identity_file.is_file()),
+        ("Memory dir", memory_dir, memory_dir.is_dir()),
+        ("Peers dir", peers_dir, peers_dir.is_dir()),
+        ("lumina peer", peers_dir / "lumina.json", (peers_dir / "lumina.json").is_file()),
+        ("claude peer", peers_dir / "claude.json", (peers_dir / "claude.json").is_file()),
+    ]
+
+    _print("")
+    all_ok = True
+    for label, path, ok in checks:
+        if HAS_RICH and console:
+            marker = "[green]✓[/]" if ok else "[red]✗[/]"
+            console.print(f"  {marker}  [bold]{label}:[/] [dim]{path}[/]")
+        else:
+            marker = "OK" if ok else "MISSING"
+            _print(f"  [{marker}]  {label}: {path}")
+        if not ok:
+            all_ok = False
+
+    _print("")
+    if all_ok:
+        if HAS_RICH and console:
+            console.print("  [green]All checks passed.[/]\n")
+        else:
+            _print("  All checks passed.")
+    else:
+        if HAS_RICH and console:
+            console.print("  [red]Some checks failed — review the items above.[/]\n")
+        else:
+            _print("  Some checks failed — review the items above.")
+        sys.exit(1)
+
+
+@main.command()
+def who() -> None:
+    """Show who is currently online.
+
+    Reads the local presence cache and displays a table of known peers
+    with their last-seen time and status.
+
+    Colors: green = online (<2 min), yellow = away (<10 min), red = offline.
+
+    Examples:
+
+        skchat who
+    """
+    import json as _json
+    from .presence import PresenceCache, PresenceState
+
+    KNOWN_PEERS: dict[str, str] = {
+        "capauth:lumina@skworld.io": "lumina",
+        "capauth:claude@skworld.io": "claude",
+        "chef@skworld.io": "chef",
+    }
+
+    peers_dir = Path.home() / ".skcapstone" / "peers"
+    if peers_dir.exists():
+        for peer_file in sorted(peers_dir.glob("*.json")):
+            try:
+                data = _json.loads(peer_file.read_text())
+                uri = data.get("identity_uri") or data.get("uri", "")
+                name = data.get("display_name") or data.get("name", peer_file.stem)
+                if uri:
+                    KNOWN_PEERS[uri] = name
+            except Exception:
+                pass
+
+    cache = PresenceCache()
+    all_entries = cache.get_all()
+    all_uris = sorted(set(all_entries.keys()) | set(KNOWN_PEERS.keys()))
+
+    if not all_uris:
+        click.echo("No presence data. Is the daemon running?  (skchat daemon start)")
+        return
+
+    now = datetime.now(timezone.utc)
+    click.echo("")
+    click.echo(f"  {'Agent':<22} {'Last Seen':<12} Status")
+    click.echo(f"  {'-'*22} {'-'*12} {'-'*10}")
+
+    for uri in all_uris:
+        display = KNOWN_PEERS.get(uri, uri.split("@")[0].replace("capauth:", ""))
+        entry = all_entries.get(uri)
+        if entry:
+            try:
+                ts = datetime.fromisoformat(entry["timestamp"])
+                age = (now - ts).total_seconds()
+                state_val = entry.get("state", "")
+                if state_val == PresenceState.OFFLINE.value:
+                    status = "offline"
+                elif age <= 120:
+                    status = "online"
+                elif age <= 600:
+                    status = "away"
+                else:
+                    status = "offline"
+                last_seen = ts.strftime("%H:%M:%S")
+            except Exception:
+                status = "offline"
+                last_seen = "-"
+        else:
+            status = "offline"
+            last_seen = "-"
+
+        if status == "online":
+            status_str = click.style(status, fg="green")
+        elif status == "away":
+            status_str = click.style(status, fg="yellow")
+        else:
+            status_str = click.style(status, fg="red")
+
+        click.echo(f"  {display:<22} {last_seen:<12} {status_str}")
+
+    click.echo("")
+
+
+@main.group()
+def peers() -> None:
+    """Discover and inspect known peers from the skcapstone peer store.
+
+    Reads peer records from ~/.skcapstone/peers/ and displays them
+    with identity URIs, trust levels, and entity types.
+
+    Examples:
+
+        skchat peers list
+
+        skchat peers list --type ai-agent
+    """
+
+
+@peers.command("list")
+@click.option(
+    "--type",
+    "entity_type",
+    default=None,
+    help="Filter by entity_type (e.g. ai-agent, human).",
+)
+def peers_list(entity_type: Optional[str]) -> None:
+    """List all discovered peers from the skcapstone peer store.
+
+    Reads JSON files from ~/.skcapstone/peers/ and displays a table
+    of names, identity URIs, trust levels, and entity types.
+
+    Examples:
+
+        skchat peers list
+
+        skchat peers list --type ai-agent
+    """
+    from .peer_discovery import PeerDiscovery
+
+    disc = PeerDiscovery()
+    peer_list = disc.list_peers()
+
+    if entity_type:
+        peer_list = [p for p in peer_list if p.get("entity_type", "").lower() == entity_type.lower()]
+
+    _print("")
+    if not peer_list:
+        _print("  [dim]No peers found in ~/.skcapstone/peers/[/]")
+        _print("")
+        return
+
+    if HAS_RICH and console:
+        table = Table(
+            show_header=True,
+            header_style="bold",
+            box=None,
+            padding=(0, 2),
+            title=f"Peers ({len(peer_list)})",
+        )
+        table.add_column("Name", style="bold", max_width=16)
+        table.add_column("URI", style="cyan", max_width=40)
+        table.add_column("Type", max_width=12)
+        table.add_column("Trust", max_width=10)
+        table.add_column("Capabilities", style="dim", max_width=35)
+
+        for peer in peer_list:
+            name = peer.get("name", "?")
+            uri = disc.resolve_identity(peer.get("handle", peer.get("name", ""))) or ""
+            etype = peer.get("entity_type", "")
+            trust = peer.get("trust_level", "")
+            caps = ", ".join(peer.get("capabilities", []))
+            if len(caps) > 35:
+                caps = caps[:32] + "..."
+
+            trust_style = "green" if trust == "verified" else "yellow"
+            table.add_row(name, uri, etype, Text(trust, style=trust_style), caps)
+
+        console.print(table)
+    else:
+        _print(f"  {len(peer_list)} peer(s):")
+        for peer in peer_list:
+            name = peer.get("name", "?")
+            uri = disc.resolve_identity(peer.get("handle", peer.get("name", ""))) or ""
+            trust = peer.get("trust_level", "")
+            etype = peer.get("entity_type", "")
+            _print(f"    {name:<16} {uri:<42} {etype:<12} {trust}")
+
+    _print("")
+
+
+@main.command()
+@click.argument("message_id")
+@click.argument("emoji")
+def react(message_id: str, emoji: str) -> None:
+    """Add an emoji reaction to a message.
+
+    Examples:
+
+        skchat react msg-abc123 👍
+
+        skchat react msg-abc123 ❤️
+    """
+    identity = _get_identity()
+    _reaction_store.add(message_id, emoji, identity)
+    summary = _reaction_store.get_summary(message_id)
+    rx_str = "  ".join(f"{e} {c}" for e, c in summary.items()) if summary else emoji
+    _print(f"  Reacted {emoji} to [dim]{message_id[:12]}[/]  ({rx_str})")
+    _print("")
+
+
+@main.command(name="reactions")
+@click.argument("message_id")
+def reactions_cmd(message_id: str) -> None:
+    """Show all reactions for a message.
+
+    Examples:
+
+        skchat reactions msg-abc123
+    """
+    summary = _reaction_store.get_summary(message_id)
+    reactions = _reaction_store.get(message_id)
+
+    _print("")
+    if not summary:
+        _print(f"  [dim]No reactions for {message_id[:12]}[/]")
+        _print("")
+        return
+
+    if HAS_RICH and console:
+        from rich.table import Table as _Table
+
+        tbl = _Table(show_header=True, header_style="bold", box=None, padding=(0, 2))
+        tbl.add_column("Emoji", style="bold")
+        tbl.add_column("Count", style="cyan")
+        tbl.add_column("Senders", style="dim")
+
+        grouped: dict[str, list[str]] = {}
+        for r in reactions:
+            grouped.setdefault(r.emoji, []).append(r.sender)
+
+        for emoji_key, senders in grouped.items():
+            tbl.add_row(emoji_key, str(len(senders)), ", ".join(senders))
+
+        console.print(tbl)
+    else:
+        for emoji_key, count in summary.items():
+            click.echo(f"  {emoji_key}  {count}")
+
+    _print("")
+
+
+@main.command()
+def rooms() -> None:
+    """List all group rooms with member count and last activity.
+
+    Reads groups from ~/.skchat/groups/*.json and displays a sorted
+    summary (most recently active first).
+
+    Examples:
+
+        skchat rooms
+    """
+    import json as _json
+
+    groups_dir = Path(SKCHAT_HOME).expanduser() / "groups"
+    if not groups_dir.exists():
+        _print("\n  [dim]No rooms found. Create one with: skchat group create <name>[/]\n")
+        return
+
+    from .group import GroupChat
+
+    entries = []
+    for p in sorted(groups_dir.glob("*.json")):
+        try:
+            grp = GroupChat.model_validate_json(p.read_text(encoding="utf-8"))
+            entries.append(grp)
+        except Exception:
+            continue
+
+    if not entries:
+        _print("\n  [dim]No rooms found. Create one with: skchat group create <name>[/]\n")
+        return
+
+    # Sort: most recently active first
+    entries.sort(key=lambda g: g.updated_at, reverse=True)
+
+    _print("")
+    if HAS_RICH and console:
+        from rich.table import Table as RichTable
+
+        table = RichTable(title="Rooms", border_style="bright_blue", show_lines=False)
+        table.add_column("Name", style="bold cyan", min_width=16)
+        table.add_column("ID", style="dim", min_width=14)
+        table.add_column("Members", justify="right")
+        table.add_column("Last activity", style="dim")
+
+        now = __import__("datetime").datetime.now(__import__("datetime").timezone.utc)
+        for grp in entries:
+            delta = now - grp.updated_at
+            secs = int(delta.total_seconds())
+            if secs < 60:
+                age = f"{secs}s ago"
+            elif secs < 3600:
+                age = f"{secs // 60}m ago"
+            elif secs < 86400:
+                age = f"{secs // 3600}h ago"
+            else:
+                age = f"{secs // 86400}d ago"
+            table.add_row(grp.name, grp.id[:12], str(grp.member_count), age)
+
+        console.print(table)
+    else:
+        _print(f"  {'Name':<20} {'ID':<14} {'Members':>7}  Last activity")
+        _print("  " + "-" * 56)
+        now = __import__("datetime").datetime.now(__import__("datetime").timezone.utc)
+        for grp in entries:
+            delta = now - grp.updated_at
+            secs = int(delta.total_seconds())
+            if secs < 60:
+                age = f"{secs}s ago"
+            elif secs < 3600:
+                age = f"{secs // 60}m ago"
+            elif secs < 86400:
+                age = f"{secs // 3600}h ago"
+            else:
+                age = f"{secs // 86400}d ago"
+            _print(f"  {grp.name:<20} {grp.id[:12]:<14} {grp.member_count:>7}  {age}")
+    _print("")
+
+
+@main.command()
+def tui() -> None:
+    """Launch the interactive terminal UI (requires textual).
+
+    Opens a full-screen chat interface with colour-coded messages,
+    3-second inbox polling, @mention tab-completion, and Ctrl+G group mode.
+
+    Examples:
+
+        skchat tui
+    """
+    try:
+        from .tui import main as tui_main
+    except ImportError:
+        _print(
+            "\n  [red]Error:[/] textual is not installed.\n"
+            "  Install with: [cyan]pip install textual[/]\n"
+        )
+        raise SystemExit(1)
+    tui_main()
 
 
 if __name__ == "__main__":
