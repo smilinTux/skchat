@@ -1,0 +1,22 @@
+[Unit]
+Description=SKChat receive daemon — sovereign P2P chat
+Documentation=https://skchat.io
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=forking
+WorkingDirectory=%h
+PIDFile=%h/.skchat/daemon.pid
+ExecStart=%h/.pyenv/shims/skchat daemon start --interval 5 --log-file %h/.skchat/daemon.log
+ExecStop=/bin/kill -TERM $MAINPID
+Restart=on-failure
+RestartSec=5
+WatchdogSec=30
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=skchat
+Environment=SKCHAT_IDENTITY=capauth:opus@skworld.io
+
+[Install]
+WantedBy=default.target
