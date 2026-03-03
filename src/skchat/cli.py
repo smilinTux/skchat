@@ -207,6 +207,33 @@ def _get_transport() -> "Optional[ChatTransport]":
         return None
 
 
+def _send_typing_before_message(
+    recipient: str,
+    thread_id: "Optional[str]" = None,
+    delay: float = 0.5,
+) -> None:
+    """Send a TYPING indicator to recipient, then pause briefly.
+
+    Fire-and-forget: any transport errors are silently suppressed so
+    a missing SKComm config never blocks the actual send.
+
+    Args:
+        recipient: Resolved CapAuth identity URI.
+        thread_id: Optional thread context.
+        delay: How long to wait (seconds) after sending indicator.
+    """
+    import time as _time
+
+    transport = _get_transport()
+    if transport is None:
+        return
+    try:
+        transport.send_typing_indicator(recipient, thread_id=thread_id)
+        _time.sleep(delay)
+    except Exception:
+        pass
+
+
 def _try_deliver(msg: "ChatMessage") -> dict:
     """Attempt to deliver a message via SKComm transport.
 
@@ -360,6 +387,9 @@ def send(
 
     history = _get_history()
     mem_id = history.store_message(msg)
+
+    # Send typing indicator so recipient sees "X is typing..." before the message arrives
+    _send_typing_before_message(resolved_recipient, thread)
 
     transport_info = _try_deliver(msg)
 
@@ -2000,6 +2030,185 @@ def watch(
     )
 
 
+@main.command(name="send-file")
+@click.argument("recipient")
+@click.argument("file_path", type=click.Path(exists=True, path_type=Path))
+def send_file_cmd(recipient: str, file_path: Path) -> None:
+    """Send a file to a recipient via SKComm.
+
+    Chunks and AES-256-GCM encrypts the file, then sends
+    FILE_TRANSFER_INIT, FILE_CHUNK (xN), and FILE_TRANSFER_DONE messages.
+    Transfer metadata is persisted to ~/.skchat/transfers/.
+
+    Examples:
+
+        skchat send-file lumina ~/report.pdf
+
+        skchat send-file capauth:bob@skworld.io /tmp/contract.zip
+    """
+    from .files import FileTransferService
+
+    identity = _get_identity()
+    try:
+        resolved_recipient = resolve_peer_name(recipient)
+    except PeerResolutionError:
+        resolved_recipient = recipient
+
+    skcomm = None
+    try:
+        from skcomm.core import SKComm
+        skcomm = SKComm.from_config()
+    except Exception:
+        pass
+
+    service = FileTransferService(identity=identity, skcomm=skcomm)
+
+    _print("")
+    _print(f"  Sending [cyan]{file_path.name}[/] to [cyan]{resolved_recipient}[/] ...")
+
+    try:
+        transfer_id = service.send_file(resolved_recipient, file_path)
+    except FileNotFoundError as exc:
+        _print(f"\n  [red]Error:[/] {exc}\n")
+        sys.exit(1)
+    except Exception as exc:
+        _print(f"\n  [red]Send failed:[/] {exc}\n")
+        sys.exit(1)
+
+    if HAS_RICH and console:
+        console.print(
+            f"  [green]Done.[/] Transfer ID: [dim]{transfer_id}[/]\n"
+            f"  Track with: [cyan]skchat transfers[/]"
+        )
+    else:
+        click.echo(f"  Done. Transfer ID: {transfer_id}")
+    _print("")
+
+
+@main.command(name="transfers")
+def transfers_cmd() -> None:
+    """List active and completed file transfers.
+
+    Shows all tracked transfers from ~/.skchat/transfers/ with
+    direction (OUT/IN), status, and progress.
+
+    Examples:
+
+        skchat transfers
+    """
+    from .files import FileTransferService
+
+    service = FileTransferService(identity=_get_identity())
+    transfers = service.list_transfers()
+
+    _print("")
+    if not transfers:
+        _print("  [dim]No transfers found.[/]")
+        _print("")
+        return
+
+    if HAS_RICH and console:
+        table = Table(
+            show_header=True,
+            header_style="bold",
+            box=None,
+            padding=(0, 2),
+            title=f"File Transfers ({len(transfers)})",
+        )
+        table.add_column("ID", style="dim", max_width=14)
+        table.add_column("File")
+        table.add_column("Dir", max_width=4)
+        table.add_column("Peer", max_width=26)
+        table.add_column("Status")
+        table.add_column("Progress", max_width=8)
+
+        for t in transfers:
+            tid = t.get("transfer_id", "")[:12]
+            fname = t.get("filename", "")
+            is_out = t.get("direction") == "outbound"
+            direction = "OUT" if is_out else "IN"
+            peer = (t.get("recipient") if is_out else t.get("sender")) or ""
+            peer = peer[:26]
+            status = t.get("status", "")
+            pct = f"{int(t.get('progress', 0) * 100)}%"
+
+            if status == "complete":
+                status_str = f"[green]{status}[/]"
+            elif status in ("sending", "receiving", "ready_to_assemble"):
+                status_str = f"[yellow]{status}[/]"
+            elif status == "failed":
+                status_str = f"[red]{status}[/]"
+            else:
+                status_str = status
+
+            table.add_row(tid, fname, direction, peer, status_str, pct)
+
+        console.print(table)
+    else:
+        for t in transfers:
+            click.echo(
+                f"  {t.get('transfer_id', '')[:12]}  "
+                f"{t.get('filename', '')}  "
+                f"{'OUT' if t.get('direction') == 'outbound' else 'IN'}  "
+                f"{t.get('status', '')}  "
+                f"{int(t.get('progress', 0) * 100)}%"
+            )
+
+    _print("")
+
+
+@main.command(name="receive-file")
+@click.argument("transfer_id")
+@click.option(
+    "--output",
+    "-o",
+    default=None,
+    metavar="DIR",
+    help="Directory to save the assembled file (default: ~/.skchat/received/).",
+)
+def receive_file_cmd(transfer_id: str, output: Optional[str]) -> None:
+    """Reassemble a received file transfer.
+
+    Looks up the transfer by ID, checks that all chunks are present,
+    reassembles the file, and verifies the SHA-256 digest.
+
+    TRANSFER_ID is the UUID shown by `skchat transfers` or returned
+    by `skchat send-file`.
+
+    Examples:
+
+        skchat receive-file abc12345-...
+
+        skchat receive-file abc12345-... --output ~/Downloads
+    """
+    from .files import FileTransferService
+
+    output_dir = Path(output).expanduser() if output else None
+    service = FileTransferService(identity=_get_identity())
+
+    _print("")
+    _print(f"  Assembling transfer [dim]{transfer_id[:12]}[/] ...")
+
+    try:
+        out_path = service.receive_file(transfer_id, output_dir=output_dir)
+    except Exception as exc:
+        _print(f"\n  [red]Error:[/] {exc}\n")
+        sys.exit(1)
+
+    if out_path is None:
+        _print(
+            "  [red]Cannot assemble:[/] transfer not found or chunks incomplete.\n"
+            "  Check incoming chunks with [cyan]skchat transfers[/]."
+        )
+        sys.exit(1)
+
+    if HAS_RICH and console:
+        console.print(f"  [green]Done.[/] Saved to [cyan]{out_path}[/]")
+    else:
+        click.echo(f"  Done. Saved to {out_path}")
+    _print("")
+
+
 _MENTION_RE = re.compile(r"(@\S+)")
 _SOUND_PATHS = [
     "/usr/share/sounds/freedesktop/stereo/message.oga",
@@ -2365,15 +2574,22 @@ def _load_group(group_id: str) -> "Optional[GroupChat]":
     from .group import GroupChat
 
     history = _get_history()
-    thread_data = history.get_thread(group_id)
-    if thread_data is None:
-        return None
+    thread_data = history.get_thread_meta(group_id)
+    if thread_data is not None:
+        group_data = thread_data.get("group_data")
+        if group_data is not None:
+            return GroupChat.model_validate(group_data)
 
-    group_data = thread_data.get("group_data")
-    if group_data is None:
-        return None
+    # Fallback: load from ~/.skchat/groups/<group_id>.json
+    groups_dir = Path(SKCHAT_HOME).expanduser() / "groups"
+    json_path = groups_dir / f"{group_id}.json"
+    if json_path.exists():
+        try:
+            return GroupChat.model_validate_json(json_path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
 
-    return GroupChat.model_validate(group_data)
+    return None
 
 
 @group.command("create")
@@ -3086,78 +3302,295 @@ def health(url: str) -> None:
 def status() -> None:
     """Show SKChat status and statistics.
 
-    Displays local identity, daemon health (port 9385), bridge
-    process status, presence cache summary, message/thread counts,
-    and storage health.
+    Displays a rich dashboard with daemon health, identity, message
+    counts, advocacy stats, online peers, recent activity, and
+    transport availability.
     """
-    import urllib.request
-    import urllib.error
+    import unicodedata
 
     identity = _get_identity()
     chat_history = _get_history()
-    msg_count = chat_history.message_count()
-    thread_list = chat_history.list_threads(limit=1000)
 
-    # --- Daemon health (port 9385 /health) ---
-    daemon_ok = False
-    try:
-        with urllib.request.urlopen(
-            "http://127.0.0.1:9385/health", timeout=2
-        ) as resp:
-            daemon_ok = resp.status == 200
-    except Exception:
-        pass
+    from .daemon import daemon_status
+    ds = daemon_status()
 
-    # --- Bridge processes ---
-    bridges: dict[str, bool] = {"lumina-bridge": False, "opus-bridge": False}
+    # ── Box layout constants ──────────────────────────────────────
+    TOTAL_W = 47   # full line width including ╔/╗
+    INNER_W = TOTAL_W - 2   # 45 — space between ║ and ║
+    TEXT_W  = INNER_W - 2   # 43 — text after leading space, before trailing space
+
+    def _wlen(s: str) -> int:
+        """Visual column width, accounting for wide Unicode (emoji etc.)."""
+        w = 0
+        for ch in s:
+            eaw = unicodedata.east_asian_width(ch)
+            w += 2 if eaw in ("W", "F") else 1
+        return w
+
+    def _row(plain: str, styled: str = "") -> str:
+        """Render one content row: ║ <styled> <padding> ║"""
+        if not styled:
+            styled = plain
+        pad = TEXT_W - _wlen(plain)
+        return "║ " + styled + " " * max(0, pad) + " ║"
+
+    def _section(title: str, *, top: bool = False) -> str:
+        """╠══ Title ══╣  (or ╔/╗ for top)."""
+        fill = INNER_W - len(title) - 2   # 2 for surrounding spaces
+        left = fill // 2
+        right = fill - left
+        lc, rc = ("╔", "╗") if top else ("╠", "╣")
+        return lc + "═" * left + " " + title + " " + "═" * right + rc
+
+    _bot = "╚" + "═" * INNER_W + "╝"
+
+    # ── Data gathering ────────────────────────────────────────────
+    running        = ds.get("running", False)
+    uptime_s       = int(ds.get("uptime_seconds", 0))
+    msg_recv       = int(ds.get("messages_received", 0))
+    msg_sent       = int(ds.get("messages_sent", 0))
+    advocacy_count = int(ds.get("advocacy_responses", 0))
+    webrtc_ok      = bool(ds.get("webrtc_signaling_ok", False))
+
+    def _fmt_uptime(s: int) -> str:
+        if s < 60:
+            return f"{s}s"
+        if s < 3600:
+            return f"{s // 60}m {s % 60}s"
+        return f"{s // 3600}h {(s % 3600) // 60}m"
+
+    def _fmt_age(s: float) -> str:
+        if s < 60:
+            return f"{int(s)}s ago"
+        if s < 3600:
+            return f"{int(s / 60)}m ago"
+        return f"{int(s / 3600)}h ago"
+
+    # Lumina-bridge PID
+    lumina_pid: Optional[int] = None
     try:
-        ps_out = subprocess.run(
+        ps_lines = subprocess.run(
             ["ps", "aux"], capture_output=True, text=True, timeout=5
-        ).stdout
-        bridges["lumina-bridge"] = "lumina-bridge.py" in ps_out
-        bridges["opus-bridge"] = "opus-bridge.py" in ps_out
+        ).stdout.splitlines()
+        for line in ps_lines:
+            if "lumina-bridge.py" in line and "grep" not in line:
+                parts = line.split()
+                if len(parts) > 1:
+                    try:
+                        lumina_pid = int(parts[1])
+                    except ValueError:
+                        lumina_pid = -1
+                break
     except Exception:
         pass
 
-    # --- Presence cache summary ---
-    presence_total = 0
-    presence_online = 0
+    # Syncthing
+    syncthing_ok = False
+    try:
+        syncthing_ok = (
+            subprocess.run(
+                ["pgrep", "-x", "syncthing"],
+                capture_output=True, timeout=3,
+            ).returncode == 0
+        )
+    except Exception:
+        pass
+
+    # Presence peers
+    peers_info: list[tuple[str, str, str]] = []  # (uri, status, age_str)
     try:
         from .presence import PresenceCache
         pc = PresenceCache()
-        presence_total = len(pc.get_all())
-        presence_online = len(pc.get_online(max_age=300))
+        all_peers = pc.get_all()
+        now = datetime.now(timezone.utc)
+        for uri, entry in all_peers.items():
+            try:
+                ts = datetime.fromisoformat(entry["timestamp"])
+                age_s = (now - ts).total_seconds()
+                age_str = _fmt_age(age_s)
+                st = pc.get_status(uri)
+            except Exception:
+                age_str = ""
+                st = "offline"
+            peers_info.append((uri, st, age_str))
+        peers_info.sort(
+            key=lambda x: (0 if x[1] == "online" else 1 if x[1] == "away" else 2)
+        )
     except Exception:
         pass
 
-    _print("")
-    if HAS_RICH and console:
-        daemon_str = "[green]running[/]" if daemon_ok else "[red]stopped[/]"
-        bridge_str = "  ".join(
-            f"[{'green' if up else 'dim'}]{name}[/]"
-            for name, up in bridges.items()
+    # Recent messages
+    recent_msgs: list[dict] = []
+    try:
+        recent_msgs = chat_history.get_messages_since(minutes=120, limit=100)[-4:]
+    except Exception:
+        pass
+
+    # ── Build output lines ────────────────────────────────────────
+    out: list[str] = []
+
+    out.append(_section("SKChat Status", top=True))
+
+    # Daemon
+    if running:
+        up_str = _fmt_uptime(uptime_s)
+        d_plain  = f"Daemon:     \u2713 RUNNING (uptime: {up_str})"
+        d_styled = (
+            "Daemon:     "
+            + click.style("\u2713 RUNNING", fg="green", bold=True)
+            + f" (uptime: {up_str})"
         )
-        console.print(Panel(
-            f"[bold]Identity:[/]  [cyan]{identity}[/]\n"
-            f"[bold]Daemon:[/]    {daemon_str} (port 9385)\n"
-            f"[bold]Bridges:[/]   {bridge_str}\n"
-            f"[bold]Presence:[/]  {presence_online} online / {presence_total} known\n"
-            f"[bold]Messages:[/]  {msg_count}\n"
-            f"[bold]Threads:[/]   {len(thread_list)}\n"
-            f"[bold]Storage:[/]   [green]SKMemory[/]\n"
-            f"[bold]Version:[/]   {__version__}",
-            title="SKChat Status",
-            border_style="bright_blue",
-        ))
     else:
-        _print(f"  Identity:  {identity}")
-        _print(f"  Daemon:    {'UP' if daemon_ok else 'DOWN'} (port 9385)")
-        for name, up in bridges.items():
-            _print(f"  {name}: {'UP' if up else 'DOWN'}")
-        _print(f"  Presence:  {presence_online} online / {presence_total} known")
-        _print(f"  Messages:  {msg_count}")
-        _print(f"  Threads:   {len(thread_list)}")
-        _print(f"  Version:   {__version__}")
+        d_plain  = "Daemon:     \u2717 STOPPED"
+        d_styled = "Daemon:     " + click.style("\u2717 STOPPED", fg="red", bold=True)
+    out.append(_row(d_plain, d_styled))
+
+    # Identity
+    out.append(_row(
+        f"Identity:   {identity}",
+        "Identity:   " + click.style(identity, fg="cyan"),
+    ))
+
+    # Messages (fall back to history count when daemon not running)
+    if not running and msg_recv == 0:
+        try:
+            msg_recv = chat_history.message_count()
+        except Exception:
+            pass
+    out.append(_row(
+        f"Messages:   {msg_recv} received, {msg_sent} sent",
+        "Messages:   "
+        + click.style(str(msg_recv), fg="yellow") + " received, "
+        + click.style(str(msg_sent), fg="yellow") + " sent",
+    ))
+
+    # Advocacy
+    if advocacy_count:
+        adv_plain  = f"Advocacy:   \u2713 active ({advocacy_count} auto-replies)"
+        adv_styled = (
+            "Advocacy:   "
+            + click.style("\u2713 active", fg="green")
+            + f" ({advocacy_count} auto-replies)"
+        )
+    else:
+        adv_plain  = "Advocacy:   active (no auto-replies yet)"
+        adv_styled = (
+            "Advocacy:   "
+            + click.style("active", fg="green")
+            + " (no auto-replies yet)"
+        )
+    out.append(_row(adv_plain, adv_styled))
+
+    # Lumina bridge
+    if lumina_pid:
+        br_plain  = f"Bridge:     \u2713 lumina-bridge (pid: {lumina_pid})"
+        br_styled = (
+            "Bridge:     "
+            + click.style("\u2713 lumina-bridge", fg="green")
+            + f" (pid: {lumina_pid})"
+        )
+    else:
+        br_plain  = "Bridge:     \u2717 lumina-bridge not running"
+        br_styled = "Bridge:     " + click.style("\u2717 lumina-bridge not running", fg="red")
+    out.append(_row(br_plain, br_styled))
+
+    # ── Online Now ────────────────────────────────────────────────
+    out.append(_section("Online Now"))
+    if peers_info:
+        for uri, pst, age_str in peers_info[:5]:
+            name = uri.split("@")[0].replace("capauth:", "").replace("nostr:", "")
+            name = name[:14]
+            if pst == "online":
+                icon, col, label = "\u25cf", "green", (f"online ({age_str})" if age_str else "online")
+            elif pst == "away":
+                icon, col, label = "\u25cf", "yellow", (f"away ({age_str})" if age_str else "away")
+            else:
+                icon, col, label = "\u25cb", "white", "offline"
+            peer_plain  = f"  {icon} {name:<14} {label}"
+            peer_styled = (
+                "  "
+                + click.style(icon, fg=col)
+                + f" {name:<14} "
+                + click.style(label, fg=col)
+            )
+            out.append(_row(peer_plain, peer_styled))
+    else:
+        out.append(_row(
+            "  (no peers in presence cache)",
+            "  " + click.style("(no peers in presence cache)", dim=True),
+        ))
+
+    # ── Recent Activity ───────────────────────────────────────────
+    out.append(_section("Recent Activity"))
+    my_short = identity.split("@")[0].replace("capauth:", "")
+    if recent_msgs:
+        for msg in recent_msgs:
+            try:
+                ts = msg.get("timestamp")
+                if isinstance(ts, str):
+                    ts = datetime.fromisoformat(ts)
+                if ts and ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                time_str = ts.strftime("%H:%M") if ts else "??:??"
+            except Exception:
+                time_str = "??:??"
+
+            sender  = msg.get("sender") or "?"
+            s_short = sender.split("@")[0].replace("capauth:", "")
+            content = str(msg.get("content") or "")
+
+            if s_short == my_short:
+                recip   = (msg.get("recipient") or "?")
+                r_short = recip.split("@")[0].replace("capauth:", "")
+                label_plain  = f"You \u2192 {r_short}"
+                label_styled = (
+                    click.style("You", fg="blue")
+                    + " \u2192 "
+                    + click.style(r_short, fg="cyan")
+                )
+            else:
+                label_plain  = s_short
+                label_styled = click.style(s_short, fg="magenta")
+
+            max_body = TEXT_W - len(time_str) - len(label_plain) - 5
+            if len(content) > max(max_body, 6):
+                content = content[: max(max_body - 2, 6)] + ".."
+
+            act_plain  = f"[{time_str}] {label_plain}: {content}"
+            act_styled = (
+                click.style(f"[{time_str}]", dim=True)
+                + f" {label_styled}: "
+                + click.style(content, dim=True)
+            )
+            out.append(_row(act_plain, act_styled))
+    else:
+        out.append(_row(
+            "  (no recent messages)",
+            "  " + click.style("(no recent messages)", dim=True),
+        ))
+
+    # ── Transports ────────────────────────────────────────────────
+    out.append(_section("Transports"))
+
+    def _t(name: str, ok: bool) -> tuple[str, str]:
+        mark = "\u2713" if ok else "\u2717"
+        col  = "green" if ok else "red"
+        return f"{name} {mark}", f"{name} " + click.style(mark, fg=col)
+
+    t_items = [
+        _t("syncthing", syncthing_ok),
+        _t("file", True),
+        _t("webrtc", webrtc_ok),
+    ]
+    tr_plain  = "  " + "  \u2502  ".join(p for p, _ in t_items)
+    tr_styled = "  " + "  \u2502  ".join(s for _, s in t_items)
+    out.append(_row(tr_plain, tr_styled))
+
+    out.append(_bot)
+
+    _print("")
+    for line in out:
+        click.echo(line)
     _print("")
 
 
