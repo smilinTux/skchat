@@ -1,38 +1,140 @@
-"""ChatHistory — persistent chat storage backed by SKMemory.
+"""ChatHistory — persistent chat storage.
 
-Every chat message is stored as an SKMemory Memory object, which gives
-us emotional context, vector search, and the full memory lifecycle
-(short-term -> mid-term -> long-term) for free.
+Primary storage: append-only JSONL files at ~/.skchat/history/YYYY-MM-DD.jsonl,
+one JSON line per ChatMessage (via model_dump_json()).
 
-ChatHistory is the bridge between the ephemeral ChatMessage model
-and the persistent MemoryStore.
+Optional SKMemory backend: when a MemoryStore is supplied the existing
+vector-search / thread helpers remain available.
 """
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import json
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Optional
 
 from .models import ChatMessage, Thread
 
+_DEFAULT_HISTORY_DIR = Path("~/.skchat/history")
+
 
 class ChatHistory:
-    """Persistent chat history backed by SKMemory's MemoryStore.
+    """Persistent chat history with JSONL file storage.
 
-    Stores messages as Memory objects with chat-specific tags and metadata.
-    Provides conversation-oriented retrieval (by thread, by participant,
-    by time range) on top of SKMemory's generic search.
+    JSONL files live at ~/.skchat/history/YYYY-MM-DD.jsonl.
+    Each line is a JSON-serialised ChatMessage produced by
+    ``message.model_dump_json()``.
+
+    An optional SKMemory MemoryStore can be supplied for the legacy
+    vector-search / thread helpers; it is not required for basic
+    save/load operations.
 
     Args:
-        store: An SKMemory MemoryStore instance for persistence.
+        store: Optional SKMemory MemoryStore instance.
+        history_dir: Override the directory for JSONL files.
     """
 
     CHAT_TAG = "skchat"
     MESSAGE_TAG = "skchat:message"
     THREAD_TAG_PREFIX = "skchat:thread:"
 
-    def __init__(self, store: object) -> None:
+    def __init__(
+        self,
+        store: object = None,
+        history_dir: Optional[Path | str] = None,
+    ) -> None:
         self._store = store
+        self._history_dir: Path = (
+            Path(history_dir).expanduser()
+            if history_dir is not None
+            else _DEFAULT_HISTORY_DIR.expanduser()
+        )
+        self._history_dir.mkdir(parents=True, exist_ok=True)
+
+    # ------------------------------------------------------------------
+    # JSONL save / load
+    # ------------------------------------------------------------------
+
+    def save(self, message: ChatMessage) -> None:
+        """Append *message* to today's JSONL history file.
+
+        File: ``~/.skchat/history/YYYY-MM-DD.jsonl``
+        One JSON line per call, written atomically (append mode).
+
+        Args:
+            message: The ChatMessage to persist.
+        """
+        date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        path = self._history_dir / f"{date_str}.jsonl"
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(message.model_dump_json())
+            fh.write("\n")
+
+    def load(
+        self,
+        since: Optional[datetime] = None,
+        peer: Optional[str] = None,
+        limit: int = 100,
+    ) -> list[ChatMessage]:
+        """Load messages from JSONL history files.
+
+        Reads all ``.jsonl`` files in the history directory in reverse
+        chronological order (newest date first).  Each line is parsed as a
+        :class:`ChatMessage`.  Malformed lines are silently skipped.
+
+        Args:
+            since: If given, only return messages with
+                ``timestamp >= since``.  Naive datetimes are treated as UTC.
+            peer: If given, only return messages where *peer* appears as
+                either ``sender`` or ``recipient``.
+            limit: Maximum number of messages to return.
+
+        Returns:
+            List of :class:`ChatMessage` objects, newest first, up to
+            *limit* entries.
+        """
+        # Normalise `since` to an aware UTC datetime for safe comparison.
+        if since is not None and since.tzinfo is None:
+            since = since.replace(tzinfo=timezone.utc)
+
+        files = sorted(self._history_dir.glob("*.jsonl"), reverse=True)
+
+        results: list[ChatMessage] = []
+        for path in files:
+            if len(results) >= limit:
+                break
+            try:
+                lines = path.read_text(encoding="utf-8").splitlines()
+            except OSError:
+                continue
+            # Iterate newest-first within the file (reverse line order).
+            for raw in reversed(lines):
+                raw = raw.strip()
+                if not raw:
+                    continue
+                try:
+                    msg = ChatMessage.model_validate_json(raw)
+                except Exception:
+                    continue
+
+                # Filter by timestamp.
+                if since is not None:
+                    ts = msg.timestamp
+                    if ts.tzinfo is None:
+                        ts = ts.replace(tzinfo=timezone.utc)
+                    if ts < since:
+                        continue
+
+                # Filter by peer (sender or recipient).
+                if peer is not None and peer not in (msg.sender, msg.recipient):
+                    continue
+
+                results.append(msg)
+                if len(results) >= limit:
+                    break
+
+        return results
 
     @classmethod
     def from_config(cls, store_path: Optional[str] = None) -> "ChatHistory":
@@ -287,6 +389,45 @@ class ChatHistory:
             }
             for m in memories
         ]
+
+    def get_messages_since(self, minutes: int, limit: int = 200) -> list[dict]:
+        """Retrieve messages stored within the last N minutes.
+
+        Fetches all recent messages from the store and filters by the
+        ``created_at`` timestamp so only messages newer than
+        ``now - minutes`` are returned.
+
+        Args:
+            minutes: Look-back window in minutes.
+            limit: Upper bound on messages fetched before filtering.
+
+        Returns:
+            list[dict]: Message dicts sorted oldest-first so they read
+                chronologically in a live inbox display.
+        """
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=minutes)
+        all_memories = self._store.list_memories(
+            tags=[self.MESSAGE_TAG],
+            limit=limit,
+        )
+        results: list[dict] = []
+        for m in all_memories:
+            ts = m.created_at
+            if ts is None:
+                continue
+            # Normalise to aware datetime for comparison
+            if isinstance(ts, str):
+                try:
+                    ts = datetime.fromisoformat(ts)
+                except ValueError:
+                    continue
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            if ts >= cutoff:
+                results.append(self._memory_to_chat_dict(m))
+
+        results.sort(key=lambda d: d.get("timestamp", ""))
+        return results
 
     def message_count(self) -> int:
         """Count total stored chat messages.
