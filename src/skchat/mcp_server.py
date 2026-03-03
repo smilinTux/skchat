@@ -88,6 +88,7 @@ _SENDER_DISPLAY: dict[str, str] = {
 }
 
 server = Server("skchat")
+app = server  # alias for import compatibility
 
 
 # ─────────────────────────────────────────────────────────────
@@ -520,6 +521,41 @@ async def list_tools() -> list[Tool]:
                     },
                 },
                 "required": ["peer", "file_path"],
+            },
+        ),
+        Tool(
+            name="send_file",
+            description=(
+                "Send a file to a recipient via SKComm chunked transfer. "
+                "Chunks and AES-256-GCM encrypts the file, then sends "
+                "FILE_TRANSFER_INIT + FILE_CHUNK × N + FILE_TRANSFER_DONE. "
+                "Returns transfer_id for tracking with list_transfers."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "recipient": {
+                        "type": "string",
+                        "description": "CapAuth identity URI or peer name of the recipient.",
+                    },
+                    "file_path": {
+                        "type": "string",
+                        "description": "Absolute path to the file to send.",
+                    },
+                },
+                "required": ["recipient", "file_path"],
+            },
+        ),
+        Tool(
+            name="list_transfers",
+            description=(
+                "List all file transfers (outbound and inbound) with status and progress. "
+                "Returns transfer_id, filename, direction, status, and progress (0.0-1.0)."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {},
+                "required": [],
             },
         ),
         Tool(
@@ -1141,6 +1177,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         "initiate_call": _handle_initiate_call,
         "accept_call": _handle_accept_call,
         "send_file_p2p": _handle_send_file_p2p,
+        "send_file": _handle_send_file,
+        "list_transfers": _handle_list_transfers,
         "add_reaction": _handle_add_reaction,
         "remove_reaction": _handle_remove_reaction,
         "get_reactions": _handle_get_reactions,
@@ -2020,6 +2058,72 @@ async def _handle_send_file_p2p(args: dict) -> list[TextContent]:
         })
     except Exception as exc:
         return _error(f"File send failed: {exc}")
+
+
+async def _handle_send_file(args: dict) -> list[TextContent]:
+    """Send a file to a recipient via SKComm chunked transfer.
+
+    Args:
+        args: recipient (str), file_path (str).
+
+    Returns:
+        JSON with transfer_id, filename, recipient, status.
+    """
+    import json as _json
+    from pathlib import Path as _Path
+
+    from .files import FileTransferService
+
+    recipient: str = args.get("recipient", "")
+    file_path: str = args.get("file_path", "")
+
+    if not recipient:
+        return _error("recipient is required")
+    if not file_path:
+        return _error("file_path is required")
+
+    path = _Path(file_path).expanduser()
+    if not path.exists():
+        return _error(f"File not found: {file_path}")
+    if not path.is_file():
+        return _error(f"Not a file: {file_path}")
+
+    skcomm = None
+    try:
+        from skcomm.core import SKComm
+        skcomm = SKComm.from_config()
+    except Exception:
+        pass
+
+    service = FileTransferService(identity=_get_identity(), skcomm=skcomm)
+
+    try:
+        transfer_id = service.send_file(recipient, path)
+    except Exception as exc:
+        return _error(f"Send failed: {exc}")
+
+    return [TextContent(type="text", text=_json.dumps({
+        "transfer_id": transfer_id,
+        "filename": path.name,
+        "recipient": recipient,
+        "status": "sent" if skcomm else "queued_local",
+        "transport": "skcomm" if skcomm else "none",
+    }))]
+
+
+async def _handle_list_transfers(args: dict) -> list[TextContent]:
+    """List all file transfers (outbound and inbound).
+
+    Returns:
+        JSON array of transfer metadata dicts.
+    """
+    import json as _json
+
+    from .files import FileTransferService
+
+    service = FileTransferService(identity=_get_identity())
+    transfers = service.list_transfers()
+    return [TextContent(type="text", text=_json.dumps(transfers))]
 
 
 # ─────────────────────────────────────────────────────────────
