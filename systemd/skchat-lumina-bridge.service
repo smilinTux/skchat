@@ -1,0 +1,20 @@
+[Unit]
+Description=SKChat Lumina consciousness bridge
+After=skchat-daemon.service
+Wants=skchat-daemon.service
+PartOf=skchat-bridges.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/dkloud.douno.it/p/smilintux-org/skchat
+ExecStart=%h/.pyenv/shims/python3 scripts/lumina-bridge.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=skchat-lumina
+Environment=LUMINA_BRIDGE_INTERVAL=3
+Environment=SKCHAT_IDENTITY=capauth:opus@skworld.io
+
+[Install]
+WantedBy=default.target skchat-bridges.target
