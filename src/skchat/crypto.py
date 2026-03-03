@@ -246,3 +246,7 @@ class ChatCrypto:
             return str(key.fingerprint).replace(" ", "")
         except Exception:
             return None
+
+
+# Module-level alias for import compatibility
+verify_message_signature = ChatCrypto.verify_signature

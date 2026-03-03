@@ -41,8 +41,15 @@ cli = [
     "click>=8.1",
     "rich>=13.0",
 ]
+tui = [
+    "textual>=0.70",
+]
+webui = [
+    "fastapi>=0.111",
+    "uvicorn[standard]>=0.29",
+]
 all = [
-    "skchat[cli]",
+    "skchat[cli,tui,webui]",
 ]
 dev = [
     "pytest>=7.0",
@@ -55,6 +62,7 @@ dev = [
 [project.scripts]
 skchat = "skchat.cli:main"
 skchat-mcp = "skchat.mcp_server:main"
+skchat-tui = "skchat.tui:main"
 
 [project.urls]
 Homepage = "https://skchat.io"
