@@ -649,3 +649,7 @@ class GroupMessageEncryptor:
             return plaintext.decode("utf-8")
         except Exception as exc:
             raise ValueError(f"Group message decryption failed: {exc}") from exc
+
+
+# Alias for import compatibility
+ChatGroup = GroupChat
