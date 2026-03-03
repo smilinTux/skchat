@@ -1019,6 +1019,103 @@ async def list_tools() -> list[Tool]:
                 "required": [],
             },
         ),
+        Tool(
+            name="skchat_inbox",
+            description=(
+                "Unified inbox for this agent. Reads all messages addressed to the current "
+                "identity from ChatHistory (local store), falling back to AgentMessenger.receive() "
+                "if the history yields nothing. Supports filtering by sender, timestamp, and "
+                "read/unread status. Returns a list of message dicts with id, sender, content, "
+                "content_type, timestamp, thread_id, reply_to, delivery_status, and message_type."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum messages to return (default: 20).",
+                    },
+                    "sender": {
+                        "type": "string",
+                        "description": (
+                            "Filter by sender identity URI or short name "
+                            "(e.g. 'capauth:lumina@skworld.io' or 'lumina'). "
+                            "Omit to return messages from all senders."
+                        ),
+                    },
+                    "unread_only": {
+                        "type": "boolean",
+                        "description": (
+                            "Return only unread messages (delivery_status != 'read'). "
+                            "Default: true."
+                        ),
+                    },
+                    "since": {
+                        "type": "string",
+                        "description": (
+                            "ISO 8601 timestamp; only return messages at or after this time "
+                            "(e.g. '2026-03-01T00:00:00Z'). Omit for no time filter."
+                        ),
+                    },
+                },
+                "required": [],
+            },
+        ),
+        Tool(
+            name="skchat_conversation",
+            description=(
+                "Retrieve the full conversation history between the current agent and a peer. "
+                "Returns messages ordered oldest-first. Supports cursor-based pagination "
+                "via before_id to scroll back through history."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "peer": {
+                        "type": "string",
+                        "description": (
+                            "Peer identity URI (e.g. 'capauth:lumina@skworld.io') "
+                            "or short name (e.g. 'lumina')."
+                        ),
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum messages to return (default: 50).",
+                    },
+                    "before_id": {
+                        "type": "string",
+                        "description": (
+                            "Return only messages that appear before this message ID "
+                            "(for pagination). Omit to get the most recent messages."
+                        ),
+                    },
+                },
+                "required": ["peer"],
+            },
+        ),
+        Tool(
+            name="skchat_peers",
+            description=(
+                "List all known peers from the skcapstone peer store, enriched with "
+                "live presence state from the presence cache. Returns name, URI, "
+                "entity_type, last_seen, presence_state (human-readable: online/away/offline), "
+                "and capabilities for each peer."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "entity_type": {
+                        "type": "string",
+                        "description": (
+                            "Filter peers by entity type "
+                            "(e.g. 'agent', 'human', 'service'). "
+                            "Omit to return all peers."
+                        ),
+                    },
+                },
+                "required": [],
+            },
+        ),
     ]
 
 
@@ -1066,6 +1163,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         "skchat_set_presence": _handle_skchat_set_presence,
         "skchat_get_presence": _handle_skchat_get_presence,
         "skchat_inbox": _handle_skchat_inbox,
+        "skchat_peers": _handle_skchat_peers,
+        "skchat_conversation": _handle_skchat_conversation,
     }
     handler = handlers.get(name)
     if handler is None:
@@ -1123,6 +1222,57 @@ async def _handle_list_peers(args: dict) -> list[TextContent]:
 
 # ─────────────────────────────────────────────────────────────
 # Tool Handlers — Messaging
+
+
+async def _handle_skchat_peers(args: dict) -> list[TextContent]:
+    """List peers from the peer store enriched with live presence state.
+
+    Combines PeerDiscovery.list_peers() with PresenceCache.get_entry(uri)
+    and maps the cached state to a human-readable string via
+    PresenceCache.get_status() (online / away / offline).
+
+    Args:
+        args: Optional entity_type filter string.
+
+    Returns:
+        JSON list of {name, uri, entity_type, last_seen, presence_state,
+        capabilities}.
+    """
+    from .peer_discovery import PeerDiscovery
+    from .presence import PresenceCache
+
+    disc = PeerDiscovery()
+    cache = PresenceCache()
+    peers = disc.list_peers()
+
+    entity_type: str | None = args.get("entity_type")
+    if entity_type:
+        peers = [p for p in peers if p.get("entity_type", "").lower() == entity_type.lower()]
+
+    result = []
+    for peer in peers:
+        handle = peer.get("handle", peer.get("name", ""))
+        uri = disc.resolve_identity(handle) or handle
+
+        entry = cache.get_entry(uri)
+        last_seen: str | None = entry.get("timestamp") if entry else peer.get("last_seen")
+        presence_state: str = cache.get_status(uri)  # "online" | "away" | "offline"
+
+        result.append({
+            "name": peer.get("name", ""),
+            "uri": uri,
+            "entity_type": peer.get("entity_type", ""),
+            "last_seen": last_seen,
+            "presence_state": presence_state,
+            "capabilities": peer.get("capabilities", []),
+        })
+
+    return _json({
+        "count": len(result),
+        "peers": result,
+    })
+
+
 # ─────────────────────────────────────────────────────────────
 
 
@@ -2817,6 +2967,228 @@ async def _handle_who_is_online(args: dict) -> list[TextContent]:
         "peers": peers_out,
     })
 
+
+# ─────────────────────────────────────────────────────────────
+# Tool Handlers — Inbox
+# ─────────────────────────────────────────────────────────────
+
+
+async def _handle_skchat_inbox(args: dict) -> list[TextContent]:
+    """Unified inbox: all messages addressed to this agent, with filters.
+
+    Reads directly from ChatHistory (tagged by recipient identity), which
+    covers all message types (not just agent_comm).  Falls back to
+    AgentMessenger.receive() — which polls the transport — when the local
+    history is empty (e.g. first run with no stored messages).
+
+    Args:
+        args:
+            limit (int, default 20): Maximum messages to return.
+            sender (str | None): Filter by sender URI or short name.
+            unread_only (bool, default True): Exclude messages with
+                delivery_status == 'read'.
+            since (str | None): ISO 8601 lower bound on message timestamp.
+
+    Returns:
+        JSON {count, identity, filters, messages[]}.
+    """
+    from datetime import datetime, timezone as _tz
+
+    limit: int = int(args.get("limit", 20))
+    sender: Optional[str] = args.get("sender") or None
+    unread_only: bool = bool(args.get("unread_only", True))
+    since: Optional[str] = args.get("since") or None
+
+    identity = _get_identity()
+    history = _get_history()
+
+    # --- Resolve sender short name before building tag ---
+    resolved_sender: Optional[str] = sender
+    if sender and not sender.startswith("capauth:"):
+        try:
+            from .identity_bridge import resolve_peer_name
+            resolved_sender = resolve_peer_name(sender)
+        except Exception:
+            pass  # keep as-is; tag filter will simply miss
+
+    # --- Primary: read from ChatHistory ----------------------------------
+    tags = ["skchat:message", f"skchat:recipient:{identity}"]
+    if resolved_sender:
+        tags.append(f"skchat:sender:{resolved_sender}")
+
+    try:
+        memories = history._store.list_memories(tags=tags, limit=limit * 4)
+        messages: list[dict] = [history._memory_to_chat_dict(m) for m in memories]
+    except Exception as exc:
+        logger.warning("skchat_inbox: history read failed: %s", exc)
+        messages = []
+
+    # --- Fallback: poll AgentMessenger.receive() if history is empty -----
+    if not messages:
+        try:
+            messenger = _get_messenger()
+            messages = messenger.receive(limit=limit * 4)
+        except Exception as exc:
+            logger.warning("skchat_inbox: fallback receive() failed: %s", exc)
+            messages = []
+
+    # --- since filter ----------------------------------------------------
+    if since:
+        try:
+            since_dt = datetime.fromisoformat(since)
+            if since_dt.tzinfo is None:
+                since_dt = since_dt.replace(tzinfo=_tz.utc)
+            filtered: list[dict] = []
+            for m in messages:
+                ts = m.get("timestamp")
+                if ts is None:
+                    continue
+                if isinstance(ts, str):
+                    try:
+                        ts = datetime.fromisoformat(ts)
+                    except ValueError:
+                        continue
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=_tz.utc)
+                if ts >= since_dt:
+                    filtered.append(m)
+            messages = filtered
+        except ValueError:
+            return _error(
+                f"Invalid 'since' value: {since!r} — use ISO 8601 format "
+                f"(e.g. '2026-03-01T00:00:00Z')"
+            )
+
+    # --- unread_only filter ----------------------------------------------
+    if unread_only:
+        messages = [m for m in messages if m.get("delivery_status") != "read"]
+
+    # --- Sort newest-first and apply limit -------------------------------
+    messages.sort(key=lambda d: str(d.get("timestamp") or ""), reverse=True)
+    messages = messages[:limit]
+
+    return _json({
+        "count": len(messages),
+        "identity": identity,
+        "filters": {
+            "sender": resolved_sender,
+            "unread_only": unread_only,
+            "since": since,
+        },
+        "messages": [
+            {
+                "id": m.get("chat_message_id") or m.get("memory_id", ""),
+                "sender": m.get("sender", ""),
+                "content": (m.get("content") or "")[:500],
+                "content_type": m.get("content_type"),
+                "timestamp": m.get("timestamp", ""),
+                "thread_id": m.get("thread_id"),
+                "reply_to": m.get("reply_to"),
+                "delivery_status": m.get("delivery_status", "delivered"),
+                "message_type": m.get("message_type", "text"),
+            }
+            for m in messages
+        ],
+    })
+
+
+# ─────────────────────────────────────────────────────────────
+# Tool Handlers — Presence (skchat_set_presence / skchat_get_presence)
+# ─────────────────────────────────────────────────────────────
+
+
+async def _handle_skchat_set_presence(args: dict) -> list[TextContent]:
+    """Broadcast own presence state via the SKComm file transport.
+
+    Writes a PresenceIndicator JSON file to ~/.skcomm/outbox/ so that
+    Syncthing (or any polling file-transport receiver) delivers it to peers.
+    Also records the new state in the local PresenceCache so that
+    skchat_get_presence reflects the change immediately.
+
+    Args:
+        args: state (str), optional custom_status (str).
+
+    Returns:
+        JSON {ok: bool, state: str, identity: str}.
+    """
+    from .presence import PresenceCache, PresenceIndicator, PresenceState
+
+    state_raw: str = args.get("state", "online")
+    custom_status: Optional[str] = args.get("custom_status")
+
+    try:
+        state = PresenceState(state_raw)
+    except ValueError:
+        return _error(
+            f"Invalid state '{state_raw}'. "
+            f"Valid values: {[s.value for s in PresenceState]}"
+        )
+
+    identity = _get_identity()
+    indicator = PresenceIndicator(
+        identity_uri=identity,
+        state=state,
+        custom_status=custom_status,
+    )
+
+    # Write to ~/.skcomm/outbox/ so file transport picks it up
+    outbox_dir = pathlib.Path.home() / ".skcomm" / "outbox"
+    ok = False
+    try:
+        outbox_dir.mkdir(parents=True, exist_ok=True)
+        filename = f"presence-{indicator.id}.json"
+        tmp = outbox_dir / f".{filename}.tmp"
+        tmp.write_text(indicator.model_dump_json())
+        tmp.rename(outbox_dir / filename)
+        ok = True
+    except Exception as exc:
+        logger.warning("skchat_set_presence: failed to write outbox file: %s", exc)
+
+    # Always update local presence cache
+    try:
+        cache = PresenceCache()
+        cache.record(identity, state)
+    except Exception as exc:
+        logger.warning("skchat_set_presence: failed to update presence cache: %s", exc)
+
+    return _json({"ok": ok, "state": state.value, "identity": identity})
+
+
+async def _handle_skchat_get_presence(args: dict) -> list[TextContent]:
+    """Query the local presence cache for peer presence state.
+
+    If *peer* is provided, returns a single-element list for that identity URI.
+    If *peer* is omitted, returns all cached entries.
+
+    Args:
+        args: Optional peer (str) -- CapAuth identity URI.
+
+    Returns:
+        JSON list of {uri, state, last_seen}.
+    """
+    from .presence import PresenceCache
+
+    peer: Optional[str] = args.get("peer")
+    cache = PresenceCache()
+
+    def _entry_to_dict(uri: str, entry: dict) -> dict:
+        return {
+            "uri": uri,
+            "state": entry.get("state", "offline"),
+            "last_seen": entry.get("timestamp"),
+        }
+
+    if peer:
+        entry = cache.get_entry(peer)
+        if entry:
+            result = [_entry_to_dict(peer, entry)]
+        else:
+            result = []
+    else:
+        all_entries = cache.get_all()
+        result = [_entry_to_dict(uri, entry) for uri, entry in sorted(all_entries.items())]
+
+    return _json(result)
 
 # ─────────────────────────────────────────────────────────────
 # Entry Point
