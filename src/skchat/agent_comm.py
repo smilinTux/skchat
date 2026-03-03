@@ -162,7 +162,7 @@ class AgentMessenger:
             content=content,
             content_type=ContentType.MARKDOWN,
             thread_id=thread_id or self._team_id,
-            reply_to=reply_to,
+            reply_to_id=reply_to,
             ttl=ttl,
             metadata=metadata,
         )

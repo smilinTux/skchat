@@ -61,7 +61,7 @@ class ChatMessage(BaseModel):
         content_type: MIME-like content type.
         timestamp: UTC creation time.
         thread_id: Optional thread for threaded conversations.
-        reply_to: Optional ID of the message being replied to.
+        reply_to_id: Optional ID of the message being replied to.
         reactions: List of reactions on this message.
         metadata: Extensible key-value metadata.
         ttl: Seconds until auto-delete (None = permanent).
@@ -77,7 +77,7 @@ class ChatMessage(BaseModel):
     content_type: ContentType = Field(default=ContentType.MARKDOWN)
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     thread_id: Optional[str] = Field(default=None, description="Thread identifier")
-    reply_to: Optional[str] = Field(default=None, description="ID of parent message")
+    reply_to_id: Optional[str] = Field(default=None, description="ID of parent message")
     reactions: list[Reaction] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
     ttl: Optional[int] = Field(default=None, description="Seconds until auto-delete")
