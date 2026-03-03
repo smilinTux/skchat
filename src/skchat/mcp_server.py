@@ -951,6 +951,53 @@ async def list_tools() -> list[Tool]:
                 "required": ["recipient", "message"],
             },
         ),
+        Tool(
+            name="skchat_set_presence",
+            description=(
+                "Broadcast your own presence state to peers via the SKComm file transport "
+                "(~/.skcomm/outbox/). Valid states: online, offline, away, do-not-disturb, typing. "
+                "Optionally attach a custom_status text (e.g. 'In a meeting'). "
+                "Also updates the local presence cache so skchat_get_presence reflects the change. "
+                "Returns {ok: bool}."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "state": {
+                        "type": "string",
+                        "enum": ["online", "offline", "away", "do-not-disturb", "typing"],
+                        "description": "Presence state to broadcast.",
+                    },
+                    "custom_status": {
+                        "type": "string",
+                        "description": "Optional freeform status text (e.g. 'In a meeting').",
+                    },
+                },
+                "required": ["state"],
+            },
+        ),
+        Tool(
+            name="skchat_get_presence",
+            description=(
+                "Query the local presence cache. "
+                "If peer is given, returns the single entry for that identity URI. "
+                "Otherwise returns all cached entries. "
+                "Each entry has {uri, state, last_seen}."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "peer": {
+                        "type": "string",
+                        "description": (
+                            "CapAuth identity URI to look up (e.g. 'capauth:lumina@skworld.io'). "
+                            "Omit to return all cached peers."
+                        ),
+                    },
+                },
+                "required": [],
+            },
+        ),
     ]
 
 
@@ -994,6 +1041,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         "skchat_group_create": _handle_skchat_group_create,
         "skchat_group_send": _handle_skchat_group_send,
         "skchat_send": _handle_skchat_send,
+        "skchat_set_presence": _handle_skchat_set_presence,
+        "skchat_get_presence": _handle_skchat_get_presence,
     }
     handler = handlers.get(name)
     if handler is None:
