@@ -383,7 +383,7 @@ class GroupChat(BaseModel):
         self,
         sender_uri: str,
         content: str,
-        reply_to: Optional[str] = None,
+        reply_to_id: Optional[str] = None,
         ttl: Optional[int] = None,
     ) -> Optional[ChatMessage]:
         """Compose a message for this group. Any member can send.
@@ -391,7 +391,7 @@ class GroupChat(BaseModel):
         Args:
             sender_uri: Sender's CapAuth identity URI (must be a member).
             content: Message content.
-            reply_to: Optional message ID being replied to.
+            reply_to_id: Optional message ID being replied to.
             ttl: Optional seconds until auto-delete.
 
         Returns:
@@ -409,8 +409,39 @@ class GroupChat(BaseModel):
             recipient=f"group:{self.id}",
             content=content,
             thread_id=self.id,
-            reply_to=reply_to,
+            reply_to_id=reply_to_id,
             ttl=ttl,
+            metadata={"group_name": self.name, "key_version": self.key_version},
+        )
+
+    def reply(
+        self,
+        thread_id: str,
+        message: str,
+        sender_uri: str,
+    ) -> Optional[ChatMessage]:
+        """Compose a threaded reply within this group.
+
+        Sends a message with *thread_id* set so recipients can correlate it
+        with an existing conversation thread.
+
+        Args:
+            thread_id: Thread ID to reply in (may differ from group ID for sub-threads).
+            message: Reply content.
+            sender_uri: CapAuth identity URI of the sender (must be a member).
+
+        Returns:
+            ChatMessage with thread_id set, or None if sender is not an active member.
+        """
+        member = self.get_member(sender_uri)
+        if member is None or member.role == MemberRole.OBSERVER:
+            return None
+        self.touch()
+        return ChatMessage(
+            sender=sender_uri,
+            recipient=f"group:{self.id}",
+            content=message,
+            thread_id=thread_id,
             metadata={"group_name": self.name, "key_version": self.key_version},
         )
 

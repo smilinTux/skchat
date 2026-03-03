@@ -684,6 +684,32 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
+            name="send_typing_indicator",
+            description=(
+                "Send a typing presence indicator to a recipient immediately before "
+                "sending a message. Pauses 0.5 s after sending so the peer can see "
+                "the indicator. Equivalent to typing_start but optimised for the "
+                "one-shot send workflow."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "recipient": {
+                        "type": "string",
+                        "description": (
+                            "Recipient identity URI (e.g. 'capauth:lumina@skworld.io') "
+                            "or short name (e.g. 'lumina')."
+                        ),
+                    },
+                    "thread_id": {
+                        "type": "string",
+                        "description": "Thread context for the typing indicator (optional).",
+                    },
+                },
+                "required": ["recipient"],
+            },
+        ),
+        Tool(
             name="capture_to_memory",
             description=(
                 "Capture a conversation thread from SKChat history into skcapstone "
@@ -969,6 +995,10 @@ async def list_tools() -> list[Tool]:
                         "type": "string",
                         "description": "Override thread ID (defaults to group_id).",
                     },
+                    "reply_to_id": {
+                        "type": "string",
+                        "description": "Message ID this reply is in response to (optional).",
+                    },
                 },
                 "required": ["group_id", "message"],
             },
@@ -998,6 +1028,10 @@ async def list_tools() -> list[Tool]:
                     "thread_id": {
                         "type": "string",
                         "description": "Thread ID to group the message in (optional).",
+                    },
+                    "reply_to_id": {
+                        "type": "string",
+                        "description": "Message ID this is a reply to (optional).",
                     },
                     "message_type": {
                         "type": "string",
@@ -1186,6 +1220,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         "daemon_status": _handle_daemon_status,
         "typing_start": _handle_typing_start,
         "typing_stop": _handle_typing_stop,
+        "send_typing_indicator": _handle_send_typing_indicator,
         "capture_to_memory": _handle_capture_to_memory,
         "get_group_history": _handle_get_group_history,
         "send_to_group": _handle_send_to_group,
@@ -1752,18 +1787,18 @@ async def _handle_get_thread(args: dict) -> list[TextContent]:
     limit: int = args.get("limit", 50)
     history = _get_history()
 
-    messages = history.get_thread_messages(thread_id, limit=limit)
+    messages = history.get_thread(thread_id, limit=limit)
 
     return _json({
         "thread_id": thread_id,
         "count": len(messages),
         "messages": [
             {
-                "id": m.get("id", ""),
-                "sender": m.get("sender", ""),
-                "content": m.get("content", "")[:500],
-                "timestamp": m.get("timestamp", ""),
-                "reply_to": m.get("reply_to"),
+                "id": m.id,
+                "sender": m.sender,
+                "content": m.content[:500],
+                "timestamp": m.timestamp.isoformat(),
+                "reply_to_id": m.reply_to_id,
             }
             for m in messages
         ],
@@ -2373,6 +2408,46 @@ async def _handle_typing_stop(args: dict) -> list[TextContent]:
     })
 
 
+async def _handle_send_typing_indicator(args: dict) -> list[TextContent]:
+    """Send a typing indicator to a recipient (one-shot convenience tool).
+
+    Sends a HEARTBEAT with TYPING state, then pauses 0.5 s so the peer can
+    see the animation before the follow-up message arrives.  Call this
+    immediately before send_message in agentic workflows.
+
+    Args:
+        args: recipient (str), optional thread_id (str).
+
+    Returns:
+        JSON with sent status, recipient, and thread_id.
+    """
+    import asyncio
+
+    recipient: str = args.get("recipient", "")
+    if not recipient:
+        return _error("recipient is required")
+
+    thread_id: Optional[str] = args.get("thread_id")
+
+    if not recipient.startswith("capauth:"):
+        try:
+            from .identity_bridge import resolve_peer_name
+
+            recipient = resolve_peer_name(recipient)
+        except Exception:
+            pass
+
+    sent = _send_typing_indicator(recipient, typing=True, thread_id=thread_id)
+    if sent:
+        await asyncio.sleep(0.5)
+
+    return _json({
+        "sent": sent,
+        "recipient": recipient,
+        "thread_id": thread_id,
+    })
+
+
 # ─────────────────────────────────────────────────────────────
 # Tool Handlers — Daemon
 # ─────────────────────────────────────────────────────────────
@@ -2589,6 +2664,7 @@ async def _handle_skchat_group_send(args: dict) -> list[TextContent]:
     group_id: str = args.get("group_id", "")
     content: str = args.get("message", "")
     thread_id: Optional[str] = args.get("thread_id") or None
+    reply_to_id: Optional[str] = args.get("reply_to_id") or None
 
     if not group_id:
         return _error("group_id is required")
@@ -2605,6 +2681,7 @@ async def _handle_skchat_group_send(args: dict) -> list[TextContent]:
     message = group.compose_group_message(
         sender_uri=sender,
         content=content,
+        reply_to_id=reply_to_id,
     )
     if message is None:
         return _error("Failed to compose group message (not a member or observer?)")
@@ -2627,6 +2704,7 @@ async def _handle_skchat_group_send(args: dict) -> list[TextContent]:
                 content=content,
                 message_type="text",
                 thread_id=effective_thread,
+                reply_to=reply_to_id,
             )
             if result.get("delivered"):
                 delivered_to.append(member.identity_uri)
@@ -2658,6 +2736,7 @@ async def _handle_skchat_send(args: dict) -> list[TextContent]:
     recipient: str = args.get("recipient", "")
     content: str = args.get("message", "")
     thread_id: Optional[str] = args.get("thread_id") or None
+    reply_to_id: Optional[str] = args.get("reply_to_id") or None
     message_type: str = args.get("message_type", "text")
 
     if not recipient:
@@ -2680,6 +2759,7 @@ async def _handle_skchat_send(args: dict) -> list[TextContent]:
             content=content,
             message_type=message_type,
             thread_id=thread_id,
+            reply_to=reply_to_id,
         )
     except Exception as exc:
         logger.warning("skchat_send failed: %s", exc)
@@ -3367,7 +3447,7 @@ async def _handle_skchat_conversation(args: dict) -> list[TextContent]:
                     else str(m.timestamp)
                 ),
                 "thread_id": m.thread_id,
-                "reply_to_id": m.reply_to,
+                "reply_to_id": m.reply_to_id,
             }
             for m in messages
         ]

@@ -32,6 +32,7 @@ class ChatTransport:
         history: A ChatHistory instance for persistence.
         crypto: Optional ChatCrypto for encryption/signing.
         identity: CapAuth identity URI for the local user.
+        presence_cache: Optional PresenceCache for typing indicator tracking.
     """
 
     SKCHAT_CONTENT_KEY = "skchat_message"
@@ -42,11 +43,13 @@ class ChatTransport:
         history: ChatHistory,
         crypto: Optional[object] = None,
         identity: str = "capauth:local@skchat",
+        presence_cache: Optional[object] = None,
     ) -> None:
         self._skcomm = skcomm
         self._history = history
         self._crypto = crypto
         self._identity = identity
+        self._presence_cache = presence_cache  # PresenceCache for typing indicators
 
     @property
     def identity(self) -> str:
@@ -91,7 +94,7 @@ class ChatTransport:
                 recipient=message.recipient,
                 message=payload_json,
                 thread_id=message.thread_id,
-                in_reply_to=message.reply_to,
+                in_reply_to=message.reply_to_id,
             )
 
             delivered = getattr(report, "delivered", False)
@@ -154,6 +157,16 @@ class ChatTransport:
 
         for envelope in envelopes:
             try:
+                # Route HEARTBEAT envelopes to presence/typing handler
+                try:
+                    from skcomm.models import MessageType as _MsgType
+
+                    if getattr(envelope, "message_type", None) == _MsgType.HEARTBEAT:
+                        self._handle_heartbeat(envelope)
+                        continue
+                except ImportError:
+                    pass
+
                 payload_content = self._extract_payload(envelope)
                 if payload_content is None:
                     continue
@@ -217,7 +230,7 @@ class ChatTransport:
             content=content,
             content_type=ContentType.MARKDOWN,
             thread_id=thread_id,
-            reply_to=reply_to,
+            reply_to_id=reply_to,
             ttl=ttl,
         )
 
@@ -245,3 +258,59 @@ class ChatTransport:
                 return payload.get("content")
             return str(payload)
         return None
+
+    def send_typing_indicator(
+        self,
+        recipient: str,
+        thread_id: Optional[str] = None,
+    ) -> None:
+        """Send a typing presence indicator to a recipient via HEARTBEAT.
+
+        The recipient's UI can use this to display a typing animation while
+        this agent is composing a reply.  Failures are logged at DEBUG only.
+
+        Args:
+            recipient: CapAuth identity URI of the recipient.
+            thread_id: Optional thread the typing is happening in.
+        """
+        from .presence import PresenceIndicator, PresenceState
+
+        indicator = PresenceIndicator(
+            identity_uri=self._identity,
+            state=PresenceState.TYPING,
+            thread_id=thread_id,
+        )
+        try:
+            from skcomm.models import MessageType
+
+            self._skcomm.send(
+                recipient=recipient,
+                message=indicator.model_dump_json(),
+                message_type=MessageType.HEARTBEAT,
+            )
+        except Exception as exc:
+            logger.debug("Typing indicator send failed: %s", exc)
+
+    def _handle_heartbeat(self, envelope: object) -> None:
+        """Process an incoming HEARTBEAT envelope for presence/typing state.
+
+        If a presence_cache is wired in and the payload is a PresenceIndicator
+        with TYPING state, records the typing signal.  Non-TYPING heartbeats
+        clear any existing typing indicator for the sender.
+
+        Args:
+            envelope: An SKComm MessageEnvelope with message_type=HEARTBEAT.
+        """
+        if self._presence_cache is None:
+            return
+        payload_content = self._extract_payload(envelope)
+        if not payload_content:
+            return
+        try:
+            from .presence import PresenceIndicator, PresenceState
+
+            indicator = PresenceIndicator.model_validate_json(payload_content)
+            is_typing = indicator.state == PresenceState.TYPING
+            self._presence_cache.set_typing(indicator.identity_uri, is_typing)
+        except Exception as exc:
+            logger.debug("HEARTBEAT presence parse failed: %s", exc)

@@ -190,7 +190,7 @@ class ChatHistory:
             "recipient": message.recipient,
             "content_type": message.content_type.value,
             "thread_id": message.thread_id,
-            "reply_to": message.reply_to,
+            "reply_to_id": message.reply_to_id,
             "delivery_status": message.delivery_status.value,
             "ttl": message.ttl,
         }
@@ -338,8 +338,46 @@ class ChatHistory:
         ]
         return chat_results[:limit]
 
-    def get_thread(self, thread_id: str) -> Optional[dict]:
-        """Retrieve a specific thread's full metadata by ID.
+    def get_thread(self, thread_id: str, limit: int = 50) -> list[ChatMessage]:
+        """Return all messages in *thread_id* from JSONL history, sorted oldest-first.
+
+        Scans the on-disk JSONL files (no SKMemory required) and filters by
+        ``message.thread_id == thread_id``.  Results are sorted by timestamp
+        ascending so callers receive a natural conversation order.
+
+        Args:
+            thread_id: Thread identifier to filter on.
+            limit: Maximum messages to return.
+
+        Returns:
+            list[ChatMessage] sorted by timestamp ascending.
+        """
+        files = sorted(self._history_dir.glob("*.jsonl"))  # oldest date first
+        results: list[ChatMessage] = []
+        for path in files:
+            if len(results) >= limit:
+                break
+            try:
+                lines = path.read_text(encoding="utf-8").splitlines()
+            except OSError:
+                continue
+            for raw in lines:
+                raw = raw.strip()
+                if not raw:
+                    continue
+                try:
+                    msg = ChatMessage.model_validate_json(raw)
+                except Exception:
+                    continue
+                if msg.thread_id == thread_id:
+                    results.append(msg)
+                    if len(results) >= limit:
+                        break
+        results.sort(key=lambda m: m.timestamp)
+        return results
+
+    def get_thread_meta(self, thread_id: str) -> Optional[dict]:
+        """Retrieve a specific thread's full metadata by ID from SKMemory.
 
         Args:
             thread_id: The thread identifier.
@@ -459,7 +497,7 @@ class ChatHistory:
             "content": memory.content,
             "content_type": memory.metadata.get("content_type"),
             "thread_id": memory.metadata.get("thread_id"),
-            "reply_to": memory.metadata.get("reply_to"),
+            "reply_to_id": memory.metadata.get("reply_to_id"),
             "delivery_status": memory.metadata.get("delivery_status"),
             "timestamp": memory.created_at,
             "tags": memory.tags,
