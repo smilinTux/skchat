@@ -319,7 +319,7 @@ def send(
         content=message,
         content_type=content_type,
         thread_id=thread,
-        reply_to=reply_to,
+        reply_to_id=reply_to,
         ttl=ttl,
         delivery_status=DeliveryStatus.PENDING,
     )
@@ -728,18 +728,25 @@ def inbox(
     elif thread:
         messages = history.get_thread_messages(thread, limit=limit)
     else:
-        identity = _get_identity()
-        messages = history.search_messages(identity, limit=limit)
-        if not messages:
-            all_msgs = history._store.list_memories(
-                tags=["skchat:message"],
-                limit=limit,
-            )
-            messages = [
-                history._memory_to_chat_dict(m)
-                for m in all_msgs
-                if "skchat:message" in m.tags
-            ]
+        raw = history.load(limit=limit)
+        messages = [
+            {
+                "sender": m.sender,
+                "recipient": m.recipient,
+                "content": m.content,
+                "thread_id": m.thread_id,
+                "timestamp": m.timestamp,
+            }
+            for m in raw
+        ]
+
+    # --from: filter by sender (substring match on name or full URI)
+    if from_peer:
+        fp_lower = from_peer.lower()
+        messages = [
+            m for m in messages
+            if fp_lower in m.get("sender", "").lower()
+        ]
 
     # --json: raw output for scripting (handles empty case too)
     if as_json:
@@ -776,7 +783,7 @@ def inbox(
     if threads:
         _inbox_display_threads(messages, my_identity)
     else:
-        _inbox_display_grouped(messages, my_identity)
+        _inbox_display_table(messages)
 
     # Update global last-read marker so next --unread shows only newer msgs
     if messages:
@@ -1391,6 +1398,146 @@ def export(fmt: str, output: Optional[str], peer: Optional[str]) -> None:
     else:
         _print(f"  Exported {len(messages)} message(s) ({fmt}) → {out_path}")
     _print("")
+
+
+@main.command()
+@click.argument("peer")
+@click.option(
+    "--interval",
+    "-i",
+    type=float,
+    default=2.0,
+    show_default=True,
+    help="Poll interval in seconds.",
+)
+@click.option("--thread", "-t", default=None, help="Thread ID for this conversation.")
+def chat(peer: str, interval: float, thread: Optional[str]) -> None:
+    """Open an interactive chat session with a peer.
+
+    Polls for new messages from PEER every INTERVAL seconds and displays
+    them inline. Type a message and press Enter to send. Ctrl+C exits.
+
+    PEER can be a short name (e.g. 'lumina') or a full capauth URI.
+
+    Examples:
+
+        skchat chat lumina
+
+        skchat chat capauth:chef@skworld.io
+
+        skchat chat lumina --interval 5
+
+        skchat chat lumina --thread proj-alpha
+    """
+    import threading
+
+    try:
+        peer_uri = resolve_peer_name(peer)
+    except PeerResolutionError:
+        peer_uri = peer
+
+    peer_display = _display_name(peer_uri)
+    peer_label = peer if peer == peer_uri else f"{peer} ({peer_uri})"
+    identity = _get_identity()
+    messenger = AgentMessenger.from_identity(identity=identity)
+
+    _print("")
+    if HAS_RICH and console:
+        console.print(Panel(
+            f"[bold]Peer:[/]     [cyan]{peer_label}[/]\n"
+            f"[bold]You:[/]      [blue]{_display_name(identity)}[/]\n"
+            f"[dim]Polling every {interval}s · type + Enter to send · Ctrl+C to quit[/]",
+            title="[bold cyan]SKChat Interactive[/]",
+            border_style="cyan",
+        ))
+    else:
+        click.echo(f"  Chat with {peer_label}  (Ctrl+C to exit)\n")
+
+    # Seed seen-set from local history to avoid re-printing old messages
+    history = _get_history()
+    recent = history.get_conversation(identity, peer_uri, limit=10)
+    seen_keys: set = set()
+
+    if recent:
+        if HAS_RICH and console:
+            console.print("[dim]\u2500\u2500\u2500 recent \u2500\u2500\u2500[/]")
+        else:
+            click.echo("\u2500\u2500\u2500 recent \u2500\u2500\u2500")
+
+        for msg in reversed(recent):
+            sender = msg.get("sender", "unknown")
+            content = msg.get("content", "")
+            ts_str = _ts_hhmm(msg.get("timestamp", ""))
+            is_me = sender == identity
+            label = "You" if is_me else peer_display
+            color = "blue" if is_me else "cyan"
+            if HAS_RICH and console:
+                console.print(f"  [dim]{ts_str}[/] [{color}]{label}:[/] {content}")
+            else:
+                click.echo(f"  [{ts_str}] {label}: {content}")
+            seen_keys.add(_msg_key(msg))
+
+        if HAS_RICH and console:
+            console.print("[dim]\u2500\u2500\u2500 live \u2500\u2500\u2500[/]\n")
+        else:
+            click.echo("\u2500\u2500\u2500 live \u2500\u2500\u2500\n")
+
+    stop_event = threading.Event()
+
+    def _poll_loop() -> None:
+        while not stop_event.is_set():
+            try:
+                msgs = messenger.receive(limit=50)
+                for msg in reversed(msgs):
+                    if msg.get("sender") != peer_uri:
+                        continue
+                    key = _msg_key(msg)
+                    if key in seen_keys:
+                        continue
+                    seen_keys.add(key)
+                    content = msg.get("content", "")
+                    ts_str = _ts_hhmm(msg.get("timestamp", ""))
+                    # Clear current input line, print message, re-show prompt
+                    sys.stdout.write("\r")
+                    if HAS_RICH and console:
+                        console.print(
+                            f"  [dim]{ts_str}[/] [cyan]{peer_display}:[/] {content}"
+                        )
+                    else:
+                        click.echo(f"  [{ts_str}] {peer_display}: {content}")
+                    sys.stdout.write("You: ")
+                    sys.stdout.flush()
+            except Exception:
+                pass
+            stop_event.wait(interval)
+
+    poll_thread = threading.Thread(target=_poll_loop, daemon=True)
+    poll_thread.start()
+
+    try:
+        while True:
+            try:
+                user_input = input("You: ")
+            except EOFError:
+                break
+            text = user_input.strip()
+            if not text:
+                continue
+            result = messenger.send(peer_uri, text, thread_id=thread)
+            delivered = result.get("delivered", False)
+            ts_str = datetime.now(timezone.utc).strftime("%H:%M")
+            if HAS_RICH and console:
+                tag = " [dim](delivered)[/]" if delivered else " [dim](stored)[/]"
+                console.print(f"  [dim]{ts_str}[/] [blue]You:[/] {text}{tag}")
+            else:
+                tag = " (delivered)" if delivered else " (stored)"
+                click.echo(f"  [{ts_str}] You: {text}{tag}")
+    except KeyboardInterrupt:
+        pass
+    finally:
+        stop_event.set()
+
+    _print("\n  [dim]Chat session ended.[/]\n")
 
 
 @main.command(name="receive")
@@ -3143,6 +3290,7 @@ def peers_list(entity_type: Optional[str]) -> None:
             _print(f"    {name:<16} {uri:<42} {etype:<12} {trust}")
 
     _print("")
+
 
 
 @main.command()
