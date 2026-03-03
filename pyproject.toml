@@ -3,8 +3,8 @@ requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "skchat"
-version = "0.1.0"
+name = "skchat-sovereign"
+version = "0.1.1"
 description = "AI-native encrypted P2P chat — sovereign communication for humans and AI"
 readme = "README.md"
 license = {text = "GPL-3.0-or-later"}
@@ -38,7 +38,7 @@ cli = [
     "rich>=13.0",
 ]
 all = [
-    "skchat[cli]",
+    "skchat-sovereign[cli]",
 ]
 dev = [
     "pytest>=7.0",
