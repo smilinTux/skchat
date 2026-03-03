@@ -108,6 +108,7 @@ class GroupChat(BaseModel):
     group_key: str = Field(default_factory=lambda: os.urandom(32).hex())
     key_version: int = 1
     metadata: dict[str, Any] = Field(default_factory=dict)
+    rotation_history: list[dict[str, Any]] = Field(default_factory=list)
 
     @classmethod
     def create(
@@ -182,11 +183,15 @@ class GroupChat(BaseModel):
         self.updated_at = datetime.now(timezone.utc)
         return member
 
-    def remove_member(self, identity_uri: str) -> bool:
+    def remove_member(self, identity_uri: str, transport: Any = None) -> bool:
         """Remove a member from the group and rotate the key.
+
+        The group key is rotated automatically so the removed member
+        cannot decrypt future messages (forward secrecy).
 
         Args:
             identity_uri: CapAuth identity URI to remove.
+            transport: Optional transport to broadcast the new key.
 
         Returns:
             bool: True if the member was found and removed.
@@ -196,7 +201,10 @@ class GroupChat(BaseModel):
         removed = len(self.members) < before
 
         if removed:
-            self.rotate_key()
+            self.rotate_key(
+                reason=f"member_removed:{identity_uri}",
+                transport=transport,
+            )
             self.updated_at = datetime.now(timezone.utc)
 
         return removed
@@ -227,19 +235,59 @@ class GroupChat(BaseModel):
         member = self.get_member(identity_uri)
         return member is not None and member.role == MemberRole.ADMIN
 
-    def rotate_key(self) -> str:
-        """Generate a new group key and increment the version.
+    def rotate_key(self, reason: str = "manual", transport: Any = None) -> str:
+        """Generate a new group key, record history, and optionally broadcast.
 
         Called automatically when a member is removed to maintain
-        forward secrecy. The new key must be re-distributed to
-        all remaining members.
+        forward secrecy.  Can also be triggered manually for periodic
+        key hygiene or after a security concern.
+
+        Args:
+            reason: Human-readable reason for the rotation (e.g.
+                ``"manual"``, ``"member_removed:capauth:bob@…"``).
+            transport: Optional transport object whose ``send(identity, payload)``
+                method is called to push the new key to every remaining member.
 
         Returns:
             str: The new group key (hex-encoded).
         """
         self.group_key = os.urandom(32).hex()
         self.key_version += 1
-        logger.info("Group %s key rotated to version %d", self.id[:8], self.key_version)
+
+        self.rotation_history.append(
+            {
+                "event": "key_rotation",
+                "reason": reason,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "version": self.key_version,
+            }
+        )
+
+        if transport is not None:
+            distributions = GroupKeyDistributor.distribute_key(self)
+            key_package = {
+                "type": "group_key_rotation",
+                "group_id": self.id,
+                "key_version": self.key_version,
+                "reason": reason,
+                "distributions": distributions,
+            }
+            for member in self.members:
+                try:
+                    transport.send(member.identity_uri, key_package)
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to broadcast key rotation to %s: %s",
+                        member.identity_uri,
+                        exc,
+                    )
+
+        logger.info(
+            "Group %s key rotated to version %d (reason: %s)",
+            self.id[:8],
+            self.key_version,
+            reason,
+        )
         return self.group_key
 
     def touch(self) -> None:
@@ -365,6 +413,62 @@ class GroupChat(BaseModel):
             ttl=ttl,
             metadata={"group_name": self.name, "key_version": self.key_version},
         )
+
+    def broadcast(self, message: str, sender_uri: str) -> dict:
+        """Multicast a message to all group members except the sender.
+
+        Uses AgentMessenger (backed by file transport via SKComm) to deliver
+        the message individually to each non-sender member. Collects per-member
+        delivery outcomes and returns a summary.
+
+        Args:
+            message: Message content to broadcast.
+            sender_uri: CapAuth identity URI of the sender (excluded from delivery).
+
+        Returns:
+            dict: ``{"delivered": [...], "failed": [...], "total": N,
+                    "sent_by": sender_uri, "group_id": self.id}``
+        """
+        from .agent_comm import AgentMessenger
+
+        messenger = AgentMessenger.from_identity(sender_uri)
+        delivered: list[str] = []
+        failed: list[str] = []
+
+        for member in self.members:
+            if member.identity_uri == sender_uri:
+                continue
+            try:
+                result = messenger.send(
+                    recipient=member.identity_uri,
+                    content=message,
+                    thread_id=self.id,
+                )
+                if result.get("delivered"):
+                    delivered.append(member.identity_uri)
+                else:
+                    failed.append(member.identity_uri)
+            except Exception as exc:
+                logger.warning(
+                    "broadcast: failed to deliver to %s: %s",
+                    member.identity_uri,
+                    exc,
+                )
+                failed.append(member.identity_uri)
+
+        logger.info(
+            "Group %s broadcast: %d delivered, %d failed",
+            self.id[:8],
+            len(delivered),
+            len(failed),
+        )
+        return {
+            "delivered": delivered,
+            "failed": failed,
+            "total": len(delivered) + len(failed),
+            "sent_by": sender_uri,
+            "group_id": self.id,
+        }
 
     @property
     def agents(self) -> list[GroupMember]:
