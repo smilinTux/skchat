@@ -3190,6 +3190,86 @@ async def _handle_skchat_get_presence(args: dict) -> list[TextContent]:
 
     return _json(result)
 
+
+# ─────────────────────────────────────────────────────────────
+# Tool Handlers — Conversation History
+# ─────────────────────────────────────────────────────────────
+
+
+async def _handle_skchat_conversation(args: dict) -> list[TextContent]:
+    """Retrieve the full conversation thread between self and a peer.
+
+    Loads all messages from JSONL history where the peer is the sender
+    or recipient, applies optional cursor-based pagination via before_id,
+    and returns them ordered oldest-first.
+
+    Args:
+        args: peer (str), optional limit (int, default 50),
+              optional before_id (str).
+
+    Returns:
+        JSON list of {id, sender, content, timestamp, thread_id, reply_to_id}
+        ordered oldest-first.
+    """
+    peer: str = args.get("peer", "")
+    if not peer:
+        return _error("peer is required")
+
+    limit: int = int(args.get("limit", 50))
+    before_id: str | None = args.get("before_id") or None
+
+    # Resolve short name → full CapAuth URI via skcapstone peer store.
+    if not peer.startswith("capauth:"):
+        try:
+            from .peer_discovery import PeerDiscovery
+
+            disc = PeerDiscovery()
+            resolved = disc.resolve_identity(peer)
+            if resolved:
+                peer = resolved
+        except Exception:
+            pass
+
+    history = _get_history()
+
+    # When paginating we load a wider window so there are enough messages
+    # before the anchor to fill a full page.
+    fetch_limit = limit if before_id is None else min(limit * 4, 400)
+    messages = history.load(peer=peer, limit=fetch_limit)
+
+    # load() returns newest-first; reverse to chronological (oldest-first).
+    messages = list(reversed(messages))
+
+    if before_id:
+        idx = next((i for i, m in enumerate(messages) if m.id == before_id), None)
+        if idx is None:
+            # Anchor not found in this window — signal end of history.
+            messages = []
+        else:
+            messages = messages[:idx]
+
+    # Return the last `limit` messages in the window (oldest-first).
+    messages = messages[-limit:] if messages else []
+
+    return _json(
+        [
+            {
+                "id": m.id,
+                "sender": m.sender,
+                "content": m.content,
+                "timestamp": (
+                    m.timestamp.isoformat()
+                    if hasattr(m.timestamp, "isoformat")
+                    else str(m.timestamp)
+                ),
+                "thread_id": m.thread_id,
+                "reply_to_id": m.reply_to,
+            }
+            for m in messages
+        ]
+    )
+
+
 # ─────────────────────────────────────────────────────────────
 # Entry Point
 # ─────────────────────────────────────────────────────────────
