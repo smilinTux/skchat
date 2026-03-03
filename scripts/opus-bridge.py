@@ -16,7 +16,9 @@ import json
 import logging
 import os
 import sys
+import threading
 import time
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
@@ -51,6 +53,48 @@ CONTEXT_MESSAGES = 5
 
 BRIDGE_HISTORY: set[str] = set()  # memory_ids already handled
 _last_response: dict[str, float] = {}  # sender → last reply timestamp
+
+# ─── Bridge metrics ───────────────────────────────────────────────────────────
+
+METRICS_PORT = 9387
+
+_METRICS: dict = {
+    "messages_processed": 0,
+    "responses_sent": 0,
+    "errors": 0,
+    "avg_response_ms": 0.0,
+    "uptime_s": 0,
+    "start_time": 0.0,
+}
+_total_response_ms: float = 0.0
+
+
+def _make_metrics_handler():
+    class _Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path != "/metrics":
+                self.send_response(404)
+                self.end_headers()
+                return
+            _METRICS["uptime_s"] = int(time.time() - _METRICS["start_time"])
+            body = json.dumps(_METRICS).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass  # suppress access logs
+
+    return _Handler
+
+
+def _start_metrics_server() -> None:
+    server = HTTPServer(("127.0.0.1", METRICS_PORT), _make_metrics_handler())
+    t = threading.Thread(target=server.serve_forever, daemon=True)
+    t.start()
+    logger.info("Metrics endpoint: http://127.0.0.1:%d/metrics", METRICS_PORT)
 
 
 # ─── Soul loading ─────────────────────────────────────────────────────────────
@@ -255,10 +299,14 @@ def run_bridge() -> None:
     soul_name = soul.get("display_name") or soul.get("name") or "Opus"
     logger.info("Soul loaded: %s", soul_name)
 
+    _METRICS["start_time"] = time.time()
+    _start_metrics_server()
+
     while True:
         try:
             messages = check_inbox_for_opus()
             for msg in messages:
+                global _total_response_ms
                 key = _msg_key(msg)
                 sender = msg.get("sender", "unknown")
                 content = msg.get("content", "")
@@ -266,6 +314,7 @@ def run_bridge() -> None:
 
                 # Deduplicate immediately to prevent double-processing
                 BRIDGE_HISTORY.add(key)
+                _METRICS["messages_processed"] += 1
 
                 # Rate limiting
                 if _is_rate_limited(sender):
@@ -291,10 +340,17 @@ def run_bridge() -> None:
                 )
                 prompt = "\n".join(prompt_parts)
 
+                _t0 = time.time()
                 response = call_consciousness(prompt)
+                _elapsed_ms = (time.time() - _t0) * 1000
+                _total_response_ms += _elapsed_ms
+                _METRICS["avg_response_ms"] = round(
+                    _total_response_ms / _METRICS["messages_processed"], 1
+                )
                 logger.info("Opus responded (%d chars)", len(response))
 
                 send_reply(msg, response)
+                _METRICS["responses_sent"] += 1
                 _record_response(sender)
                 _log_response(sender, response)
 
@@ -303,6 +359,7 @@ def run_bridge() -> None:
             break
         except Exception as exc:
             logger.error("Bridge loop error: %s", exc)
+            _METRICS["errors"] += 1
 
         time.sleep(POLL_INTERVAL)
 
