@@ -1,0 +1,7 @@
+[Unit]
+Description=SKChat bridge services (Lumina + Opus)
+After=skchat-daemon.service
+Wants=skchat-lumina-bridge.service skchat-opus-bridge.service
+
+[Install]
+WantedBy=default.target
