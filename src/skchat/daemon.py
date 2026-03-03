@@ -12,15 +12,23 @@ The daemon can be run as:
 
 from __future__ import annotations
 
+import json
 import logging
 import signal
 import sys
+import threading
 import time
 from datetime import datetime, timezone
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+# Exponential backoff delays (seconds) for consecutive transport poll failures.
+# Index 0 = 1st failure delay; last entry is the cap applied for all further failures.
+_BACKOFF_DELAYS: tuple = (5, 10, 20, 40, 60)
+_BACKOFF_ERROR_THRESHOLD: int = 5  # emit ERROR after this many consecutive failures
 
 
 class DaemonShutdown(Exception):
@@ -53,6 +61,11 @@ class ChatDaemon:
         self.last_poll_time: Optional[datetime] = None
         self.poll_count = 0
         self._webrtc_active = False
+        self._transport_ok: bool = False
+        self._consecutive_failures: int = 0
+        self.total_sent: int = 0
+        self.start_time: Optional[datetime] = None
+        self.last_heartbeat_at: Optional[datetime] = None
 
         if log_file:
             logging.basicConfig(
@@ -143,8 +156,14 @@ class ChatDaemon:
         # Initialize outbox queue drain
         queue = self._init_queue(skcomm)
 
+        # Initialize memory bridge for hourly auto-capture
+        bridge = self._init_memory_bridge(history)
+
         # Initialize WebRTC transport event wiring
         self._init_webrtc(skcomm, identity)
+
+        # Initialize transport watchdog (health-check + auto-reconnect)
+        watchdog = self._init_watchdog(skcomm)
 
         subsystems = []
         if reaper:
@@ -155,17 +174,28 @@ class ChatDaemon:
             subsystems.append("queue")
         if self._webrtc_active:
             subsystems.append("webrtc")
+        if watchdog:
+            subsystems.append("watchdog")
+        if bridge:
+            subsystems.append("memory-bridge")
         subsys_str = ", ".join(subsystems) if subsystems else "none"
 
         self._log(f"SKChat daemon starting (identity: {identity})")
         self._log(f"Polling every {self.interval}s, subsystems: {subsys_str}, Ctrl+C to stop")
 
+        self._start_health_server()
+
+        self.start_time = datetime.now(timezone.utc)
         self.running = True
         reap_counter = 0
         queue_counter = 0
         presence_counter = 0
+        memory_bridge_counter = 0
+        watchdog_counter = 0
 
         try:
+            from skchat.advocacy import AdvocacyEngine
+            engine = AdvocacyEngine(identity=identity)
             while self.running:
                 self.poll_count += 1
                 self.last_poll_time = datetime.now(timezone.utc)
@@ -173,6 +203,15 @@ class ChatDaemon:
                 # --- Poll for incoming messages ---
                 try:
                     messages = transport.poll_inbox()
+
+                    # Transport succeeded — reset backoff counter
+                    if self._consecutive_failures > 0:
+                        logger.info(
+                            "Transport recovered after %d consecutive failure(s)",
+                            self._consecutive_failures,
+                        )
+                        self._consecutive_failures = 0
+                    self._transport_ok = True
 
                     if messages:
                         self.total_received += len(messages)
@@ -182,12 +221,43 @@ class ChatDaemon:
                             sender_short = msg.sender.split("@")[0].replace("capauth:", "")
                             preview = msg.content[:60] + ("..." if len(msg.content) > 60 else "")
                             self._log(f"  [{sender_short}] {preview}")
+                            try:
+                                import subprocess
+                                subprocess.run(
+                                    ["notify-send", "SKChat", f"[{sender_short}] {preview}"],
+                                    capture_output=True,
+                                )
+                            except Exception:
+                                pass
+                            try:
+                                reply = engine.process_message(msg)
+                                if reply:
+                                    transport.send_and_store(msg.sender, reply)
+                            except Exception as exc:
+                                self._log(f"Advocacy error: {exc}", "warning")
                     else:
                         if self.poll_count % 12 == 0:
                             self._log(f"No new messages (polls: {self.poll_count}, uptime: {self._uptime()})")
 
                 except Exception as exc:
-                    self._log(f"Poll error: {exc}", "warning")
+                    self._consecutive_failures += 1
+                    self._transport_ok = False
+                    delay = _BACKOFF_DELAYS[
+                        min(self._consecutive_failures - 1, len(_BACKOFF_DELAYS) - 1)
+                    ]
+                    self._log(
+                        f"Transport poll failed (attempt {self._consecutive_failures},"
+                        f" retrying in {delay}s): {exc}",
+                        "warning",
+                    )
+                    if self._consecutive_failures >= _BACKOFF_ERROR_THRESHOLD:
+                        logger.error(
+                            "Transport has failed %d consecutive time(s);"
+                            " check SKComm connectivity",
+                            self._consecutive_failures,
+                        )
+                    time.sleep(delay)
+                    continue
 
                 # --- Reap expired ephemeral messages (every 6 cycles ~30s) ---
                 reap_counter += 1
@@ -218,6 +288,7 @@ class ChatDaemon:
                         )
                         if delivered > 0 or failed > 0:
                             self._log(f"Queue drain: {delivered} delivered, {failed} failed")
+                        self.total_sent += delivered
                     except Exception as exc:
                         self._log(f"Queue drain error: {exc}", "warning")
 
@@ -227,8 +298,36 @@ class ChatDaemon:
                     presence_counter = 0
                     try:
                         self._broadcast_presence(skcomm, identity, presence)
+                        self.last_heartbeat_at = datetime.now(timezone.utc)
                     except Exception as exc:
                         self._log(f"Presence broadcast error: {exc}", "warning")
+
+                # --- Auto-capture active threads to skcapstone (every 720 cycles ~1h) ---
+                memory_bridge_counter += 1
+                if bridge and memory_bridge_counter >= 720:
+                    memory_bridge_counter = 0
+                    try:
+                        results = bridge.auto_capture()
+                        if results:
+                            self._log(
+                                f"MemoryBridge: captured {len(results)} thread(s) to skcapstone"
+                            )
+                    except Exception as exc:
+                        self._log(f"MemoryBridge auto-capture error: {exc}", "warning")
+
+                # --- Watchdog health check + stats file write (every 6 cycles ~30s) ---
+                watchdog_counter += 1
+                if watchdog_counter >= 6:
+                    watchdog_counter = 0
+                    if watchdog:
+                        try:
+                            watchdog.check()
+                        except Exception as exc:
+                            self._log(f"Watchdog error: {exc}", "warning")
+                    try:
+                        self._write_daemon_stats(watchdog, presence, skcomm)
+                    except Exception as exc:
+                        logger.warning("Daemon stats write error: %s", exc)
 
                 time.sleep(self.interval)
 
@@ -287,8 +386,8 @@ class ChatDaemon:
             MessageQueue or None if initialization fails.
         """
         try:
-            from skcomm.queue import MessageQueue
-            return MessageQueue()
+            from .outbox import OutboxQueue
+            return OutboxQueue()
         except Exception as exc:
             self._log(f"Queue init skipped: {exc}", "warning")
             return None
@@ -324,6 +423,23 @@ class ChatDaemon:
         except Exception as exc:
             self._log(f"WebRTC init skipped: {exc}", "warning")
 
+
+    def _init_memory_bridge(self, history: object) -> object:
+        """Initialize the MemoryBridge for hourly auto-capture to skcapstone.
+
+        Args:
+            history: ChatHistory instance.
+
+        Returns:
+            MemoryBridge or None if initialization fails.
+        """
+        try:
+            from .memory_bridge import MemoryBridge
+            return MemoryBridge(history=history)
+        except Exception as exc:
+            self._log(f"MemoryBridge init skipped: {exc}", "warning")
+            return None
+
     def _broadcast_presence(
         self,
         skcomm: object,
@@ -348,6 +464,14 @@ class ChatDaemon:
         )
         tracker.update(indicator)
 
+        # Persist own presence to the file-backed cache so CLI / MCP tools
+        # (skchat who, who_is_online) can read it without being in-process.
+        try:
+            from .presence import PresenceCache
+            PresenceCache().record(identity, state, indicator.timestamp)
+        except Exception as exc:
+            logger.debug("PresenceCache.record failed: %s", exc)
+
         try:
             payload = indicator.model_dump_json()
             from skcomm.models import MessageType
@@ -365,10 +489,12 @@ class ChatDaemon:
         Returns:
             str: Human-readable uptime (e.g., "5m 30s")
         """
-        if not self.last_poll_time:
+        if self.start_time:
+            uptime_seconds = int((datetime.now(timezone.utc) - self.start_time).total_seconds())
+        elif self.last_poll_time:
+            uptime_seconds = int(self.poll_count * self.interval)
+        else:
             return "0s"
-
-        uptime_seconds = int(self.poll_count * self.interval)
         
         if uptime_seconds < 60:
             return f"{uptime_seconds}s"
@@ -380,6 +506,144 @@ class ChatDaemon:
             hours = uptime_seconds // 3600
             minutes = (uptime_seconds % 3600) // 60
             return f"{hours}h {minutes}m"
+
+    def _start_health_server(self, port: int = 9385) -> None:
+        """Start a tiny HTTP healthcheck server in a daemon thread.
+
+        Serves GET /health → JSON with live daemon metrics.
+
+        Args:
+            port: TCP port to listen on (default: 9385).
+        """
+        daemon_ref = self
+
+        class _HealthHandler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:
+                if self.path != "/health":
+                    self.send_response(404)
+                    self.end_headers()
+                    return
+
+                uptime_s = 0
+                if daemon_ref.start_time:
+                    uptime_s = int(
+                        (datetime.now(timezone.utc) - daemon_ref.start_time).total_seconds()
+                    )
+
+                last_poll_at = (
+                    daemon_ref.last_poll_time.isoformat()
+                    if daemon_ref.last_poll_time
+                    else None
+                )
+
+                body = json.dumps({
+                    "status": "ok" if daemon_ref.running else "stopping",
+                    "uptime_s": uptime_s,
+                    "messages_received": daemon_ref.total_received,
+                    "last_poll_at": last_poll_at,
+                    "transport_ok": daemon_ref._transport_ok,
+                }).encode()
+
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, fmt, *args) -> None:  # noqa: N802
+                pass  # suppress access log noise
+
+        server = HTTPServer(("127.0.0.1", port), _HealthHandler)
+        thread = threading.Thread(
+            target=server.serve_forever,
+            daemon=True,
+            name="skchat-health",
+        )
+        thread.start()
+        self._log(f"Health endpoint listening on http://127.0.0.1:{port}/health")
+
+    def _init_watchdog(self, skcomm: object) -> object:
+        """Initialize the transport watchdog.
+
+        Args:
+            skcomm: SKComm instance to monitor and reconnect.
+
+        Returns:
+            TransportWatchdog or None if initialization fails.
+        """
+        try:
+            from .watchdog import TransportWatchdog
+            return TransportWatchdog(transport=skcomm)
+        except Exception as exc:
+            self._log(f"Watchdog init skipped: {exc}", "warning")
+            return None
+
+    def _write_daemon_stats(
+        self,
+        watchdog: object,
+        presence: object,
+        skcomm: object,
+    ) -> None:
+        """Write daemon runtime stats to the stats JSON file.
+
+        Stats are consumed by daemon_status() and the MCP daemon_status tool
+        to expose uptime, message counts, and transport health across processes.
+
+        Args:
+            watchdog: TransportWatchdog instance (or None).
+            presence: PresenceTracker instance (or None).
+            skcomm: SKComm instance (or None).
+        """
+        stats_path = _DAEMON_STATS_FILE.expanduser()
+
+        uptime_seconds = 0
+        if self.start_time:
+            uptime_seconds = int(
+                (datetime.now(timezone.utc) - self.start_time).total_seconds()
+            )
+
+        transport_status = "unknown"
+        if watchdog:
+            transport_status = watchdog.transport_status
+
+        online_peer_count = 0
+        if presence:
+            try:
+                online_peer_count = len(presence.who_is_online())
+            except Exception:
+                pass
+
+        webrtc_signaling_ok = False
+        if skcomm:
+            try:
+                for t in skcomm.router.transports:
+                    if t.name == "webrtc":
+                        webrtc_signaling_ok = bool(
+                            getattr(t, "_signaling_connected", False)
+                        )
+                        break
+            except Exception:
+                pass
+
+        stats = {
+            "uptime_seconds": uptime_seconds,
+            "messages_sent": self.total_sent,
+            "messages_received": self.total_received,
+            "transport_status": transport_status,
+            "webrtc_signaling_ok": webrtc_signaling_ok,
+            "last_heartbeat_at": (
+                self.last_heartbeat_at.isoformat()
+                if self.last_heartbeat_at
+                else None
+            ),
+            "online_peer_count": online_peer_count,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+        stats_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = stats_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(stats))
+        tmp.rename(stats_path)
 
     @staticmethod
     def from_config(config_path: Optional[Path] = None) -> "ChatDaemon":
@@ -424,6 +688,8 @@ class ChatDaemon:
 
 DAEMON_PID_FILE = Path("~/.skchat/daemon.pid")
 DAEMON_LOG_FILE = Path("~/.skchat/daemon.log")
+DAEMON_STATS_FILE = Path("~/.skchat/daemon_stats.json")
+_DAEMON_STATS_FILE = DAEMON_STATS_FILE  # internal alias used by _write_daemon_stats
 
 
 def _pid_file() -> Path:
@@ -484,22 +750,40 @@ def is_running() -> bool:
 
 
 def daemon_status() -> dict:
-    """Get the current daemon status.
+    """Get the current daemon status including runtime statistics.
+
+    Reads the PID file to determine if the daemon is running, then merges
+    in the stats written by ChatDaemon._write_daemon_stats (uptime,
+    message counts, transport health, heartbeat time, online peers).
 
     Returns:
-        dict with keys: running (bool), pid (int|None), pid_file (str).
+        dict with keys: running, pid, pid_file, log_file, plus
+        uptime_seconds, messages_sent, messages_received,
+        transport_status, webrtc_signaling_ok, last_heartbeat_at,
+        online_peer_count, updated_at (when daemon was last running).
     """
     pid = _read_pid()
     running = is_running()
     if not running and pid is not None:
         _remove_pid()
         pid = None
-    return {
+
+    status: dict = {
         "running": running,
         "pid": pid,
         "pid_file": str(_pid_file()),
         "log_file": str(DAEMON_LOG_FILE.expanduser()),
     }
+
+    stats_file = DAEMON_STATS_FILE.expanduser()
+    if stats_file.exists():
+        try:
+            stats = json.loads(stats_file.read_text())
+            status.update(stats)
+        except Exception as exc:
+            logger.debug("Failed to read daemon stats file: %s", exc)
+
+    return status
 
 
 def start_daemon(
