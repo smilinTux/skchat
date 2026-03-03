@@ -19,6 +19,18 @@ Tools:
     add_reaction       — Add an emoji reaction to a message
     remove_reaction    — Remove a reaction from a message
     daemon_status      — Get SKChat background daemon status
+    typing_start              — Broadcast a typing indicator to a peer via SKComm
+    typing_stop               — Broadcast a typing-stopped indicator to a peer via SKComm
+    capture_to_memory         — Capture a conversation thread to skcapstone memory
+    capture_chat_to_memory    — Capture recent messages as a skcapstone memory (session-aware)
+    get_context_for_message   — Search skcapstone memories relevant to a query for AI context
+    speak_message             — Read a message aloud using Piper TTS (local, sovereign)
+    record_voice_message      — Record audio from microphone and transcribe with Whisper STT
+    skchat_group_create       — Create a group from a flat list[str] of member identity URIs
+    skchat_group_send         — Send to group; returns {status, delivered_to, failed}
+    skchat_peers              — List known peers with presence state and capabilities
+    skchat_set_presence       — Broadcast own presence state via file transport to ~/.skcomm/outbox/
+    skchat_get_presence       — Query presence cache for all peers or a specific peer
 
 Invocation:
     python -m skchat.mcp_server
@@ -34,6 +46,8 @@ import asyncio
 import json
 import logging
 import pathlib
+import re
+import threading
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -58,7 +72,17 @@ _groups: dict[str, GroupChat] = {}
 _groups_loaded: bool = False
 _reactions: Optional[ReactionManager] = None
 
+# Single lock guards all lazy-init blocks above. Double-checked locking
+# pattern: fast path reads without the lock; slow path acquires and re-checks.
+_init_lock = threading.Lock()
+
 _GROUPS_DIR = pathlib.Path.home() / ".skchat" / "groups"
+
+# Well-known identity → display name mappings for group history formatting.
+_SENDER_DISPLAY: dict[str, str] = {
+    "capauth:lumina@skworld.io": "Lumina",
+    "capauth:opus@skworld.io": "Claude/Opus",
+}
 
 server = Server("skchat")
 
@@ -72,10 +96,12 @@ def _get_identity() -> str:
     """Get or resolve the sovereign identity."""
     global _identity
     if _identity is None:
-        try:
-            _identity = get_sovereign_identity()
-        except Exception:
-            _identity = "capauth:agent@skchat.local"
+        with _init_lock:
+            if _identity is None:
+                try:
+                    _identity = get_sovereign_identity()
+                except Exception:
+                    _identity = "capauth:agent@skchat.local"
     return _identity
 
 
@@ -83,7 +109,9 @@ def _get_history() -> ChatHistory:
     """Get or initialize the ChatHistory."""
     global _history
     if _history is None:
-        _history = ChatHistory.from_config()
+        with _init_lock:
+            if _history is None:
+                _history = ChatHistory.from_config()
     return _history
 
 
@@ -91,10 +119,12 @@ def _get_messenger() -> AgentMessenger:
     """Get or initialize the AgentMessenger."""
     global _messenger
     if _messenger is None:
-        _messenger = AgentMessenger(
-            identity=_get_identity(),
-            history=_get_history(),
-        )
+        with _init_lock:
+            if _messenger is None:
+                _messenger = AgentMessenger(
+                    identity=_get_identity(),
+                    history=_get_history(),
+                )
     return _messenger
 
 
@@ -102,7 +132,9 @@ def _get_reactions() -> ReactionManager:
     """Get or initialize the ReactionManager."""
     global _reactions
     if _reactions is None:
-        _reactions = ReactionManager()
+        with _init_lock:
+            if _reactions is None:
+                _reactions = ReactionManager()
     return _reactions
 
 
@@ -115,8 +147,10 @@ def _get_groups() -> dict[str, GroupChat]:
     """Return the group registry, loading from disk on first call."""
     global _groups, _groups_loaded
     if not _groups_loaded:
-        _groups_loaded = True
-        _load_groups_from_disk()
+        with _init_lock:
+            if not _groups_loaded:
+                _groups_loaded = True
+                _load_groups_from_disk()
     return _groups
 
 
@@ -557,12 +591,364 @@ async def list_tools() -> list[Tool]:
             name="daemon_status",
             description=(
                 "Get the status of the SKChat background daemon. "
-                "Returns whether it is running, its PID, and log file path."
+                "Returns uptime_seconds, messages_sent, messages_received, "
+                "outbox_pending, transport_status, webrtc_signaling_ok, "
+                "last_heartbeat_at, and online_peer_count."
             ),
             inputSchema={
                 "type": "object",
                 "properties": {},
                 "required": [],
+            },
+        ),
+        Tool(
+            name="typing_start",
+            description=(
+                "Broadcast a typing indicator to a peer via SKComm HEARTBEAT. "
+                "Call this before starting to generate a response so the peer's "
+                "chat UI can show a typing animation. Use typing_stop when done."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "recipient": {
+                        "type": "string",
+                        "description": (
+                            "Recipient identity URI (e.g. 'capauth:lumina@skworld.io') "
+                            "or short name (e.g. 'lumina')."
+                        ),
+                    },
+                    "thread_id": {
+                        "type": "string",
+                        "description": "Thread context for the typing indicator (optional).",
+                    },
+                },
+                "required": ["recipient"],
+            },
+        ),
+        Tool(
+            name="capture_to_memory",
+            description=(
+                "Capture a conversation thread from SKChat history into skcapstone "
+                "sovereign memory. Fetches the last 50 messages for the given thread, "
+                "formats them as a transcript, and sends them to the skcapstone "
+                "session_capture tool for long-term retention."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "thread_id": {
+                        "type": "string",
+                        "description": "Thread ID to capture.",
+                    },
+                    "min_importance": {
+                        "type": "number",
+                        "description": "Minimum importance threshold 0.0-1.0 (default: 0.5).",
+                    },
+                },
+                "required": ["thread_id"],
+            },
+        ),
+        Tool(
+            name="typing_stop",
+            description=(
+                "Broadcast a typing-stopped indicator to a peer via SKComm HEARTBEAT. "
+                "Call this after finishing response generation to clear the typing "
+                "animation on the peer's chat UI."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "recipient": {
+                        "type": "string",
+                        "description": (
+                            "Recipient identity URI (e.g. 'capauth:lumina@skworld.io') "
+                            "or short name (e.g. 'lumina')."
+                        ),
+                    },
+                    "thread_id": {
+                        "type": "string",
+                        "description": "Thread context for the typing indicator (optional).",
+                    },
+                },
+                "required": ["recipient"],
+            },
+        ),
+        Tool(
+            name="get_group_history",
+            description=(
+                "Get the last N messages from a group chat thread. "
+                "Returns sender display names for well-known identities."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "group_id": {
+                        "type": "string",
+                        "description": "Group ID (e.g. 'd4f3281e-fa92-474c-a8cd-f0a2a4c31c33' for skworld-team).",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum messages to return (default: 20).",
+                    },
+                },
+                "required": ["group_id"],
+            },
+        ),
+        Tool(
+            name="send_to_group",
+            description=(
+                "Send a message to all members of a group chat. "
+                "Supports optional TTL for auto-expiring messages. "
+                "Returns delivered/failed counts."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "group_id": {
+                        "type": "string",
+                        "description": "Group ID to send to.",
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "Message content.",
+                    },
+                    "ttl": {
+                        "type": "integer",
+                        "description": "Optional seconds until auto-delete.",
+                    },
+                },
+                "required": ["group_id", "content"],
+            },
+        ),
+        Tool(
+            name="capture_chat_to_memory",
+            description=(
+                "Capture recent chat messages as a skcapstone memory for future context. "
+                "If thread_id is omitted, captures from all active threads. "
+                "Stores messages formatted as '[sender] content' via the skcapstone "
+                "memory_store tool with tags=['skchat','conversation'] and importance=0.7. "
+                "Returns the number of threads captured and their memory IDs."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "thread_id": {
+                        "type": "string",
+                        "description": "Thread ID to capture (omit to capture all active threads).",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum messages per thread to include (default: 20).",
+                    },
+                },
+                "required": [],
+            },
+        ),
+        Tool(
+            name="get_context_for_message",
+            description=(
+                "Search skcapstone memories relevant to a chat message for AI context injection. "
+                "Queries the skcapstone memory_search tool and returns a formatted bullet list "
+                "of the top 5 matching memories, ready to prime AI responses."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "The chat message or topic to search context for.",
+                    },
+                },
+                "required": ["query"],
+            },
+        ),
+        Tool(
+            name="who_is_online",
+            description=(
+                "List all known peers with their current presence status. "
+                "Returns a JSON array of {identity, display_name, last_seen, status} "
+                "for every peer in the local presence cache plus well-known identities. "
+                "status is 'online' (<2 min since last heartbeat), "
+                "'away' (<10 min), or 'offline'."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "max_age": {
+                        "type": "integer",
+                        "description": (
+                            "Max seconds since last seen to include a peer "
+                            "(default: 300 = 5 minutes)."
+                        ),
+                    },
+                },
+                "required": [],
+            },
+        ),
+        Tool(
+            name="speak_message",
+            description=(
+                "Read a message aloud using Piper TTS (local, sovereign). "
+                "Requires the piper binary and a voice model installed at "
+                "~/.local/share/piper/voices/. "
+                "Gracefully no-ops if Piper is not installed."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "text": {
+                        "type": "string",
+                        "description": "The text to synthesise and play aloud.",
+                    },
+                    "voice": {
+                        "type": "string",
+                        "description": (
+                            "Piper voice name (e.g. 'en_US-lessac-medium'). "
+                            "Defaults to en_US-lessac-medium."
+                        ),
+                    },
+                },
+                "required": ["text"],
+            },
+        ),
+        Tool(
+            name="list_peers",
+            description=(
+                "List all known agent peers from the skcapstone peer store "
+                "(~/.skcapstone/peers/). Returns name, resolved identity URI, "
+                "trust_level, entity_type, and capabilities for each peer. "
+                "Useful for discovering available agents before sending messages."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "entity_type": {
+                        "type": "string",
+                        "description": (
+                            "Filter by entity type (e.g. 'ai-agent', 'human'). "
+                            "Omit to return all peers."
+                        ),
+                    },
+                },
+                "required": [],
+            },
+        ),
+        Tool(
+            name="record_voice_message",
+            description=(
+                "Record a voice message via the system microphone and transcribe it "
+                "with Whisper STT (local, sovereign — no cloud dependency). "
+                "Returns the transcribed text. "
+                "Requires arecord (alsa-utils) and openai-whisper installed. "
+                "Gracefully returns an error dict if either dependency is missing."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "duration": {
+                        "type": "integer",
+                        "description": "Recording length in seconds (default: 10).",
+                    },
+                    "whisper_model": {
+                        "type": "string",
+                        "description": (
+                            "Whisper model size for transcription "
+                            "(tiny/base/small/medium/large, default: base)."
+                        ),
+                    },
+                },
+                "required": [],
+            },
+        ),
+        Tool(
+            name="skchat_group_create",
+            description=(
+                "Create a new SKChat group with a flat list of member identity URIs. "
+                "The calling agent becomes admin. Returns group_id, name, members, and created_at."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Group display name.",
+                    },
+                    "members": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "List of member identity URIs or short names "
+                            "(e.g. ['capauth:lumina@skworld.io', 'opus'])."
+                        ),
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "Optional group description.",
+                    },
+                },
+                "required": ["name", "members"],
+            },
+        ),
+        Tool(
+            name="skchat_group_send",
+            description=(
+                "Send a message to all members of a SKChat group. "
+                "Returns delivered_to (list of URIs that received the message) "
+                "and failed (list of URIs where delivery failed)."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "group_id": {
+                        "type": "string",
+                        "description": "Group ID to send to.",
+                    },
+                    "message": {
+                        "type": "string",
+                        "description": "Message content.",
+                    },
+                    "thread_id": {
+                        "type": "string",
+                        "description": "Override thread ID (defaults to group_id).",
+                    },
+                },
+                "required": ["group_id", "message"],
+            },
+        ),
+        Tool(
+            name="skchat_send",
+            description=(
+                "Send a message to a recipient using AgentMessenger. "
+                "Stores the message in sovereign history and delivers via SKComm "
+                "transport when available. Returns status, message_id, delivered, "
+                "and recipient."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "recipient": {
+                        "type": "string",
+                        "description": (
+                            "Recipient identity URI (e.g. 'capauth:lumina@skworld.io') "
+                            "or short name (e.g. 'lumina')."
+                        ),
+                    },
+                    "message": {
+                        "type": "string",
+                        "description": "Message text (markdown supported).",
+                    },
+                    "thread_id": {
+                        "type": "string",
+                        "description": "Thread ID to group the message in (optional).",
+                    },
+                    "message_type": {
+                        "type": "string",
+                        "enum": ["text", "finding", "task", "query", "response"],
+                        "description": "Structured message type (default: text).",
+                    },
+                },
+                "required": ["recipient", "message"],
             },
         ),
     ]
@@ -594,6 +980,20 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         "remove_reaction": _handle_remove_reaction,
         "list_groups": _handle_list_groups,
         "daemon_status": _handle_daemon_status,
+        "typing_start": _handle_typing_start,
+        "typing_stop": _handle_typing_stop,
+        "capture_to_memory": _handle_capture_to_memory,
+        "get_group_history": _handle_get_group_history,
+        "send_to_group": _handle_send_to_group,
+        "capture_chat_to_memory": _handle_capture_chat_to_memory,
+        "get_context_for_message": _handle_get_context_for_message,
+        "who_is_online": _handle_who_is_online,
+        "speak_message": _handle_speak_message,
+        "list_peers": _handle_list_peers,
+        "record_voice_message": _handle_record_voice_message,
+        "skchat_group_create": _handle_skchat_group_create,
+        "skchat_group_send": _handle_skchat_group_send,
+        "skchat_send": _handle_skchat_send,
     }
     handler = handlers.get(name)
     if handler is None:
@@ -603,6 +1003,50 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     except Exception as exc:
         logger.exception("Tool '%s' failed", name)
         return _error(f"{name} failed: {exc}")
+
+
+# ─────────────────────────────────────────────────────────────
+# Tool Handlers — Peer Discovery
+# ─────────────────────────────────────────────────────────────
+
+
+async def _handle_list_peers(args: dict) -> list[TextContent]:
+    """List peers from the skcapstone peer store.
+
+    Args:
+        args: Optional entity_type filter.
+
+    Returns:
+        JSON list of {name, uri, trust_level, entity_type, capabilities}.
+    """
+    from .peer_discovery import PeerDiscovery
+
+    disc = PeerDiscovery()
+    peers = disc.list_peers()
+
+    entity_type: str | None = args.get("entity_type")
+    if entity_type:
+        peers = [p for p in peers if p.get("entity_type", "").lower() == entity_type.lower()]
+
+    result = []
+    for peer in peers:
+        handle = peer.get("handle", peer.get("name", ""))
+        uri = disc.resolve_identity(handle) or handle
+        result.append({
+            "name": peer.get("name", ""),
+            "uri": uri,
+            "trust_level": peer.get("trust_level", ""),
+            "entity_type": peer.get("entity_type", ""),
+            "capabilities": peer.get("capabilities", []),
+            "fingerprint": peer.get("fingerprint", ""),
+            "last_seen": peer.get("last_seen"),
+            "notes": peer.get("notes", ""),
+        })
+
+    return _json({
+        "count": len(result),
+        "peers": result,
+    })
 
 
 # ─────────────────────────────────────────────────────────────
@@ -836,6 +1280,9 @@ async def _handle_group_send(args: dict) -> list[TextContent]:
     if group is None:
         return _error(f"Group not found: {group_id}")
 
+    # Extract @mentions before composing
+    mentions = re.findall(r"@(\w+)", content)
+
     sender = _get_identity()
     message = group.compose_group_message(
         sender_uri=sender,
@@ -844,6 +1291,9 @@ async def _handle_group_send(args: dict) -> list[TextContent]:
 
     if message is None:
         return _error("Failed to compose group message (not a member?)")
+
+    if mentions:
+        message.metadata["mentions"] = mentions
 
     # Store in local history
     history = _get_history()
@@ -1453,23 +1903,760 @@ async def _handle_list_groups(args: dict) -> list[TextContent]:
 
 
 # ─────────────────────────────────────────────────────────────
+# Tool Handlers — Typing Indicators
+# ─────────────────────────────────────────────────────────────
+
+
+def _send_typing_indicator(recipient: str, typing: bool, thread_id: Optional[str]) -> bool:
+    """Send a typing presence indicator over SKComm HEARTBEAT.
+
+    Args:
+        recipient: Resolved CapAuth identity URI.
+        typing: True to send TYPING state, False to send ONLINE (stopped).
+        thread_id: Optional thread context.
+
+    Returns:
+        bool: True if the indicator was delivered, False on transport error.
+    """
+    from .presence import PresenceIndicator, PresenceState
+
+    identity = _get_identity()
+    state = PresenceState.TYPING if typing else PresenceState.ONLINE
+    indicator = PresenceIndicator(
+        identity_uri=identity,
+        state=state,
+        thread_id=thread_id,
+    )
+
+    try:
+        from skcomm import SKComm
+        from skcomm.models import MessageType
+
+        comm = SKComm.from_config()
+        comm.send(
+            recipient=recipient,
+            message=indicator.model_dump_json(),
+            message_type=MessageType.HEARTBEAT,
+        )
+        return True
+    except Exception as exc:
+        logger.warning("Failed to send typing indicator to %s: %s", recipient[:24], exc)
+        return False
+
+
+async def _handle_typing_start(args: dict) -> list[TextContent]:
+    """Broadcast a typing indicator to a peer.
+
+    Sends a HEARTBEAT message with PresenceState.TYPING so the peer's
+    UI can display a typing animation while the agent generates a response.
+
+    Args:
+        args: recipient (str), optional thread_id (str).
+
+    Returns:
+        JSON with typing status and delivery result.
+    """
+    recipient: str = args.get("recipient", "")
+    if not recipient:
+        return _error("recipient is required")
+
+    thread_id: Optional[str] = args.get("thread_id")
+
+    if not recipient.startswith("capauth:"):
+        try:
+            from .identity_bridge import resolve_peer_name
+            recipient = resolve_peer_name(recipient)
+        except Exception:
+            pass
+
+    sent = _send_typing_indicator(recipient, typing=True, thread_id=thread_id)
+
+    return _json({
+        "typing": True,
+        "recipient": recipient,
+        "thread_id": thread_id,
+        "sent": sent,
+    })
+
+
+async def _handle_typing_stop(args: dict) -> list[TextContent]:
+    """Broadcast a typing-stopped indicator to a peer.
+
+    Sends a HEARTBEAT message with PresenceState.ONLINE to clear the
+    typing animation on the peer's UI after response generation is complete.
+
+    Args:
+        args: recipient (str), optional thread_id (str).
+
+    Returns:
+        JSON with typing status and delivery result.
+    """
+    recipient: str = args.get("recipient", "")
+    if not recipient:
+        return _error("recipient is required")
+
+    thread_id: Optional[str] = args.get("thread_id")
+
+    if not recipient.startswith("capauth:"):
+        try:
+            from .identity_bridge import resolve_peer_name
+            recipient = resolve_peer_name(recipient)
+        except Exception:
+            pass
+
+    sent = _send_typing_indicator(recipient, typing=False, thread_id=thread_id)
+
+    return _json({
+        "typing": False,
+        "recipient": recipient,
+        "thread_id": thread_id,
+        "sent": sent,
+    })
+
+
+# ─────────────────────────────────────────────────────────────
 # Tool Handlers — Daemon
 # ─────────────────────────────────────────────────────────────
 
 
 async def _handle_daemon_status(args: dict) -> list[TextContent]:
-    """Get the SKChat daemon status.
+    """Get the SKChat daemon status with full runtime metrics.
+
+    Returns uptime, message counts, outbox queue depth, transport health,
+    WebRTC signaling state, last heartbeat time, and online peer count.
 
     Args:
         args: No arguments required.
 
     Returns:
-        JSON with running state, PID, and file paths.
+        JSON with daemon status and runtime statistics.
     """
     from .daemon import daemon_status
 
     status = daemon_status()
+
+    # Enrich with live outbox pending count from skcomm PersistentOutbox.
+    try:
+        from skcomm.outbox import PersistentOutbox
+        status["outbox_pending"] = PersistentOutbox().pending_count
+    except Exception:
+        status.setdefault("outbox_pending", 0)
+
     return _json(status)
+
+
+
+
+# ─────────────────────────────────────────────────────────────
+# Tool Handlers — Group History & send_to_group
+# ─────────────────────────────────────────────────────────────
+
+
+def _sender_display(identity_uri: str) -> str:
+    """Map a CapAuth identity URI to a human-readable display name."""
+    if identity_uri in _SENDER_DISPLAY:
+        return _SENDER_DISPLAY[identity_uri]
+    # Fall back to the local-part after the last colon
+    return identity_uri.split(":")[-1] if ":" in identity_uri else identity_uri
+
+
+async def _handle_get_group_history(args: dict) -> list[TextContent]:
+    """Get the last N messages from a group chat thread.
+
+    Args:
+        args: group_id (str), optional limit (int, default 20).
+
+    Returns:
+        JSON list of messages with sender, sender_display, content, timestamp.
+    """
+    group_id: str = args.get("group_id", "")
+    if not group_id:
+        return _error("group_id is required")
+
+    group = _get_groups().get(group_id)
+    if group is None:
+        return _error(f"Group not found: {group_id}")
+
+    limit: int = args.get("limit", 20)
+    history = _get_history()
+    messages = history.get_thread_messages(group_id, limit=limit)
+
+    return _json([
+        {
+            "sender": m.get("sender", ""),
+            "sender_display": _sender_display(m.get("sender", "")),
+            "content": m.get("content", ""),
+            "timestamp": m.get("timestamp", ""),
+        }
+        for m in messages
+    ])
+
+
+async def _handle_send_to_group(args: dict) -> list[TextContent]:
+    """Send a message to all members of a group chat.
+
+    Supports optional TTL for auto-expiring messages.
+
+    Args:
+        args: group_id (str), content (str), optional ttl (int).
+
+    Returns:
+        JSON with delivered count, failed count, and message_id.
+    """
+    group_id: str = args.get("group_id", "")
+    content: str = args.get("content", "")
+    ttl: Optional[int] = args.get("ttl")
+
+    if not group_id:
+        return _error("group_id is required")
+    if not content:
+        return _error("content is required")
+
+    group = _get_groups().get(group_id)
+    if group is None:
+        return _error(f"Group not found: {group_id}")
+
+    # Extract @mentions (e.g. @lumina, @claude, @opus)
+    mentions = re.findall(r"@(\w+)", content)
+
+    sender = _get_identity()
+    message = group.compose_group_message(
+        sender_uri=sender,
+        content=content,
+        ttl=ttl,
+    )
+
+    if message is None:
+        return _error("Failed to compose group message (not a member?)")
+
+    if mentions:
+        message.metadata["mentions"] = mentions
+
+    history = _get_history()
+    history.store_message(message)
+
+    messenger = _get_messenger()
+    delivered = 0
+    failed = 0
+
+    for member in group.members:
+        if member.identity_uri == sender:
+            continue
+        try:
+            result = messenger.send(
+                recipient=member.identity_uri,
+                content=content,
+                message_type="text",
+                thread_id=group.id,
+            )
+            if result.get("delivered"):
+                delivered += 1
+            else:
+                failed += 1
+        except Exception:
+            failed += 1
+
+    _save_group(group)
+
+    return _json({
+        "message_id": message.id,
+        "delivered": delivered,
+        "failed": failed,
+    })
+
+
+async def _handle_skchat_group_create(args: dict) -> list[TextContent]:
+    """Create a new group from a flat list of member identity URIs.
+
+    Args:
+        args: name (str), members (list[str]), optional description (str).
+
+    Returns:
+        JSON {group_id, name, members, created_at}.
+    """
+    name: str = args.get("name", "")
+    if not name:
+        return _error("name is required")
+
+    members_raw: list[str] = args.get("members", [])
+    if not isinstance(members_raw, list):
+        return _error("members must be a list of identity URI strings")
+
+    description: str = args.get("description", "")
+    creator = _get_identity()
+
+    group = GroupChat.create(
+        name=name,
+        creator_uri=creator,
+        description=description,
+    )
+
+    added: list[str] = []
+    for identity in members_raw:
+        if not identity or not isinstance(identity, str):
+            continue
+        if not identity.startswith("capauth:"):
+            try:
+                from .identity_bridge import resolve_peer_name
+                identity = resolve_peer_name(identity)
+            except Exception:
+                pass
+        member = group.add_member(identity_uri=identity)
+        if member:
+            added.append(identity)
+
+    _get_groups()[group.id] = group
+    _save_group(group)
+
+    logger.info("skchat_group_create: '%s' id=%s members=%d", name, group.id[:8], len(group.members))
+
+    return _json({
+        "group_id": group.id,
+        "name": group.name,
+        "members": [m.identity_uri for m in group.members],
+        "created_at": group.created_at.isoformat(),
+    })
+
+
+async def _handle_skchat_group_send(args: dict) -> list[TextContent]:
+    """Send a message to all members of a group.
+
+    Args:
+        args: group_id (str), message (str), optional thread_id (str).
+
+    Returns:
+        JSON {status, delivered_to: list[str], failed: list[str]}.
+    """
+    group_id: str = args.get("group_id", "")
+    content: str = args.get("message", "")
+    thread_id: Optional[str] = args.get("thread_id") or None
+
+    if not group_id:
+        return _error("group_id is required")
+    if not content:
+        return _error("message is required")
+
+    group = _get_groups().get(group_id)
+    if group is None:
+        return _error(f"Group not found: {group_id}")
+
+    sender = _get_identity()
+    effective_thread = thread_id or group.id
+
+    message = group.compose_group_message(
+        sender_uri=sender,
+        content=content,
+    )
+    if message is None:
+        return _error("Failed to compose group message (not a member or observer?)")
+
+    message.thread_id = effective_thread
+
+    history = _get_history()
+    history.store_message(message)
+
+    messenger = _get_messenger()
+    delivered_to: list[str] = []
+    failed: list[str] = []
+
+    for member in group.members:
+        if member.identity_uri == sender:
+            continue
+        try:
+            result = messenger.send(
+                recipient=member.identity_uri,
+                content=content,
+                message_type="text",
+                thread_id=effective_thread,
+            )
+            if result.get("delivered"):
+                delivered_to.append(member.identity_uri)
+            else:
+                failed.append(member.identity_uri)
+        except Exception:
+            failed.append(member.identity_uri)
+
+    _save_group(group)
+
+    status = "ok" if not failed else ("partial" if delivered_to else "failed")
+    return _json({
+        "status": status,
+        "delivered_to": delivered_to,
+        "failed": failed,
+    })
+
+
+# -----------------------------------------------------------------
+# Tool Handlers -- Memory Bridge
+# -----------------------------------------------------------------
+
+
+async def _handle_capture_to_memory(args: dict) -> list[TextContent]:
+    """Capture a thread to skcapstone sovereign memory.
+
+    Args:
+        args: thread_id (str), optional min_importance (float).
+
+    Returns:
+        JSON with capture result (captured_count, skipped_count, etc.).
+    """
+    thread_id: str = args.get("thread_id", "")
+    if not thread_id:
+        return _error("thread_id is required")
+
+    min_importance: float = float(args.get("min_importance", 0.5))
+
+    from .memory_bridge import MemoryBridge
+
+    bridge = MemoryBridge(history=_get_history())
+    result = bridge.capture_thread(thread_id, min_importance=min_importance)
+
+    if "error" in result:
+        return _error(result["error"])
+
+    return _json({
+        "captured": True,
+        "thread_id": thread_id,
+        "min_importance": min_importance,
+        **result,
+    })
+
+# -----------------------------------------------------------------
+# Tool Handlers -- Session-aware Memory Capture & Context Retrieval
+# -----------------------------------------------------------------
+
+
+def _call_skcapstone(tool_name: str, arguments: dict) -> dict:
+    """POST a tools/call request to the skcapstone MCP HTTP server.
+
+    Args:
+        tool_name: Name of the skcapstone tool to call (e.g. 'memory_store').
+        arguments: Tool arguments dict.
+
+    Returns:
+        dict: Unwrapped tool result or {"error": "..."} on failure.
+    """
+    import json as _json_mod
+    import urllib.error
+    import urllib.request
+
+    from .memory_bridge import SKCAPSTONE_MCP_URL, _CAPTURE_TIMEOUT
+
+    payload = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {"name": tool_name, "arguments": arguments},
+    }
+    body = _json_mod.dumps(payload).encode()
+    req = urllib.request.Request(
+        SKCAPSTONE_MCP_URL,
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=_CAPTURE_TIMEOUT) as resp:
+            raw = resp.read().decode()
+    except (urllib.error.URLError, OSError) as exc:
+        logger.warning("skcapstone MCP unavailable (%s): %s", tool_name, exc)
+        return {"error": f"skcapstone unreachable: {exc}"}
+    except Exception as exc:
+        logger.warning("skcapstone HTTP call failed (%s): %s", tool_name, exc)
+        return {"error": str(exc)}
+
+    try:
+        response = _json_mod.loads(raw)
+    except _json_mod.JSONDecodeError as exc:
+        return {"error": f"invalid JSON response: {exc}"}
+
+    if "error" in response:
+        return {"error": response["error"]}
+
+    result = response.get("result", {})
+    # MCP tools/call wraps output in result.content[0].text
+    if isinstance(result, dict) and "content" in result:
+        try:
+            text = result["content"][0].get("text", "{}")
+            return _json_mod.loads(text)
+        except (KeyError, IndexError, _json_mod.JSONDecodeError):
+            pass
+    return result if isinstance(result, dict) else {"raw": result}
+
+
+async def _handle_capture_chat_to_memory(args: dict) -> list[TextContent]:
+    """Capture recent chat messages as a skcapstone memory for future context.
+
+    If thread_id is None, captures from all active threads (up to 50).
+    Messages are formatted as '[sender_short] content' before storage.
+
+    Args:
+        args: Optional thread_id (str), optional limit (int, default 20).
+
+    Returns:
+        JSON: {"captured": N, "memory_ids": [...]}
+    """
+    thread_id: Optional[str] = args.get("thread_id") or None
+    limit: int = int(args.get("limit", 20))
+
+    history = _get_history()
+
+    # Determine target threads
+    if thread_id:
+        threads = [thread_id]
+    else:
+        thread_list = history.list_threads(limit=50)
+        threads = [t.get("id") for t in thread_list if t.get("id")]
+
+    if not threads:
+        return _json({"captured": 0, "memory_ids": []})
+
+    memory_ids: list[str] = []
+
+    for tid in threads:
+        messages = history.get_thread_messages(tid, limit=limit)
+        if not messages:
+            continue
+
+        # Format as [sender_short] content (newest-last)
+        lines: list[str] = []
+        for msg in reversed(messages):
+            sender = msg.get("sender") or "unknown"
+            short = sender.split("@")[0].replace("capauth:", "")
+            content = (msg.get("content") or "").strip()
+            lines.append(f"[{short}] {content}")
+
+        formatted = "\n".join(lines)
+
+        result = _call_skcapstone(
+            "memory_store",
+            {
+                "content": formatted,
+                "tags": ["skchat", "conversation"],
+                "importance": 0.7,
+            },
+        )
+
+        if "error" in result:
+            logger.warning(
+                "capture_chat_to_memory: thread %s — %s", tid[:12], result["error"]
+            )
+            continue
+
+        mem_id = result.get("memory_id") or result.get("id") or tid
+        memory_ids.append(mem_id)
+
+    return _json({"captured": len(memory_ids), "memory_ids": memory_ids})
+
+
+async def _handle_get_context_for_message(args: dict) -> list[TextContent]:
+    """Search skcapstone memories relevant to a chat message for AI context injection.
+
+    Queries skcapstone memory_search (limit=5) and returns a formatted
+    bullet-list string ready to prepend to an AI prompt.
+
+    Args:
+        args: query (str).
+
+    Returns:
+        JSON: {"context": "- ...\n- ...", "count": N}
+    """
+    query: str = args.get("query", "")
+    if not query:
+        return _error("query is required")
+
+    result = _call_skcapstone("memory_search", {"query": query, "limit": 5})
+
+    if "error" in result:
+        logger.warning("get_context_for_message: %s", result["error"])
+        return _json({"context": "", "count": 0, "error": result["error"]})
+
+    memories = result.get("memories") or result.get("results") or []
+
+    if not memories:
+        return _json({"context": "", "count": 0})
+
+    lines = [
+        f"- {(m.get('content') or m.get('text') or '').strip()}"
+        for m in memories
+        if m.get("content") or m.get("text")
+    ]
+    context = "\n".join(lines)
+
+    return _json({"context": context, "count": len(lines)})
+
+
+# ─────────────────────────────────────────────────────────────
+# Tool Handlers — Voice (Piper TTS)
+# ─────────────────────────────────────────────────────────────
+
+
+async def _handle_speak_message(args: dict) -> list[TextContent]:
+    """Read a message aloud using Piper TTS.
+
+    Args:
+        args: Must contain ``text`` (str).  Optionally ``voice`` (str).
+
+    Returns:
+        JSON with ``spoken`` bool and ``available`` bool.  If Piper is not
+        installed, returns ``available: false`` without an error so the
+        caller can gracefully degrade.
+    """
+    text: str = args.get("text", "").strip()
+    if not text:
+        return _error("speak_message requires non-empty 'text'")
+
+    from .voice import VoicePlayer, DEFAULT_VOICE
+
+    voice: str = args.get("voice", DEFAULT_VOICE)
+    player = VoicePlayer(voice=voice)
+
+    if not player.is_available():
+        logger.warning(
+            "speak_message: Piper TTS not available (binary or voice model missing)"
+        )
+        return _json({"spoken": False, "available": False, "text": text})
+
+    player.speak(text, blocking=False)
+    return _json({"spoken": True, "available": True, "text": text, "voice": voice})
+
+
+async def _handle_record_voice_message(args: dict) -> list[TextContent]:
+    """Record a voice message and transcribe it with Whisper STT.
+
+    Args:
+        args: Optional ``duration`` (int, seconds, default 10) and
+            ``whisper_model`` (str, default "base").
+
+    Returns:
+        JSON with ``transcribed`` bool, ``text`` str, and ``available`` bool.
+        If openai-whisper or arecord is not installed, returns
+        ``available: false`` with an install hint — no exception raised.
+    """
+    from .voice import VoiceRecorder
+
+    duration: int = int(args.get("duration", 10))
+    whisper_model: str = args.get("whisper_model", "base")
+
+    recorder = VoiceRecorder(whisper_model=whisper_model)
+
+    if not recorder.available:
+        logger.warning(
+            "record_voice_message: openai-whisper not installed"
+        )
+        return _json({
+            "transcribed": False,
+            "available": False,
+            "text": "",
+            "hint": "Install openai-whisper with: pip install openai-whisper",
+        })
+
+    text = recorder.record(duration=duration)
+
+    if text is None:
+        return _json({
+            "transcribed": False,
+            "available": True,
+            "text": "",
+            "hint": (
+                "Recording failed — ensure arecord (alsa-utils) is installed "
+                "and a microphone is available."
+            ),
+        })
+
+    return _json({
+        "transcribed": True,
+        "available": True,
+        "text": text,
+        "duration": duration,
+        "whisper_model": whisper_model,
+    })
+
+
+# ─────────────────────────────────────────────────────────────
+# Tool Handlers — Presence
+# ─────────────────────────────────────────────────────────────
+
+
+async def _handle_who_is_online(args: dict) -> list[TextContent]:
+    """List all known peers with their current presence status.
+
+    Reads the local presence cache and enriches with display names from
+    ~/.skcapstone/peers/ and the well-known-peers registry.
+
+    Args:
+        args: Optional max_age (int, seconds, default 300).
+
+    Returns:
+        JSON with count, online count, and peers list:
+        [{identity, display_name, last_seen, status}].
+    """
+    from datetime import datetime, timezone
+
+    from .presence import PresenceCache, PresenceState
+
+    max_age: int = int(args.get("max_age", 300))
+
+    KNOWN_PEERS: dict[str, str] = {
+        "capauth:lumina@skworld.io": "lumina",
+        "capauth:claude@skworld.io": "claude",
+        "chef@skworld.io": "chef",
+    }
+
+    peers_dir = pathlib.Path.home() / ".skcapstone" / "peers"
+    if peers_dir.exists():
+        for peer_file in sorted(peers_dir.glob("*.json")):
+            try:
+                data = json.loads(peer_file.read_text())
+                uri = data.get("identity_uri") or data.get("uri", "")
+                name = data.get("display_name") or data.get("name", peer_file.stem)
+                if uri:
+                    KNOWN_PEERS[uri] = name
+            except Exception:
+                pass
+
+    cache = PresenceCache()
+    all_entries = cache.get_all()
+    all_uris = sorted(set(all_entries.keys()) | set(KNOWN_PEERS.keys()))
+
+    now = datetime.now(timezone.utc)
+    peers_out: list[dict] = []
+    for uri in all_uris:
+        display = KNOWN_PEERS.get(uri, uri.split("@")[0].replace("capauth:", ""))
+        entry = all_entries.get(uri)
+        last_seen: Optional[str] = None
+        if entry:
+            try:
+                ts = datetime.fromisoformat(entry["timestamp"])
+                age = (now - ts).total_seconds()
+                state_val = entry.get("state", "")
+                if state_val == PresenceState.OFFLINE.value:
+                    status = "offline"
+                elif age <= 120:
+                    status = "online"
+                elif age <= max_age:
+                    status = "away"
+                else:
+                    status = "offline"
+                last_seen = ts.isoformat()
+            except Exception:
+                status = "offline"
+        else:
+            status = "offline"
+
+        peers_out.append({
+            "identity": uri,
+            "display_name": display,
+            "last_seen": last_seen,
+            "status": status,
+        })
+
+    online_count = sum(1 for p in peers_out if p["status"] == "online")
+    return _json({
+        "count": len(peers_out),
+        "online": online_count,
+        "peers": peers_out,
+    })
 
 
 # ─────────────────────────────────────────────────────────────
