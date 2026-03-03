@@ -18,6 +18,7 @@ Tools:
     get_thread         — Get messages in a thread
     add_reaction       — Add an emoji reaction to a message
     remove_reaction    — Remove a reaction from a message
+    get_reactions      — Get all reactions for a message
     daemon_status      — Get SKChat background daemon status
     typing_start              — Broadcast a typing indicator to a peer via SKComm
     typing_stop               — Broadcast a typing-stopped indicator to a peer via SKComm
@@ -28,9 +29,11 @@ Tools:
     record_voice_message      — Record audio from microphone and transcribe with Whisper STT
     skchat_group_create       — Create a group from a flat list[str] of member identity URIs
     skchat_group_send         — Send to group; returns {status, delivered_to, failed}
+    skchat_send               — Send a message via AgentMessenger; returns {status, message_id, delivered, recipient}
     skchat_peers              — List known peers with presence state and capabilities
     skchat_set_presence       — Broadcast own presence state via file transport to ~/.skcomm/outbox/
     skchat_get_presence       — Query presence cache for all peers or a specific peer
+    skchat_inbox              — Unified inbox: all messages for this agent with sender/timestamp/unread filters
 
 Invocation:
     python -m skchat.mcp_server
@@ -576,6 +579,24 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
+            name="get_reactions",
+            description=(
+                "Get all emoji reactions for a message. "
+                "Returns a list of reactions with emoji, sender, and timestamp, "
+                "plus an aggregated summary of emoji counts."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "message_id": {
+                        "type": "string",
+                        "description": "ID of the message to retrieve reactions for.",
+                    },
+                },
+                "required": ["message_id"],
+            },
+        ),
+        Tool(
             name="list_groups",
             description=(
                 "List all group chats. Returns group IDs, names, "
@@ -1025,6 +1046,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         "send_file_p2p": _handle_send_file_p2p,
         "add_reaction": _handle_add_reaction,
         "remove_reaction": _handle_remove_reaction,
+        "get_reactions": _handle_get_reactions,
         "list_groups": _handle_list_groups,
         "daemon_status": _handle_daemon_status,
         "typing_start": _handle_typing_start,
@@ -1043,6 +1065,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         "skchat_send": _handle_skchat_send,
         "skchat_set_presence": _handle_skchat_set_presence,
         "skchat_get_presence": _handle_skchat_get_presence,
+        "skchat_inbox": _handle_skchat_inbox,
     }
     handler = handlers.get(name)
     if handler is None:
@@ -1920,6 +1943,39 @@ async def _handle_remove_reaction(args: dict) -> list[TextContent]:
     })
 
 
+async def _handle_get_reactions(args: dict) -> list[TextContent]:
+    """Get all reactions for a message.
+
+    Args:
+        args: message_id.
+
+    Returns:
+        JSON with reaction list and aggregated summary counts.
+    """
+    message_id: str = args.get("message_id", "")
+
+    if not message_id:
+        return _error("message_id is required")
+
+    manager = _get_reactions()
+    reactions = manager.get_reactions(message_id)
+    summary = manager.summarize(message_id)
+
+    return _json({
+        "message_id": message_id,
+        "reactions": [
+            {
+                "emoji": r.emoji,
+                "sender": r.sender,
+                "timestamp": r.timestamp.isoformat(),
+            }
+            for r in reactions
+        ],
+        "summary": {emoji: len(senders) for emoji, senders in summary.reactions.items()},
+        "total_count": summary.total_count,
+    })
+
+
 # ─────────────────────────────────────────────────────────────
 # Tool Handlers — Groups listing
 # ─────────────────────────────────────────────────────────────
@@ -2332,6 +2388,60 @@ async def _handle_skchat_group_send(args: dict) -> list[TextContent]:
         "status": status,
         "delivered_to": delivered_to,
         "failed": failed,
+    })
+
+
+async def _handle_skchat_send(args: dict) -> list[TextContent]:
+    """Send a message to a recipient via AgentMessenger.
+
+    Args:
+        args: recipient (str), message (str), optional thread_id (str),
+              optional message_type (str, default 'text').
+
+    Returns:
+        JSON {status, message_id, delivered, recipient}.
+    """
+    recipient: str = args.get("recipient", "")
+    content: str = args.get("message", "")
+    thread_id: Optional[str] = args.get("thread_id") or None
+    message_type: str = args.get("message_type", "text")
+
+    if not recipient:
+        return _error("recipient is required")
+    if not content:
+        return _error("message is required")
+
+    # Resolve short names to full URIs
+    if not recipient.startswith("capauth:"):
+        try:
+            from .identity_bridge import resolve_peer_name
+            recipient = resolve_peer_name(recipient)
+        except Exception:
+            pass
+
+    try:
+        messenger = AgentMessenger.from_identity()
+        result = messenger.send(
+            recipient=recipient,
+            content=content,
+            message_type=message_type,
+            thread_id=thread_id,
+        )
+    except Exception as exc:
+        logger.warning("skchat_send failed: %s", exc)
+        return _json({
+            "status": "error",
+            "message_id": None,
+            "delivered": False,
+            "recipient": recipient,
+            "error": str(exc),
+        })
+
+    return _json({
+        "status": "ok",
+        "message_id": result.get("message_id"),
+        "delivered": result.get("delivered", False),
+        "recipient": recipient,
     })
 
 
