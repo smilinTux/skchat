@@ -66,6 +66,7 @@ class ChatDaemon:
         self.total_sent: int = 0
         self.start_time: Optional[datetime] = None
         self.last_heartbeat_at: Optional[datetime] = None
+        self._outbox_messenger: Optional[object] = None
 
         if log_file:
             logging.basicConfig(
@@ -154,7 +155,7 @@ class ChatDaemon:
         presence = self._init_presence(identity)
 
         # Initialize outbox queue drain
-        queue = self._init_queue(skcomm)
+        queue = self._init_queue(skcomm, identity)
 
         # Initialize memory bridge for hourly auto-capture
         bridge = self._init_memory_bridge(history)
@@ -270,22 +271,14 @@ class ChatDaemon:
                     except Exception as exc:
                         self._log(f"Reaper error: {exc}", "warning")
 
-                # --- Drain outbox queue (every 3 cycles ~15s) ---
+                # --- Drain outbox queue (every 6 cycles ~30s) ---
                 queue_counter += 1
-                if queue and queue_counter >= 3:
+                if queue and queue_counter >= 6:
                     queue_counter = 0
                     try:
-                        try:
-                            from skcomm.models import MessageEnvelope
-                        except ImportError:
-                            MessageEnvelope = None
-                        if MessageEnvelope is None:
-                            raise RuntimeError("skcomm.models.MessageEnvelope unavailable; skipping queue drain")
-                        delivered, failed = queue.drain(
-                            lambda env_bytes, recipient: skcomm.router.route(
-                                MessageEnvelope.from_bytes(env_bytes)
-                            ).delivered
-                        )
+                        if self._outbox_messenger is None:
+                            raise RuntimeError("outbox messenger unavailable; skipping queue drain")
+                        delivered, failed = queue.deliver_pending(self._outbox_messenger)
                         if delivered > 0 or failed > 0:
                             self._log(f"Queue drain: {delivered} delivered, {failed} failed")
                         self.total_sent += delivered
@@ -376,18 +369,29 @@ class ChatDaemon:
             self._log(f"Presence init skipped: {exc}", "warning")
             return None
 
-    def _init_queue(self, skcomm: object) -> object:
+    def _init_queue(self, skcomm: object, identity: str) -> object:
         """Initialize the outbox message queue for retry delivery.
+
+        Also initialises the AgentMessenger stored on self._outbox_messenger
+        so deliver_pending() has a send channel without re-creating it each cycle.
 
         Args:
             skcomm: SKComm instance.
+            identity: Local CapAuth identity URI.
 
         Returns:
-            MessageQueue or None if initialization fails.
+            OutboxQueue or None if initialization fails.
         """
         try:
             from .outbox import OutboxQueue
-            return OutboxQueue()
+            from .agent_comm import AgentMessenger
+
+            queue = OutboxQueue()
+            try:
+                self._outbox_messenger = AgentMessenger.from_identity(identity)
+            except Exception as exc:
+                self._log(f"Outbox messenger init skipped: {exc}", "warning")
+            return queue
         except Exception as exc:
             self._log(f"Queue init skipped: {exc}", "warning")
             return None
