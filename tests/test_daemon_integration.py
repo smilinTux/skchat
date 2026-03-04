@@ -73,8 +73,9 @@ def _start_patches(mock_skcomm, mock_transport, mock_history, mock_advocacy):
     also patched so the daemon loop stays fast and isolated.
     """
     patchers = [
-        # Core deps
-        patch("skcomm.SKComm"),
+        # Core deps — patch the name as imported into the daemon module namespace,
+        # not the skcomm module itself (daemon does `from skcomm import SKComm`).
+        patch("skchat.daemon.SKComm"),
         patch("skchat.transport.ChatTransport"),
         patch("skchat.history.ChatHistory"),
         patch("skchat.identity_bridge.get_sovereign_identity"),

@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 
-import '../../core/theme/glass_decorations.dart';
-import '../../core/theme/sovereign_glass.dart';
+import '../../../core/theme/glass_decorations.dart';
 
 class TypingIndicator extends StatefulWidget {
   final String name;

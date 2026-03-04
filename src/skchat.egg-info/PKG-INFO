@@ -2,7 +2,7 @@ Metadata-Version: 2.4
 Name: skchat
 Version: 0.1.0
 Summary: AI-native encrypted P2P chat — sovereign communication for humans and AI
-Author-email: smilinTux <admin@smilintux.org>
+Author-email: "smilinTux.org" <hello@smilintux.org>
 License: GPL-3.0-or-later
 Project-URL: Homepage, https://skchat.io
 Project-URL: Repository, https://github.com/smilinTux/skchat
@@ -13,27 +13,38 @@ Classifier: Environment :: Console
 Classifier: Intended Audience :: Developers
 Classifier: License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)
 Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.10
 Classifier: Programming Language :: Python :: 3.11
 Classifier: Programming Language :: Python :: 3.12
 Classifier: Programming Language :: Python :: 3.13
 Classifier: Programming Language :: Python :: 3.14
 Classifier: Topic :: Communications :: Chat
 Classifier: Topic :: Security :: Cryptography
-Requires-Python: >=3.11
+Requires-Python: >=3.10
 Description-Content-Type: text/markdown
 License-File: LICENSE
-Requires-Dist: pydantic>=2.0
-Requires-Dist: PGPy>=0.6
-Requires-Dist: pyyaml>=6.0
+Requires-Dist: pydantic<3.0,>=2.0
+Requires-Dist: PGPy<1.0,>=0.6
+Requires-Dist: pyyaml<7.0,>=6.0
+Requires-Dist: mcp<2.0,>=1.0
+Requires-Dist: skcomm>=0.1
+Requires-Dist: skmemory>=0.5
 Provides-Extra: cli
 Requires-Dist: click>=8.1; extra == "cli"
 Requires-Dist: rich>=13.0; extra == "cli"
+Provides-Extra: tui
+Requires-Dist: textual>=0.70; extra == "tui"
+Provides-Extra: webui
+Requires-Dist: fastapi>=0.111; extra == "webui"
+Requires-Dist: uvicorn[standard]>=0.29; extra == "webui"
 Provides-Extra: all
-Requires-Dist: skchat[cli]; extra == "all"
+Requires-Dist: skchat[cli,tui,webui]; extra == "all"
 Provides-Extra: dev
 Requires-Dist: pytest>=7.0; extra == "dev"
 Requires-Dist: pytest-cov>=4.0; extra == "dev"
-Requires-Dist: black>=24.0; extra == "dev"
+Requires-Dist: pytest-asyncio>=0.21; extra == "dev"
+Requires-Dist: black>=23.0; extra == "dev"
+Requires-Dist: ruff>=0.1; extra == "dev"
 Dynamic: license-file
 
 # SKChat — AI-Native Encrypted Communication
@@ -298,7 +309,7 @@ Lumina (Chef's AI)        Jarvis (Casey's AI)
 
 - **Codec**: Opus (low latency, adaptive bitrate)
 - **Encryption**: DTLS-SRTP (WebRTC native) + PGP key verification
-- **NAT traversal**: STUN first, TURN fallback, Iroh hole-punching
+- **NAT traversal**: STUN first, sovereign coturn (`turn.skworld.io`) fallback, Tailscale DERP for tailnet peers
 - **AI participation**: AI can join as audio participant with own stream
 - **Conference**: Janus or LiveKit SFU for 3+ participants
 
@@ -401,6 +412,9 @@ voice:
   stt_engine: "whisper"
   stt_model: "base"
   webrtc_stun: "stun:stun.l.google.com:19302"
+  webrtc_turn: "turn:turn.skworld.io:3478"       # sovereign coturn
+  webrtc_turn_secret: "${SKCOMM_TURN_SECRET}"    # HMAC-SHA1 shared secret
+  webrtc_signaling: "wss://skcomm.skworld.io/webrtc/ws"
 
 transport:
   primary: "netbird"
@@ -432,6 +446,49 @@ ui:
   theme: "dark"
   notifications: true
   sound: true
+```
+
+---
+
+## MCP Tools (AI Agent Integration)
+
+SKChat exposes a **Model Context Protocol** server for AI agents running inside
+Claude Code, Cursor, Windsurf, or any MCP-compatible host. This makes SKChat's
+full feature set available as native AI tools — no shell commands needed.
+
+### Text & History Tools
+
+| Tool | Description |
+|------|-------------|
+| `send_message` | Send a message to a peer or group |
+| `get_inbox` | Read incoming messages (local history) |
+| `get_history` | Conversation history with a specific peer |
+| `search_messages` | Full-text search across all messages |
+| `create_group` | Create a group chat with specified members |
+
+### WebRTC P2P Tools
+
+| Tool | Description |
+|------|-------------|
+| `webrtc_status` | List active P2P connections and transport health |
+| `initiate_call` | Open a WebRTC data channel to a peer (async, ~1-3s) |
+| `accept_call` | Accept an incoming WebRTC connection |
+| `send_file_p2p` | Transfer a file via WebRTC parallel data channels |
+
+### Usage Example (Claude Code)
+
+```
+> Use skchat MCP to send lumina a message saying deploy complete
+→ send_message(recipient="lumina", message="Deploy complete")
+  ✓ Delivered via webrtc (12ms)
+
+> Open a P2P connection to jarvis
+→ initiate_call(peer="jarvis")
+  Connecting... check webrtc_status in ~3s
+
+> Send the blueprint file to lumina over P2P
+→ send_file_p2p(file_path="./blueprint.md", recipient="lumina")
+  ✓ Sent via WebRTC data channel (256KB chunks)
 ```
 
 ---

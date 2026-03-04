@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
 
 class ContentType(str, Enum):
@@ -62,6 +62,7 @@ class ChatMessage(BaseModel):
         timestamp: UTC creation time.
         thread_id: Optional thread for threaded conversations.
         reply_to_id: Optional ID of the message being replied to.
+            Also accepted as ``reply_to`` during construction.
         reactions: List of reactions on this message.
         metadata: Extensible key-value metadata.
         ttl: Seconds until auto-delete (None = permanent).
@@ -70,6 +71,8 @@ class ChatMessage(BaseModel):
         signature: PGP signature over the message content.
     """
 
+    model_config = ConfigDict(populate_by_name=True)
+
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     sender: str = Field(description="CapAuth identity URI of the sender")
     recipient: str = Field(description="CapAuth identity URI or group URI")
@@ -77,13 +80,22 @@ class ChatMessage(BaseModel):
     content_type: ContentType = Field(default=ContentType.MARKDOWN)
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     thread_id: Optional[str] = Field(default=None, description="Thread identifier")
-    reply_to_id: Optional[str] = Field(default=None, description="ID of parent message")
+    reply_to_id: Optional[str] = Field(
+        default=None,
+        description="ID of parent message",
+        validation_alias=AliasChoices("reply_to_id", "reply_to"),
+    )
     reactions: list[Reaction] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
     ttl: Optional[int] = Field(default=None, description="Seconds until auto-delete")
     delivery_status: DeliveryStatus = Field(default=DeliveryStatus.PENDING)
     encrypted: bool = Field(default=False)
     signature: Optional[str] = Field(default=None, description="PGP signature armor")
+
+    @property
+    def reply_to(self) -> Optional[str]:
+        """Alias for reply_to_id for backward compatibility."""
+        return self.reply_to_id
 
     @field_validator("sender", "recipient")
     @classmethod

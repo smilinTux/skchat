@@ -44,6 +44,8 @@ class ChatHistory:
         store: object = None,
         history_dir: Optional[Path | str] = None,
     ) -> None:
+        if store is None:
+            store = self._make_default_store()
         self._store = store
         self._history_dir: Path = (
             Path(history_dir).expanduser()
@@ -51,6 +53,31 @@ class ChatHistory:
             else _DEFAULT_HISTORY_DIR.expanduser()
         )
         self._history_dir.mkdir(parents=True, exist_ok=True)
+
+    @staticmethod
+    def _make_default_store() -> object:
+        """Create a default SQLite-backed MemoryStore at ~/.skchat/memory/.
+
+        Called automatically when no store is supplied to __init__, so that
+        ``ChatHistory()`` (no args) behaves the same as ``ChatHistory.from_config()``.
+
+        Returns:
+            MemoryStore backed by SQLite, or None if skmemory is unavailable.
+        """
+        store_path = str(Path("~/.skchat/memory").expanduser())
+        Path(store_path).mkdir(parents=True, exist_ok=True)
+        try:
+            from skmemory import MemoryStore, SQLiteBackend
+
+            backend = SQLiteBackend(base_path=store_path)
+            return MemoryStore(primary=backend)
+        except ImportError:
+            try:
+                from skmemory import MemoryStore
+
+                return MemoryStore()
+            except ImportError:
+                return None
 
     # ------------------------------------------------------------------
     # JSONL save / load
@@ -338,6 +365,60 @@ class ChatHistory:
         ]
         return chat_results[:limit]
 
+    # ------------------------------------------------------------------
+    # Convenience API (thin wrappers used by daemon / tests)
+    # ------------------------------------------------------------------
+
+    def add_message(self, sender: str, recipient: str, content: str) -> ChatMessage:
+        """Create a ChatMessage and persist it to the JSONL history.
+
+        Convenience wrapper around :meth:`save` that constructs the
+        :class:`ChatMessage` from scalar arguments.
+
+        Args:
+            sender: CapAuth identity URI (or short name) of the sender.
+            recipient: CapAuth identity URI (or short name) of the recipient.
+            content: Plaintext message body.
+
+        Returns:
+            The created and saved :class:`ChatMessage`.
+        """
+        msg = ChatMessage(sender=sender, recipient=recipient, content=content)
+        self.save(msg)
+        return msg
+
+    def get_messages(
+        self,
+        peer: str,
+        limit: int = 50,
+        since: Optional[datetime] = None,
+    ) -> list[dict]:
+        """Return recent messages involving *peer* as sender or recipient.
+
+        Wraps :meth:`load` and converts results to plain dicts for easy
+        display / JSON serialisation.
+
+        Args:
+            peer: CapAuth identity URI (or short name) to filter by.
+            limit: Maximum number of messages to return (newest first).
+            since: Optional lower bound on message timestamp.
+
+        Returns:
+            list[dict]: Each dict contains ``id``, ``sender``, ``recipient``,
+            ``content``, and ``timestamp`` (ISO-8601 string).
+        """
+        messages = self.load(since=since, peer=peer, limit=limit)
+        return [
+            {
+                "id": m.id,
+                "sender": m.sender,
+                "recipient": m.recipient,
+                "content": m.content,
+                "timestamp": m.timestamp.isoformat(),
+            }
+            for m in messages
+        ]
+
     def get_thread(self, thread_id: str, limit: int = 50) -> list[ChatMessage]:
         """Return all messages in *thread_id* from JSONL history, sorted oldest-first.
 
@@ -428,7 +509,12 @@ class ChatHistory:
             for m in memories
         ]
 
-    def get_messages_since(self, minutes: int, limit: int = 200) -> list[dict]:
+    def get_messages_since(
+        self,
+        minutes: int,
+        limit: int = 200,
+        recipient: Optional[str] = None,
+    ) -> list[dict]:
         """Retrieve messages stored within the last N minutes.
 
         Fetches all recent messages from the store and filters by the
@@ -436,33 +522,51 @@ class ChatHistory:
         ``now - minutes`` are returned.
 
         Args:
-            minutes: Look-back window in minutes.
+            minutes: Look-back window in minutes.  Pass ``0`` (or any
+                non-positive value) to return all messages regardless of age.
             limit: Upper bound on messages fetched before filtering.
+            recipient: If given, only return messages where the stored
+                ``recipient`` metadata field matches this value exactly.
 
         Returns:
             list[dict]: Message dicts sorted oldest-first so they read
                 chronologically in a live inbox display.
         """
-        cutoff = datetime.now(timezone.utc) - timedelta(minutes=minutes)
+        if self._store is None:
+            return []
+
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(minutes=minutes)
+            if minutes > 0
+            else None
+        )
         all_memories = self._store.list_memories(
             tags=[self.MESSAGE_TAG],
             limit=limit,
         )
         results: list[dict] = []
         for m in all_memories:
-            ts = m.created_at
-            if ts is None:
-                continue
-            # Normalise to aware datetime for comparison
-            if isinstance(ts, str):
-                try:
-                    ts = datetime.fromisoformat(ts)
-                except ValueError:
+            # Apply time filter when a cutoff is set
+            if cutoff is not None:
+                ts = m.created_at
+                if ts is None:
                     continue
-            if ts.tzinfo is None:
-                ts = ts.replace(tzinfo=timezone.utc)
-            if ts >= cutoff:
-                results.append(self._memory_to_chat_dict(m))
+                # Normalise to aware datetime for comparison
+                if isinstance(ts, str):
+                    try:
+                        ts = datetime.fromisoformat(ts)
+                    except ValueError:
+                        continue
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                if ts < cutoff:
+                    continue
+
+            # Apply recipient filter
+            if recipient is not None and m.metadata.get("recipient") != recipient:
+                continue
+
+            results.append(self._memory_to_chat_dict(m))
 
         results.sort(key=lambda d: d.get("timestamp", ""))
         return results

@@ -1,9 +1,12 @@
-pydantic>=2.0
-PGPy>=0.6
-pyyaml>=6.0
+pydantic<3.0,>=2.0
+PGPy<1.0,>=0.6
+pyyaml<7.0,>=6.0
+mcp<2.0,>=1.0
+skcomm>=0.1
+skmemory>=0.5
 
 [all]
-skchat[cli]
+skchat[cli,tui,webui]
 
 [cli]
 click>=8.1
@@ -12,4 +15,13 @@ rich>=13.0
 [dev]
 pytest>=7.0
 pytest-cov>=4.0
-black>=24.0
+pytest-asyncio>=0.21
+black>=23.0
+ruff>=0.1
+
+[tui]
+textual>=0.70
+
+[webui]
+fastapi>=0.111
+uvicorn[standard]>=0.29

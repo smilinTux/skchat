@@ -1,20 +1,19 @@
 #!/usr/bin/env python3
-"""bridge-supervisor.py — Supervisor for SKChat bridge subprocesses.
+"""bridge-supervisor.py — Systemd service health monitor for SKChat bridges.
 
-Starts opus-bridge.py and lumina-bridge.py as subprocesses and keeps them
-alive: if either dies it is logged and restarted after a 5-second delay.
-Handles SIGTERM cleanly by forwarding it to both children before exiting.
+Checks skchat-opus-bridge and skchat-lumina-bridge systemd user services
+every 30 seconds and restarts any that are not active.
 
 Usage:
-  python3 scripts/bridge-supervisor.py
+  python3 scripts/bridge-supervisor.py              # continuous loop
+  python3 scripts/bridge-supervisor.py --check-once # one-shot health check
   systemctl --user start skchat-bridge-supervisor.service
 """
 
 from __future__ import annotations
 
+import argparse
 import logging
-import os
-import signal
 import subprocess
 import sys
 import time
@@ -37,112 +36,127 @@ logger = logging.getLogger("bridge-supervisor")
 
 # ─── Config ──────────────────────────────────────────────────────────────────
 
-SCRIPTS_DIR = Path(__file__).parent
-CHECK_INTERVAL = 10   # seconds between liveness checks
-RESTART_DELAY = 5     # seconds to wait before restarting a dead child
+CHECK_INTERVAL = 30  # seconds between liveness checks
 
-BRIDGES: dict[str, Path] = {
-    "opus-bridge": SCRIPTS_DIR / "opus-bridge.py",
-    "lumina-bridge": SCRIPTS_DIR / "lumina-bridge.py",
-}
+BRIDGE_SERVICES: list[str] = [
+    "skchat-opus-bridge",
+    "skchat-lumina-bridge",
+]
 
-# ─── State ───────────────────────────────────────────────────────────────────
-
-_procs: dict[str, subprocess.Popen | None] = {name: None for name in BRIDGES}
-_shutdown = False
+# ─── Systemd helpers ─────────────────────────────────────────────────────────
 
 
-# ─── Signal handling ──────────────────────────────────────────────────────────
-
-def _handle_sigterm(signum: int, frame) -> None:  # noqa: ANN001
-    global _shutdown
-    logger.info("SIGTERM received — shutting down children")
-    _shutdown = True
-    for name, proc in _procs.items():
-        if proc is not None and proc.poll() is None:
-            logger.info("Terminating %s (pid=%d)", name, proc.pid)
-            proc.terminate()
-    # Give children a moment to exit gracefully
-    time.sleep(2)
-    for name, proc in _procs.items():
-        if proc is not None and proc.poll() is None:
-            logger.warning("Force-killing %s (pid=%d)", name, proc.pid)
-            proc.kill()
-    logger.info("All children stopped. Exiting.")
-    sys.exit(0)
+def _systemctl(*args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["systemctl", "--user", *args],
+        capture_output=True,
+        text=True,
+    )
 
 
-signal.signal(signal.SIGTERM, _handle_sigterm)
+def _is_active(service: str) -> bool:
+    return _systemctl("is-active", "--quiet", service).returncode == 0
 
 
-# ─── Process management ───────────────────────────────────────────────────────
-
-def _start(name: str, script: Path) -> subprocess.Popen | None:
-    """Launch a bridge script as a subprocess and return the Popen object."""
-    if not script.exists():
-        logger.warning("Script not found, skipping %s (%s)", name, script)
-        return None
-    try:
-        proc = subprocess.Popen(
-            [sys.executable, str(script)],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            env=os.environ.copy(),
-        )
-        logger.info("Started %s (pid=%d)", name, proc.pid)
-        return proc
-    except Exception as exc:
-        logger.error("Failed to start %s: %s", name, exc)
-        return None
+def _unit_exists(service: str) -> bool:
+    """Return True when systemd has a unit file for this service."""
+    r = _systemctl("cat", service)
+    return r.returncode == 0
 
 
-def check_and_restart() -> None:
-    """Check liveness of each bridge; restart any that have died."""
-    for name, script in BRIDGES.items():
-        proc = _procs[name]
+def _restart(service: str) -> bool:
+    r = _systemctl("restart", service)
+    if r.returncode == 0:
+        logger.info("Restarted %s successfully", service)
+        return True
+    logger.error(
+        "Failed to restart %s: %s",
+        service,
+        (r.stderr or r.stdout).strip() or "(no output)",
+    )
+    return False
 
-        if proc is None:
-            # Never started (e.g. script missing on first attempt) — retry
-            _procs[name] = _start(name, script)
+
+# ─── Core check ──────────────────────────────────────────────────────────────
+
+# Possible status values returned by check_bridges():
+#   "active"          — service is running normally
+#   "restarted"       — was dead, restart succeeded
+#   "restart-failed"  — was dead, restart command failed
+#   "not-found"       — no unit file exists (skip silently after first warning)
+
+_warned_missing: set[str] = set()
+
+
+def check_bridges() -> dict[str, str]:
+    """Check all bridge services. Returns {service: status} mapping."""
+    results: dict[str, str] = {}
+
+    for service in BRIDGE_SERVICES:
+        if not _unit_exists(service):
+            if service not in _warned_missing:
+                logger.warning("Unit file not found for %s — skipping", service)
+                _warned_missing.add(service)
+            results[service] = "not-found"
             continue
 
-        exit_code = proc.poll()
-        if exit_code is not None:
-            logger.error(
-                "%s died (pid=%d, exit=%d) — restarting in %ds",
-                name, proc.pid, exit_code, RESTART_DELAY,
-            )
-            time.sleep(RESTART_DELAY)
-            _procs[name] = _start(name, script)
+        if _is_active(service):
+            logger.debug("%s is active", service)
+            results[service] = "active"
+        else:
+            logger.warning("%s is not active — restarting", service)
+            ok = _restart(service)
+            results[service] = "restarted" if ok else "restart-failed"
+
+    return results
 
 
 # ─── Entry point ─────────────────────────────────────────────────────────────
 
+
 def main() -> None:
-    logger.info("Bridge supervisor starting (check interval: %ds)", CHECK_INTERVAL)
-
-    # Initial launch
-    for name, script in BRIDGES.items():
-        _procs[name] = _start(name, script)
-
-    # Print startup summary
-    started = {n: p.pid for n, p in _procs.items() if p is not None}
-    skipped = [n for n, p in _procs.items() if p is None]
-    print(
-        f"[bridge-supervisor] running — "
-        + ", ".join(f"{n} pid={pid}" for n, pid in started.items())
-        + (f" | skipped: {', '.join(skipped)}" if skipped else ""),
-        flush=True,
+    parser = argparse.ArgumentParser(
+        description="SKChat bridge supervisor — monitors systemd bridge services"
     )
-    logger.info("Log file: %s", LOG_FILE)
+    parser.add_argument(
+        "--check-once",
+        action="store_true",
+        help="Perform a single health check and exit (non-zero exit if any service "
+        "is unhealthy and could not be restarted)",
+    )
+    args = parser.parse_args()
 
-    while not _shutdown:
+    if args.check_once:
+        logger.info("=== bridge-supervisor --check-once ===")
+        results = check_bridges()
+        print("\nBridge health check:")
+        for service, status in results.items():
+            if status == "active":
+                symbol = "[OK]"
+            elif status == "restarted":
+                symbol = "[RESTARTED]"
+            elif status == "not-found":
+                symbol = "[NOT FOUND]"
+            else:
+                symbol = "[FAILED]"
+            print(f"  {symbol} {service}: {status}")
+        print(f"\nLog: {LOG_FILE}")
+        unhealthy = [s for s, st in results.items() if st == "restart-failed"]
+        sys.exit(1 if unhealthy else 0)
+
+    # ── Continuous loop ───────────────────────────────────────────────────────
+    logger.info(
+        "Bridge supervisor starting (interval: %ds, log: %s)", CHECK_INTERVAL, LOG_FILE
+    )
+    logger.info("Monitoring: %s", ", ".join(BRIDGE_SERVICES))
+
+    while True:
         try:
+            check_bridges()
             time.sleep(CHECK_INTERVAL)
-            check_and_restart()
         except KeyboardInterrupt:
-            logger.info("KeyboardInterrupt — shutting down")
-            _handle_sigterm(signal.SIGINT, None)
+            logger.info("KeyboardInterrupt — stopping")
+            sys.exit(0)
 
 
 if __name__ == "__main__":

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -216,6 +217,191 @@ class TestInboxCommand:
         result = runner.invoke(main, ["inbox", "--thread", "thread-abc"])
         assert result.exit_code == 0
         mock_history.get_thread_messages.assert_called_once_with("thread-abc", limit=20)
+
+    @patch("skchat.cli._save_read_state")
+    @patch("skchat.cli._load_read_state", return_value={})
+    @patch("skchat.cli._get_history")
+    @patch("skchat.cli._get_identity", return_value="capauth:local@skchat")
+    def test_inbox_json_flag(
+        self,
+        mock_id: MagicMock,
+        mock_hist_fn: MagicMock,
+        mock_load: MagicMock,
+        mock_save: MagicMock,
+        mock_history: MagicMock,
+        runner: CliRunner,
+    ) -> None:
+        """--json outputs a raw JSON array, no Rich markup."""
+        history = MagicMock()
+        msg = MagicMock()
+        msg.sender = "capauth:alice@test"
+        msg.recipient = "capauth:local@skchat"
+        msg.content = "The quantum upgrade is ready"
+        msg.thread_id = None
+        msg.timestamp = "2026-02-23T14:00:00"
+        history.load.return_value = [msg]
+        mock_hist_fn.return_value = history
+
+        result = runner.invoke(main, ["inbox", "--json"])
+        assert result.exit_code == 0
+        import json
+        data = json.loads(result.output)
+        assert isinstance(data, list)
+        assert len(data) == 1
+        assert data[0]["content"] == "The quantum upgrade is ready"
+        # early return → save_read_state NOT called
+        mock_save.assert_not_called()
+
+    @patch("skchat.cli._save_read_state")
+    @patch("skchat.cli._load_read_state", return_value={})
+    @patch("skchat.cli._get_history")
+    @patch("skchat.cli._get_identity", return_value="capauth:local@skchat")
+    def test_inbox_threads_flag(
+        self,
+        mock_id: MagicMock,
+        mock_hist_fn: MagicMock,
+        mock_load: MagicMock,
+        mock_save: MagicMock,
+        mock_history: MagicMock,
+        runner: CliRunner,
+    ) -> None:
+        """--threads shows a one-line-per-conversation summary."""
+        history = MagicMock()
+        msg = MagicMock()
+        msg.sender = "capauth:alice@test"
+        msg.recipient = "capauth:local@skchat"
+        msg.content = "Hey! The pipeline is live!"
+        msg.thread_id = None
+        msg.timestamp = "2026-02-23T14:00:00"
+        history.load.return_value = [msg]
+        mock_hist_fn.return_value = history
+
+        result = runner.invoke(main, ["inbox", "--threads"])
+        assert result.exit_code == 0
+        # _display_name("capauth:alice@test") → "Alice"
+        assert "Alice" in result.output
+        mock_save.assert_called_once()
+
+    @patch("skchat.cli._save_read_state")
+    @patch("skchat.cli._load_read_state", return_value={})
+    @patch("skchat.cli._get_history")
+    @patch("skchat.cli._get_identity", return_value="capauth:local@skchat")
+    def test_inbox_unread_flag_no_prior_state(
+        self,
+        mock_id: MagicMock,
+        mock_hist_fn: MagicMock,
+        mock_load: MagicMock,
+        mock_save: MagicMock,
+        mock_history: MagicMock,
+        runner: CliRunner,
+    ) -> None:
+        """--unread with empty read-state shows all messages and saves state."""
+        history = MagicMock()
+        msg = MagicMock()
+        msg.sender = "capauth:alice@test"
+        msg.recipient = "capauth:local@skchat"
+        msg.content = "The quantum upgrade is ready"
+        msg.thread_id = None
+        msg.timestamp = "2026-02-23T14:00:00"
+        history.load.return_value = [msg]
+        mock_hist_fn.return_value = history
+
+        result = runner.invoke(main, ["inbox", "--unread"])
+        assert result.exit_code == 0
+        assert "quantum" in result.output.lower()
+        mock_save.assert_called_once()
+
+    @patch("skchat.cli._save_read_state")
+    @patch(
+        "skchat.cli._load_read_state",
+        return_value={"_global": "2099-01-01T00:00:00"},
+    )
+    @patch("skchat.cli._get_history")
+    @patch("skchat.cli._get_identity", return_value="capauth:local@skchat")
+    def test_inbox_unread_flag_all_read(
+        self,
+        mock_id: MagicMock,
+        mock_hist_fn: MagicMock,
+        mock_load: MagicMock,
+        mock_save: MagicMock,
+        mock_history: MagicMock,
+        runner: CliRunner,
+    ) -> None:
+        """--unread with a future last-read marker shows 'No unread messages'."""
+        history = MagicMock()
+        msg = MagicMock()
+        msg.sender = "capauth:alice@test"
+        msg.recipient = "capauth:local@skchat"
+        msg.content = "Old news"
+        msg.thread_id = None
+        msg.timestamp = "2026-02-23T14:00:00"
+        history.load.return_value = [msg]
+        mock_hist_fn.return_value = history
+
+        result = runner.invoke(main, ["inbox", "--unread"])
+        assert result.exit_code == 0
+        assert "No unread messages" in result.output
+        mock_save.assert_not_called()
+
+
+class TestInboxHelpers:
+    """Unit tests for inbox display helper functions."""
+
+    def test_display_name_capauth_uri(self) -> None:
+        """capauth URI extracts local part and capitalises it."""
+        from skchat.cli import _display_name
+        assert _display_name("capauth:lumina@skworld.io") == "Lumina"
+        assert _display_name("capauth:chef@skworld.io") == "Chef"
+        assert _display_name("capauth:local@skchat") == "Local"
+
+    def test_display_name_plain(self) -> None:
+        """Plain strings are returned capitalised."""
+        from skchat.cli import _display_name
+        assert _display_name("alice") == "Alice"
+
+    def test_sender_color_self(self) -> None:
+        """Own identity returns blue."""
+        from skchat.cli import _sender_color
+        assert _sender_color("capauth:me@test", "capauth:me@test") == "blue"
+
+    def test_sender_color_lumina(self) -> None:
+        """Lumina gets magenta."""
+        from skchat.cli import _sender_color
+        assert _sender_color("capauth:lumina@skworld.io", "capauth:me@test") == "magenta"
+
+    def test_sender_color_chef(self) -> None:
+        """Chef gets yellow."""
+        from skchat.cli import _sender_color
+        assert _sender_color("capauth:chef@skworld.io", "capauth:me@test") == "yellow"
+
+    def test_sender_color_other(self) -> None:
+        """Unknown senders get cyan."""
+        from skchat.cli import _sender_color
+        assert _sender_color("capauth:bob@test", "capauth:me@test") == "cyan"
+
+    def test_ts_ago_seconds(self) -> None:
+        """Recent timestamp returns 'Xs ago'."""
+        from skchat.cli import _ts_ago
+        from datetime import timedelta
+        ts = (datetime.now(timezone.utc) - timedelta(seconds=30)).isoformat()
+        assert "s ago" in _ts_ago(ts)
+
+    def test_ts_ago_minutes(self) -> None:
+        """Minute-range timestamp returns 'Nmin ago'."""
+        from skchat.cli import _ts_ago
+        from datetime import timedelta
+        ts = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+        assert "min ago" in _ts_ago(ts)
+
+    def test_ts_hhmm_string(self) -> None:
+        """ISO string extracts HH:MM."""
+        from skchat.cli import _ts_hhmm
+        assert _ts_hhmm("2026-02-23T14:35:00") == "14:35"
+
+    def test_ts_hhmm_short(self) -> None:
+        """Short strings return as-is truncated."""
+        from skchat.cli import _ts_hhmm
+        assert _ts_hhmm("14:35") == "14:35"
 
 
 class TestHistoryCommand:

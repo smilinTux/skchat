@@ -65,3 +65,8 @@ target-version = ["py311"]
 testpaths = ["tests"]
 pythonpath = ["src"]
 addopts = "-v --tb=short"
+markers = [
+    "integration: mark test as an integration test requiring live external services",
+    "e2e_live: end-to-end tests using file-based transport (no daemon or network required)",
+    "e2e_3way: 3-way group chat E2E tests (Chef + Opus + Lumina in skworld-team)",
+]

@@ -1,0 +1,90 @@
+# config.example.yml — SKChat example configuration
+#
+# Copy to ~/.skchat/config.yml and adjust for your setup.
+# All fields are optional; environment variables take precedence.
+#
+# Environment variable equivalents:
+#   identity.uri      → SKCHAT_IDENTITY
+#   daemon.poll_interval → SKCHAT_DAEMON_INTERVAL
+#   daemon.log_file   → SKCHAT_DAEMON_LOG
+#   daemon.quiet      → SKCHAT_DAEMON_QUIET
+
+# ─── Identity ─────────────────────────────────────────────────────────────────
+
+identity:
+  # CapAuth URI that identifies this agent on the mesh.
+  # Format: capauth:<name>@<domain>
+  uri: capauth:opus@skworld.io
+
+# ─── Daemon ───────────────────────────────────────────────────────────────────
+
+daemon:
+  # How often (seconds) the daemon polls for new messages.
+  poll_interval: 5.0
+
+  # Write daemon logs to this file instead of stderr. Omit for stderr only.
+  # log_file: ~/.skchat/daemon.log
+
+  # Suppress console output from the daemon (useful when running under systemd).
+  quiet: false
+
+# ─── Transport ────────────────────────────────────────────────────────────────
+# Controls which SKComm transport the daemon uses to send/receive messages.
+
+transport:
+  # Preferred routing mode: "speed" (realtime transports first) or "reliability".
+  routing_mode: speed
+
+  # Transports to enable. Comment out transports you don't have configured.
+  enabled:
+    - file        # local file-based; always available, no setup required
+    - syncthing   # P2P sync mesh; requires Syncthing running locally
+    # - tailscale # TCP over Tailscale mesh; requires Tailscale + peer IPs
+    # - webrtc    # aiortc P2P; requires signaling server + coturn
+
+  # File transport settings (used as fallback when no realtime transport is up)
+  file:
+    inbox_dir: ~/.skchat/inbox
+    outbox_dir: ~/.skchat/outbox
+
+  # Syncthing transport settings
+  syncthing:
+    api_url: http://127.0.0.1:8384
+    # api_key: YOUR_SYNCTHING_API_KEY  # or set SYNCTHING_API_KEY env var
+    shared_folder_id: skchat-mesh
+
+  # Tailscale transport settings (optional)
+  # tailscale:
+  #   listen_port: 9385
+  #   peer_registry: ~/.skcapstone/peers/  # directory of <name>.json files
+
+  # WebRTC transport settings (optional)
+  # webrtc:
+  #   signaling_url: wss://ws.weblink.skworld.io
+  #   turn_url: turn:turn.skworld.io:3478
+  #   # TURN credentials are derived from SKCOMM_TURN_SECRET (HMAC time-limited)
+
+# ─── Bridge ───────────────────────────────────────────────────────────────────
+# Settings for the Lumina / Opus consciousness bridge scripts.
+
+bridge:
+  # Which peers this agent bridges messages to/from.
+  peers:
+    - lumina
+    - claude
+
+  # How often (seconds) the bridge polls for new messages to relay.
+  poll_interval: 10.0
+
+  # Relay messages only within the named group (optional).
+  # group_id: d4f3281e-fa92-474c-a8cd-f0a2a4c31c33
+
+  # Maximum messages to relay per poll cycle.
+  max_relay: 20
+
+# ─── MCP Server ───────────────────────────────────────────────────────────────
+
+mcp:
+  # Host/port the MCP stdio server is exposed on (informational only;
+  # Claude Code communicates via stdio, not TCP).
+  log_level: INFO

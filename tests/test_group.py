@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 import pgpy
 import pytest
 from pgpy.constants import (
@@ -359,3 +361,170 @@ class TestGroupMessageEncryption:
         encrypted = GroupMessageEncryptor.encrypt(long_msg, key)
         decrypted = GroupMessageEncryptor.decrypt(encrypted, key)
         assert decrypted == long_msg
+
+
+class TestGroupMulticast:
+    """Tests for group message multicast delivery via file transport."""
+
+    def _two_member_group(
+        self,
+        alice_pub: str,
+        bob_pub: str,
+        suffix: str = "",
+    ) -> GroupChat:
+        group = GroupChat.create(
+            name=f"Multicast Test {suffix}",
+            creator_uri=f"capauth:alice{suffix}@test",
+            creator_public_key=alice_pub,
+        )
+        group.add_member(
+            identity_uri=f"capauth:bob{suffix}@test",
+            public_key_armor=bob_pub,
+        )
+        return group
+
+    def test_send_calls_transport_for_each_non_sender(
+        self,
+        alice_keys: tuple[str, str],
+        bob_keys: tuple[str, str],
+    ) -> None:
+        """send() calls transport.send() exactly once per non-sender member."""
+        _, alice_pub = alice_keys
+        _, bob_pub = bob_keys
+        group = self._two_member_group(alice_pub, bob_pub, "-transport")
+
+        transport = MagicMock()
+        transport.send.return_value = {"delivered": True}
+
+        result = group.send(
+            content="Hello group!",
+            sender=f"capauth:alice-transport@test",
+            transport=transport,
+        )
+
+        # Only bob receives — alice is the sender
+        assert transport.send.call_count == 1
+        recipient_arg = transport.send.call_args[0][0]
+        assert recipient_arg == "capauth:bob-transport@test"
+
+        # Payload contains expected fields
+        payload_arg = transport.send.call_args[0][1]
+        assert payload_arg["content"] == "Hello group!"
+        assert payload_arg["group_id"] == group.id
+        assert payload_arg["sender"] == "capauth:alice-transport@test"
+
+        assert "capauth:bob-transport@test" in result["delivered"]
+        assert result["total"] == 1
+        assert result["failed"] == []
+
+    def test_send_stores_group_and_individual_history(
+        self,
+        alice_keys: tuple[str, str],
+        bob_keys: tuple[str, str],
+        tmp_path,
+    ) -> None:
+        """send() saves to group thread history AND individual member history."""
+        from skchat.history import ChatHistory
+
+        _, alice_pub = alice_keys
+        _, bob_pub = bob_keys
+        group = self._two_member_group(alice_pub, bob_pub, "-hist")
+
+        history = ChatHistory(store=MagicMock(), history_dir=tmp_path)
+        transport = MagicMock()
+        transport.send.return_value = {"delivered": True}
+
+        group.send(
+            content="Multicast history test",
+            sender="capauth:alice-hist@test",
+            transport=transport,
+            history=history,
+        )
+
+        # Group thread history: both group msg + bob's individual copy share thread_id
+        thread_msgs = history.get_thread(group.id)
+        assert len(thread_msgs) >= 1
+        assert any(m.content == "Multicast history test" for m in thread_msgs)
+
+        # Individual history — bob appears as recipient in his personal copy
+        bob_msgs = history.load(peer="capauth:bob-hist@test")
+        assert len(bob_msgs) >= 1
+        assert any(m.content == "Multicast history test" for m in bob_msgs)
+
+        # Individual history — alice appears as sender in the group-thread copy
+        alice_msgs = history.load(peer="capauth:alice-hist@test")
+        assert len(alice_msgs) >= 1
+        assert any(m.content == "Multicast history test" for m in alice_msgs)
+
+    def test_send_without_transport_still_records_history(
+        self,
+        alice_keys: tuple[str, str],
+        bob_keys: tuple[str, str],
+        tmp_path,
+    ) -> None:
+        """send() with transport=None marks delivered and still writes history."""
+        from skchat.history import ChatHistory
+
+        _, alice_pub = alice_keys
+        _, bob_pub = bob_keys
+        group = self._two_member_group(alice_pub, bob_pub, "-notrans")
+
+        history = ChatHistory(store=MagicMock(), history_dir=tmp_path)
+
+        result = group.send(
+            content="No-transport delivery",
+            sender="capauth:alice-notrans@test",
+            transport=None,
+            history=history,
+        )
+
+        assert "capauth:bob-notrans@test" in result["delivered"]
+        assert result["failed"] == []
+
+        thread_msgs = history.get_thread(group.id)
+        assert any(m.content == "No-transport delivery" for m in thread_msgs)
+
+    def test_send_nonmember_returns_error(
+        self,
+        alice_keys: tuple[str, str],
+        bob_keys: tuple[str, str],
+    ) -> None:
+        """send() by a non-member returns an error dict without delivering."""
+        _, alice_pub = alice_keys
+        _, bob_pub = bob_keys
+        group = self._two_member_group(alice_pub, bob_pub, "-nonmember")
+
+        transport = MagicMock()
+        result = group.send(
+            content="Intruder message",
+            sender="capauth:stranger@test",
+            transport=transport,
+        )
+
+        assert result["delivered"] == []
+        assert result["total"] == 0
+        assert "error" in result
+        transport.send.assert_not_called()
+
+    def test_send_transport_failure_recorded_in_failed(
+        self,
+        alice_keys: tuple[str, str],
+        bob_keys: tuple[str, str],
+    ) -> None:
+        """send() records members in 'failed' when transport.send() raises."""
+        _, alice_pub = alice_keys
+        _, bob_pub = bob_keys
+        group = self._two_member_group(alice_pub, bob_pub, "-fail")
+
+        transport = MagicMock()
+        transport.send.side_effect = OSError("transport unavailable")
+
+        result = group.send(
+            content="Will fail",
+            sender="capauth:alice-fail@test",
+            transport=transport,
+        )
+
+        assert "capauth:bob-fail@test" in result["failed"]
+        assert result["delivered"] == []
+        assert result["total"] == 1

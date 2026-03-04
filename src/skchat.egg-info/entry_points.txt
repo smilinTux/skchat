@@ -1,2 +1,4 @@
 [console_scripts]
 skchat = skchat.cli:main
+skchat-mcp = skchat.mcp_server:main
+skchat-tui = skchat.tui:main

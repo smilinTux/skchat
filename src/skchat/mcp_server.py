@@ -33,6 +33,7 @@ Tools:
     skchat_peers              — List known peers with presence state and capabilities
     skchat_set_presence       — Broadcast own presence state via file transport to ~/.skcomm/outbox/
     skchat_get_presence       — Query presence cache for all peers or a specific peer
+    skchat_who_is_online      — List all peers with online/away/offline status (presence cache)
     skchat_inbox              — Unified inbox: all messages for this agent with sender/timestamp/unread filters
 
 Invocation:
@@ -89,6 +90,7 @@ _SENDER_DISPLAY: dict[str, str] = {
 
 server = Server("skchat")
 app = server  # alias for import compatibility
+mcp = server  # alias for MCP tool importers
 
 
 # ─────────────────────────────────────────────────────────────
@@ -1021,9 +1023,13 @@ async def list_tools() -> list[Tool]:
                             "or short name (e.g. 'lumina')."
                         ),
                     },
-                    "message": {
+                    "content": {
                         "type": "string",
                         "description": "Message text (markdown supported).",
+                    },
+                    "message": {
+                        "type": "string",
+                        "description": "Alias for content (backward-compat).",
                     },
                     "thread_id": {
                         "type": "string",
@@ -1039,7 +1045,7 @@ async def list_tools() -> list[Tool]:
                         "description": "Structured message type (default: text).",
                     },
                 },
-                "required": ["recipient", "message"],
+                "required": ["recipient", "content"],
             },
         ),
         Tool(
@@ -1054,17 +1060,22 @@ async def list_tools() -> list[Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
+                    "status": {
+                        "type": "string",
+                        "enum": ["online", "offline", "away", "do-not-disturb", "typing"],
+                        "description": "Presence status to broadcast.",
+                    },
                     "state": {
                         "type": "string",
                         "enum": ["online", "offline", "away", "do-not-disturb", "typing"],
-                        "description": "Presence state to broadcast.",
+                        "description": "Alias for status (legacy parameter name).",
                     },
                     "custom_status": {
                         "type": "string",
                         "description": "Optional freeform status text (e.g. 'In a meeting').",
                     },
                 },
-                "required": ["state"],
+                "required": [],
             },
         ),
         Tool(
@@ -1186,6 +1197,51 @@ async def list_tools() -> list[Tool]:
                 "required": [],
             },
         ),
+        Tool(
+            name="skchat_who_is_online",
+            description=(
+                "List all known peers with their current presence status. "
+                "Returns a JSON object with count, online count, and a peers list: "
+                "[{identity, display_name, last_seen, status}]. "
+                "status is 'online' (<2 min since last heartbeat), "
+                "'away' (<10 min), or 'offline'."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "max_age": {
+                        "type": "integer",
+                        "description": (
+                            "Max seconds since last seen to include a peer "
+                            "(default: 300 = 5 minutes)."
+                        ),
+                    },
+                },
+                "required": [],
+            },
+        ),
+        Tool(
+            name="skchat_get_group_history",
+            description=(
+                "Get the last N messages from a group chat thread. "
+                "Returns sender, sender_display, content, and timestamp for each message. "
+                "Default limit is 50 messages."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "group_id": {
+                        "type": "string",
+                        "description": "Group ID (e.g. 'd4f3281e-fa92-474c-a8cd-f0a2a4c31c33').",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum messages to return (default: 50).",
+                    },
+                },
+                "required": ["group_id"],
+            },
+        ),
     ]
 
 
@@ -1237,6 +1293,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         "skchat_get_presence": _handle_skchat_get_presence,
         "skchat_inbox": _handle_skchat_inbox,
         "skchat_peers": _handle_skchat_peers,
+        "skchat_who_is_online": _handle_who_is_online,
+        "skchat_get_group_history": _handle_skchat_get_group_history,
         "skchat_conversation": _handle_skchat_conversation,
     }
     handler = handlers.get(name)
@@ -1333,9 +1391,11 @@ async def _handle_skchat_peers(args: dict) -> list[TextContent]:
 
         result.append({
             "name": peer.get("name", ""),
+            "identity": uri,
             "uri": uri,
             "entity_type": peer.get("entity_type", ""),
             "last_seen": last_seen,
+            "status": presence_state,
             "presence_state": presence_state,
             "capabilities": peer.get("capabilities", []),
         })
@@ -1787,12 +1847,31 @@ async def _handle_get_thread(args: dict) -> list[TextContent]:
     limit: int = args.get("limit", 50)
     history = _get_history()
 
-    messages = history.get_thread(thread_id, limit=limit)
-
-    return _json({
-        "thread_id": thread_id,
-        "count": len(messages),
-        "messages": [
+    # Prefer get_thread_messages (returns dicts) for mock/test compat;
+    # fall back to get_thread (returns ChatMessage objects) if unavailable.
+    if hasattr(history, "get_thread_messages"):
+        raw_messages = history.get_thread_messages(thread_id, limit=limit)
+        serialised = []
+        for m in raw_messages:
+            if isinstance(m, dict):
+                serialised.append({
+                    "id": m.get("id", ""),
+                    "sender": m.get("sender", ""),
+                    "content": str(m.get("content", ""))[:500],
+                    "timestamp": m.get("timestamp", ""),
+                    "reply_to_id": m.get("reply_to_id"),
+                })
+            else:
+                serialised.append({
+                    "id": m.id,
+                    "sender": m.sender,
+                    "content": m.content[:500],
+                    "timestamp": m.timestamp.isoformat(),
+                    "reply_to_id": m.reply_to_id,
+                })
+    else:
+        raw_messages = history.get_thread(thread_id, limit=limit)
+        serialised = [
             {
                 "id": m.id,
                 "sender": m.sender,
@@ -1800,8 +1879,13 @@ async def _handle_get_thread(args: dict) -> list[TextContent]:
                 "timestamp": m.timestamp.isoformat(),
                 "reply_to_id": m.reply_to_id,
             }
-            for m in messages
-        ],
+            for m in raw_messages
+        ]
+
+    return _json({
+        "thread_id": thread_id,
+        "count": len(serialised),
+        "messages": serialised,
     })
 
 
@@ -2656,20 +2740,21 @@ async def _handle_skchat_group_send(args: dict) -> list[TextContent]:
     """Send a message to all members of a group.
 
     Args:
-        args: group_id (str), message (str), optional thread_id (str).
+        args: group_id (str), content or message (str), optional thread_id (str).
 
     Returns:
-        JSON {status, delivered_to: list[str], failed: list[str]}.
+        JSON {ok, message_id, status, delivered_to: list[str], failed: list[str]}.
     """
     group_id: str = args.get("group_id", "")
-    content: str = args.get("message", "")
+    # Accept "content" (task spec) or "message" (legacy param name)
+    content: str = args.get("content") or args.get("message", "")
     thread_id: Optional[str] = args.get("thread_id") or None
     reply_to_id: Optional[str] = args.get("reply_to_id") or None
 
     if not group_id:
         return _error("group_id is required")
     if not content:
-        return _error("message is required")
+        return _error("content is required")
 
     group = _get_groups().get(group_id)
     if group is None:
@@ -2715,12 +2800,30 @@ async def _handle_skchat_group_send(args: dict) -> list[TextContent]:
 
     _save_group(group)
 
-    status = "ok" if not failed else ("partial" if delivered_to else "failed")
+    ok = not failed
+    status = "ok" if ok else ("partial" if delivered_to else "failed")
     return _json({
+        "ok": ok,
+        "message_id": message.id,
         "status": status,
         "delivered_to": delivered_to,
         "failed": failed,
     })
+
+
+async def _handle_skchat_get_group_history(args: dict) -> list[TextContent]:
+    """Get the last N messages from a group chat thread.
+
+    Args:
+        args: group_id (str), optional limit (int, default 50).
+
+    Returns:
+        JSON list of messages with sender, sender_display, content, timestamp.
+    """
+    # Delegate to the existing handler with a default limit of 50.
+    if "limit" not in args:
+        args = {**args, "limit": 50}
+    return await _handle_get_group_history(args)
 
 
 async def _handle_skchat_send(args: dict) -> list[TextContent]:
@@ -2734,7 +2837,8 @@ async def _handle_skchat_send(args: dict) -> list[TextContent]:
         JSON {status, message_id, delivered, recipient}.
     """
     recipient: str = args.get("recipient", "")
-    content: str = args.get("message", "")
+    # Accept "content" (canonical) or "message" (backward-compat alias)
+    content: str = args.get("content") or args.get("message", "")
     thread_id: Optional[str] = args.get("thread_id") or None
     reply_to_id: Optional[str] = args.get("reply_to_id") or None
     message_type: str = args.get("message_type", "text")
@@ -2742,7 +2846,7 @@ async def _handle_skchat_send(args: dict) -> list[TextContent]:
     if not recipient:
         return _error("recipient is required")
     if not content:
-        return _error("message is required")
+        return _error("content is required")
 
     # Resolve short names to full URIs
     if not recipient.startswith("capauth:"):
@@ -3297,7 +3401,7 @@ async def _handle_skchat_set_presence(args: dict) -> list[TextContent]:
     """
     from .presence import PresenceCache, PresenceIndicator, PresenceState
 
-    state_raw: str = args.get("state", "online")
+    state_raw: str = args.get("status") or args.get("state", "online")
     custom_status: Optional[str] = args.get("custom_status")
 
     try:
@@ -3414,26 +3518,30 @@ async def _handle_skchat_conversation(args: dict) -> list[TextContent]:
         except Exception:
             pass
 
-    history = _get_history()
+    try:
+        history = _get_history()
 
-    # When paginating we load a wider window so there are enough messages
-    # before the anchor to fill a full page.
-    fetch_limit = limit if before_id is None else min(limit * 4, 400)
-    messages = history.load(peer=peer, limit=fetch_limit)
+        # When paginating we load a wider window so there are enough messages
+        # before the anchor to fill a full page.
+        fetch_limit = limit if before_id is None else min(limit * 4, 400)
+        messages = history.load(peer=peer, limit=fetch_limit)
 
-    # load() returns newest-first; reverse to chronological (oldest-first).
-    messages = list(reversed(messages))
+        # load() returns newest-first; reverse to chronological (oldest-first).
+        messages = list(reversed(messages))
 
-    if before_id:
-        idx = next((i for i, m in enumerate(messages) if m.id == before_id), None)
-        if idx is None:
-            # Anchor not found in this window — signal end of history.
-            messages = []
-        else:
-            messages = messages[:idx]
+        if before_id:
+            idx = next((i for i, m in enumerate(messages) if m.id == before_id), None)
+            if idx is None:
+                # Anchor not found in this window — signal end of history.
+                messages = []
+            else:
+                messages = messages[:idx]
 
-    # Return the last `limit` messages in the window (oldest-first).
-    messages = messages[-limit:] if messages else []
+        # Return the last `limit` messages in the window (oldest-first).
+        messages = messages[-limit:] if messages else []
+    except Exception as exc:
+        logger.warning("skchat_conversation: history load failed for peer=%s: %s", peer, exc)
+        return _json([])
 
     return _json(
         [
@@ -3446,6 +3554,7 @@ async def _handle_skchat_conversation(args: dict) -> list[TextContent]:
                     if hasattr(m.timestamp, "isoformat")
                     else str(m.timestamp)
                 ),
+                "message_type": m.content_type.value if hasattr(m.content_type, "value") else str(m.content_type),
                 "thread_id": m.thread_id,
                 "reply_to_id": m.reply_to_id,
             }

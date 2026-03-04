@@ -106,6 +106,8 @@ def test_daemon_log_verbose(capsys):
     assert "Test message" in captured.out
 
 
+@patch("skchat.daemon.time.sleep", return_value=None)
+@patch("skchat.daemon.SKComm")
 @patch("skchat.transport.ChatTransport")
 @patch("skchat.history.ChatHistory")
 @patch("skchat.identity_bridge.get_sovereign_identity")
@@ -113,29 +115,33 @@ def test_daemon_start_no_messages(
     mock_identity,
     mock_history_class,
     mock_transport_class,
+    mock_skcomm_class,
+    mock_sleep,
     mock_transport,
 ):
     """Test daemon with no incoming messages."""
+    mock_skcomm_class.from_config.return_value = mock_skcomm_class
     mock_transport_class.from_config.return_value = mock_transport
     mock_identity.return_value = "capauth:test@capauth.local"
-    
+
     daemon = ChatDaemon(interval=0.1, quiet=True)
-    
-    def stop_after_polls():
-        time.sleep(0.3)
-        daemon.running = False
-    
-    import threading
-    stop_thread = threading.Thread(target=stop_after_polls)
-    stop_thread.start()
-    
+
+    # Stop after 3 poll cycles via sleep call count (instant sleeps, count-based)
+    call_count = [0]
+    def _counting_sleep(seconds):
+        call_count[0] += 1
+        if call_count[0] >= 3:
+            daemon.running = False
+    mock_sleep.side_effect = _counting_sleep
+
     daemon.start()
-    stop_thread.join()
-    
+
     assert daemon.poll_count >= 2
     assert daemon.total_received == 0
 
 
+@patch("skchat.daemon.time.sleep", return_value=None)
+@patch("skchat.daemon.SKComm")
 @patch("skchat.transport.ChatTransport")
 @patch("skchat.history.ChatHistory")
 @patch("skchat.identity_bridge.get_sovereign_identity")
@@ -143,27 +149,28 @@ def test_daemon_start_with_messages(
     mock_identity,
     mock_history_class,
     mock_transport_class,
+    mock_skcomm_class,
+    mock_sleep,
     mock_transport,
     sample_message,
 ):
     """Test daemon receiving messages."""
+    mock_skcomm_class.from_config.return_value = mock_skcomm_class
     mock_transport.poll_inbox = MagicMock(return_value=[sample_message])
     mock_transport_class.from_config.return_value = mock_transport
     mock_identity.return_value = "capauth:test@capauth.local"
-    
+
     daemon = ChatDaemon(interval=0.1, quiet=True)
-    
-    def stop_after_polls():
-        time.sleep(0.3)
-        daemon.running = False
-    
-    import threading
-    stop_thread = threading.Thread(target=stop_after_polls)
-    stop_thread.start()
-    
+
+    call_count = [0]
+    def _counting_sleep(seconds):
+        call_count[0] += 1
+        if call_count[0] >= 3:
+            daemon.running = False
+    mock_sleep.side_effect = _counting_sleep
+
     daemon.start()
-    stop_thread.join()
-    
+
     assert daemon.total_received >= 2
 
 
@@ -188,6 +195,8 @@ def test_daemon_graceful_shutdown(
     assert daemon.running is False
 
 
+@patch("skchat.daemon.time.sleep", return_value=None)
+@patch("skchat.daemon.SKComm")
 @patch("skchat.transport.ChatTransport")
 @patch("skchat.history.ChatHistory")
 @patch("skchat.identity_bridge.get_sovereign_identity")
@@ -195,36 +204,50 @@ def test_daemon_poll_error_handling(
     mock_identity,
     mock_history_class,
     mock_transport_class,
+    mock_skcomm_class,
+    mock_sleep,
     mock_transport,
 ):
-    """Test daemon handling poll errors gracefully."""
+    """Test daemon handling poll errors gracefully — backoff sleep is bypassed."""
+    mock_skcomm_class.from_config.return_value = mock_skcomm_class
     mock_transport.poll_inbox = MagicMock(side_effect=Exception("Transport error"))
     mock_transport_class.from_config.return_value = mock_transport
     mock_identity.return_value = "capauth:test@capauth.local"
-    
+
     daemon = ChatDaemon(interval=0.1, quiet=True)
-    
-    def stop_after_polls():
-        time.sleep(0.3)
-        daemon.running = False
-    
-    import threading
-    stop_thread = threading.Thread(target=stop_after_polls)
-    stop_thread.start()
-    
+
+    call_count = [0]
+    def _counting_sleep(seconds):
+        call_count[0] += 1
+        if call_count[0] >= 3:
+            daemon.running = False
+    mock_sleep.side_effect = _counting_sleep
+
     daemon.start()
-    stop_thread.join()
-    
+
+    # Daemon should have attempted multiple polls (errors don't stop the loop)
     assert daemon.poll_count >= 2
+    assert daemon._consecutive_failures >= 2
 
 
+@patch("skchat.daemon.SKComm")
+@patch("skchat.history.ChatHistory")
 @patch("skchat.transport.ChatTransport")
-def test_daemon_start_transport_init_failure(mock_transport_class):
+@patch("skchat.identity_bridge.get_sovereign_identity")
+def test_daemon_start_transport_init_failure(
+    mock_identity,
+    mock_transport_class,
+    mock_history_class,
+    mock_skcomm_class,
+):
     """Test daemon handling transport initialization failure."""
+    mock_skcomm_class.from_config.return_value = mock_skcomm_class
+    mock_history_class.from_config.return_value = MagicMock()
+    mock_identity.return_value = "capauth:test@capauth.local"
     mock_transport_class.from_config.side_effect = Exception("No transport")
-    
+
     daemon = ChatDaemon(interval=5, quiet=True)
-    
+
     with pytest.raises(Exception, match="No transport"):
         daemon.start()
 

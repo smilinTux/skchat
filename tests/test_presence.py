@@ -1,13 +1,14 @@
-"""Tests for SKChat presence — PresenceIndicator and PresenceTracker."""
+"""Tests for SKChat presence — PresenceIndicator, PresenceTracker, PresenceCache."""
 
 from __future__ import annotations
 
 import time
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
-from skchat.presence import PresenceIndicator, PresenceState, PresenceTracker
+from skchat.presence import PresenceCache, PresenceIndicator, PresenceState, PresenceTracker
 
 
 class TestPresenceIndicator:
@@ -215,3 +216,59 @@ class TestPresenceTracker:
                 state=PresenceState.ONLINE,
             ))
         assert tracker.tracked_count == 5
+
+
+class TestPresenceCacheTyping:
+    """Tests for PresenceCache typing indicator methods."""
+
+    def test_set_typing(self, tmp_path: Path) -> None:
+        """set_typing marks a peer as currently typing."""
+        pc = PresenceCache(cache_file=tmp_path / "presence_cache.json")
+        pc.set_typing("capauth:lumina@skworld.io", True)
+        assert pc.is_typing("capauth:lumina@skworld.io") is True
+
+    def test_clear_typing(self, tmp_path: Path) -> None:
+        """set_typing(False) immediately clears the indicator."""
+        pc = PresenceCache(cache_file=tmp_path / "presence_cache.json")
+        pc.set_typing("capauth:lumina@skworld.io", True)
+        pc.set_typing("capauth:lumina@skworld.io", False)
+        assert pc.is_typing("capauth:lumina@skworld.io") is False
+
+    def test_typing_expires(self, tmp_path: Path) -> None:
+        """Typing indicator reports False once the 5 s TTL has elapsed."""
+        pc = PresenceCache(cache_file=tmp_path / "presence_cache.json")
+        pc.set_typing("capauth:lumina@skworld.io", True)
+        # Backdate the timestamp past the TTL
+        pc._typing["capauth:lumina@skworld.io"] = time.monotonic() - 6.0
+        assert pc.is_typing("capauth:lumina@skworld.io") is False
+
+    def test_get_typing_peers(self, tmp_path: Path) -> None:
+        """get_typing_peers returns all currently-typing peers."""
+        pc = PresenceCache(cache_file=tmp_path / "presence_cache.json")
+        pc.set_typing("capauth:lumina@skworld.io", True)
+        pc.set_typing("capauth:chef@skworld.io", True)
+        peers = pc.get_typing_peers()
+        assert "capauth:lumina@skworld.io" in peers
+        assert "capauth:chef@skworld.io" in peers
+        assert len(peers) == 2
+
+    def test_get_typing_peers_excludes_expired(self, tmp_path: Path) -> None:
+        """get_typing_peers excludes peers whose indicators have expired."""
+        pc = PresenceCache(cache_file=tmp_path / "presence_cache.json")
+        pc.set_typing("capauth:lumina@skworld.io", True)
+        pc.set_typing("capauth:chef@skworld.io", True)
+        # Expire lumina's indicator
+        pc._typing["capauth:lumina@skworld.io"] = time.monotonic() - 6.0
+        peers = pc.get_typing_peers()
+        assert "capauth:lumina@skworld.io" not in peers
+        assert "capauth:chef@skworld.io" in peers
+
+    def test_unknown_peer_not_typing(self, tmp_path: Path) -> None:
+        """is_typing returns False for an unknown peer."""
+        pc = PresenceCache(cache_file=tmp_path / "presence_cache.json")
+        assert pc.is_typing("capauth:ghost@skworld.io") is False
+
+    def test_get_typing_peers_empty_by_default(self, tmp_path: Path) -> None:
+        """get_typing_peers returns empty list when no peers are typing."""
+        pc = PresenceCache(cache_file=tmp_path / "presence_cache.json")
+        assert pc.get_typing_peers() == []

@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
-import '../../core/theme/sovereign_glass.dart';
-import '../../core/theme/soul_color.dart';
-import '../../models/chat_message.dart';
+import '../../../core/theme/sovereign_glass.dart';
+import '../../../core/theme/soul_color.dart';
+import '../../../models/chat_message.dart';
 
 class MessageBubble extends StatelessWidget {
   final ChatMessage message;

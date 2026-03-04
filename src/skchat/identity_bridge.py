@@ -157,6 +157,67 @@ def resolve_peer_name(name: str) -> str:
     )
 
 
+def resolve_display_name(uri: str) -> str:
+    """Resolve a CapAuth URI or fingerprint to a human-friendly display name.
+
+    Resolution order:
+      1. Exact URI match — PeerDiscovery.get_peer() checks handle, name,
+         email, and all contact_uris.
+      2. Fingerprint match — get_peer() checks the ``fingerprint`` field
+         directly (bare hex or scheme-prefixed like ``capauth:AABB1122...``).
+      3. Name/identity field match — get_peer() also checks the ``identity``
+         field and ``name`` field of each peer record.
+      4. Fallback: derive a short label from the URI itself.
+         Returns the local part of a ``capauth:X@Y`` URI, the first 8
+         uppercase hex chars of a bare fingerprint, or the input capitalized.
+         Never returns the string "unknown".
+
+    Args:
+        uri: A CapAuth URI, fingerprint, or short name to display.
+            May be ``None`` or empty — returns empty string in that case.
+
+    Returns:
+        str: Friendly display name (e.g. "Lumina", "Opus").
+    """
+    if not uri:
+        return ""
+
+    # Steps 1–3: peer-store reverse lookup via handle / URI / fingerprint / identity
+    try:
+        from .peer_discovery import PeerDiscovery
+
+        peer = PeerDiscovery().get_peer(uri)
+        if peer is not None:
+            # Prefer explicit name field, then handle local-part
+            name = peer.get("name", "")
+            if name:
+                return name
+            handle = peer.get("handle", "")
+            if handle:
+                local = handle.split("@")[0]
+                if local:
+                    return local.capitalize()
+    except Exception:
+        pass
+
+    # Step 4: string-based fallback — never return "unknown"
+    try:
+        local = uri
+        if ":" in local:
+            local = local.split(":", 1)[1]
+        if "@" in local:
+            local = local.split("@", 1)[0]
+        # Fingerprint heuristic: all-hex string longer than 16 chars → shorten
+        if len(local) > 16 and all(c in "0123456789abcdefABCDEF" for c in local):
+            return local[:8].upper()
+        # Avoid surfacing the literal word "unknown" as a display name
+        if local.lower() in ("unknown", "none"):
+            return "?"
+        return local.capitalize() if local else uri
+    except Exception:
+        return uri
+
+
 def get_peer_transport_address(name: str) -> Optional[dict]:
     """Get transport address information for a peer.
 

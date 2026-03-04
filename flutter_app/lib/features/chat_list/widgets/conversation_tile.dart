@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:timeago/timeago.dart' as timeago;
 
-import '../../core/theme/sovereign_glass.dart';
-import '../../core/theme/soul_color.dart';
-import '../../models/conversation.dart';
+import '../../../core/theme/sovereign_glass.dart';
+import '../../../core/theme/soul_color.dart';
+import '../../../models/conversation.dart';
 import 'soul_avatar.dart';
 
 class ConversationTile extends StatelessWidget {
