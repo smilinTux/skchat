@@ -1,0 +1,42 @@
+{
+  "name": "skchat-openclaw-plugin",
+  "version": "0.1.0",
+  "description": "OpenClaw plugin for SKChat — Sovereign Chat System",
+  "main": "src/index.ts",
+  "type": "module",
+  "openclaw": {
+    "plugin": {
+      "name": "skchat",
+      "version": "0.1.0",
+      "displayName": "SKChat",
+      "description": "Sovereign P2P chat with groups, threads, and file transfer",
+      "author": "smilinTux Team",
+      "license": "AGPL-3.0",
+      "category": "communication",
+      "permissions": ["read", "write"],
+      "commands": [
+        "skchat:send",
+        "skchat:inbox",
+        "skchat:history",
+        "skchat:search",
+        "skchat:who",
+        "skchat:group-send",
+        "skchat:group-list",
+        "skchat:group-create",
+        "skchat:group-members",
+        "skchat:daemon-status",
+        "skchat:threads",
+        "skchat:react",
+        "skchat:send-file",
+        "skchat:presence",
+        "skchat:status"
+      ]
+    }
+  },
+  "peerDependencies": {
+    "openclaw": ">=1.0.0"
+  },
+  "keywords": ["openclaw", "openclaw-plugin", "skchat", "chat", "p2p", "messaging"],
+  "author": "smilinTux Team",
+  "license": "AGPL-3.0"
+}

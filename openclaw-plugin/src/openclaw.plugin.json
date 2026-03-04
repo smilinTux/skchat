@@ -1,0 +1,10 @@
+{
+  "id": "skchat",
+  "name": "SKChat",
+  "description": "Sovereign chat system — messaging, groups, threads, file transfer, and presence via the skchat CLI.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}
