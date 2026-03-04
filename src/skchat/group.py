@@ -445,6 +445,129 @@ class GroupChat(BaseModel):
             metadata={"group_name": self.name, "key_version": self.key_version},
         )
 
+    def send(
+        self,
+        content: str,
+        sender: str,
+        transport: Any = None,
+        history: Any = None,
+    ) -> dict:
+        """Multicast a message to all group members via file transport.
+
+        Composes a ``ChatMessage``, delivers it to every non-sender member
+        via ``transport.send(recipient_uri, payload)``, then persists:
+
+        * **Group history** — one entry with ``recipient=group:<id>`` and
+          ``thread_id=<group_id>`` (visible via ``history.get_thread()`` and
+          ``history.load(peer=sender)``).
+        * **Individual history** — one entry per non-sender member with
+          ``recipient=member_uri`` and ``thread_id=<group_id>`` (visible via
+          ``history.load(peer=member_uri)``).
+
+        Args:
+            content: Message text.
+            sender: CapAuth identity URI of the sender (must be an active member).
+            transport: Optional transport object.  ``transport.send(uri, payload)``
+                is called for each recipient.  When ``None`` members are marked
+                delivered without a network call (useful in tests / dry-run).
+            history: Optional :class:`~skchat.history.ChatHistory` instance for
+                persistence.  When ``None`` no messages are written to disk.
+
+        Returns:
+            dict: ``{"delivered": [...], "failed": [...], "total": N,
+                    "sent_by": sender, "group_id": self.id, "message_id": msg.id}``
+        """
+        from .models import ChatMessage
+
+        msg = self.compose_group_message(sender_uri=sender, content=content)
+        if msg is None:
+            return {
+                "delivered": [],
+                "failed": [],
+                "total": 0,
+                "sent_by": sender,
+                "group_id": self.id,
+                "error": "sender is not an active member",
+            }
+
+        # Persist group-thread copy (sender can find this via load(peer=sender))
+        if history is not None:
+            try:
+                history.save(msg)
+            except Exception as exc:
+                logger.warning("Failed to save group message to history: %s", exc)
+
+        delivered: list[str] = []
+        failed: list[str] = []
+
+        payload = {
+            "type": "group_message",
+            "group_id": self.id,
+            "group_name": self.name,
+            "message_id": msg.id,
+            "sender": sender,
+            "content": content,
+            "thread_id": self.id,
+            "timestamp": msg.timestamp.isoformat(),
+        }
+
+        for member in self.members:
+            if member.identity_uri == sender:
+                continue
+
+            # Deliver via transport
+            if transport is not None:
+                try:
+                    transport.send(member.identity_uri, payload)
+                    delivered.append(member.identity_uri)
+                except Exception as exc:
+                    logger.warning(
+                        "send: failed to deliver to %s: %s",
+                        member.identity_uri,
+                        exc,
+                    )
+                    failed.append(member.identity_uri)
+                    continue
+            else:
+                delivered.append(member.identity_uri)
+
+            # Persist individual copy so member's inbox/load(peer=...) shows it
+            if history is not None:
+                individual_msg = ChatMessage(
+                    sender=sender,
+                    recipient=member.identity_uri,
+                    content=content,
+                    thread_id=self.id,
+                    metadata={
+                        "group_id": self.id,
+                        "group_name": self.name,
+                        "key_version": self.key_version,
+                    },
+                )
+                try:
+                    history.save(individual_msg)
+                except Exception as exc:
+                    logger.warning(
+                        "send: failed to save individual history for %s: %s",
+                        member.identity_uri,
+                        exc,
+                    )
+
+        logger.info(
+            "Group %s send: %d delivered, %d failed",
+            self.id[:8],
+            len(delivered),
+            len(failed),
+        )
+        return {
+            "delivered": delivered,
+            "failed": failed,
+            "total": len(delivered) + len(failed),
+            "sent_by": sender,
+            "group_id": self.id,
+            "message_id": msg.id,
+        }
+
     def broadcast(self, message: str, sender_uri: str) -> dict:
         """Multicast a message to all group members except the sender.
 

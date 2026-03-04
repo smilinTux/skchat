@@ -299,3 +299,17 @@ class ReactionManager:
         ]
         counts.sort(key=lambda x: x[1], reverse=True)
         return counts[:limit]
+
+    # Backward-compat aliases (pre-rename API used by cli.py)
+    def add(self, message_id: str, emoji: str, sender: str) -> bool:
+        return self.add_reaction(message_id, emoji, sender)
+
+    def get_summary(self, message_id: str) -> ReactionSummary:
+        return self.summarize(message_id)
+
+    def get(self, message_id: str) -> list[Reaction]:
+        return self.get_reactions(message_id)
+
+
+# Backward-compat alias: cli.py imports ReactionStore
+ReactionStore = ReactionManager
