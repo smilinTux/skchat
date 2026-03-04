@@ -1,21 +1,29 @@
 """Built-in SKChat plugins — shipped with skchat core.
 
-These plugins demonstrate the plugin SDK and provide essential features:
+Slash-command plugins (ChatPlugin subclasses):
 1. LinkPreview — extracts and previews URLs in messages
 2. CodeFormat — syntax-highlights code blocks in messages
 3. EphemeralHelper — /burn slash command for quick ephemeral messages
 4. ReactShortcut — /react slash command for quick reactions
 5. StatusPlugin — /status slash command showing chat health
+
+Trigger-based plugins (SKChatPlugin subclasses):
+6. EchoPlugin — responds to "echo: MESSAGE" with MESSAGE (testing)
+7. DaemonStatusPlugin — responds to "!status" with daemon status info
+8. TranslatePlugin — responds to "!translate LANG: TEXT" via translate-shell
+9. WeatherPlugin — responds to "!weather CITY" via wttr.in (curl)
+10. TimePlugin — responds to "!time" with current time/timezone info
 """
 
 from __future__ import annotations
 
 import re
+import subprocess
 from datetime import datetime, timezone
 from typing import Optional
 
 from .models import ChatMessage
-from .plugins import ChatPlugin
+from .plugins import ChatPlugin, SKChatPlugin
 
 
 class LinkPreviewPlugin(ChatPlugin):
@@ -189,7 +197,7 @@ class StatusPlugin(ChatPlugin):
 
 
 def get_builtin_plugins() -> list[ChatPlugin]:
-    """Return all built-in plugin instances.
+    """Return all built-in slash-command plugin instances.
 
     Returns:
         list[ChatPlugin]: All built-in plugins ready for registration.
@@ -200,4 +208,210 @@ def get_builtin_plugins() -> list[ChatPlugin]:
         EphemeralHelperPlugin(),
         ReactShortcutPlugin(),
         StatusPlugin(),
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Trigger-based plugins (SKChatPlugin subclasses)
+# ---------------------------------------------------------------------------
+
+_ECHO_PATTERN = re.compile(r"^echo:\s+(.+)$", re.IGNORECASE | re.DOTALL)
+_TRANSLATE_PATTERN = re.compile(r"^!translate\s+(\w+):\s+(.+)$", re.IGNORECASE | re.DOTALL)
+_WEATHER_PATTERN = re.compile(r"^!weather\s+(.+)$", re.IGNORECASE)
+
+
+class EchoPlugin(SKChatPlugin):
+    """Responds to "echo: MESSAGE" with MESSAGE — useful for testing.
+
+    Triggers: any message matching "echo: <text>"
+    Reply: the text after "echo: "
+    """
+
+    name = "echo"
+    triggers = ["echo:"]
+
+    def should_handle(self, message: ChatMessage) -> bool:
+        return bool(_ECHO_PATTERN.match(message.content.strip()))
+
+    def handle(self, message: ChatMessage) -> Optional[str]:
+        m = _ECHO_PATTERN.match(message.content.strip())
+        if m:
+            return m.group(1).strip()
+        return None
+
+
+class DaemonStatusPlugin(SKChatPlugin):
+    """Responds to "!status" with current daemon runtime statistics.
+
+    Triggers: message content is exactly "!status" (case-insensitive)
+    Reply: formatted daemon status including uptime, message counts,
+           transport health, and online peer count.
+    """
+
+    name = "daemon-status"
+    triggers = ["!status"]
+
+    def should_handle(self, message: ChatMessage) -> bool:
+        return message.content.strip().lower() == "!status"
+
+    def handle(self, message: ChatMessage) -> Optional[str]:
+        try:
+            from .daemon import daemon_status
+
+            s = daemon_status()
+        except Exception as exc:
+            return f"Status unavailable: {exc}"
+
+        running = s.get("running", False)
+        uptime_s = s.get("uptime_seconds", 0)
+        msgs_recv = s.get("messages_received", "n/a")
+        msgs_sent = s.get("messages_sent", "n/a")
+        transport = s.get("transport_status", "unknown")
+        peers = s.get("online_peer_count", 0)
+
+        if uptime_s and isinstance(uptime_s, (int, float)) and uptime_s > 0:
+            h, rem = divmod(int(uptime_s), 3600)
+            m, sec = divmod(rem, 60)
+            uptime_str = f"{h}h {m}m {sec}s" if h else (f"{m}m {sec}s" if m else f"{sec}s")
+        else:
+            uptime_str = "n/a"
+
+        return (
+            f"SKChat Daemon Status\n"
+            f"  Running: {running}\n"
+            f"  Uptime: {uptime_str}\n"
+            f"  Messages recv/sent: {msgs_recv}/{msgs_sent}\n"
+            f"  Transport: {transport}\n"
+            f"  Online peers: {peers}"
+        )
+
+
+class TranslatePlugin(SKChatPlugin):
+    """Translates text via translate-shell subprocess.
+
+    Usage: !translate LANG: TEXT
+    Example: !translate fr: Hello, world!
+    Triggers: any message starting with "!translate"
+
+    Requires translate-shell (trans) to be installed.
+    """
+
+    name = "translate"
+    triggers = ["!translate"]
+
+    def should_handle(self, message: ChatMessage) -> bool:
+        return bool(_TRANSLATE_PATTERN.match(message.content.strip()))
+
+    def handle(self, message: ChatMessage) -> Optional[str]:
+        m = _TRANSLATE_PATTERN.match(message.content.strip())
+        if not m:
+            return "Usage: !translate LANG: TEXT  (e.g. !translate fr: Hello)"
+
+        lang = m.group(1).strip()
+        text = m.group(2).strip()
+
+        try:
+            result = subprocess.run(
+                ["trans", "-brief", f":{lang}", text],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            output = result.stdout.strip()
+            if result.returncode != 0 or not output:
+                err = result.stderr.strip() or "translation failed"
+                return f"Translate error: {err}"
+            return output
+        except FileNotFoundError:
+            return (
+                "translate-shell (trans) is not installed. "
+                "Install with: sudo pacman -S translate-shell"
+            )
+        except subprocess.TimeoutExpired:
+            return "Translation timed out."
+        except Exception as exc:
+            return f"Translate error: {exc}"
+
+
+class WeatherPlugin(SKChatPlugin):
+    """Fetches current weather for a city via wttr.in (curl).
+
+    Usage: !weather CITY
+    Example: !weather London
+    Triggers: any message starting with "!weather"
+    """
+
+    name = "weather"
+    triggers = ["!weather"]
+
+    def should_handle(self, message: ChatMessage) -> bool:
+        return bool(_WEATHER_PATTERN.match(message.content.strip()))
+
+    def handle(self, message: ChatMessage) -> Optional[str]:
+        m = _WEATHER_PATTERN.match(message.content.strip())
+        if not m:
+            return "Usage: !weather CITY  (e.g. !weather Berlin)"
+
+        city = m.group(1).strip().replace(" ", "+")
+
+        try:
+            result = subprocess.run(
+                ["curl", "-s", f"wttr.in/{city}?format=3"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            output = result.stdout.strip()
+            if result.returncode != 0 or not output:
+                return f"Weather unavailable for '{city}'."
+            return output
+        except FileNotFoundError:
+            return "curl is not installed."
+        except subprocess.TimeoutExpired:
+            return "Weather request timed out."
+        except Exception as exc:
+            return f"Weather error: {exc}"
+
+
+class TimePlugin(SKChatPlugin):
+    """Responds to "!time" with the current UTC time and local timezone.
+
+    Triggers: message content is exactly "!time" (case-insensitive)
+    Reply: current UTC time plus local timezone offset.
+    """
+
+    name = "time"
+    triggers = ["!time"]
+
+    def should_handle(self, message: ChatMessage) -> bool:
+        return message.content.strip().lower() == "!time"
+
+    def handle(self, message: ChatMessage) -> Optional[str]:
+        import time as _time
+
+        now_utc = datetime.now(timezone.utc)
+        utc_str = now_utc.strftime("%Y-%m-%d %H:%M:%S UTC")
+
+        try:
+            local_tz_name = _time.tzname[0]
+            local_now = datetime.now()
+            local_str = local_now.strftime(f"%Y-%m-%d %H:%M:%S {local_tz_name}")
+        except Exception:
+            local_str = "n/a"
+
+        return f"Current time:\n  UTC:   {utc_str}\n  Local: {local_str}"
+
+
+def get_trigger_plugins() -> list[SKChatPlugin]:
+    """Return all built-in trigger plugin instances.
+
+    Returns:
+        list[SKChatPlugin]: Trigger plugins ready for registration.
+    """
+    return [
+        EchoPlugin(),
+        DaemonStatusPlugin(),
+        TranslatePlugin(),
+        WeatherPlugin(),
+        TimePlugin(),
     ]

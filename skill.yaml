@@ -1,0 +1,34 @@
+name: skchat
+version: "0.1.0"
+description: >
+  AI-native P2P encrypted messaging daemon with MCP integration.
+  Agent-to-agent chat, group messaging, voice messages, file transfer,
+  presence tracking, and 40+ MCP tools for sovereign communication.
+
+author:
+  name: smilinTux.org
+  email: hello@smilintux.org
+
+tags: [chat, messaging, daemon, mcp, encrypted, p2p, voice]
+category: transport
+
+tools:
+  - name: skchat_send
+    description: Send a message to a peer or group
+    entrypoint: skchat.skill:send_message
+
+  - name: skchat_inbox
+    description: Check incoming messages
+    entrypoint: skchat.skill:check_inbox
+
+  - name: skchat_group_send
+    description: Send a message to a group
+    entrypoint: skchat.skill:group_send
+
+  - name: skchat_peers
+    description: List known peers and their online status
+    entrypoint: skchat.skill:list_peers
+
+  - name: skchat_daemon_status
+    description: Check if the SKChat daemon is running and healthy
+    entrypoint: skchat.skill:daemon_status

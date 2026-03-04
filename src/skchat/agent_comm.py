@@ -62,6 +62,7 @@ class AgentMessenger:
         cls,
         identity: Optional[str] = None,
         team_id: Optional[str] = None,
+        skcomm: Optional[object] = None,
     ) -> "AgentMessenger":
         """Create an AgentMessenger from the local sovereign identity.
 
@@ -70,6 +71,8 @@ class AgentMessenger:
         Args:
             identity: Override identity URI. Auto-detected if None.
             team_id: Optional team scope.
+            skcomm: Optional pre-initialized SKComm instance. If provided,
+                avoids a redundant SKComm.from_config() call.
 
         Returns:
             AgentMessenger: Ready to send/receive.
@@ -79,7 +82,7 @@ class AgentMessenger:
             identity = get_sovereign_identity()
 
         history = ChatHistory.from_config()
-        transport = cls._try_init_transport(history, identity)
+        transport = cls._try_init_transport(history, identity, skcomm=skcomm)
 
         return cls(
             identity=identity,
@@ -89,16 +92,27 @@ class AgentMessenger:
         )
 
     @staticmethod
-    def _try_init_transport(history: ChatHistory, identity: str) -> Optional[object]:
+    def _try_init_transport(
+        history: ChatHistory,
+        identity: str,
+        skcomm: Optional[object] = None,
+    ) -> Optional[object]:
         """Try to initialize ChatTransport backed by SKComm.
 
         Returns None if SKComm is not available.
+
+        Args:
+            history: ChatHistory instance.
+            identity: Local identity URI.
+            skcomm: Optional pre-initialized SKComm instance. If None, calls
+                SKComm.from_config() to create one.
         """
         try:
-            from skcomm import SKComm
+            if skcomm is None:
+                from skcomm import SKComm
+                skcomm = SKComm.from_config()
             from .transport import ChatTransport
 
-            skcomm = SKComm.from_config()
             return ChatTransport(
                 skcomm=skcomm,
                 history=history,
@@ -155,6 +169,8 @@ class AgentMessenger:
             metadata["team_id"] = self._team_id
         if payload:
             metadata["payload"] = payload
+        if reply_to:
+            metadata["reply_to"] = reply_to
 
         msg = ChatMessage(
             sender=self._identity,
