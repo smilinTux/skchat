@@ -320,8 +320,13 @@ natively. The GUI wraps the same core.
 ## Quick Start
 
 ```bash
-# Install
-pip install skchat
+# Install via SK* suite installer
+bash path/to/skcapstone/scripts/install.sh
+
+# Or standalone in venv:
+python3 -m venv ~/.skenv
+~/.skenv/bin/pip install skchat-sovereign
+export PATH="$HOME/.skenv/bin:$PATH"
 
 # Generate identity (or import existing CapAuth profile)
 skchat init --name "Chef" --generate-keys
@@ -488,6 +493,26 @@ skchat plugin list
 
 ---
 
+## DID Publishing (Tier 3)
+
+SKChat supports publishing your Decentralized Identifier (DID) to Cloudflare KV
+for Tier 3 identity resolution — making your sovereign identity discoverable
+across the network.
+
+```bash
+# Publish your DID to Cloudflare KV (requires CF_API_TOKEN, CF_ACCOUNT_ID, CF_KV_NAMESPACE_ID)
+bash scripts/publish-did.sh
+
+# Environment variables required:
+export CF_API_TOKEN="your-cloudflare-api-token"
+export CF_ACCOUNT_ID="your-account-id"
+export CF_KV_NAMESPACE_ID="your-kv-namespace-id"
+```
+
+See `scripts/publish-did.sh` for full usage and options.
+
+---
+
 ## Integration with smilinTux Ecosystem
 
 | Component | Role in SKChat |
@@ -517,7 +542,7 @@ Copyright (C) 2026 smilinTux Team + Lumina
 - **GitHub**: [github.com/smilinTux/skchat](https://github.com/smilinTux/skchat)
 - **SKComm**: [github.com/smilinTux/skcomm](https://github.com/smilinTux/skcomm)
 - **CapAuth**: [github.com/smilinTux/capauth](https://github.com/smilinTux/capauth)
-- **Cloud 9**: `pip install cloud9-protocol`
+- **Cloud 9**: `~/.skenv/bin/pip install cloud9-protocol`
 
 ---
 
