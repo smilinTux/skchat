@@ -1,0 +1,28 @@
+{
+  "name": "@smilintux/skchat",
+  "version": "0.1.1",
+  "description": "SKChat - AI-native encrypted P2P chat daemon. Sovereign communication for humans and AI agents with 40+ MCP tools.",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "keywords": [
+    "skchat",
+    "chat",
+    "messaging",
+    "mcp",
+    "encrypted",
+    "p2p",
+    "sovereign",
+    "ai-agent",
+    "daemon"
+  ],
+  "author": "smilinTux <chefboyrdave2.1@gmail.com>",
+  "license": "GPL-3.0-or-later",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/smilinTux/skchat.git"
+  },
+  "homepage": "https://github.com/smilinTux/skchat",
+  "bugs": {
+    "url": "https://github.com/smilinTux/skchat/issues"
+  }
+}
