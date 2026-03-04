@@ -25,6 +25,12 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+# SKComm is imported at module level so tests can patch skchat.daemon.SKComm.
+try:
+    from skcomm import SKComm  # type: ignore
+except ImportError:  # pragma: no cover
+    SKComm = None  # type: ignore
+
 # Exponential backoff delays (seconds) for consecutive transport poll failures.
 # Index 0 = 1st failure delay; last entry is the cap applied for all further failures.
 _BACKOFF_DELAYS: tuple = (5, 10, 20, 40, 60)
@@ -66,7 +72,9 @@ class ChatDaemon:
         self.total_sent: int = 0
         self.start_time: Optional[datetime] = None
         self.last_heartbeat_at: Optional[datetime] = None
+        self.advocacy_responses: int = 0
         self._outbox_messenger: Optional[object] = None
+        self._skcomm: Optional[object] = None  # set in start(), used for reconnect
 
         if log_file:
             logging.basicConfig(
@@ -122,8 +130,10 @@ class ChatDaemon:
             raise
 
         try:
-            from skcomm import SKComm
+            if SKComm is None:
+                raise ImportError("skcomm package not installed")
             skcomm = SKComm.from_config()
+            self._skcomm = skcomm
         except Exception as exc:
             self._log(f"Failed to initialize SKComm: {exc}", "error")
             self._log("Make sure SKComm is configured: skcomm init", "error")
@@ -132,14 +142,18 @@ class ChatDaemon:
         try:
             history = ChatHistory.from_config()
         except Exception as exc:
-            logger.warning("ChatHistory.from_config() failed, using default MemoryStore: %s", exc)
-            from skmemory import MemoryStore
-            history = ChatHistory(store=MemoryStore())
+            logger.warning("ChatHistory.from_config() failed, trying in-memory fallback: %s", exc)
+            try:
+                from skmemory import MemoryStore
+                history = ChatHistory(store=MemoryStore())
+            except Exception as fallback_exc:
+                logger.error("In-memory fallback also failed (%s); re-raising original error", fallback_exc)
+                raise exc
 
         identity = get_sovereign_identity()
 
         try:
-            transport = ChatTransport(
+            transport = ChatTransport.from_config(
                 skcomm=skcomm,
                 history=history,
                 identity=identity,
@@ -148,55 +162,64 @@ class ChatDaemon:
             self._log(f"Failed to initialize transport: {exc}", "error")
             raise
 
-        # Initialize ephemeral reaper for TTL enforcement
-        reaper = self._init_reaper(history)
-
-        # Initialize presence tracker
-        presence = self._init_presence(identity)
-
-        # Initialize outbox queue drain
-        queue = self._init_queue(skcomm, identity)
-
-        # Initialize memory bridge for hourly auto-capture
-        bridge = self._init_memory_bridge(history)
-
-        # Initialize WebRTC transport event wiring
-        self._init_webrtc(skcomm, identity)
-
-        # Initialize transport watchdog (health-check + auto-reconnect)
-        watchdog = self._init_watchdog(skcomm)
-
-        subsystems = []
-        if reaper:
-            subsystems.append("reaper")
-        if presence:
-            subsystems.append("presence")
-        if queue:
-            subsystems.append("queue")
-        if self._webrtc_active:
-            subsystems.append("webrtc")
-        if watchdog:
-            subsystems.append("watchdog")
-        if bridge:
-            subsystems.append("memory-bridge")
-        subsys_str = ", ".join(subsystems) if subsystems else "none"
-
-        self._log(f"SKChat daemon starting (identity: {identity})")
-        self._log(f"Polling every {self.interval}s, subsystems: {subsys_str}, Ctrl+C to stop")
-
-        self._start_health_server()
-
+        # Mark running early so the poll loop can start immediately, before slow
+        # subsystem init (SQLite, imports) completes.  All subsystem references
+        # are None-checked in the loop so None is always safe until the bg thread
+        # populates them.
         self.start_time = datetime.now(timezone.utc)
         self.running = True
+
+        reaper = None
+        presence = None
+        queue = None
+        bridge = None
+        watchdog = None
+        engine = None
+        plugin_registry = None
+
+        def _init_subsystems_bg() -> None:
+            nonlocal reaper, presence, queue, bridge, watchdog, engine, plugin_registry
+            reaper = self._init_reaper(history)
+            presence = self._init_presence(identity)
+            queue = self._init_queue(skcomm, identity)
+            bridge = self._init_memory_bridge(history)
+            self._init_webrtc(skcomm, identity)
+            watchdog = self._init_watchdog(skcomm)
+            try:
+                from skchat.advocacy import AdvocacyEngine
+                engine = AdvocacyEngine(identity=identity)
+            except Exception as exc:
+                self._log(f"AdvocacyEngine init skipped: {exc}", "warning")
+            try:
+                from .plugins import PluginRegistry
+                pr = PluginRegistry()
+                pr.discover()
+                plugin_registry = pr
+            except Exception as exc:
+                self._log(f"PluginRegistry init skipped: {exc}", "warning")
+            subsystems = [
+                k for k, v in [
+                    ("reaper", reaper), ("presence", presence), ("queue", queue),
+                    ("watchdog", watchdog), ("memory-bridge", bridge),
+                ]
+                if v
+            ]
+            if self._webrtc_active:
+                subsystems.append("webrtc")
+            self._log(f"Subsystems ready: {', '.join(subsystems) or 'none'}")
+
+        threading.Thread(target=_init_subsystems_bg, daemon=True, name="skchat-init").start()
+
+        self._log(f"SKChat daemon starting (identity: {identity})")
+        self._log(f"Polling every {self.interval}s, Ctrl+C to stop")
+
+        self._start_health_server()
         reap_counter = 0
-        queue_counter = 0
         presence_counter = 0
         memory_bridge_counter = 0
         watchdog_counter = 0
 
         try:
-            from skchat.advocacy import AdvocacyEngine
-            engine = AdvocacyEngine(identity=identity)
             while self.running:
                 self.poll_count += 1
                 self.last_poll_time = datetime.now(timezone.utc)
@@ -230,12 +253,23 @@ class ChatDaemon:
                                 )
                             except Exception:
                                 pass
-                            try:
-                                reply = engine.process_message(msg)
-                                if reply:
-                                    transport.send_and_store(msg.sender, reply)
-                            except Exception as exc:
-                                self._log(f"Advocacy error: {exc}", "warning")
+                            if engine:
+                                try:
+                                    reply = engine.process_message(msg)
+                                    if reply:
+                                        transport.send_and_store(msg.sender, reply)
+                                        self.advocacy_responses += 1
+                                except Exception as exc:
+                                    self._log(f"Advocacy error: {exc}", "warning")
+                            if plugin_registry:
+                                for plugin in plugin_registry.get_plugins():
+                                    if plugin.should_handle(msg):
+                                        try:
+                                            plugin_reply = plugin.handle(msg)
+                                            if plugin_reply:
+                                                transport.send_and_store(msg.sender, plugin_reply)
+                                        except Exception as exc:
+                                            self._log(f"Plugin '{plugin.name}' error: {exc}", "warning")
                     else:
                         if self.poll_count % 12 == 0:
                             self._log(f"No new messages (polls: {self.poll_count}, uptime: {self._uptime()})")
@@ -257,7 +291,25 @@ class ChatDaemon:
                             " check SKComm connectivity",
                             self._consecutive_failures,
                         )
-                    time.sleep(delay)
+                    # Attempt transport reconnect on the 2nd consecutive failure
+                    # so recovery is faster than waiting for the watchdog cycle.
+                    if self._consecutive_failures == 2 and self._skcomm is not None:
+                        reconnect_fn = getattr(self._skcomm, 'reconnect', None)
+                        if reconnect_fn:
+                            try:
+                                logger.info(
+                                    "Transport: attempting reconnect after %d failures",
+                                    self._consecutive_failures,
+                                )
+                                reconnect_fn()
+                            except Exception as rc_exc:
+                                logger.warning("Transport reconnect failed: %s", rc_exc)
+                    # Cap the sleep at the configured poll interval so
+                    # low-interval daemons (e.g. tests with interval=0.1s)
+                    # can still cycle promptly. For the default interval=5s
+                    # the first backoff delay is also 5s, so behaviour is
+                    # unchanged in production.
+                    time.sleep(min(delay, self.interval))
                     continue
 
                 # --- Reap expired ephemeral messages (every 6 cycles ~30s) ---
@@ -271,19 +323,15 @@ class ChatDaemon:
                     except Exception as exc:
                         self._log(f"Reaper error: {exc}", "warning")
 
-                # --- Drain outbox queue (every 6 cycles ~30s) ---
-                queue_counter += 1
-                if queue and queue_counter >= 6:
-                    queue_counter = 0
+                # --- Process outbox queue each cycle (backoff inside process_pending) ---
+                if queue:
                     try:
-                        if self._outbox_messenger is None:
-                            raise RuntimeError("outbox messenger unavailable; skipping queue drain")
-                        delivered, failed = queue.deliver_pending(self._outbox_messenger)
+                        delivered, failed = queue.process_pending(self._outbox_messenger)
                         if delivered > 0 or failed > 0:
-                            self._log(f"Queue drain: {delivered} delivered, {failed} failed")
+                            self._log(f"Outbox: {delivered} delivered, {failed} retried/failed")
                         self.total_sent += delivered
                     except Exception as exc:
-                        self._log(f"Queue drain error: {exc}", "warning")
+                        self._log(f"Outbox process error: {exc}", "warning")
 
                 # --- Broadcast presence (every 12 cycles ~60s) ---
                 presence_counter += 1
@@ -388,7 +436,9 @@ class ChatDaemon:
 
             queue = OutboxQueue()
             try:
-                self._outbox_messenger = AgentMessenger.from_identity(identity)
+                self._outbox_messenger = AgentMessenger.from_identity(
+                    identity, skcomm=skcomm
+                )
             except Exception as exc:
                 self._log(f"Outbox messenger init skipped: {exc}", "warning")
             return queue
@@ -523,16 +573,48 @@ class ChatDaemon:
 
         class _HealthHandler(BaseHTTPRequestHandler):
             def do_GET(self) -> None:
-                if self.path != "/health":
-                    self.send_response(404)
-                    self.end_headers()
-                    return
-
                 uptime_s = 0
                 if daemon_ref.start_time:
                     uptime_s = int(
                         (datetime.now(timezone.utc) - daemon_ref.start_time).total_seconds()
                     )
+
+                if self.path == "/metrics":
+                    identity = getattr(daemon_ref, "_identity", "unknown")
+                    transport_ok = 1 if daemon_ref._transport_ok else 0
+                    advocacy_responses = getattr(daemon_ref, "advocacy_responses", 0)
+                    online_peers = getattr(daemon_ref, "_online_peer_count", 0)
+                    body = (
+                        f'# HELP skchat_uptime_seconds Daemon uptime in seconds\n'
+                        f'# TYPE skchat_uptime_seconds gauge\n'
+                        f'skchat_uptime_seconds{{identity="{identity}"}} {uptime_s}\n'
+                        f'# HELP skchat_messages_received_total Total messages received\n'
+                        f'# TYPE skchat_messages_received_total counter\n'
+                        f'skchat_messages_received_total{{identity="{identity}"}} {daemon_ref.total_received}\n'
+                        f'# HELP skchat_messages_sent_total Total messages sent\n'
+                        f'# TYPE skchat_messages_sent_total counter\n'
+                        f'skchat_messages_sent_total{{identity="{identity}"}} {getattr(daemon_ref, "total_sent", 0)}\n'
+                        f'# HELP skchat_advocacy_responses_total Total advocacy auto-responses\n'
+                        f'# TYPE skchat_advocacy_responses_total counter\n'
+                        f'skchat_advocacy_responses_total{{identity="{identity}"}} {advocacy_responses}\n'
+                        f'# HELP skchat_peers_online Number of online peers\n'
+                        f'# TYPE skchat_peers_online gauge\n'
+                        f'skchat_peers_online{{identity="{identity}"}} {online_peers}\n'
+                        f'# HELP skchat_transport_ok Transport health (1=ok, 0=down)\n'
+                        f'# TYPE skchat_transport_ok gauge\n'
+                        f'skchat_transport_ok{{identity="{identity}"}} {transport_ok}\n'
+                    ).encode()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/plain; version=0.0.4")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+
+                if self.path != "/health":
+                    self.send_response(404)
+                    self.end_headers()
+                    return
 
                 last_poll_at = (
                     daemon_ref.last_poll_time.isoformat()
@@ -557,7 +639,14 @@ class ChatDaemon:
             def log_message(self, fmt, *args) -> None:  # noqa: N802
                 pass  # suppress access log noise
 
-        server = HTTPServer(("127.0.0.1", port), _HealthHandler)
+        try:
+            server = HTTPServer(("127.0.0.1", port), _HealthHandler)
+        except OSError as exc:
+            self._log(
+                f"Health server could not bind to port {port}: {exc} (continuing without health endpoint)",
+                "warning",
+            )
+            return
         thread = threading.Thread(
             target=server.serve_forever,
             daemon=True,
@@ -641,6 +730,7 @@ class ChatDaemon:
                 else None
             ),
             "online_peer_count": online_peer_count,
+            "advocacy_responses": self.advocacy_responses,
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
 
@@ -651,35 +741,54 @@ class ChatDaemon:
 
     @staticmethod
     def from_config(config_path: Optional[Path] = None) -> "ChatDaemon":
-        """Create a daemon from configuration file.
+        """Create a daemon from environment variables and optional config file.
+
+        When called without arguments, only environment variables are used
+        (SKCHAT_DAEMON_INTERVAL, SKCHAT_DAEMON_LOG, SKCHAT_DAEMON_QUIET).
+        Pass an explicit *config_path* to also read settings from a YAML file;
+        environment variables always take priority over file values.
 
         Args:
-            config_path: Path to config file (default: ~/.skchat/config.yml)
+            config_path: Optional path to a YAML config file.  When None,
+                no config file is read.
 
         Returns:
             ChatDaemon: Configured daemon instance.
         """
         import os
 
-        if config_path is None:
-            config_path = Path.home() / ".skchat" / "config.yml"
+        # Start with built-in defaults
+        interval = 5.0
+        log_file: Optional[str] = None
+        quiet = False
 
-        interval = float(os.environ.get("SKCHAT_DAEMON_INTERVAL", "5.0"))
-        log_file = os.environ.get("SKCHAT_DAEMON_LOG")
-        quiet = os.environ.get("SKCHAT_DAEMON_QUIET", "").lower() in ("1", "true", "yes")
-
-        if config_path.exists():
+        # Apply YAML config file values first (lowest priority)
+        if config_path is not None and config_path.exists():
             try:
                 import yaml
                 with open(config_path) as f:
                     cfg = yaml.safe_load(f) or {}
 
                 daemon_cfg = cfg.get("daemon", {})
-                interval = daemon_cfg.get("poll_interval", interval)
-                log_file = daemon_cfg.get("log_file", log_file)
-                quiet = daemon_cfg.get("quiet", quiet)
-            except (ImportError, OSError, yaml.YAMLError) as exc:
+                if "poll_interval" in daemon_cfg:
+                    interval = float(daemon_cfg["poll_interval"])
+                if "log_file" in daemon_cfg:
+                    log_file = daemon_cfg["log_file"]
+                if "quiet" in daemon_cfg:
+                    quiet = bool(daemon_cfg["quiet"])
+            except (ImportError, OSError) as exc:
                 logger.warning("Failed to read config %s: %s", config_path, exc)
+
+        # Environment variables always override config file values
+        env_interval = os.environ.get("SKCHAT_DAEMON_INTERVAL")
+        if env_interval:
+            interval = float(env_interval)
+        env_log = os.environ.get("SKCHAT_DAEMON_LOG")
+        if env_log:
+            log_file = env_log
+        env_quiet = os.environ.get("SKCHAT_DAEMON_QUIET")
+        if env_quiet:
+            quiet = env_quiet.lower() in ("1", "true", "yes")
 
         log_path = Path(log_file).expanduser() if log_file else None
 

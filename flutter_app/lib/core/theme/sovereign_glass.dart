@@ -144,7 +144,7 @@ class SovereignGlassTheme {
       ),
       
       // Card theme
-      cardTheme: CardTheme(
+      cardTheme: CardThemeData(
         color: surfaceGlass,
         elevation: 0,
         margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),

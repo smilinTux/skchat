@@ -38,7 +38,7 @@ class GlassDecorations {
   /// Glass bottom navigation bar
   static Widget bottomBar({
     required Widget child,
-    double height = 72,
+    double? height = 72,
   }) {
     return Container(
       height: height,

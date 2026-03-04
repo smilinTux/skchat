@@ -6,9 +6,13 @@ It flows as lightweight signals over SKComm alongside chat messages.
 
 from __future__ import annotations
 
+import json
+import threading
+import time
 import uuid
 from datetime import datetime, timezone
 from enum import Enum
+from pathlib import Path
 from typing import Optional
 
 from pydantic import BaseModel, Field
@@ -195,3 +199,192 @@ class PresenceTracker:
             int: Count of tracked participants.
         """
         return len(self._indicators)
+
+
+class PresenceCache:
+    """File-backed presence cache — who was seen, when, and in what state.
+
+    Unlike PresenceTracker (in-memory only), PresenceCache persists
+    presence records to a JSON file so the CLI and MCP tools can query
+    presence without running inside the daemon process.
+
+    Records are keyed by identity URI. Each entry stores the last-seen
+    timestamp and state. The file is reloaded on every read call so the
+    cache stays fresh across processes.
+
+    Typing state is tracked in-memory only (5 s TTL); it is too ephemeral
+    to write to disk.
+
+    Attributes:
+        CACHE_FILE: Default path (~/.skchat/presence_cache.json).
+    """
+
+    CACHE_FILE = Path("~/.skchat/presence_cache.json")
+    _TYPING_TTL: float = 5.0  # seconds before typing indicator auto-expires
+
+    def __init__(self, cache_file: Optional[Path] = None) -> None:
+        self._path = (cache_file or self.CACHE_FILE).expanduser()
+        self._data: dict[str, dict] = {}
+        self._typing: dict[str, float] = {}  # identity_uri -> monotonic timestamp
+        self._load()
+
+    def _load(self) -> None:
+        """Reload cache from disk (no-op if file absent)."""
+        if self._path.exists():
+            try:
+                raw = json.loads(self._path.read_text())
+                self._data = raw if isinstance(raw, dict) else {}
+            except Exception:
+                self._data = {}
+
+    def _save(self) -> None:
+        """Atomically persist cache to disk via temp-file rename."""
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self._path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(self._data))
+        tmp.rename(self._path)
+
+    def record(
+        self,
+        identity_uri: str,
+        state: PresenceState,
+        timestamp: Optional[datetime] = None,
+    ) -> None:
+        """Record or update presence for a peer.
+
+        Args:
+            identity_uri: CapAuth identity URI.
+            state: Current presence state.
+            timestamp: When the presence was recorded (default: now).
+        """
+        ts = (timestamp or datetime.now(timezone.utc)).isoformat()
+        self._data[identity_uri] = {"state": state.value, "timestamp": ts}
+        self._save()
+
+    def get_entry(self, identity_uri: str) -> Optional[dict]:
+        """Get the raw cache entry for a peer.
+
+        Args:
+            identity_uri: CapAuth identity URI.
+
+        Returns:
+            dict with 'state' and 'timestamp' keys, or None if unknown.
+        """
+        self._load()
+        return self._data.get(identity_uri)
+
+    def get_all(self) -> dict[str, dict]:
+        """Return all cached presence entries.
+
+        Returns:
+            dict mapping identity URI -> {'state': str, 'timestamp': str}.
+        """
+        self._load()
+        return dict(self._data)
+
+    def get_online(self, max_age: int = 300) -> list[str]:
+        """List peers seen within the last *max_age* seconds.
+
+        Only peers whose state is not OFFLINE and whose last-seen
+        timestamp is within *max_age* seconds are returned.
+
+        Args:
+            max_age: Max age in seconds (default: 300 = 5 minutes).
+
+        Returns:
+            list[str]: Identity URIs of recently-seen peers.
+        """
+        self._load()
+        now = datetime.now(timezone.utc)
+        result = []
+        for uri, entry in self._data.items():
+            try:
+                ts = datetime.fromisoformat(entry["timestamp"])
+                age = (now - ts).total_seconds()
+                state = entry.get("state", "")
+                if age <= max_age and state != PresenceState.OFFLINE.value:
+                    result.append(uri)
+            except Exception:
+                pass
+        return result
+
+    def get_status(self, identity_uri: str) -> str:
+        """Get human-readable status for a peer.
+
+        Thresholds: online (<2 min), away (<10 min), offline (>=10 min or unknown).
+
+        Args:
+            identity_uri: CapAuth identity URI.
+
+        Returns:
+            str: "online", "away", or "offline".
+        """
+        self._load()
+        entry = self._data.get(identity_uri)
+        if not entry:
+            return "offline"
+        try:
+            ts = datetime.fromisoformat(entry["timestamp"])
+            age = (datetime.now(timezone.utc) - ts).total_seconds()
+            state = entry.get("state", "")
+            if state == PresenceState.OFFLINE.value:
+                return "offline"
+            if age <= 120:
+                return "online"
+            if age <= 600:
+                return "away"
+            return "offline"
+        except Exception:
+            return "offline"
+
+    # ── Typing indicator methods ───────────────────────────────────────────
+
+    def set_typing(self, identity: str, is_typing: bool) -> None:
+        """Record or clear a typing indicator for a peer (in-memory, 5 s TTL).
+
+        When *is_typing* is True, stamps the current monotonic time and
+        schedules an auto-clear timer so stale indicators are removed even
+        if the peer never sends a stop signal.
+
+        Args:
+            identity: CapAuth identity URI of the peer.
+            is_typing: True to start the indicator, False to clear it.
+        """
+        if not is_typing:
+            self._typing.pop(identity, None)
+            return
+        self._typing[identity] = time.monotonic()
+        t = threading.Timer(self._TYPING_TTL, self._clear_typing, args=(identity,))
+        t.daemon = True
+        t.start()
+
+    def _clear_typing(self, identity: str) -> None:
+        """Remove typing state for *identity* after TTL expires."""
+        self._typing.pop(identity, None)
+
+    def is_typing(self, identity: str) -> bool:
+        """Return True if *identity* sent a typing signal within the last 5 seconds.
+
+        Args:
+            identity: CapAuth identity URI.
+
+        Returns:
+            bool: True if the peer is currently typing.
+        """
+        ts = self._typing.get(identity)
+        if ts is None:
+            return False
+        return (time.monotonic() - ts) <= self._TYPING_TTL
+
+    def get_typing_peers(self) -> list[str]:
+        """Return identity URIs of peers whose typing signal is still fresh.
+
+        Returns:
+            list[str]: Peers whose typing indicator was received within the last 5 s.
+        """
+        now = time.monotonic()
+        return [
+            uri
+            for uri, ts in list(self._typing.items())
+            if (now - ts) <= self._TYPING_TTL
+        ]

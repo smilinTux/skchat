@@ -2,6 +2,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../data/message_repository.dart';
 import '../../models/chat_message.dart';
 import '../../models/conversation.dart';
+import '../../services/daemon_service.dart';
 import '../../services/skcomm_client.dart';
 import '../chats/chats_provider.dart';
 
@@ -28,31 +29,71 @@ class ConversationNotifier extends FamilyNotifier<List<ChatMessage>, String> {
     await _fetchFromDaemon(peerId);
   }
 
-  /// Fetch conversation history from the daemon and merge into local state.
+  /// Fetch conversation history from the skchat local store via CLI.
+  ///
+  /// Calls `skchat inbox --json` and filters messages by [peerId].
+  /// Falls back to the SKComm HTTP API for conversation IDs when the CLI
+  /// is unavailable.  Merges into Hive-persisted state without duplicates.
   Future<void> _fetchFromDaemon(String peerId) async {
-    final client = ref.read(skcommClientProvider);
+    final daemon = ref.read(daemonServiceProvider);
     final repo = ref.read(messageRepositoryProvider);
+
+    // Primary: skchat CLI conversation history.
+    try {
+      final cliMessages = await daemon.getConversation(peerId, limit: 100);
+      if (cliMessages.isNotEmpty) {
+        final localId = daemon.localIdentity;
+        final localShort = localId != null
+            ? DaemonService.peerShortName(localId).toLowerCase()
+            : null;
+        final peerShort = DaemonService.peerShortName(peerId).toLowerCase();
+
+        final existing = state.map((m) => m.id).toSet();
+        final fresh = <ChatMessage>[];
+
+        for (final m in cliMessages) {
+          if (existing.contains(m.id)) continue;
+          final senderShort =
+              DaemonService.peerShortName(m.sender).toLowerCase();
+          final isOutbound =
+              localShort != null && senderShort == localShort;
+          final msgPeerId = isOutbound
+              ? DaemonService.peerShortName(m.recipient).toLowerCase()
+              : senderShort;
+          // Only include messages that belong to this conversation.
+          if (msgPeerId != peerShort) continue;
+
+          fresh.add(ChatMessage(
+            id: m.id,
+            peerId: msgPeerId,
+            content: m.content,
+            timestamp: m.timestamp,
+            isOutbound: isOutbound,
+            deliveryStatus: isOutbound ? 'sent' : 'delivered',
+          ));
+        }
+
+        if (fresh.isNotEmpty) {
+          final merged = [...state, ...fresh];
+          merged.sort((a, b) => a.timestamp.compareTo(b.timestamp));
+          state = merged;
+          for (final msg in fresh) {
+            await repo.saveMessage(msg);
+          }
+        }
+        return;
+      }
+    } catch (_) {
+      // CLI unavailable — fall through to HTTP fallback.
+    }
+
+    // Fallback: SKComm HTTP conversation listing (no per-message history yet).
+    final client = ref.read(skcommClientProvider);
     try {
       final alive = await client.isAlive();
       if (!alive) return;
-
-      final conversations = await client.getConversations();
-      // Look for a conversation matching this peerId.
-      String? conversationId;
-      for (final raw in conversations) {
-        final pid = raw['peer_id'] as String? ?? '';
-        if (pid == peerId) {
-          conversationId = raw['id'] as String? ?? pid;
-          break;
-        }
-      }
-      if (conversationId == null) return;
-
-      // TODO: SKComm daemon needs GET /api/v1/conversation/:id endpoint
-      // to fetch message history for a specific conversation.
-      // For now the sync layer (_pollInbox in skcomm_sync.dart) handles
-      // real-time message dispatch. This method will be fully wired once
-      // the daemon exposes per-conversation message history.
+      // HTTP API does not yet expose per-conversation message history;
+      // the CLI path above is the canonical source.  Nothing more to do.
     } catch (_) {
       // Daemon offline — keep Hive data.
     }

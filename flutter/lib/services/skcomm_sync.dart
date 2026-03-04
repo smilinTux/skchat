@@ -7,6 +7,7 @@ import '../models/chat_message.dart';
 import '../models/conversation.dart';
 import '../features/chats/chats_provider.dart';
 import '../features/conversation/conversation_provider.dart';
+import 'daemon_service.dart';
 import 'skcomm_client.dart';
 
 /// Daemon connection status.
@@ -45,9 +46,12 @@ class DaemonState {
 class SKCommSyncNotifier extends Notifier<DaemonState> {
   static const _pollInterval = Duration(seconds: 5);
   static const _daemonCheckInterval = Duration(seconds: 15);
+  // CLI polling is slightly slower to reduce subprocess overhead.
+  static const _cliPollInterval = Duration(seconds: 10);
 
   Timer? _pollTimer;
   Timer? _daemonTimer;
+  Timer? _cliPollTimer;
   final Set<String> _seenEnvelopeIds = {};
 
   @override
@@ -61,14 +65,17 @@ class SKCommSyncNotifier extends Notifier<DaemonState> {
   void _startPolling() {
     _checkDaemon();
     _pollInbox();
+    _pollSkchatCli();
 
     _pollTimer = Timer.periodic(_pollInterval, (_) => _pollInbox());
     _daemonTimer = Timer.periodic(_daemonCheckInterval, (_) => _checkDaemon());
+    _cliPollTimer = Timer.periodic(_cliPollInterval, (_) => _pollSkchatCli());
   }
 
   void _stopPolling() {
     _pollTimer?.cancel();
     _daemonTimer?.cancel();
+    _cliPollTimer?.cancel();
   }
 
   /// Check daemon health and update connection status.
@@ -116,14 +123,67 @@ class SKCommSyncNotifier extends Notifier<DaemonState> {
     }
   }
 
-  /// Send a message via the daemon.
-  /// Returns the envelope ID on success, null on failure.
+  /// Poll the skchat local history store via CLI and dispatch any new messages.
+  ///
+  /// Runs `skchat inbox --json --limit 100` from $HOME and dispatches messages
+  /// not yet seen by the HTTP poller.  Outbound detection uses $SKCHAT_IDENTITY.
+  Future<void> _pollSkchatCli() async {
+    final daemon = ref.read(daemonServiceProvider);
+    try {
+      final messages = await daemon.getInbox(limit: 100);
+      final localId = daemon.localIdentity;
+      final localShort =
+          localId != null ? DaemonService.peerShortName(localId).toLowerCase() : null;
+
+      for (final msg in messages) {
+        if (_seenEnvelopeIds.contains(msg.id)) continue;
+        _seenEnvelopeIds.add(msg.id);
+
+        final senderShort =
+            DaemonService.peerShortName(msg.sender).toLowerCase();
+        final recipientShort =
+            DaemonService.peerShortName(msg.recipient).toLowerCase();
+        final isOutbound = localShort != null && senderShort == localShort;
+
+        // peerId is the *other* party in the conversation.
+        final peerId = isOutbound ? recipientShort : senderShort;
+
+        _dispatchCliMessage(
+          id: msg.id,
+          peerId: peerId,
+          content: msg.content,
+          timestamp: msg.timestamp,
+          isOutbound: isOutbound,
+        );
+      }
+    } catch (_) {
+      // CLI unavailable — silently ignore.
+    }
+  }
+
+  /// Send a message via the skchat CLI (primary), falling back to HTTP.
+  ///
+  /// The CLI path stores the message locally AND delivers via SKComm transport.
+  /// Returns the envelope ID (from HTTP) or a CLI-generated token on success,
+  /// null on complete failure.
   Future<String?> sendMessage({
     required String peerId,
     required String content,
     String? threadId,
     String? inReplyTo,
   }) async {
+    // Primary: skchat CLI — local store + transport delivery.
+    final daemon = ref.read(daemonServiceProvider);
+    final cliResult = await daemon.sendMessage(
+      recipient: peerId,
+      content: content,
+    );
+    if (cliResult.success) {
+      // Return a synthetic ID so callers can track the message.
+      return 'cli_${DateTime.now().millisecondsSinceEpoch}';
+    }
+
+    // Fallback: SKComm HTTP (transport only, no local store).
     final client = ref.read(skcommClientProvider);
     try {
       final result = await client.sendMessage(
@@ -133,7 +193,7 @@ class SKCommSyncNotifier extends Notifier<DaemonState> {
         inReplyTo: inReplyTo,
       );
       return result.delivered ? result.envelopeId : null;
-    } catch (e) {
+    } catch (_) {
       return null;
     }
   }
@@ -195,6 +255,59 @@ class SKCommSyncNotifier extends Notifier<DaemonState> {
           lastMessage: msg.content,
           lastMessageTime: msg.createdAt,
           soulFingerprint: msg.sender,
+          lastDeliveryStatus: 'delivered',
+          unreadCount: 1,
+        ),
+      );
+    }
+  }
+
+  /// Dispatch a message sourced from the skchat CLI into Riverpod state.
+  ///
+  /// Unlike [_dispatchIncoming] which always marks isOutbound=false,
+  /// this helper handles both directions based on the CLI isOutbound flag.
+  void _dispatchCliMessage({
+    required String id,
+    required String peerId,
+    required String content,
+    required DateTime timestamp,
+    required bool isOutbound,
+  }) {
+    // Skip call sentinels (handled by HTTP path).
+    if (content.startsWith('__CALL_REQUEST__:')) return;
+
+    final chatMsg = ChatMessage(
+      id: id,
+      peerId: peerId,
+      content: content,
+      timestamp: timestamp,
+      isOutbound: isOutbound,
+      deliveryStatus: isOutbound ? 'sent' : 'delivered',
+    );
+
+    ref.read(conversationProvider(peerId).notifier).addMessage(chatMsg);
+
+    final chats = ref.read(chatsProvider);
+    final exists = chats.any((c) => c.peerId == peerId);
+    if (exists) {
+      ref.read(chatsProvider.notifier).updateConversation(
+        chats
+            .firstWhere((c) => c.peerId == peerId)
+            .copyWith(
+              lastMessage: content,
+              lastMessageTime: timestamp,
+              lastDeliveryStatus: isOutbound ? 'sent' : 'delivered',
+            ),
+      );
+    } else if (!isOutbound) {
+      // Only auto-create conversation entries for inbound messages.
+      ref.read(chatsProvider.notifier).addConversation(
+        Conversation(
+          peerId: peerId,
+          displayName: peerId,
+          lastMessage: content,
+          lastMessageTime: timestamp,
+          soulFingerprint: peerId,
           lastDeliveryStatus: 'delivered',
           unreadCount: 1,
         ),

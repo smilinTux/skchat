@@ -84,8 +84,9 @@ def temp_peers_dir(tmp_path):
 def test_get_sovereign_identity_from_file(temp_identity_dir):
     """Test loading identity from skcapstone identity.json."""
     with patch("skchat.identity_bridge.SKCAPSTONE_IDENTITY_DIR", temp_identity_dir):
-        identity = get_sovereign_identity()
-        assert identity == "capauth:test-agent@capauth.local"
+        with patch.dict("os.environ", {}, clear=True):
+            identity = get_sovereign_identity()
+            assert identity == "capauth:test-agent@capauth.local"
 
 
 def test_get_sovereign_identity_from_env():
@@ -107,19 +108,20 @@ def test_get_sovereign_identity_with_fingerprint_only(tmp_path):
     """Test identity resolution when only fingerprint is available."""
     identity_dir = tmp_path / "identity"
     identity_dir.mkdir()
-    
+
     identity_data = {
         "fingerprint": "AABBCCDDEEFF0011",
         "created_at": "2026-02-24T00:00:00+00:00"
     }
-    
+
     identity_file = identity_dir / "identity.json"
     with open(identity_file, "w") as f:
         json.dump(identity_data, f)
-    
+
     with patch("skchat.identity_bridge.SKCAPSTONE_IDENTITY_DIR", identity_dir):
-        identity = get_sovereign_identity()
-        assert identity == "capauth:AABBCCDDEEFF0011"
+        with patch.dict("os.environ", {}, clear=True):
+            identity = get_sovereign_identity()
+            assert identity == "capauth:AABBCCDDEEFF0011"
 
 
 def test_resolve_peer_name_from_json(temp_peers_dir):

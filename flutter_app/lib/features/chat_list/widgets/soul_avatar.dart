@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-import '../../core/theme/soul_color.dart';
+import '../../../core/theme/soul_color.dart';
 
 class SoulAvatar extends StatelessWidget {
   final String name;

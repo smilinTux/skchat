@@ -8,6 +8,7 @@ Commands:
     skchat threads [--limit N]
     skchat search <query>
     skchat status
+    skchat presence
 
 All commands operate against the local SKMemory-backed chat history.
 Messages are composed locally, stored via ChatHistory, and (when
@@ -528,19 +529,31 @@ def reply(message_id: str, content: str, thread: Optional[str], ctype: str) -> N
 # ─────────────── inbox display helpers ───────────────
 
 def _display_name(identity: str) -> str:
-    """Extract a friendly display name from a CapAuth identity URI.
+    """Resolve a CapAuth identity URI to a friendly display name.
+
+    Uses peer-store reverse lookup (name/fingerprint/URI → friendly name)
+    before falling back to string parsing.  Never returns "unknown".
 
     Examples:
-        'capauth:lumina@skworld.io' → 'Lumina'
-        'capauth:chef@skworld.io'   → 'Chef'
+        'capauth:lumina@skworld.io'              → 'Lumina'
+        'capauth:AABB1122CCDD3344EEFF5566...'    → 'Lumina'  (via peer store)
+        'capauth:chef@skworld.io'                → 'Chef'
     """
+    if not identity:
+        return ""
+    try:
+        from .identity_bridge import resolve_display_name
+        return resolve_display_name(identity)
+    except Exception:
+        pass
+    # bare string fallback (no identity_bridge available)
     try:
         local = identity
         if ":" in local:
             local = local.split(":", 1)[1]
         if "@" in local:
             local = local.split("@", 1)[0]
-        return local.capitalize()
+        return local.capitalize() if local else identity
     except Exception:
         return identity
 
@@ -662,7 +675,7 @@ def _inbox_display_table(messages: list) -> None:
         table.add_column("Content", ratio=1)
         for msg in messages:
             ts = _ts_ago(msg.get("timestamp", ""))
-            sender = _display_name(msg.get("sender", "unknown"))
+            sender = _display_name(msg.get("sender") or "")
             content = msg.get("content", "")
             preview = content[:80] + ("…" if len(content) > 80 else "")
             table.add_row(ts, sender, preview)
@@ -670,7 +683,7 @@ def _inbox_display_table(messages: list) -> None:
     else:
         for msg in messages:
             ts = _ts_ago(msg.get("timestamp", ""))
-            sender = _display_name(msg.get("sender", "unknown"))
+            sender = _display_name(msg.get("sender") or "")
             content = msg.get("content", "")[:80]
             click.echo(f"  [{ts}] {sender}: {content}")
 
@@ -688,15 +701,16 @@ def _inbox_display_grouped(messages: list, my_identity: str) -> None:
 
     peer_groups: dict = OrderedDict()
     for msg in sorted_msgs:
-        sender = msg.get("sender", "unknown")
-        recipient = msg.get("recipient", "unknown")
+        sender = msg.get("sender") or ""
+        recipient = msg.get("recipient") or ""
         peer = recipient if sender == my_identity else sender
         peer_groups.setdefault(peer, []).append(msg)
 
     term_width = 72
     for peer, msgs in peer_groups.items():
         name = _display_name(peer)
-        prefix = f"── {name} ({peer}) "
+        peer_label = peer or "?"
+        prefix = f"── {name} ({peer_label}) "
         dashes = "─" * max(4, term_width - len(prefix))
         header = prefix + dashes
         if HAS_RICH and console:
@@ -705,7 +719,7 @@ def _inbox_display_grouped(messages: list, my_identity: str) -> None:
             click.echo(header)
 
         for msg in msgs:
-            sender = msg.get("sender", "unknown")
+            sender = msg.get("sender") or ""
             content = msg.get("content", "")
             ts_label = _ts_hhmm(msg.get("timestamp", ""))
 
@@ -753,8 +767,8 @@ def _inbox_display_threads(messages: list, my_identity: str) -> None:
     """
     peer_groups: dict = {}
     for msg in sorted(messages, key=lambda m: str(m.get("timestamp", ""))):
-        sender = msg.get("sender", "unknown")
-        recipient = msg.get("recipient", "unknown")
+        sender = msg.get("sender") or ""
+        recipient = msg.get("recipient") or ""
         peer = recipient if sender == my_identity else sender
         peer_groups.setdefault(peer, []).append(msg)
 
@@ -950,7 +964,7 @@ def inbox(
     if threads:
         _inbox_display_threads(messages, my_identity)
     else:
-        _inbox_display_table(messages)
+        _inbox_display_grouped(messages, my_identity)
 
     # Update global last-read marker so next --unread shows only newer msgs
     if messages:
@@ -1024,7 +1038,8 @@ def _watch_inbox(interval: float = 5.0, limit: int = 50) -> None:
         display = all_messages[-limit:]
         if display:
             for idx, msg in enumerate(display, start=1):
-                sender = msg.get("sender", "unknown")
+                sender = msg.get("sender") or ""
+                sender_label = _display_name(sender) if sender else "?"
                 content = msg.get("content", "")
                 preview = content[:60] + ("…" if len(content) > 60 else "")
                 tid = (msg.get("thread_id") or "")[:12]
@@ -1035,7 +1050,7 @@ def _watch_inbox(interval: float = 5.0, limit: int = 50) -> None:
                     ts_str = ts[11:19]
                 else:
                     ts_str = str(ts)[:8]
-                tbl.add_row(str(idx), sender, preview, tid, ts_str)
+                tbl.add_row(str(idx), sender_label, preview, tid, ts_str)
         else:
             tbl.add_row("", "[dim]No messages yet — waiting…[/]", "", "", "")
 
@@ -1395,41 +1410,86 @@ def search(
         _print("")
         return
 
+    def _fmt_search_ts(ts: object) -> str:
+        """Compact timestamp: today → HH:MM, same year → MM-DD HH:MM, else YY-MM-DD."""
+        try:
+            if isinstance(ts, str):
+                dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+            elif isinstance(ts, datetime):
+                dt = ts
+            else:
+                return str(ts)[:16]
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            now = datetime.now(timezone.utc)
+            if dt.date() == now.date():
+                return dt.strftime("%H:%M")
+            if dt.year == now.year:
+                return dt.strftime("%m-%d %H:%M")
+            return dt.strftime("%y-%m-%d %H:%M")
+        except Exception:
+            return str(ts)[:16]
+
+    def _short_uri(uri: str) -> str:
+        """Convert a full identity URI to a short display name."""
+        u = uri.replace("capauth:", "").replace("nostr:", "").replace("group:", "grp/")
+        return u.split("@")[0][:18] if "@" in u else u[:18]
+
+    def _rich_highlight(text: str, q: str) -> "Text":
+        """Return a Rich Text object with query terms highlighted bold yellow."""
+        from rich.text import Text as RText
+        t = RText()
+        if not q:
+            t.append(text)
+            return t
+        pattern = re.compile(re.escape(q), re.IGNORECASE)
+        last = 0
+        for m in pattern.finditer(text):
+            t.append(text[last:m.start()])
+            t.append(m.group(), style="bold yellow")
+            last = m.end()
+        t.append(text[last:])
+        return t
+
+    n_results = len(results)
+    title_str = f"Search: '{query}'  {n_results} result{'s' if n_results != 1 else ''}"
+
     if HAS_RICH and console:
+        from rich.box import SIMPLE_HEAD
         table = Table(
             show_header=True,
-            header_style="bold",
-            box=None,
-            padding=(0, 2),
-            title=f"Search: '{query}' ({len(results)} result{'s' if len(results) != 1 else ''})",
+            header_style="bold cyan",
+            box=SIMPLE_HEAD,
+            padding=(0, 1),
+            title=title_str,
         )
-        table.add_column("Date", style="dim", max_width=20)
-        table.add_column("From", style="cyan", max_width=30)
-        table.add_column("Preview", max_width=62)
+        table.add_column("When", style="dim", max_width=13, no_wrap=True)
+        table.add_column("From", style="cyan", max_width=18, no_wrap=True)
+        table.add_column("To", style="dim", max_width=18, no_wrap=True)
+        table.add_column("Preview", max_width=50)
 
         for msg in results:
-            sender = msg.get("sender", "unknown")
-            content = msg.get("content", "")
-            preview = content[:60] + ("..." if len(content) > 60 else "")
-            ts = msg.get("timestamp", "")
-            if isinstance(ts, str) and len(ts) > 19:
-                ts = ts[:19]
-            table.add_row(str(ts), sender, preview)
+            sender = _short_uri(msg.get("sender") or "?")
+            recip  = _short_uri(msg.get("recipient") or "")
+            content = str(msg.get("content") or "").replace("\n", " ")
+            preview_text = content[:60] + ("\u2026" if len(content) > 60 else "")
+            preview_rich = _rich_highlight(preview_text, query)
+            ts_str = _fmt_search_ts(msg.get("timestamp", ""))
+            table.add_row(ts_str, sender, recip, preview_rich)
 
         console.print(table)
     else:
-        click.echo(f"  {len(results)} result(s) for '{query}':\n")
-        click.echo(f"  {'Date':<20}  {'From':<30}  Preview")
+        click.echo(f"\n  {title_str}\n")
+        click.echo(f"  {'When':<14}  {'From':<18}  {'To':<18}  Preview")
         click.echo("  " + "-" * 80)
         for msg in results:
-            sender = msg.get("sender", "unknown")
-            content = msg.get("content", "")
-            raw_preview = content[:60] + ("..." if len(content) > 60 else "")
+            sender = _short_uri(msg.get("sender") or "?")
+            recip  = _short_uri(msg.get("recipient") or "")
+            content = str(msg.get("content") or "").replace("\n", " ")
+            raw_preview = content[:50] + ("\u2026" if len(content) > 50 else "")
             preview = _highlight_query(raw_preview, query)
-            ts = msg.get("timestamp", "")
-            if isinstance(ts, str) and len(ts) > 19:
-                ts = ts[:19]
-            click.echo(f"  {str(ts):<20}  {sender:<30}  {preview}")
+            ts_str = _fmt_search_ts(msg.get("timestamp", ""))
+            click.echo(f"  {ts_str:<14}  {sender:<18}  {recip:<18}  {preview}")
 
     _print("")
 
@@ -1568,7 +1628,7 @@ def export(fmt: str, output: Optional[str], peer: Optional[str]) -> None:
 
 
 @main.command()
-@click.argument("peer")
+@click.option("--to", "peer", default="lumina", show_default=True, help="Recipient peer name or capauth URI.")
 @click.option(
     "--interval",
     "-i",
@@ -1578,23 +1638,22 @@ def export(fmt: str, output: Optional[str], peer: Optional[str]) -> None:
     help="Poll interval in seconds.",
 )
 @click.option("--thread", "-t", default=None, help="Thread ID for this conversation.")
-def chat(peer: str, interval: float, thread: Optional[str]) -> None:
+@click.option("--group", is_flag=True, default=False, help="Address a group conversation instead of a peer.")
+def chat(peer: str, interval: float, thread: Optional[str], group: bool) -> None:
     """Open an interactive chat session with a peer.
 
-    Polls for new messages from PEER every INTERVAL seconds and displays
-    them inline. Type a message and press Enter to send. Ctrl+C exits.
-
-    PEER can be a short name (e.g. 'lumina') or a full capauth URI.
+    Polls for new messages every INTERVAL seconds and displays them inline.
+    Type a message and press Enter to send. Ctrl+C exits.
 
     Examples:
 
-        skchat chat lumina
+        skchat chat
 
-        skchat chat capauth:chef@skworld.io
+        skchat chat --to lumina
 
-        skchat chat lumina --interval 5
+        skchat chat --to capauth:chef@skworld.io
 
-        skchat chat lumina --thread proj-alpha
+        skchat chat --to lumina --thread proj-alpha
     """
     import threading
     import time
@@ -1717,7 +1776,7 @@ def chat(peer: str, interval: float, thread: Optional[str]) -> None:
             ts_str = _ts_hhmm(msg.get("timestamp", ""))
             is_me = sender == identity
             label = "You" if is_me else peer_display
-            color = "blue" if is_me else "cyan"
+            color = "blue" if is_me else "green"
             if HAS_RICH and console:
                 console.print(f"  [dim]{ts_str}[/] [{color}]{label}:[/] {content}")
             else:
@@ -1731,6 +1790,13 @@ def chat(peer: str, interval: float, thread: Optional[str]) -> None:
 
     # Announce ONLINE presence on session start
     threading.Thread(target=_send_presence, args=(PresenceState.ONLINE,), daemon=True).start()
+
+    # Build the REPL prompt string (colored via ANSI when Rich is available)
+    _you_label = _display_name(identity)
+    if HAS_RICH:
+        _prompt_text = f"\033[34m[{_you_label}]\033[0m >> "
+    else:
+        _prompt_text = f"[{_you_label}] >> "
 
     stop_event = threading.Event()
 
@@ -1751,11 +1817,11 @@ def chat(peer: str, interval: float, thread: Optional[str]) -> None:
                     sys.stdout.write("\r")
                     if HAS_RICH and console:
                         console.print(
-                            f"  [dim]{ts_str}[/] [cyan]{peer_display}:[/] {content}"
+                            f"  [dim]{ts_str}[/] [green]{peer_display}:[/] {content}"
                         )
                     else:
                         click.echo(f"  [{ts_str}] {peer_display}: {content}")
-                    sys.stdout.write("You: ")
+                    sys.stdout.write(_prompt_text)
                     sys.stdout.flush()
             except Exception:
                 pass
@@ -1767,14 +1833,23 @@ def chat(peer: str, interval: float, thread: Optional[str]) -> None:
     try:
         while True:
             try:
-                user_input = input("You: ")
+                user_input = input(_prompt_text)
             except EOFError:
                 break
             text = user_input.strip()
             if not text:
                 continue
             _prev_buf[0] = ""  # reset buffer tracker so next typed char fires
-            result = messenger.send(peer_uri, text, thread_id=thread)
+            _transport = _get_chat_transport()
+            if _transport is not None:
+                result = _transport.send_and_store(peer_uri, text, thread_id=thread)
+            else:
+                _msg = ChatMessage(
+                    sender=identity, recipient=peer_uri, content=text,
+                    thread_id=thread, delivery_status=DeliveryStatus.PENDING,
+                )
+                history.save(_msg)
+                result = {"delivered": False}
             delivered = result.get("delivered", False)
             ts_str = datetime.now(timezone.utc).strftime("%H:%M")
             if HAS_RICH and console:
@@ -3536,12 +3611,13 @@ def status() -> None:
                 time_str = "??:??"
 
             sender  = msg.get("sender") or "?"
-            s_short = sender.split("@")[0].replace("capauth:", "")
+            s_short_full = sender.split("@")[0].replace("capauth:", "").replace("nostr:", "")
+            s_short = s_short_full[:16]
             content = str(msg.get("content") or "")
 
-            if s_short == my_short:
+            if s_short_full == my_short:
                 recip   = (msg.get("recipient") or "?")
-                r_short = recip.split("@")[0].replace("capauth:", "")
+                r_short = recip.split("@")[0].replace("capauth:", "").replace("nostr:", "").replace("group:", "grp/")[:16]
                 label_plain  = f"You \u2192 {r_short}"
                 label_styled = (
                     click.style("You", fg="blue")
@@ -3865,6 +3941,133 @@ def who() -> None:
     click.echo("")
 
 
+@main.command()
+def presence() -> None:
+    """Show presence status of all known peers.
+
+    Reads the local presence cache and displays a rich table of known peers
+    with their last-seen time and online/away/offline status.
+
+    Colors: green = online (<2 min), yellow = away (<10 min), red = offline.
+
+    Examples:
+
+        skchat presence
+    """
+    import json as _json
+    from .presence import PresenceCache, PresenceState
+
+    KNOWN_PEERS: dict[str, str] = {
+        "capauth:lumina@skworld.io": "lumina",
+        "capauth:claude@skworld.io": "claude",
+        "chef@skworld.io": "chef",
+    }
+
+    peers_dir = Path.home() / ".skcapstone" / "peers"
+    if peers_dir.exists():
+        for peer_file in sorted(peers_dir.glob("*.json")):
+            try:
+                data = _json.loads(peer_file.read_text())
+                uri = data.get("identity_uri") or data.get("uri", "")
+                name = data.get("display_name") or data.get("name", peer_file.stem)
+                if uri:
+                    KNOWN_PEERS[uri] = name
+            except Exception:
+                pass
+
+    cache = PresenceCache()
+    all_entries = cache.get_all()
+    all_uris = sorted(set(all_entries.keys()) | set(KNOWN_PEERS.keys()))
+
+    if not all_uris:
+        click.echo("No presence data. Is the daemon running?  (skchat daemon start)")
+        return
+
+    now = datetime.now(timezone.utc)
+
+    if HAS_RICH:
+        table = Table(title="Peer Presence", show_header=True, header_style="bold cyan")
+        table.add_column("Agent", style="bold", min_width=20)
+        table.add_column("Last Seen", min_width=10)
+        table.add_column("Status", min_width=10)
+
+        for uri in all_uris:
+            display = KNOWN_PEERS.get(uri, uri.split("@")[0].replace("capauth:", ""))
+            entry = all_entries.get(uri)
+            if entry:
+                try:
+                    ts = datetime.fromisoformat(entry["timestamp"])
+                    age = (now - ts).total_seconds()
+                    state_val = entry.get("state", "")
+                    if state_val == PresenceState.OFFLINE.value:
+                        status = "offline"
+                    elif age <= 120:
+                        status = "online"
+                    elif age <= 600:
+                        status = "away"
+                    else:
+                        status = "offline"
+                    last_seen = ts.strftime("%H:%M:%S")
+                except Exception:
+                    status = "offline"
+                    last_seen = "-"
+            else:
+                status = "offline"
+                last_seen = "-"
+
+            if status == "online":
+                status_cell = Text("● online", style="green")
+            elif status == "away":
+                status_cell = Text("◐ away", style="yellow")
+            else:
+                status_cell = Text("○ offline", style="red")
+
+            table.add_row(display, last_seen, status_cell)
+
+        console.print()
+        console.print(table)
+        console.print()
+    else:
+        click.echo("")
+        click.echo(f"  {'Agent':<22} {'Last Seen':<12} Status")
+        click.echo(f"  {'-'*22} {'-'*12} {'-'*10}")
+
+        for uri in all_uris:
+            display = KNOWN_PEERS.get(uri, uri.split("@")[0].replace("capauth:", ""))
+            entry = all_entries.get(uri)
+            if entry:
+                try:
+                    ts = datetime.fromisoformat(entry["timestamp"])
+                    age = (now - ts).total_seconds()
+                    state_val = entry.get("state", "")
+                    if state_val == PresenceState.OFFLINE.value:
+                        status = "offline"
+                    elif age <= 120:
+                        status = "online"
+                    elif age <= 600:
+                        status = "away"
+                    else:
+                        status = "offline"
+                    last_seen = ts.strftime("%H:%M:%S")
+                except Exception:
+                    status = "offline"
+                    last_seen = "-"
+            else:
+                status = "offline"
+                last_seen = "-"
+
+            if status == "online":
+                status_str = click.style(status, fg="green")
+            elif status == "away":
+                status_str = click.style(status, fg="yellow")
+            else:
+                status_str = click.style(status, fg="red")
+
+            click.echo(f"  {display:<22} {last_seen:<12} {status_str}")
+
+        click.echo("")
+
+
 @main.group()
 def peers() -> None:
     """Discover and inspect known peers from the skcapstone peer store.
@@ -4015,81 +4218,221 @@ def reactions_cmd(message_id: str) -> None:
 
 
 @main.command()
-def rooms() -> None:
-    """List all group rooms with member count and last activity.
+@click.option("--limit", "-n", default=20, help="Max rooms per section (default: 20).")
+def rooms(limit: int) -> None:
+    """List group rooms and DM threads with last message and unread count.
 
-    Reads groups from ~/.skchat/groups/*.json and displays a sorted
-    summary (most recently active first).
+    Groups are deduplicated by name (most recent kept).
+    DM threads are derived from chat history.
+    Unread count = messages since last ``skchat inbox --unread`` view.
 
     Examples:
 
         skchat rooms
+
+        skchat rooms --limit 10
     """
-    import json as _json
+    my_identity = _get_identity()
 
-    groups_dir = Path(SKCHAT_HOME).expanduser() / "groups"
-    if not groups_dir.exists():
-        _print("\n  [dim]No rooms found. Create one with: skchat group create <name>[/]\n")
-        return
-
-    from .group import GroupChat
-
-    entries = []
-    for p in sorted(groups_dir.glob("*.json")):
+    # ── Read state for unread calculation ────────────────────────
+    read_state = _load_read_state()
+    last_read_str = read_state.get("_global", "")
+    last_read_dt: Optional[datetime] = None
+    if last_read_str:
         try:
-            grp = GroupChat.model_validate_json(p.read_text(encoding="utf-8"))
-            entries.append(grp)
+            last_read_dt = datetime.fromisoformat(last_read_str)
+            if last_read_dt.tzinfo is None:
+                last_read_dt = last_read_dt.replace(tzinfo=timezone.utc)
+        except ValueError:
+            pass
+
+    def _is_unread(ts_raw: object) -> bool:
+        if last_read_dt is None:
+            return False
+        try:
+            if isinstance(ts_raw, str):
+                ts = datetime.fromisoformat(ts_raw.replace("Z", "+00:00"))
+            elif isinstance(ts_raw, datetime):
+                ts = ts_raw
+            else:
+                return False
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            return ts > last_read_dt
         except Exception:
-            continue
+            return False
 
-    if not entries:
-        _print("\n  [dim]No rooms found. Create one with: skchat group create <name>[/]\n")
-        return
+    def _short_name(uri: str) -> str:
+        return uri.split("@")[0].replace("capauth:", "").replace("nostr:", "").replace("group:", "grp/")[:20]
 
-    # Sort: most recently active first
-    entries.sort(key=lambda g: g.updated_at, reverse=True)
+    def _msg_preview(msg: Optional[dict], width: int = 30) -> str:
+        if msg is None:
+            return ""
+        content = str(msg.get("content") or "").replace("\n", " ").strip()
+        if len(content) > width:
+            return content[:width - 1] + "\u2026"
+        return content
+
+    # ── Scan history for last-msg + unread per group and DM ──────
+    history = _get_history()
+    group_last: dict[str, dict] = {}   # group_id -> last msg dict
+    group_unread: dict[str, int] = {}  # group_id -> unread count
+    dm_last: dict[str, dict] = {}      # peer_key -> last msg dict
+    dm_unread: dict[str, int] = {}     # peer_key -> unread count
+    dm_peer_uri: dict[str, str] = {}   # peer_key -> other peer URI
+    try:
+        all_mems = history._store.list_memories(tags=["skchat:message"], limit=2000)
+        for m in all_mems:
+            msg_dict = history._memory_to_chat_dict(m)
+            sender = msg_dict.get("sender") or ""
+            recipient = msg_dict.get("recipient") or ""
+            ts = msg_dict.get("timestamp")
+            ts_str = str(ts) if ts else ""
+
+            if recipient.startswith("group:"):
+                gid = recipient[len("group:"):]
+                cur = group_last.get(gid)
+                if cur is None or ts_str > str(cur.get("timestamp") or ""):
+                    group_last[gid] = msg_dict
+                if _is_unread(ts):
+                    group_unread[gid] = group_unread.get(gid, 0) + 1
+            else:
+                # DM: determine the other party
+                other = recipient if sender == my_identity else sender
+                if not other or other == my_identity:
+                    continue
+                # Skip obviously non-person URIs (e.g. bare group IDs)
+                if other.startswith("group:"):
+                    continue
+                pair = tuple(sorted([sender, recipient]))
+                pk = f"{pair[0]}|{pair[1]}"
+                cur = dm_last.get(pk)
+                if cur is None or ts_str > str(cur.get("timestamp") or ""):
+                    dm_last[pk] = msg_dict
+                dm_peer_uri[pk] = other
+                if _is_unread(ts):
+                    dm_unread[pk] = dm_unread.get(pk, 0) + 1
+    except Exception:
+        pass
+
+    # ── Load groups, deduplicate by name (keep latest updated_at) ─
+    groups_dir = Path(SKCHAT_HOME).expanduser() / "groups"
+    unique_groups: dict[str, object] = {}  # name -> GroupChat (latest)
+    if groups_dir.exists():
+        from .group import GroupChat
+        for p in sorted(groups_dir.glob("*.json")):
+            try:
+                grp = GroupChat.model_validate_json(p.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            existing = unique_groups.get(grp.name)
+            if existing is None or grp.updated_at > existing.updated_at:  # type: ignore[union-attr]
+                unique_groups[grp.name] = grp
+
+    entries = list(unique_groups.values())
+
+    def _group_sort_key(g: object) -> str:
+        msg = group_last.get(g.id)  # type: ignore[attr-defined]
+        if msg:
+            ts = msg.get("timestamp")
+            if ts:
+                return str(ts)
+        return g.updated_at.isoformat()  # type: ignore[union-attr]
+
+    entries.sort(key=_group_sort_key, reverse=True)
+    entries = entries[:limit]
+
+    # ── Build sorted DM list ──────────────────────────────────────
+    dm_entries = [
+        {
+            "peer_uri": dm_peer_uri[pk],
+            "last_msg": dm_last[pk],
+            "unread": dm_unread.get(pk, 0),
+        }
+        for pk in dm_last
+    ]
+    dm_entries.sort(key=lambda x: str(x["last_msg"].get("timestamp") or ""), reverse=True)
+    dm_entries = dm_entries[:limit]
 
     _print("")
+
     if HAS_RICH and console:
-        from rich.table import Table as RichTable
+        # ── Groups table ─────────────────────────────────────────
+        if entries:
+            tbl = Table(
+                title=f"[bold]Groups[/bold] ({len(entries)})",
+                border_style="bright_blue",
+                show_lines=False,
+                padding=(0, 1),
+            )
+            tbl.add_column("Name", style="bold cyan", min_width=14, max_width=22)
+            tbl.add_column("Mbrs", justify="right", max_width=4)
+            tbl.add_column("Last message", max_width=32)
+            tbl.add_column("When", style="dim", max_width=10)
+            tbl.add_column("Unread", justify="right", max_width=6)
+            for grp in entries:
+                msg = group_last.get(grp.id)  # type: ignore[attr-defined]
+                preview = _msg_preview(msg, 30)
+                age = _ts_ago(msg.get("timestamp")) if msg else _ts_ago(grp.updated_at)  # type: ignore[union-attr]
+                unread = group_unread.get(grp.id, 0)  # type: ignore[attr-defined]
+                unread_cell = f"[bold red]{unread}[/bold red]" if unread else "[dim]-[/dim]"
+                tbl.add_row(grp.name, str(grp.member_count), preview, age, unread_cell)  # type: ignore[attr-defined]
+            console.print(tbl)
+        else:
+            console.print("  [dim]No groups found. Create one with: skchat group create <name>[/dim]")
 
-        table = RichTable(title="Rooms", border_style="bright_blue", show_lines=False)
-        table.add_column("Name", style="bold cyan", min_width=16)
-        table.add_column("ID", style="dim", min_width=14)
-        table.add_column("Members", justify="right")
-        table.add_column("Last activity", style="dim")
-
-        now = __import__("datetime").datetime.now(__import__("datetime").timezone.utc)
-        for grp in entries:
-            delta = now - grp.updated_at
-            secs = int(delta.total_seconds())
-            if secs < 60:
-                age = f"{secs}s ago"
-            elif secs < 3600:
-                age = f"{secs // 60}m ago"
-            elif secs < 86400:
-                age = f"{secs // 3600}h ago"
-            else:
-                age = f"{secs // 86400}d ago"
-            table.add_row(grp.name, grp.id[:12], str(grp.member_count), age)
-
-        console.print(table)
+        # ── DM threads table ─────────────────────────────────────
+        if dm_entries:
+            console.print("")
+            tbl2 = Table(
+                title="[bold]DM Threads[/bold]",
+                border_style="magenta",
+                show_lines=False,
+                padding=(0, 1),
+            )
+            tbl2.add_column("Peer", style="cyan", min_width=12, max_width=22)
+            tbl2.add_column("Last message", max_width=38)
+            tbl2.add_column("When", style="dim", max_width=10)
+            tbl2.add_column("Unread", justify="right", max_width=6)
+            for dm in dm_entries:
+                peer_display = _short_name(dm["peer_uri"])
+                msg = dm["last_msg"]
+                preview = _msg_preview(msg, 36)
+                age = _ts_ago(msg.get("timestamp"))
+                unread = dm["unread"]
+                unread_cell = f"[bold red]{unread}[/bold red]" if unread else "[dim]-[/dim]"
+                tbl2.add_row(peer_display, preview, age, unread_cell)
+            console.print(tbl2)
+        elif not entries:
+            console.print("  [dim]No DM threads found.[/dim]")
     else:
-        _print(f"  {'Name':<20} {'ID':<14} {'Members':>7}  Last activity")
-        _print("  " + "-" * 56)
-        now = __import__("datetime").datetime.now(__import__("datetime").timezone.utc)
-        for grp in entries:
-            delta = now - grp.updated_at
-            secs = int(delta.total_seconds())
-            if secs < 60:
-                age = f"{secs}s ago"
-            elif secs < 3600:
-                age = f"{secs // 60}m ago"
-            elif secs < 86400:
-                age = f"{secs // 3600}h ago"
-            else:
-                age = f"{secs // 86400}d ago"
-            _print(f"  {grp.name:<20} {grp.id[:12]:<14} {grp.member_count:>7}  {age}")
+        # Plain text fallback
+        if entries:
+            click.echo(f"\n  Groups ({len(entries)})")
+            click.echo("  " + "-" * 72)
+            click.echo(f"  {'Name':<22} {'M':>2}  {'Last message':<30}  {'When':<10}  Unread")
+            click.echo("  " + "-" * 72)
+            for grp in entries:
+                msg = group_last.get(grp.id)  # type: ignore[attr-defined]
+                preview = _msg_preview(msg, 28)
+                age = _ts_ago(msg.get("timestamp")) if msg else _ts_ago(grp.updated_at)  # type: ignore[union-attr]
+                unread = group_unread.get(grp.id, 0)  # type: ignore[attr-defined]
+                click.echo(f"  {grp.name:<22} {grp.member_count:>2}  {preview:<30}  {age:<10}  {unread or '-'}")  # type: ignore[attr-defined]
+        if dm_entries:
+            click.echo(f"\n  DM Threads")
+            click.echo("  " + "-" * 72)
+            click.echo(f"  {'Peer':<22}  {'Last message':<36}  {'When':<10}  Unread")
+            click.echo("  " + "-" * 72)
+            for dm in dm_entries:
+                peer_display = _short_name(dm["peer_uri"])
+                msg = dm["last_msg"]
+                preview = _msg_preview(msg, 34)
+                age = _ts_ago(msg.get("timestamp"))
+                unread = dm["unread"]
+                click.echo(f"  {peer_display:<22}  {preview:<36}  {age:<10}  {unread or '-'}")
+        if not entries and not dm_entries:
+            click.echo("\n  No rooms or DM threads found.\n")
+
     _print("")
 
 
@@ -4113,6 +4456,31 @@ def tui() -> None:
         )
         raise SystemExit(1)
     tui_main()
+
+
+@main.command()
+@click.option("--port", "-p", default=8765, show_default=True, help="TCP port to listen on.")
+@click.option("--no-browser", is_flag=True, default=False, help="Do not open browser automatically.")
+def webui(port: int, no_browser: bool) -> None:
+    """Launch the web-based chat UI (requires fastapi + uvicorn).
+
+    Opens a browser window at http://localhost:<port> with an HTMX chat
+    interface that polls for new messages every 3 seconds.
+
+    Examples:
+
+        skchat webui
+        skchat webui --port 9000 --no-browser
+    """
+    try:
+        from .webui import run as webui_run
+    except ImportError:
+        _print(
+            "\n  [red]Error:[/] fastapi/uvicorn is not installed.\n"
+            "  Install with: [cyan]pip install fastapi uvicorn[/]\n"
+        )
+        raise SystemExit(1)
+    webui_run(port=port, open_browser=not no_browser)
 
 
 if __name__ == "__main__":
