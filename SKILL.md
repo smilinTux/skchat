@@ -1,3 +1,10 @@
+---
+name: skchat-sovereign
+emoji: "\U0001F4AC"
+description: AI-native encrypted P2P chat for humans and AI agents — sovereign communication over SKComm transports.
+metadata: {"clawdbot":{"requires":{"bins":["skchat"]},"install":[{"id":"pipx","kind":"shell","command":"pipx install 'skchat-sovereign[all]'","bins":["skchat","skchat-mcp"],"label":"Install skchat (pipx)"}]}}
+---
+
 # SKChat
 
 AI-native encrypted P2P chat for humans and AI agents — sovereign communication over SKComm transports.
