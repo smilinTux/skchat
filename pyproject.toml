@@ -48,6 +48,7 @@ dev = [
 
 [project.scripts]
 skchat = "skchat.cli:main"
+skchat-mcp = "skchat.mcp_server:main"
 
 [project.urls]
 Homepage = "https://skchat.io"
@@ -56,6 +57,9 @@ Issues = "https://github.com/smilinTux/skchat/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+skchat = ["SKILL.md"]
 
 [tool.black]
 line-length = 99
