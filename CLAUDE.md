@@ -4,7 +4,8 @@
 SKChat is an AI-native P2P encrypted messaging daemon with MCP integration.
 It enables agents (Opus/Claude, Lumina) and humans (Chef) to chat in real-time over SKComm transports.
 
-- **Package**: `skchat` v0.1.0 (GPL-3.0)
+- **Package**: `skchat` v0.1.0 (GPL-3.0) — PyPI name: `skchat-sovereign`
+- **Install**: `~/.skenv/bin/pip install skchat-sovereign` (all SK* packages use `~/.skenv/`)
 - **Entry points**: `skchat` (CLI) · `skchat-mcp` (MCP server) · `skchat-tui` (Textual TUI)
 - **Source**: `src/skchat/` · **Tests**: `tests/`
 
@@ -12,7 +13,7 @@ It enables agents (Opus/Claude, Lumina) and humans (Chef) to chat in real-time o
 
 ```bash
 # Start daemon — CRITICAL: always run from ~/, NOT from smilintux-org/
-cd ~ && skchat daemon start --interval 5
+cd ~ && ~/.skenv/bin/skchat daemon start --interval 5
 
 # Required env
 export SKCHAT_IDENTITY=capauth:opus@skworld.io
@@ -204,8 +205,8 @@ Messages containing `@opus`, `@claude`, or `@ai` are routed to `AdvocacyEngine`,
 **Cause**: CWD is `smilintux-org/` — the local `skmemory/` dir shadows the installed package.
 **Fix**: Always run from `~/`:
 ```bash
-cd ~ && skchat daemon start --interval 5
-cd ~ && python -m pytest .../tests/ -q
+cd ~ && ~/.skenv/bin/skchat daemon start --interval 5
+cd ~ && ~/.skenv/bin/python -m pytest tests/ -q
 ```
 
 ### Daemon not starting / already running
@@ -214,7 +215,7 @@ skchat daemon status              # check PID + uptime
 cat ~/.skchat/daemon.log          # inspect logs
 skchat daemon stop                # graceful stop
 rm ~/.skchat/daemon.pid           # force-clear stale PID
-cd ~ && skchat daemon start       # restart
+cd ~ && ~/.skenv/bin/skchat daemon start  # restart
 ```
 
 ### MCP server not connecting
@@ -265,13 +266,13 @@ systemctl --user status skchat-lumina-bridge
 
 ```bash
 # Run from ~ to avoid skmemory namespace collision
-cd ~ && python -m pytest /home/cbrd21/dkloud.douno.it/p/smilintux-org/skchat/tests/ -q
+cd ~ && ~/.skenv/bin/python -m pytest tests/ -q
 
 # Skip integration tests (require full stack)
-cd ~ && python -m pytest .../tests/ -q -m 'not integration'
+cd ~ && ~/.skenv/bin/python -m pytest tests/ -q -m 'not integration'
 
 # E2E live (file transport, no network)
-cd ~ && python -m pytest .../tests/ -q -m e2e_live
+cd ~ && ~/.skenv/bin/python -m pytest tests/ -q -m e2e_live
 ```
 
 Test files mirror module names: `test_advocacy.py`, `test_daemon.py`, `test_mcp_server.py`, etc.
@@ -284,6 +285,7 @@ Test files mirror module names: `test_advocacy.py`, `test_daemon.py`, `test_mcp_
 | `scripts/lumina-bridge.py` | Lumina AI polling loop (systemd service) |
 | `scripts/mcp-config-inject.sh` | Inject MCP config into Claude/Cursor settings |
 | `scripts/mcp-test.sh` | Smoke-test MCP server |
+| `scripts/publish-did.sh` | Publish DID to Cloudflare KV (Tier 3 identity) |
 
 ## Systemd Services
 - `~/.config/systemd/user/skchat.service` — main daemon
