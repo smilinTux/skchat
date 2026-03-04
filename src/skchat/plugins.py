@@ -158,6 +158,51 @@ class ChatPlugin(ABC):
         )
 
 
+class SKChatPlugin(ABC):
+    """Trigger-based plugin: activated by keywords in message content.
+
+    Unlike ChatPlugin (which hooks into the message processing pipeline),
+    SKChatPlugin listens for keyword triggers and generates reply messages.
+    The daemon calls should_handle() on each received message, then handle()
+    if matched, and sends the returned reply back to the sender.
+
+    Attributes:
+        name: Unique plugin identifier.
+        triggers: Keywords that activate this plugin (case-insensitive).
+    """
+
+    name: str = "unnamed-trigger"
+    triggers: list[str] = []
+
+    def should_handle(self, message: ChatMessage) -> bool:
+        """Return True if this plugin should handle the message.
+
+        Default implementation checks whether any trigger keyword appears
+        in the message content (case-insensitive). Override for custom
+        matching logic (e.g. regex, prefix-only, exact match).
+
+        Args:
+            message: Incoming ChatMessage to evaluate.
+
+        Returns:
+            bool: True if this plugin wants to handle the message.
+        """
+        content_lower = message.content.lower()
+        return any(t.lower() in content_lower for t in self.triggers)
+
+    @abstractmethod
+    def handle(self, message: ChatMessage) -> Optional[str]:
+        """Process a matching message and return a reply string.
+
+        Args:
+            message: The ChatMessage that matched should_handle().
+
+        Returns:
+            Optional[str]: Reply text to send back, or None to skip reply.
+        """
+        ...
+
+
 class PluginRegistry:
     """Discovers, loads, and manages SKChat plugins.
 
@@ -175,6 +220,7 @@ class PluginRegistry:
     def __init__(self, user_plugin_dir: Optional[Path] = None) -> None:
         self._plugins: dict[str, ChatPlugin] = {}
         self._meta: dict[str, PluginMeta] = {}
+        self._trigger_plugins: dict[str, SKChatPlugin] = {}
         self._user_dir = user_plugin_dir or Path("~/.skchat/plugins").expanduser()
 
     @property
@@ -361,14 +407,67 @@ class PluginRegistry:
                 cmds[cmd] = plugin.name
         return cmds
 
+    def register_trigger(self, plugin: SKChatPlugin, source: str = "manual") -> bool:
+        """Register a trigger-based SKChatPlugin.
+
+        Args:
+            plugin: The SKChatPlugin to register.
+            source: Where the plugin came from.
+
+        Returns:
+            bool: True if registered (not a duplicate).
+        """
+        if plugin.name in self._trigger_plugins:
+            logger.debug("Trigger plugin '%s' already registered — skipping", plugin.name)
+            return False
+
+        self._trigger_plugins[plugin.name] = plugin
+        logger.info("Registered trigger plugin '%s' from %s", plugin.name, source)
+        return True
+
+    def get_plugins(self) -> list[SKChatPlugin]:
+        """Return all registered trigger plugins.
+
+        Returns:
+            list[SKChatPlugin]: All trigger plugin instances.
+        """
+        return list(self._trigger_plugins.values())
+
+    def process_triggers(self, message: ChatMessage) -> list[str]:
+        """Run all trigger plugins against an incoming message.
+
+        Calls should_handle() on each plugin; if it matches, calls handle()
+        and collects any non-None replies.
+
+        Args:
+            message: The incoming ChatMessage to evaluate.
+
+        Returns:
+            list[str]: Reply strings from all matching plugins.
+        """
+        replies: list[str] = []
+        for plugin in self.get_plugins():
+            try:
+                if plugin.should_handle(message):
+                    reply = plugin.handle(message)
+                    if reply:
+                        replies.append(reply)
+            except Exception as exc:
+                logger.warning("Trigger plugin '%s' failed: %s", plugin.name, exc)
+        return replies
+
     def _discover_builtins(self) -> int:
         """Load built-in plugins shipped with skchat."""
         count = 0
         try:
-            from .plugins_builtin import get_builtin_plugins
+            from .plugins_builtin import get_builtin_plugins, get_trigger_plugins
 
             for plugin in get_builtin_plugins():
                 if self.register(plugin, source="builtin"):
+                    count += 1
+
+            for plugin in get_trigger_plugins():
+                if self.register_trigger(plugin, source="builtin"):
                     count += 1
         except ImportError:
             pass

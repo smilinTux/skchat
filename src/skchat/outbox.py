@@ -13,7 +13,7 @@ import sqlite3
 import time
 import uuid
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Callable, Optional, Union
 
 if TYPE_CHECKING:
     from .agent_comm import AgentMessenger
@@ -21,8 +21,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger("skchat.outbox")
 
 _MAX_ATTEMPTS = 5
-# Exponential backoff delays in seconds for attempt index 1-5.
-_BACKOFF_DELAYS = [5, 15, 45, 120, 600]
+# Exponential backoff delays in seconds for attempt index 1-N.
+# Steps: 5s → 15s → 45s → 2min → 10min → 1hr.  Last entry caps all further retries.
+_BACKOFF_DELAYS = [5, 15, 45, 120, 600, 3600]
 
 
 def _backoff(attempts: int) -> float:
@@ -68,6 +69,7 @@ class OutboxQueue:
                 content       TEXT NOT NULL,
                 thread_id     TEXT,
                 attempts      INTEGER NOT NULL DEFAULT 0,
+                retry_count   INTEGER NOT NULL DEFAULT 0,
                 last_attempt  REAL,
                 created_at    REAL NOT NULL,
                 delivered     INTEGER NOT NULL DEFAULT 0,
@@ -83,6 +85,18 @@ class OutboxQueue:
             """
         )
         self._conn.commit()
+        # Migrate existing databases: add retry_count if missing.
+        try:
+            self._conn.execute(
+                "ALTER TABLE outbox ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0"
+            )
+            # Back-fill retry_count from attempts for rows that already have retries.
+            self._conn.execute(
+                "UPDATE outbox SET retry_count = attempts WHERE retry_count = 0 AND attempts > 0"
+            )
+            self._conn.commit()
+        except Exception:
+            pass  # Column already exists — no-op.
 
     # ------------------------------------------------------------------
     # Public API
@@ -91,7 +105,7 @@ class OutboxQueue:
     def enqueue(
         self,
         recipient: str,
-        content: str,
+        content: Union[bytes, str],
         thread_id: Optional[str] = None,
     ) -> str:
         """Add a message to the outbox for delivery.
@@ -109,10 +123,10 @@ class OutboxQueue:
         self._conn.execute(
             """
             INSERT INTO outbox
-                (id, recipient, content, thread_id, attempts, created_at,
-                 delivered, next_retry_at)
+                (id, recipient, content, thread_id, attempts, retry_count,
+                 created_at, delivered, next_retry_at)
             VALUES
-                (?, ?, ?, ?, 0, ?, 0, ?)
+                (?, ?, ?, ?, 0, 0, ?, 0, ?)
             """,
             (msg_id, recipient, content, thread_id, now, now),
         )
@@ -180,13 +194,113 @@ class OutboxQueue:
                 self._conn.execute(
                     """
                     UPDATE outbox
-                    SET    attempts = ?, last_attempt = ?, next_retry_at = ?
+                    SET    attempts = ?, retry_count = ?, last_attempt = ?,
+                           next_retry_at = ?
                     WHERE  id = ?
                     """,
-                    (new_attempts, time.time(), next_retry, msg_id),
+                    (new_attempts, new_attempts, time.time(), next_retry, msg_id),
                 )
                 logger.debug(
                     "Message %s failed (attempt %d/%d), retry in %.0fs",
+                    msg_id[:8],
+                    new_attempts,
+                    _MAX_ATTEMPTS,
+                    delay,
+                )
+                failed_count += 1
+
+        self._conn.commit()
+        return delivered_count, failed_count
+
+    def process_pending(self, messenger: "AgentMessenger") -> tuple[int, int]:
+        """Process pending outbox messages — called each daemon cycle.
+
+        Convenience wrapper around :meth:`deliver_pending`.  Returns
+        ``(0, 0)`` immediately when *messenger* is ``None`` so callers
+        need not guard against an uninitialised messenger.
+
+        Args:
+            messenger: ``AgentMessenger`` used for sending, or ``None``.
+
+        Returns:
+            tuple[int, int]: ``(delivered_count, failed_count)``
+        """
+        if messenger is None:
+            return (0, 0)
+        return self.deliver_pending(messenger)
+
+    def drain(
+        self,
+        send_fn: Callable[[bytes, str], bool],
+    ) -> tuple[int, int]:
+        """Attempt delivery of pending messages via a simple send function.
+
+        A lightweight alternative to :meth:`deliver_pending` that accepts a
+        plain callable ``send_fn(content: bytes, recipient: str) -> bool``
+        instead of a full AgentMessenger.  Returns True from send_fn means
+        success; False or an exception counts as failure.
+
+        Args:
+            send_fn: Callable that takes (content_bytes, recipient_uri) and
+                returns True on success, False on failure.
+
+        Returns:
+            tuple[int, int]: ``(delivered_count, failed_count)``
+        """
+        now = time.time()
+        rows = self._conn.execute(
+            """
+            SELECT id, recipient, content, attempts
+            FROM   outbox
+            WHERE  delivered = 0
+              AND  attempts < ?
+              AND  next_retry_at <= ?
+            ORDER BY created_at
+            """,
+            (_MAX_ATTEMPTS, now),
+        ).fetchall()
+
+        delivered_count = 0
+        failed_count = 0
+
+        for row in rows:
+            msg_id: str = row["id"]
+            recipient: str = row["recipient"]
+            raw_content = row["content"]
+            attempts: int = row["attempts"]
+
+            # Normalise to bytes for the send_fn contract
+            if isinstance(raw_content, bytes):
+                content_bytes = raw_content
+            else:
+                content_bytes = str(raw_content).encode()
+
+            success = False
+            try:
+                result = send_fn(content_bytes, recipient)
+                success = bool(result)
+            except Exception as exc:
+                logger.warning("drain: delivery failed for %s: %s", msg_id[:8], exc)
+
+            if success:
+                self.mark_delivered(msg_id)
+                delivered_count += 1
+                logger.debug("drain: delivered %s -> %s", msg_id[:8], recipient)
+            else:
+                new_attempts = attempts + 1
+                delay = _backoff(new_attempts)
+                next_retry = time.time() + delay
+                self._conn.execute(
+                    """
+                    UPDATE outbox
+                    SET    attempts = ?, retry_count = ?, last_attempt = ?,
+                           next_retry_at = ?
+                    WHERE  id = ?
+                    """,
+                    (new_attempts, new_attempts, time.time(), next_retry, msg_id),
+                )
+                logger.debug(
+                    "drain: %s failed (attempt %d/%d), retry in %.0fs",
                     msg_id[:8],
                     new_attempts,
                     _MAX_ATTEMPTS,

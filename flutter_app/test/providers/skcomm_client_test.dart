@@ -5,7 +5,6 @@ import 'package:mocktail/mocktail.dart';
 
 import 'package:skchat_mobile/core/transport/skcomm_client.dart';
 import 'package:skchat_mobile/features/chat_list/chat_list_screen.dart';
-import 'package:skchat_mobile/models/conversation.dart';
 
 // ---------------------------------------------------------------------------
 // Mock
@@ -57,20 +56,16 @@ void main() {
     test('returns conversations when daemon responds', () async {
       when(() => mockClient.getConversations()).thenAnswer(
         (_) async => [
-          Conversation(
-            id: 'lumina',
-            participantId: 'lumina',
-            participantName: 'Lumina',
-            presenceStatus: PresenceStatus.online,
-          ),
+          {
+            'id': 'lumina',
+            'participant_id': 'lumina',
+            'participant_name': 'Lumina',
+          }
         ],
       );
 
       final conversations = await container.read(chatListProvider.future);
 
-      // The notifier calls getConversations(); since we return a typed
-      // List<Conversation>, the raw-JSON mapping branch is skipped.
-      // The result should be the single conversation we provided.
       expect(conversations, hasLength(1));
       expect(conversations.first.participantId, 'lumina');
     });
@@ -78,18 +73,18 @@ void main() {
     test('refresh re-fetches from daemon', () async {
       // First call returns empty.
       when(() => mockClient.getConversations())
-          .thenAnswer((_) async => <Conversation>[]);
+          .thenAnswer((_) async => <Map<String, dynamic>>[]);
 
       await container.read(chatListProvider.future);
 
       // Now return data on the second call.
       when(() => mockClient.getConversations()).thenAnswer(
         (_) async => [
-          Conversation(
-            id: 'jarvis',
-            participantId: 'jarvis',
-            participantName: 'Jarvis',
-          ),
+          {
+            'id': 'jarvis',
+            'participant_id': 'jarvis',
+            'participant_name': 'Jarvis',
+          }
         ],
       );
 
