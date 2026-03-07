@@ -184,8 +184,8 @@ def _load_soul() -> dict:
     """Load Opus's soul blueprint from ~/.skcapstone/.
 
     Tries canonical locations in order:
-      1. ~/.skcapstone/agents/opus/soul/active.json
-      2. ~/.skcapstone/agents/opus/soul/installed/opus.json
+      1. ~/.skcapstone/agent/opus/soul/active.json
+      2. ~/.skcapstone/agent/opus/soul/installed/opus.json
       3. ~/.skcapstone/soul.json
     Returns an empty dict if none are found.
     """

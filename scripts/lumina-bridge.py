@@ -185,8 +185,8 @@ def _load_soul() -> dict:
 
     Tries canonical locations in order:
       1. ~/.skcapstone/soul.json
-      2. ~/.skcapstone/agents/opus/soul/installed/lumina.json
-      3. ~/.skcapstone/agents/opus/soul/active.json
+      2. ~/.skcapstone/agent/opus/soul/installed/lumina.json
+      3. ~/.skcapstone/agent/opus/soul/active.json
     Returns an empty dict if none are found.
     """
     home = Path.home()
