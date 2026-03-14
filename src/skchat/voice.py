@@ -27,8 +27,11 @@ Usage::
 from __future__ import annotations
 
 import logging
+import os
+import platform
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Optional
 
@@ -42,7 +45,9 @@ _PIPER_SEARCH_PATHS: list[str] = [
 ]
 
 # Default location for downloaded voice models.
-_VOICES_DIR: Path = Path.home() / ".local/share/piper/voices"
+_VOICES_DIRS: list[Path] = [Path.home() / ".local/share/piper/voices"]
+if platform.system() == "Darwin":
+    _VOICES_DIRS.insert(0, Path.home() / "Library/Application Support/piper/voices")
 
 # Well-known voice names.
 DEFAULT_VOICE = "en_US-lessac-medium"
@@ -96,9 +101,10 @@ class VoicePlayer:
         if self._model_path:
             p = Path(self._model_path)
             return str(p) if p.exists() else None
-        model_file = _VOICES_DIR / f"{self._voice}.onnx"
-        if model_file.exists():
-            return str(model_file)
+        for voices_dir in _VOICES_DIRS:
+            model_file = voices_dir / f"{self._voice}.onnx"
+            if model_file.exists():
+                return str(model_file)
         return None
 
     # ------------------------------------------------------------------
@@ -140,37 +146,65 @@ class VoicePlayer:
         model = self._resolve_model()
 
         try:
-            piper_proc = subprocess.Popen(
-                [self._piper_bin, "--model", model, "--output_raw"],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-            )
-
-            aplay_proc = subprocess.Popen(
-                ["aplay", "-r", "22050", "-f", "S16_LE", "-t", "raw", "-"],
-                stdin=piper_proc.stdout,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-
-            # Close parent's copy of the pipe so aplay sees EOF when piper exits.
-            assert piper_proc.stdout is not None
-            piper_proc.stdout.close()
-
-            # Feed the text to piper then signal EOF.
-            assert piper_proc.stdin is not None
-            piper_proc.stdin.write(text.encode("utf-8"))
-            piper_proc.stdin.close()
-
-            self._current_procs = [piper_proc, aplay_proc]
-
-            if blocking:
+            if platform.system() == "Darwin":
+                # macOS: afplay cannot read from a pipe, so synthesise to a
+                # WAV file first, then play it.
+                wav_path = os.path.join(tempfile.gettempdir(), "skchat-tts.wav")
+                piper_proc = subprocess.Popen(
+                    [self._piper_bin, "--model", model, "--output_file", wav_path],
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                assert piper_proc.stdin is not None
+                piper_proc.stdin.write(text.encode("utf-8"))
+                piper_proc.stdin.close()
                 piper_proc.wait()
-                aplay_proc.wait()
-                return None
 
-            return aplay_proc
+                play_proc = subprocess.Popen(
+                    ["afplay", wav_path],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                self._current_procs = [play_proc]
+
+                if blocking:
+                    play_proc.wait()
+                    return None
+                return play_proc
+            else:
+                # Linux: pipe raw PCM from piper directly into aplay.
+                piper_proc = subprocess.Popen(
+                    [self._piper_bin, "--model", model, "--output_raw"],
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                )
+
+                aplay_proc = subprocess.Popen(
+                    ["aplay", "-r", "22050", "-f", "S16_LE", "-t", "raw", "-"],
+                    stdin=piper_proc.stdout,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+
+                # Close parent's copy of the pipe so aplay sees EOF when piper exits.
+                assert piper_proc.stdout is not None
+                piper_proc.stdout.close()
+
+                # Feed the text to piper then signal EOF.
+                assert piper_proc.stdin is not None
+                piper_proc.stdin.write(text.encode("utf-8"))
+                piper_proc.stdin.close()
+
+                self._current_procs = [piper_proc, aplay_proc]
+
+                if blocking:
+                    piper_proc.wait()
+                    aplay_proc.wait()
+                    return None
+
+                return aplay_proc
 
         except FileNotFoundError as exc:
             logger.warning("Piper TTS playback failed (command not found): %s", exc)
@@ -193,7 +227,7 @@ class VoicePlayer:
 # Temporary file paths for voice recording
 # ---------------------------------------------------------------------------
 
-_VOICE_TMP_WAV: str = "/tmp/skchat-voice.wav"
+_VOICE_TMP_WAV: str = os.path.join(tempfile.gettempdir(), "skchat-voice.wav")
 
 
 class VoiceRecorder:
