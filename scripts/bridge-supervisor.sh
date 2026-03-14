@@ -39,7 +39,12 @@ log_error() { log "ERROR" "$@"; }
 # ── Checks ────────────────────────────────────────────────────────────────────
 
 check_service_active() {
-    systemctl --user is-active --quiet "${BRIDGE_SERVICE}" 2>/dev/null
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        # macOS: check if the bridge process is running via pgrep
+        pgrep -f "skchat.*lumina.*bridge" >/dev/null 2>&1
+    else
+        systemctl --user is-active --quiet "${BRIDGE_SERVICE}" 2>/dev/null
+    fi
 }
 
 # Returns seconds since the last line in lumina-responses.log, or -1 if
@@ -57,13 +62,17 @@ seconds_since_last_response() {
         return
     fi
     local ts
-    ts="$(printf '%s' "${last_line}" | grep -oP '(?<=\[)\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?=\])')"
+    ts="$(printf '%s' "${last_line}" | grep -oE '\[([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})\]' | tr -d '[]')"
     if [[ -z "${ts}" ]]; then
         echo -1
         return
     fi
     local then now
-    then="$(date -d "${ts}" +%s 2>/dev/null)" || { echo -1; return; }
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        then="$(date -j -f "%Y-%m-%dT%H:%M:%S" "${ts}" +%s 2>/dev/null)" || { echo -1; return; }
+    else
+        then="$(date -d "${ts}" +%s 2>/dev/null)" || { echo -1; return; }
+    fi
     now="$(date +%s)"
     echo $(( now - then ))
 }
@@ -110,11 +119,21 @@ run_check() {
         log_warn "Triggering restart of ${BRIDGE_SERVICE} (reason: ${reason})"
 
         # Desktop notification (best-effort — may not be available in headless env)
-        notify-send --urgency=normal \
-            "SKChat Bridge Supervisor" \
-            "Restarting ${BRIDGE_SERVICE}: ${reason}" 2>/dev/null || true
+        if [[ "$OSTYPE" == "darwin"* ]]; then
+            osascript -e "display notification \"Restarting ${BRIDGE_SERVICE}: ${reason}\" with title \"SKChat Bridge Supervisor\"" 2>/dev/null || true
+        else
+            notify-send --urgency=normal \
+                "SKChat Bridge Supervisor" \
+                "Restarting ${BRIDGE_SERVICE}: ${reason}" 2>/dev/null || true
+        fi
 
-        if systemctl --user restart "${BRIDGE_SERVICE}" 2>&1 | tee -a "${LOG_FILE}"; then
+        if [[ "$OSTYPE" == "darwin"* ]]; then
+            # macOS: kill and re-launch the bridge process
+            pkill -f "skchat.*lumina.*bridge" 2>/dev/null || true
+            sleep 1
+            nohup "${HOME}/.skenv/bin/python" -m skchat.scripts.lumina_bridge >> "${LOG_DIR}/lumina-bridge.log" 2>&1 &
+            log_info "Bridge process relaunched (macOS)"
+        elif systemctl --user restart "${BRIDGE_SERVICE}" 2>&1 | tee -a "${LOG_FILE}"; then
             log_info "${BRIDGE_SERVICE} restarted successfully"
         else
             log_error "Failed to restart ${BRIDGE_SERVICE} — check: journalctl --user -u ${BRIDGE_SERVICE}"
