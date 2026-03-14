@@ -17,6 +17,7 @@ transport is wired) sent via SKComm.
 
 from __future__ import annotations
 
+import platform
 import re
 import subprocess
 import sys
@@ -2289,27 +2290,45 @@ _SOUND_PATHS = [
     "/usr/share/sounds/freedesktop/stereo/message.oga",
     "/usr/share/sounds/freedesktop/stereo/message-new-instant.oga",
 ]
+if platform.system() == "Darwin":
+    _SOUND_PATHS = [
+        "/System/Library/Sounds/Ping.aiff",
+        "/System/Library/Sounds/Glass.aiff",
+    ]
 
 
 def _notify(sender_short: str, preview: str) -> None:
-    """Fire a desktop notification via notify-send (best-effort)."""
-    subprocess.run(
-        [
-            "notify-send",
-            "--urgency=normal",
-            "--icon=dialog-information",
-            f"SKChat from {sender_short}",
-            preview,
-        ],
-        capture_output=True,
-    )
+    """Fire a desktop notification (best-effort, cross-platform)."""
+    if platform.system() == "Darwin":
+        subprocess.run(
+            [
+                "osascript", "-e",
+                f'display notification "{preview}" with title "SKChat from {sender_short}"',
+            ],
+            capture_output=True,
+        )
+    else:
+        subprocess.run(
+            [
+                "notify-send",
+                "--urgency=normal",
+                "--icon=dialog-information",
+                f"SKChat from {sender_short}",
+                preview,
+            ],
+            capture_output=True,
+        )
 
 
 def _play_sound() -> None:
-    """Play a notification ping via paplay/aplay (best-effort)."""
+    """Play a notification ping (best-effort, cross-platform)."""
+    if platform.system() == "Darwin":
+        players = ("afplay",)
+    else:
+        players = ("paplay", "aplay")
     for path in _SOUND_PATHS:
         if Path(path).exists():
-            for player in ("paplay", "aplay"):
+            for player in players:
                 result = subprocess.run(
                     [player, path],
                     capture_output=True,
