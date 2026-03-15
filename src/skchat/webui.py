@@ -18,6 +18,40 @@ from fastapi.responses import HTMLResponse, JSONResponse
 app = FastAPI(title="SKChat Web UI")
 _SKCHAT_HOME = Path("~/.skchat").expanduser()
 
+# Register voice streaming routes (/ws/voice, /voice)
+try:
+    from .voice_stream import register_voice_routes as _register_voice_routes
+    _register_voice_routes(app)
+    _voice_routes_loaded = True
+except ImportError:
+    # torch/silero not available — use lightweight handler (client-side VAD)
+    try:
+        from .voice_ws_lite import register_voice_routes_lite as _register_voice_routes_lite
+        _register_voice_routes_lite(app)
+        _voice_routes_loaded = True
+    except ImportError:
+        _voice_routes_loaded = False
+
+
+@app.get("/health")
+async def health() -> JSONResponse:
+    """Health check endpoint for container orchestration."""
+    return JSONResponse({"status": "ok", "service": "skchat-webui", "version": "0.1.1"})
+
+
+# Serve /voice page even when torch/silero are unavailable (voice WS won't work
+# but the static HTML page will still load and attempt to connect)
+if not _voice_routes_loaded:
+    from fastapi.responses import FileResponse as _FileResponse
+
+    @app.get("/voice", response_class=HTMLResponse)
+    async def voice_chat_page_fallback() -> HTMLResponse:
+        _static = Path(__file__).parent / "static" / "voice-chat.html"
+        if _static.exists():
+            return _FileResponse(_static, media_type="text/html")
+        return HTMLResponse("<h1>voice-chat.html not found</h1>", status_code=404)
+
+
 # ── WebSocket connection registry ─────────────────────────────────────────────
 
 _ws_connections: set[WebSocket] = set()
@@ -374,9 +408,11 @@ async def _startup() -> None:
 # ── entry point ───────────────────────────────────────────────────────────────
 
 
-def run(port: int = 8765, open_browser: bool = True) -> None:
+def run(port: int = 8765, open_browser: bool = True, host: str = "") -> None:
     """Start the SKChat Web UI server (blocking)."""
     import uvicorn
+    if not host:
+        host = os.environ.get("SKCHAT_HOST", "127.0.0.1")
     if open_browser:
         webbrowser.open(f"http://localhost:{port}")
-    uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
+    uvicorn.run(app, host=host, port=port, log_level="warning")
