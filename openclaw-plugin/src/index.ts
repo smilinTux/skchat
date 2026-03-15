@@ -13,6 +13,16 @@ import { emptyPluginConfigSchema } from "openclaw/plugin-sdk";
 
 const SKCHAT_BIN = process.env.SKCHAT_BIN || "skchat";
 const EXEC_TIMEOUT = 30_000;
+const IS_WIN = process.platform === "win32";
+
+function skenvPath(): string {
+  if (IS_WIN) {
+    const local = process.env.LOCALAPPDATA || "";
+    return `${local}\\skenv\\Scripts`;
+  }
+  const home = process.env.HOME || "";
+  return `${home}/.local/bin:${home}/.skenv/bin`;
+}
 
 function runCli(args: string): { ok: boolean; output: string } {
   try {
@@ -21,7 +31,7 @@ function runCli(args: string): { ok: boolean; output: string } {
       timeout: EXEC_TIMEOUT,
       env: {
         ...process.env,
-        PATH: `${process.env.HOME}/.local/bin:${process.env.HOME}/.skenv/bin:${process.env.PATH}`,
+        PATH: `${skenvPath()}${IS_WIN ? ";" : ":"}${process.env.PATH}`,
       },
     }).trim();
     return { ok: true, output: raw };
@@ -306,6 +316,196 @@ function createSKChatStatusTool() {
   };
 }
 
+// ── Voice tools ─────────────────────────────────────────────────────────
+
+function runPython(script: string): { ok: boolean; output: string } {
+  const home = process.env.HOME || "";
+  const pythonBin = `${home}/.skenv/bin/python`;
+  try {
+    const raw = execSync(`${pythonBin} -c ${escapeShellArg(script)}`, {
+      encoding: "utf-8",
+      timeout: 120_000,  // voice ops can be slow on CPU
+      env: {
+        ...process.env,
+        PATH: `${skenvPath()}:/usr/bin:/usr/local/bin:${process.env.PATH}`,
+      },
+    }).trim();
+    return { ok: true, output: raw };
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { ok: false, output: msg };
+  }
+}
+
+function createTranscribeAudioFileTool() {
+  return {
+    name: "skchat_transcribe_audio",
+    label: "SKChat Transcribe Audio",
+    description:
+      "Transcribe an audio file (OGG, WAV, MP3, etc.) with rich metadata. " +
+      "Uses SenseVoice (preferred) for text + emotion (happy/sad/angry/neutral) " +
+      "+ audio events (laughter, applause). Falls back to Whisper. " +
+      "Use this to process incoming voice messages from Telegram.",
+    parameters: {
+      type: "object",
+      required: ["file_path"],
+      properties: {
+        file_path: {
+          type: "string",
+          description: "Absolute path to the audio file to transcribe.",
+        },
+        backend: {
+          type: "string",
+          description:
+            "STT backend: 'sensevoice' (rich), 'whisper' (text only), " +
+            "or 'auto' (try sensevoice first). Default: auto.",
+        },
+      },
+    },
+    async execute(_id: string, params: Record<string, unknown>) {
+      const filePath = String(params.file_path ?? "");
+      const backend = String(params.backend ?? "auto");
+      if (!filePath) return textResult(JSON.stringify({ error: "file_path required" }));
+
+      const script = `
+import json, os, re, subprocess, tempfile, sys
+
+file_path = ${JSON.stringify(filePath)}
+backend = ${JSON.stringify(backend)}
+
+if not os.path.isfile(file_path):
+    print(json.dumps({"error": f"File not found: {file_path}"}))
+    sys.exit(0)
+
+# Convert to WAV if needed
+wav_path = file_path
+tmp_wav = None
+if not file_path.lower().endswith('.wav'):
+    tmp_wav = tempfile.NamedTemporaryFile(suffix='.wav', delete=False)
+    tmp_wav.close()
+    wav_path = tmp_wav.name
+    subprocess.run(['ffmpeg', '-i', file_path, '-ar', '16000', '-ac', '1', '-f', 'wav', wav_path, '-y'],
+                   capture_output=True, timeout=30)
+
+result = {"transcribed": False, "text": "", "backend": "none"}
+
+# Try SenseVoice
+if backend in ('sensevoice', 'auto'):
+    try:
+        from funasr import AutoModel
+        sv = AutoModel(model='iic/SenseVoiceSmall', trust_remote_code=True, device='cpu', disable_update=True)
+        res = sv.generate(input=wav_path, language='auto', use_itn=True)
+        raw = res[0].get('text', '') if res else ''
+        tokens = re.findall(r'<\\|([^|]+)\\|>', raw)
+        text = re.sub(r'<\\|[^|]+\\|>', '', raw).strip()
+        emotion = tokens[1].lower() if len(tokens) >= 2 else 'unknown'
+        events = []
+        if len(tokens) >= 3 and tokens[2].lower() != 'speech':
+            events.append(tokens[2].lower())
+        result = {"transcribed": bool(text), "text": text, "emotion": emotion, "events": events, "backend": "sensevoice"}
+
+        # Try emotion2vec
+        try:
+            emo = AutoModel(model='iic/emotion2vec_plus_large', trust_remote_code=True, device='cpu', disable_update=True)
+            emo_res = emo.generate(input=wav_path, granularity='utterance', extract_embedding=False)
+            if emo_res and emo_res[0].get('labels'):
+                labels = emo_res[0]['labels']
+                scores = emo_res[0]['scores']
+                result['emotion_detailed'] = labels[scores.index(max(scores))]
+        except:
+            pass
+    except ImportError:
+        pass
+    except Exception as e:
+        result['sensevoice_error'] = str(e)
+
+# Fallback to Whisper
+if not result.get('transcribed') and backend in ('whisper', 'auto'):
+    try:
+        import whisper
+        model = whisper.load_model('base')
+        res = model.transcribe(wav_path)
+        text = res.get('text', '').strip()
+        result = {"transcribed": bool(text), "text": text, "backend": "whisper"}
+    except:
+        pass
+
+if tmp_wav:
+    os.unlink(wav_path)
+
+print(json.dumps(result))
+`;
+
+      const res = runPython(script);
+      return textResult(res.output);
+    },
+  };
+}
+
+function createGenerateVoiceMessageTool() {
+  return {
+    name: "skchat_generate_voice",
+    label: "SKChat Generate Voice Message",
+    description:
+      "Generate an OGG Opus voice message file from text using Piper TTS. " +
+      "Returns the file path to the generated audio, ready to send via " +
+      "Telegram. Use the returned file_path as a media attachment.",
+    parameters: {
+      type: "object",
+      required: ["text"],
+      properties: {
+        text: {
+          type: "string",
+          description: "The text to synthesize into a voice message.",
+        },
+      },
+    },
+    async execute(_id: string, params: Record<string, unknown>) {
+      const text = String(params.text ?? "");
+      if (!text) return textResult(JSON.stringify({ error: "text required" }));
+
+      const script = `
+import json, os, subprocess, time
+
+text = ${JSON.stringify(text)}
+piper_bin = '/usr/local/piper/piper'
+voice_model = os.path.expanduser('~/.local/share/piper-voices/en_US-amy-medium.onnx')
+
+if not os.path.isfile(piper_bin):
+    print(json.dumps({"generated": False, "error": "Piper not installed"}))
+    exit(0)
+if not os.path.isfile(voice_model):
+    print(json.dumps({"generated": False, "error": "Voice model not found"}))
+    exit(0)
+
+output_dir = '/tmp/piper-tts'
+os.makedirs(output_dir, exist_ok=True)
+ts = int(time.time() * 1000)
+wav_path = f'{output_dir}/lumina-voice-{ts}.wav'
+ogg_path = f'{output_dir}/lumina-voice-{ts}.ogg'
+
+proc = subprocess.run([piper_bin, '-m', voice_model, '-f', wav_path],
+                      input=text, capture_output=True, text=True, timeout=30)
+if proc.returncode != 0:
+    print(json.dumps({"generated": False, "error": proc.stderr}))
+    exit(0)
+
+subprocess.run(['ffmpeg', '-i', wav_path, '-c:a', 'libopus', '-b:a', '64k', ogg_path, '-y'],
+               capture_output=True, timeout=30)
+os.unlink(wav_path)
+
+if os.path.isfile(ogg_path):
+    print(json.dumps({"generated": True, "file_path": ogg_path}))
+else:
+    print(json.dumps({"generated": False, "error": "OGG not created"}))
+`;
+
+      const res = runPython(script);
+      return textResult(res.output);
+    },
+  };
+}
+
 // ── Plugin registration ─────────────────────────────────────────────────
 
 const skchatPlugin = {
@@ -332,6 +532,8 @@ const skchatPlugin = {
       createSKChatSendFileTool(),
       createSKChatPresenceTool(),
       createSKChatStatusTool(),
+      createTranscribeAudioFileTool(),
+      createGenerateVoiceMessageTool(),
     ];
 
     for (const tool of tools) {
@@ -352,7 +554,7 @@ const skchatPlugin = {
       },
     });
 
-    api.logger.info?.("SKChat plugin registered (15 tools + /skchat command)");
+    api.logger.info?.("SKChat plugin registered (17 tools + /skchat command)");
   },
 };
 

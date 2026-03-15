@@ -947,6 +947,66 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
+            name="transcribe_audio_file",
+            description=(
+                "Transcribe an audio file (OGG, WAV, MP3, etc.) with rich "
+                "metadata. Uses SenseVoice (preferred) which returns text + "
+                "emotion (happy/sad/angry/neutral) + audio events (laughter, "
+                "applause, etc.) + emotion2vec fine-grained emotion. Falls "
+                "back to Whisper if SenseVoice unavailable. Use this to "
+                "process incoming voice messages from Telegram."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "file_path": {
+                        "type": "string",
+                        "description": (
+                            "Absolute path to the audio file to transcribe. "
+                            "Supports OGG, WAV, MP3, FLAC, M4A, and other "
+                            "ffmpeg-compatible formats."
+                        ),
+                    },
+                    "backend": {
+                        "type": "string",
+                        "description": (
+                            "STT backend: 'sensevoice' (rich: text+emotion+events), "
+                            "'whisper' (text only), or 'auto' (try sensevoice first). "
+                            "Default: auto."
+                        ),
+                    },
+                    "whisper_model": {
+                        "type": "string",
+                        "description": (
+                            "Whisper model size if using whisper backend "
+                            "(tiny/base/small/medium/large, default: base)."
+                        ),
+                    },
+                },
+                "required": ["file_path"],
+            },
+        ),
+        Tool(
+            name="generate_voice_message",
+            description=(
+                "Generate an OGG Opus voice message file from text using Piper TTS. "
+                "Returns the file path to the generated audio, ready to send via "
+                "Telegram or other channels using the 'message' tool with media "
+                "attachment. Does NOT play audio on server speakers — use "
+                "speak_message for that instead."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "text": {
+                        "type": "string",
+                        "description": "The text to synthesize into a voice message.",
+                    },
+                },
+                "required": ["text"],
+            },
+        ),
+        Tool(
             name="skchat_group_create",
             description=(
                 "Create a new SKChat group with a flat list of member identity URIs. "
@@ -1286,6 +1346,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         "speak_message": _handle_speak_message,
         "list_peers": _handle_list_peers,
         "record_voice_message": _handle_record_voice_message,
+        "transcribe_audio_file": _handle_transcribe_audio_file,
+        "generate_voice_message": _handle_generate_voice_message,
         "skchat_group_create": _handle_skchat_group_create,
         "skchat_group_send": _handle_skchat_group_send,
         "skchat_send": _handle_skchat_send,
@@ -3167,6 +3229,241 @@ async def _handle_record_voice_message(args: dict) -> list[TextContent]:
         "text": text,
         "duration": duration,
         "whisper_model": whisper_model,
+    })
+
+
+async def _handle_transcribe_audio_file(args: dict) -> list[TextContent]:
+    """Transcribe an audio file with rich metadata.
+
+    Tries SenseVoice first (text + emotion + audio events), falls back to
+    Whisper if SenseVoice is not installed.
+
+    Args:
+        args: Must contain ``file_path`` (str).  Optionally ``whisper_model``
+            (str) and ``backend`` (str: "sensevoice", "whisper", or "auto").
+
+    Returns:
+        JSON with ``transcribed`` bool, ``text`` str, ``emotion`` str,
+        ``events`` list, ``file_path`` str, ``backend`` str.
+    """
+    import os
+    import re
+    import subprocess
+    import tempfile
+
+    file_path: str = args.get("file_path", "").strip()
+    if not file_path:
+        return _error("transcribe_audio_file requires 'file_path'")
+
+    if not os.path.isfile(file_path):
+        return _error(f"Audio file not found: {file_path}")
+
+    backend: str = args.get("backend", "auto")
+
+    # Convert to WAV if not already (both backends prefer WAV)
+    wav_path = file_path
+    tmp_wav = None
+    if not file_path.lower().endswith(".wav"):
+        tmp_wav = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+        tmp_wav.close()
+        wav_path = tmp_wav.name
+        try:
+            subprocess.run(
+                ["ffmpeg", "-i", file_path, "-ar", "16000", "-ac", "1",
+                 "-f", "wav", wav_path, "-y"],
+                capture_output=True, timeout=30,
+            )
+        except Exception as exc:
+            logger.error("transcribe_audio_file: ffmpeg conversion failed: %s", exc)
+            if tmp_wav:
+                os.unlink(wav_path)
+            return _error(f"Audio conversion failed: {exc}")
+
+    # Try SenseVoice first (rich transcription: text + emotion + events)
+    if backend in ("sensevoice", "auto"):
+        try:
+            from funasr import AutoModel  # type: ignore[import-untyped]
+
+            sv_model = AutoModel(
+                model="iic/SenseVoiceSmall",
+                trust_remote_code=True,
+                device="cpu",
+                disable_update=True,
+            )
+            result = sv_model.generate(
+                input=wav_path, language="auto", use_itn=True
+            )
+            raw_text = result[0].get("text", "") if result else ""
+
+            # Parse SenseVoice output tokens:
+            # <|en|><|NEUTRAL|><|Speech|><|withitn|>actual text here
+            emotion = "unknown"
+            events = []
+            text = raw_text
+
+            token_pattern = r"<\|([^|]+)\|>"
+            tokens = re.findall(token_pattern, raw_text)
+            # Remove tokens from text
+            text = re.sub(r"<\|[^|]+\|>", "", raw_text).strip()
+
+            if len(tokens) >= 2:
+                emotion = tokens[1].lower()  # NEUTRAL, HAPPY, SAD, ANGRY
+            if len(tokens) >= 3:
+                event = tokens[2]  # Speech, Applause, BGM, Laughter
+                if event.lower() != "speech":
+                    events.append(event.lower())
+
+            # Optionally run emotion2vec for finer-grained emotion
+            emotion_detailed = None
+            try:
+                emo_model = AutoModel(
+                    model="iic/emotion2vec_plus_large",
+                    trust_remote_code=True,
+                    device="cpu",
+                    disable_update=True,
+                )
+                emo_result = emo_model.generate(
+                    input=wav_path,
+                    granularity="utterance",
+                    extract_embedding=False,
+                )
+                if emo_result and emo_result[0].get("labels"):
+                    labels = emo_result[0]["labels"]
+                    scores = emo_result[0]["scores"]
+                    top_idx = scores.index(max(scores))
+                    emotion_detailed = labels[top_idx]
+            except Exception as exc:
+                logger.debug("emotion2vec not available: %s", exc)
+
+            if tmp_wav:
+                os.unlink(wav_path)
+
+            result_dict = {
+                "transcribed": bool(text),
+                "available": True,
+                "text": text,
+                "emotion": emotion,
+                "events": events,
+                "file_path": file_path,
+                "backend": "sensevoice",
+            }
+            if emotion_detailed:
+                result_dict["emotion_detailed"] = emotion_detailed
+            return _json(result_dict)
+
+        except ImportError:
+            logger.info("transcribe_audio_file: SenseVoice not available, trying Whisper")
+        except Exception as exc:
+            logger.warning("transcribe_audio_file: SenseVoice failed: %s", exc)
+
+    # Fallback to Whisper
+    whisper_model: str = args.get("whisper_model", "base")
+    try:
+        import whisper  # type: ignore[import-untyped]
+    except ImportError:
+        if tmp_wav:
+            os.unlink(wav_path)
+        return _json({
+            "transcribed": False,
+            "available": False,
+            "text": "",
+            "hint": "Install openai-whisper or funasr (SenseVoice)",
+        })
+
+    try:
+        model = whisper.load_model(whisper_model)
+        result = model.transcribe(wav_path)
+        text = result.get("text", "").strip()
+    except Exception as exc:
+        logger.error("transcribe_audio_file: Whisper failed: %s", exc)
+        text = ""
+    finally:
+        if tmp_wav:
+            os.unlink(wav_path)
+
+    return _json({
+        "transcribed": bool(text),
+        "available": True,
+        "text": text,
+        "emotion": None,
+        "events": [],
+        "file_path": file_path,
+        "backend": "whisper",
+        "whisper_model": whisper_model,
+    })
+
+
+async def _handle_generate_voice_message(args: dict) -> list[TextContent]:
+    """Generate an OGG Opus voice message file from text using Piper TTS.
+
+    Args:
+        args: Must contain ``text`` (str).
+
+    Returns:
+        JSON with ``generated`` bool, ``file_path`` str (OGG file path).
+    """
+    import os
+    import subprocess
+    import time
+
+    text: str = args.get("text", "").strip()
+    if not text:
+        return _error("generate_voice_message requires non-empty 'text'")
+
+    piper_bin = "/usr/local/piper/piper"
+    voice_model = os.path.expanduser(
+        "~/.local/share/piper-voices/en_US-amy-medium.onnx"
+    )
+
+    if not os.path.isfile(piper_bin):
+        return _json({
+            "generated": False,
+            "available": False,
+            "hint": "Piper TTS not installed at /usr/local/piper/piper",
+        })
+    if not os.path.isfile(voice_model):
+        return _json({
+            "generated": False,
+            "available": False,
+            "hint": f"Voice model not found at {voice_model}",
+        })
+
+    output_dir = "/tmp/piper-tts"
+    os.makedirs(output_dir, exist_ok=True)
+    timestamp = int(time.time() * 1000)
+    wav_path = os.path.join(output_dir, f"lumina-voice-{timestamp}.wav")
+    ogg_path = os.path.join(output_dir, f"lumina-voice-{timestamp}.ogg")
+
+    try:
+        # Generate WAV with Piper
+        proc = subprocess.run(
+            [piper_bin, "-m", voice_model, "-f", wav_path],
+            input=text, capture_output=True, text=True, timeout=30,
+        )
+        if proc.returncode != 0:
+            return _error(f"Piper failed: {proc.stderr}")
+
+        # Convert to OGG Opus
+        subprocess.run(
+            ["ffmpeg", "-i", wav_path, "-c:a", "libopus", "-b:a", "64k",
+             ogg_path, "-y"],
+            capture_output=True, timeout=30,
+        )
+        # Clean up WAV
+        os.unlink(wav_path)
+
+    except Exception as exc:
+        logger.error("generate_voice_message: failed: %s", exc)
+        return _error(f"Voice generation failed: {exc}")
+
+    if not os.path.isfile(ogg_path):
+        return _error("Voice file generation failed — OGG not created")
+
+    return _json({
+        "generated": True,
+        "available": True,
+        "file_path": ogg_path,
+        "text": text,
     })
 
 
