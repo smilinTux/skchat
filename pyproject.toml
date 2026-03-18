@@ -42,6 +42,7 @@ all = [
 ]
 dev = [
     "pytest>=7.0",
+    "pytest-asyncio>=0.21",
     "pytest-cov>=4.0",
     "black>=24.0",
     "ruff>=0.4",
@@ -88,6 +89,7 @@ target-version = ["py311"]
 testpaths = ["tests"]
 pythonpath = ["src"]
 addopts = "-v --tb=short"
+asyncio_mode = "auto"
 markers = [
     "integration: mark test as an integration test requiring live external services",
     "e2e_live: end-to-end tests using file-based transport (no daemon or network required)",
