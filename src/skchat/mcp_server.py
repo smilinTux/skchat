@@ -1626,8 +1626,8 @@ async def _handle_create_group(args: dict) -> list[TextContent]:
             try:
                 from .identity_bridge import resolve_peer_name
                 identity = resolve_peer_name(identity)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("resolve_peer_name(%r) failed: %s", identity, exc)
 
         role_str = m.get("role", "member")
         try:
@@ -1822,8 +1822,8 @@ async def _handle_group_add_member(args: dict) -> list[TextContent]:
         try:
             from .identity_bridge import resolve_peer_name
             identity = resolve_peer_name(identity)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("resolve_peer_name(%r) failed: %s", identity, exc)
 
     role_str = args.get("role", "member")
     try:
@@ -1969,8 +1969,8 @@ def _get_webrtc_transport():
         for t in comm.router.transports:
             if t.name == "webrtc":
                 return t
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("Failed to get WebRTC transport: %s", exc)
     return None
 
 
@@ -2003,8 +2003,8 @@ async def _handle_webrtc_status(args: dict) -> list[TextContent]:
                     "channel_open": peer.channel is not None,
                     "pending_count": len(peer.pending),
                 }
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("Failed to enumerate WebRTC peers: %s", exc)
 
     return _json({
         "available": transport.is_available(),
@@ -2047,8 +2047,8 @@ async def _handle_initiate_call(args: dict) -> list[TextContent]:
             from .identity_bridge import resolve_peer_name
             peer_uri = resolve_peer_name(peer)
             peer = peer_uri
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("resolve_peer_name(%r) failed for WebRTC call: %s", peer, exc)
 
     # Schedule the WebRTC offer (non-blocking)
     transport._schedule_offer(peer)
@@ -2273,8 +2273,8 @@ async def _handle_send_file(args: dict) -> list[TextContent]:
     try:
         from skcomm.core import SKComm
         skcomm = SKComm.from_config()
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("SKComm unavailable for file transfer: %s", exc)
 
     service = FileTransferService(identity=_get_identity(), skcomm=skcomm)
 
@@ -2506,8 +2506,8 @@ async def _handle_typing_start(args: dict) -> list[TextContent]:
         try:
             from .identity_bridge import resolve_peer_name
             recipient = resolve_peer_name(recipient)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("resolve_peer_name(%r) failed for typing_start: %s", recipient, exc)
 
     sent = _send_typing_indicator(recipient, typing=True, thread_id=thread_id)
 
@@ -2541,8 +2541,8 @@ async def _handle_typing_stop(args: dict) -> list[TextContent]:
         try:
             from .identity_bridge import resolve_peer_name
             recipient = resolve_peer_name(recipient)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("resolve_peer_name(%r) failed for typing_stop: %s", recipient, exc)
 
     sent = _send_typing_indicator(recipient, typing=False, thread_id=thread_id)
 
@@ -2580,8 +2580,8 @@ async def _handle_send_typing_indicator(args: dict) -> list[TextContent]:
             from .identity_bridge import resolve_peer_name
 
             recipient = resolve_peer_name(recipient)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("resolve_peer_name(%r) failed for send_typing_indicator: %s", recipient, exc)
 
     sent = _send_typing_indicator(recipient, typing=True, thread_id=thread_id)
     if sent:
@@ -2779,8 +2779,8 @@ async def _handle_skchat_group_create(args: dict) -> list[TextContent]:
             try:
                 from .identity_bridge import resolve_peer_name
                 identity = resolve_peer_name(identity)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("resolve_peer_name(%r) failed for group member: %s", identity, exc)
         member = group.add_member(identity_uri=identity)
         if member:
             added.append(identity)
@@ -2915,8 +2915,8 @@ async def _handle_skchat_send(args: dict) -> list[TextContent]:
         try:
             from .identity_bridge import resolve_peer_name
             recipient = resolve_peer_name(recipient)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("resolve_peer_name(%r) failed for skchat_send: %s", recipient, exc)
 
     try:
         messenger = AgentMessenger.from_identity()
@@ -3506,8 +3506,8 @@ async def _handle_who_is_online(args: dict) -> list[TextContent]:
                 name = data.get("display_name") or data.get("name", peer_file.stem)
                 if uri:
                     KNOWN_PEERS[uri] = name
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("Failed to load peer file %s: %s", peer_file.name, exc)
 
     cache = PresenceCache()
     all_entries = cache.get_all()
@@ -3812,8 +3812,8 @@ async def _handle_skchat_conversation(args: dict) -> list[TextContent]:
             resolved = disc.resolve_identity(peer)
             if resolved:
                 peer = resolved
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("PeerDiscovery.resolve_identity(%r) failed: %s", peer, exc)
 
     try:
         history = _get_history()
