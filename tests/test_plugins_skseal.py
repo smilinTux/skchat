@@ -1,9 +1,13 @@
 """Tests for the SKSeal integration plugin."""
 
-from unittest.mock import MagicMock, patch
+import pytest
 
-from skchat.models import ChatMessage
-from skchat.plugins_skseal import SKSealPlugin
+pytest.importorskip("skseal", reason="skseal not installed")
+
+from unittest.mock import MagicMock, patch  # noqa: E402
+
+from skchat.models import ChatMessage  # noqa: E402
+from skchat.plugins_skseal import SKSealPlugin  # noqa: E402
 
 
 def _msg(content="Hello", sender="capauth:alice@test", recipient="capauth:bob@test", **meta):
