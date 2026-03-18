@@ -6,8 +6,6 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-import pytest
-
 from skchat.presence import PresenceCache, PresenceIndicator, PresenceState, PresenceTracker
 
 
@@ -134,18 +132,24 @@ class TestPresenceTracker:
     def test_who_is_online(self) -> None:
         """who_is_online returns active participants."""
         tracker = PresenceTracker()
-        tracker.update(PresenceIndicator(
-            identity_uri="capauth:alice@skworld.io",
-            state=PresenceState.ONLINE,
-        ))
-        tracker.update(PresenceIndicator(
-            identity_uri="capauth:bob@skworld.io",
-            state=PresenceState.OFFLINE,
-        ))
-        tracker.update(PresenceIndicator(
-            identity_uri="capauth:lumina@skworld.io",
-            state=PresenceState.TYPING,
-        ))
+        tracker.update(
+            PresenceIndicator(
+                identity_uri="capauth:alice@skworld.io",
+                state=PresenceState.ONLINE,
+            )
+        )
+        tracker.update(
+            PresenceIndicator(
+                identity_uri="capauth:bob@skworld.io",
+                state=PresenceState.OFFLINE,
+            )
+        )
+        tracker.update(
+            PresenceIndicator(
+                identity_uri="capauth:lumina@skworld.io",
+                state=PresenceState.TYPING,
+            )
+        )
 
         online = tracker.who_is_online()
         assert "capauth:alice@skworld.io" in online
@@ -155,16 +159,20 @@ class TestPresenceTracker:
     def test_who_is_typing(self) -> None:
         """who_is_typing filters by thread when specified."""
         tracker = PresenceTracker()
-        tracker.update(PresenceIndicator(
-            identity_uri="capauth:alice@skworld.io",
-            state=PresenceState.TYPING,
-            thread_id="thread-1",
-        ))
-        tracker.update(PresenceIndicator(
-            identity_uri="capauth:bob@skworld.io",
-            state=PresenceState.TYPING,
-            thread_id="thread-2",
-        ))
+        tracker.update(
+            PresenceIndicator(
+                identity_uri="capauth:alice@skworld.io",
+                state=PresenceState.TYPING,
+                thread_id="thread-1",
+            )
+        )
+        tracker.update(
+            PresenceIndicator(
+                identity_uri="capauth:bob@skworld.io",
+                state=PresenceState.TYPING,
+                thread_id="thread-2",
+            )
+        )
 
         all_typing = tracker.who_is_typing()
         assert len(all_typing) == 2
@@ -176,10 +184,12 @@ class TestPresenceTracker:
     def test_remove(self) -> None:
         """Removing a tracked participant returns True."""
         tracker = PresenceTracker()
-        tracker.update(PresenceIndicator(
-            identity_uri="capauth:alice@skworld.io",
-            state=PresenceState.ONLINE,
-        ))
+        tracker.update(
+            PresenceIndicator(
+                identity_uri="capauth:alice@skworld.io",
+                state=PresenceState.ONLINE,
+            )
+        )
         assert tracker.remove("capauth:alice@skworld.io") is True
         assert tracker.get("capauth:alice@skworld.io") is None
 
@@ -191,15 +201,19 @@ class TestPresenceTracker:
     def test_prune_stale(self) -> None:
         """prune_stale removes old indicators."""
         tracker = PresenceTracker()
-        tracker.update(PresenceIndicator(
-            identity_uri="capauth:stale@skworld.io",
-            state=PresenceState.ONLINE,
-            timestamp=datetime.now(timezone.utc) - timedelta(seconds=300),
-        ))
-        tracker.update(PresenceIndicator(
-            identity_uri="capauth:fresh@skworld.io",
-            state=PresenceState.ONLINE,
-        ))
+        tracker.update(
+            PresenceIndicator(
+                identity_uri="capauth:stale@skworld.io",
+                state=PresenceState.ONLINE,
+                timestamp=datetime.now(timezone.utc) - timedelta(seconds=300),
+            )
+        )
+        tracker.update(
+            PresenceIndicator(
+                identity_uri="capauth:fresh@skworld.io",
+                state=PresenceState.ONLINE,
+            )
+        )
 
         removed = tracker.prune_stale()
         assert removed == 1
@@ -211,10 +225,12 @@ class TestPresenceTracker:
         assert tracker.tracked_count == 0
 
         for i in range(5):
-            tracker.update(PresenceIndicator(
-                identity_uri=f"capauth:user{i}@test",
-                state=PresenceState.ONLINE,
-            ))
+            tracker.update(
+                PresenceIndicator(
+                    identity_uri=f"capauth:user{i}@test",
+                    state=PresenceState.ONLINE,
+                )
+            )
         assert tracker.tracked_count == 5
 
 

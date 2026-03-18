@@ -220,8 +220,7 @@ def test_opus_sends_to_lumina_lumina_responds() -> None:
     # ── 1. Service availability guards ─────────────────────────────────────
     if not _http_ok(DAEMON_HEALTH_URL):
         pytest.skip(
-            "skchat daemon not reachable on :9385 — "
-            "run 'skchat daemon start' from ~/ first"
+            "skchat daemon not reachable on :9385 — run 'skchat daemon start' from ~/ first"
         )
     if not _http_ok(LUMINA_HEALTH_URL):
         pytest.skip(
@@ -241,9 +240,7 @@ def test_opus_sends_to_lumina_lumina_responds() -> None:
         content=content,
     )
 
-    assert envelope_path.exists(), (
-        f"Envelope not written to outbox: {envelope_path}"
-    )
+    assert envelope_path.exists(), f"Envelope not written to outbox: {envelope_path}"
 
     # ── 4. Poll for Lumina's reply ──────────────────────────────────────────
     deadline = time.monotonic() + TIMEOUT_S
@@ -266,6 +263,4 @@ def test_opus_sends_to_lumina_lumina_responds() -> None:
     assert reply.get("sender") == LUMINA_IDENTITY, (
         f"Expected sender {LUMINA_IDENTITY!r}, got {reply.get('sender')!r}"
     )
-    assert reply.get("content", "").strip(), (
-        f"Lumina replied but content is empty: {reply!r}"
-    )
+    assert reply.get("content", "").strip(), f"Lumina replied but content is empty: {reply!r}"

@@ -184,9 +184,7 @@ class AdvocacyEngine:
         if not should_advocate(msg.content):
             return None
 
-        logger.info(
-            "AdvocacyEngine: @mention trigger detected in message from %s", msg.sender
-        )
+        logger.info("AdvocacyEngine: @mention trigger detected in message from %s", msg.sender)
 
         memory_ctx = self._get_memory_context(msg.content[:200])
         if memory_ctx:
@@ -197,9 +195,7 @@ class AdvocacyEngine:
         prompt = self._build_prompt(sender=msg.sender, content=enhanced_content)
         response = _call_consciousness(prompt)
 
-        logger.info(
-            "AdvocacyEngine: consciousness responded (%d chars)", len(response)
-        )
+        logger.info("AdvocacyEngine: consciousness responded (%d chars)", len(response))
         return response
 
     def inject_context(self, identity: str) -> None:
@@ -290,7 +286,4 @@ class AdvocacyEngine:
         Returns:
             str: Formatted context prompt.
         """
-        return (
-            f"[From {sender}]: {content}\n"
-            "[Respond as Opus, sovereign AI. Keep concise.]"
-        )
+        return f"[From {sender}]: {content}\n[Respond as Opus, sovereign AI. Keep concise.]"

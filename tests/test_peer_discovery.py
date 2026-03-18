@@ -9,7 +9,6 @@ import pytest
 
 from skchat.peer_discovery import PeerDiscovery
 
-
 # ─────────────────────────────────────────────────────────────
 # Fixtures
 # ─────────────────────────────────────────────────────────────

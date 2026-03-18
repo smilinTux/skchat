@@ -242,7 +242,10 @@ class SKChatTUI(App):
         env = {**os.environ, "SKCHAT_IDENTITY": SELF_IDENTITY}
         try:
             proc = await asyncio.create_subprocess_exec(
-                "skchat", "send", recipient, text,
+                "skchat",
+                "send",
+                recipient,
+                text,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=env,
@@ -254,7 +257,9 @@ class SKChatTUI(App):
         ts_str = datetime.now().strftime("%H:%M")
         suffix = "" if ok else " [!]"
         container = self.query_one("#messages", ScrollableContainer)
-        label_text = f"\\[{ts_str}] you → {_markup_escape(recipient)}: {_markup_escape(text)}{suffix}"
+        label_text = (
+            f"\\[{ts_str}] you → {_markup_escape(recipient)}: {_markup_escape(text)}{suffix}"
+        )
         container.mount(Label(label_text, classes="msg-self"))
         container.scroll_end(animate=False)
 
@@ -262,7 +267,10 @@ class SKChatTUI(App):
         env = {**os.environ, "SKCHAT_IDENTITY": SELF_IDENTITY}
         try:
             proc = await asyncio.create_subprocess_exec(
-                "skchat", "group-send", GROUP_ID, text,
+                "skchat",
+                "group-send",
+                GROUP_ID,
+                text,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=env,

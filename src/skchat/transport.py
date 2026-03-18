@@ -35,12 +35,14 @@ _FILE_INBOX_ROOT = Path("~/.skcomm/transport/file/inbox").expanduser()
 # copy written directly to the file-transport outbox so lumina-bridge's
 # poll_outbox_for_lumina() can pick them up immediately, independent of the
 # SQLite history backlog.
-_LOCAL_PEERS: frozenset[str] = frozenset({
-    "capauth:lumina@skworld.io",
-    "capauth:lumina@capauth.local",
-    "lumina@skworld.io",
-    "lumina",
-})
+_LOCAL_PEERS: frozenset[str] = frozenset(
+    {
+        "capauth:lumina@skworld.io",
+        "capauth:lumina@capauth.local",
+        "lumina@skworld.io",
+        "lumina",
+    }
+)
 
 
 def _write_local_loopback(message: ChatMessage) -> None:
@@ -213,9 +215,7 @@ class ChatTransport:
         # inbox so the polling loop detects the message on the next cycle.
         if message.recipient == self._identity:
             self._write_file_inbox(message, payload_json)
-            stored_msg = message.model_copy(
-                update={"delivery_status": DeliveryStatus.SENT}
-            )
+            stored_msg = message.model_copy(update={"delivery_status": DeliveryStatus.SENT})
             self._history.store_message(stored_msg)
             return {
                 "delivered": True,
@@ -264,7 +264,9 @@ class ChatTransport:
                     stored_msg = message.model_copy(
                         update={
                             "delivery_status": (
-                                DeliveryStatus.SENT if fallback_delivered else DeliveryStatus.FAILED
+                                DeliveryStatus.SENT
+                                if fallback_delivered
+                                else DeliveryStatus.FAILED
                             ),
                         }
                     )
@@ -278,9 +280,7 @@ class ChatTransport:
                 except Exception as fb_exc:
                     logger.error("Fallback transport also failed: %s", fb_exc)
 
-            failed_msg = message.model_copy(
-                update={"delivery_status": DeliveryStatus.FAILED}
-            )
+            failed_msg = message.model_copy(update={"delivery_status": DeliveryStatus.FAILED})
             self._history.store_message(failed_msg)
 
             return {
@@ -337,8 +337,8 @@ class ChatTransport:
                 envelope_sender = getattr(envelope, "sender", "") or ""
                 if envelope_sender and not envelope_sender.startswith("capauth:"):
                     try:
-                        from .identity_bridge import resolve_display_name as _rdn
                         from .peer_discovery import PeerDiscovery as _PD
+
                         _peer = _PD().get_peer(envelope_sender)
                         if _peer:
                             for _uri in _peer.get("contact_uris", []):
@@ -378,6 +378,7 @@ class ChatTransport:
                 if msg.sender and ":" not in msg.sender:
                     try:
                         from .peer_discovery import PeerDiscovery as _PD2
+
                         _p = _PD2().get_peer(msg.sender)
                         if _p:
                             for _u in _p.get("contact_uris", []):
@@ -402,9 +403,7 @@ class ChatTransport:
                     else:
                         msg.metadata["signature_valid"] = True
 
-                msg = msg.model_copy(
-                    update={"delivery_status": DeliveryStatus.DELIVERED}
-                )
+                msg = msg.model_copy(update={"delivery_status": DeliveryStatus.DELIVERED})
                 self._history.store_message(msg)
                 messages.append(msg)
 
@@ -473,19 +472,14 @@ class ChatTransport:
             if config_path.exists():
                 with open(config_path) as _f:
                     cfg = yaml.safe_load(_f) or {}
-                fp = (
-                    cfg.get("skcomm", {})
-                    .get("identity", {})
-                    .get("fingerprint", "")
-                )
+                fp = cfg.get("skcomm", {}).get("identity", {}).get("fingerprint", "")
                 if fp:
                     return str(fp).replace(" ", "")
         except Exception:
             pass
         # Sanitize identity URI → filesystem-safe slug
         slug = (
-            self._identity
-            .replace("capauth:", "")
+            self._identity.replace("capauth:", "")
             .replace("@", "_at_")
             .replace(":", "_")
             .replace("/", "_")
@@ -616,9 +610,7 @@ class ChatTransport:
                     pass
 
             if payload_content is None:
-                logger.debug(
-                    "No payload in file inbox entry %s — archiving", env_file.name
-                )
+                logger.debug("No payload in file inbox entry %s — archiving", env_file.name)
                 self._archive_file_inbox_entry(env_file, archive_dir)
                 continue
 
@@ -628,6 +620,7 @@ class ChatTransport:
                 if msg.sender and ":" not in msg.sender:
                     try:
                         from .peer_discovery import PeerDiscovery as _PD3
+
                         _p3 = _PD3().get_peer(msg.sender)
                         if _p3:
                             for _u3 in _p3.get("contact_uris", []):
@@ -649,6 +642,7 @@ class ChatTransport:
                 if envelope_sender_file:
                     try:
                         from .peer_discovery import PeerDiscovery as _PD4
+
                         _env_sender = envelope_sender_file
                         if ":" not in _env_sender:
                             _p4 = _PD4().get_peer(_env_sender)
@@ -672,9 +666,7 @@ class ChatTransport:
                             _env_sender,
                         )
                     except Exception as exc2:
-                        logger.debug(
-                            "Cannot wrap file inbox entry %s: %s", env_file.name, exc2
-                        )
+                        logger.debug("Cannot wrap file inbox entry %s: %s", env_file.name, exc2)
 
             # Archive whether parse succeeded or failed (avoids re-processing)
             self._archive_file_inbox_entry(env_file, archive_dir)

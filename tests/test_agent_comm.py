@@ -1,9 +1,7 @@
 """Tests for agent-to-agent communication."""
 
-import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
-from skchat.models import ChatMessage, ContentType
 from skchat.agent_comm import AgentMessenger
 
 

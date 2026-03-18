@@ -34,7 +34,6 @@ import pytest
 from skchat.models import ChatMessage, ContentType, DeliveryStatus
 from skchat.transport import ChatTransport
 
-
 # ---------------------------------------------------------------------------
 # Minimal file-based SKComm stub
 # ---------------------------------------------------------------------------
@@ -84,9 +83,7 @@ class _FileSKComm:
             try:
                 content = f.read_text(encoding="utf-8")
                 f.unlink()
-                envelopes.append(
-                    SimpleNamespace(payload=SimpleNamespace(content=content))
-                )
+                envelopes.append(SimpleNamespace(payload=SimpleNamespace(content=content)))
             except Exception:
                 continue
         return envelopes
@@ -250,20 +247,14 @@ def test_group_send(test_dir: Path) -> None:
     msg = group.compose_group_message(sender_uri=OPUS, content=group_content)
 
     assert msg is not None, "compose_group_message returned None"
-    assert msg.thread_id == group.id, (
-        f"thread_id mismatch: {msg.thread_id!r} != {group.id!r}"
-    )
-    assert msg.recipient == f"group:{group.id}", (
-        f"recipient mismatch: {msg.recipient!r}"
-    )
+    assert msg.thread_id == group.id, f"thread_id mismatch: {msg.thread_id!r} != {group.id!r}"
+    assert msg.recipient == f"group:{group.id}", f"recipient mismatch: {msg.recipient!r}"
     assert msg.sender == OPUS
 
     # Opus sends via transport to the shared dir
     opus_history = _InMemoryHistory()
     opus_skcomm = _FileSKComm(outbox_dir=shared_dir, inbox_dir=shared_dir)
-    opus_transport = ChatTransport(
-        skcomm=opus_skcomm, history=opus_history, identity=OPUS
-    )
+    opus_transport = ChatTransport(skcomm=opus_skcomm, history=opus_history, identity=OPUS)
 
     result = opus_transport.send_message(msg)
     assert result["delivered"] is True, f"group send_message failed: {result}"
@@ -271,9 +262,7 @@ def test_group_send(test_dir: Path) -> None:
     # Lumina polls the shared inbox — must receive the group message
     lumina_history = _InMemoryHistory()
     lumina_skcomm = _FileSKComm(outbox_dir=shared_dir, inbox_dir=shared_dir)
-    lumina_transport = ChatTransport(
-        skcomm=lumina_skcomm, history=lumina_history, identity=LUMINA
-    )
+    lumina_transport = ChatTransport(skcomm=lumina_skcomm, history=lumina_history, identity=LUMINA)
 
     received = lumina_transport.poll_inbox()
 
@@ -367,9 +356,7 @@ def test_history_persist(test_dir: Path) -> None:
 
     # Filter by peer: alice appears as sender or recipient in all 3 messages
     alice_msgs = history.load(peer=ALICE, limit=50)
-    assert len(alice_msgs) == 3, (
-        f"expected 3 messages involving alice, got {len(alice_msgs)}"
-    )
+    assert len(alice_msgs) == 3, f"expected 3 messages involving alice, got {len(alice_msgs)}"
 
     # Filter by peer: bob appears in all 3 as well (sender or recipient)
     bob_msgs = history.load(peer=BOB, limit=50)
@@ -452,9 +439,7 @@ def test_peer_discovery(test_dir: Path) -> None:
 
     for peer in peers_data:
         local = peer["handle"].split("@")[0]
-        (peers_dir / f"{local}.json").write_text(
-            json.dumps(peer, indent=2), encoding="utf-8"
-        )
+        (peers_dir / f"{local}.json").write_text(json.dumps(peer, indent=2), encoding="utf-8")
 
     disc = PeerDiscovery(peers_dir=peers_dir)
 

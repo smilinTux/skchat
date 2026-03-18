@@ -9,6 +9,7 @@ import pytest
 
 try:
     import pgpy as _pgpy_check  # noqa: F401
+
     _HAS_PGPY = True
 except ImportError:
     _HAS_PGPY = False
@@ -18,13 +19,10 @@ _pgpy_skip = pytest.mark.skipif(not _HAS_PGPY, reason="pgpy not installed")
 from skchat.crypto import (
     ChatCrypto,
     CryptoError,
-    DecryptionError,
-    EncryptionError,
     verify_message,
     verify_message_signature,
 )
-from skchat.models import ChatMessage, ContentType
-
+from skchat.models import ChatMessage
 
 PASSPHRASE = "test-passphrase-123"
 

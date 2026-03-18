@@ -34,15 +34,9 @@ logger = logging.getLogger("skchat.voice_stream")
 # Configuration (env vars with sensible defaults)
 # ---------------------------------------------------------------------------
 
-WHISPER_URL = os.getenv(
-    "SKCHAT_STT_URL", "http://192.168.0.100:18794/v1/audio/transcriptions"
-)
-CHATTERBOX_URL = os.getenv(
-    "SKCHAT_TTS_URL", "http://192.168.0.100:18793/audio/speech"
-)
-OLLAMA_URL = os.getenv(
-    "SKCHAT_LLM_URL", "http://192.168.0.100:11434/v1/chat/completions"
-)
+WHISPER_URL = os.getenv("SKCHAT_STT_URL", "http://192.168.0.100:18794/v1/audio/transcriptions")
+CHATTERBOX_URL = os.getenv("SKCHAT_TTS_URL", "http://192.168.0.100:18793/audio/speech")
+OLLAMA_URL = os.getenv("SKCHAT_LLM_URL", "http://192.168.0.100:11434/v1/chat/completions")
 OLLAMA_MODEL = os.getenv("SKCHAT_LLM_MODEL", "kimi-k2-instruct")
 PIPER_BIN = os.getenv("SKCHAT_PIPER_BIN", "/usr/local/piper/piper")
 PIPER_MODEL = os.getenv(
@@ -85,6 +79,7 @@ class SileroVAD:
     def _load_model(self):
         if self._model is None:
             from silero_vad import load_silero_vad
+
             self._model = load_silero_vad()
             logger.info("Silero VAD model loaded")
 
@@ -106,7 +101,7 @@ class SileroVAD:
 
         # Convert bytes to float32 tensor
         n_samples = len(audio_chunk) // SAMPLE_WIDTH
-        samples = struct.unpack(f"<{n_samples}h", audio_chunk[:n_samples * SAMPLE_WIDTH])
+        samples = struct.unpack(f"<{n_samples}h", audio_chunk[: n_samples * SAMPLE_WIDTH])
         tensor = torch.FloatTensor(samples) / 32768.0
 
         # Silero expects specific window sizes at 16kHz: 512, 1024, or 1536
@@ -322,14 +317,15 @@ async def _tts_piper(text: str) -> Optional[bytes]:
     try:
         # Piper outputs raw PCM at 22050 Hz by default
         proc = await asyncio.create_subprocess_exec(
-            piper_bin, "--model", piper_model, "--output_raw",
+            piper_bin,
+            "--model",
+            piper_model,
+            "--output_raw",
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
         )
-        stdout, _ = await asyncio.wait_for(
-            proc.communicate(text.encode("utf-8")), timeout=15.0
-        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(text.encode("utf-8")), timeout=15.0)
 
         if proc.returncode != 0 or not stdout:
             return None
@@ -339,7 +335,9 @@ async def _tts_piper(text: str) -> Optional[bytes]:
         tensor = torch.FloatTensor(samples) / 32768.0
         target_len = int(len(samples) * SAMPLE_RATE / 22050)
         resampled = torch.nn.functional.interpolate(
-            tensor.unsqueeze(0).unsqueeze(0), size=target_len, mode="linear",
+            tensor.unsqueeze(0).unsqueeze(0),
+            size=target_len,
+            mode="linear",
             align_corners=False,
         ).squeeze()
         int_samples = (resampled * 32767).clamp(-32768, 32767).to(torch.int16)
@@ -422,8 +420,9 @@ class VoiceStreamManager:
 
     async def _on_speech_end(self, websocket) -> None:
         """Called when VAD detects end of speech. Runs STT -> LLM -> TTS."""
-        logger.info("Speech ended, processing utterance (%d bytes buffered)",
-                     len(self._audio_buffer))
+        logger.info(
+            "Speech ended, processing utterance (%d bytes buffered)", len(self._audio_buffer)
+        )
 
         # Collect all audio accumulated during speech
         pcm_data = bytes(self._speech_audio)
@@ -471,7 +470,7 @@ class VoiceStreamManager:
             # Send audio in chunks to avoid overwhelming the WebSocket
             chunk_size = 8192  # 8KB chunks (~256ms at 16kHz 16-bit)
             for i in range(0, len(audio_out), chunk_size):
-                await websocket.send_bytes(audio_out[i:i + chunk_size])
+                await websocket.send_bytes(audio_out[i : i + chunk_size])
             # Send end-of-audio marker
             await websocket.send_text(json.dumps({"type": "audio_end"}))
         else:
@@ -541,19 +540,27 @@ class VoiceStreamManager:
 
     async def _send_status(self, websocket, status: str, message: str) -> None:
         """Send a status update to the browser."""
-        await websocket.send_text(json.dumps({
-            "type": "status",
-            "status": status,
-            "message": message,
-        }))
+        await websocket.send_text(
+            json.dumps(
+                {
+                    "type": "status",
+                    "status": status,
+                    "message": message,
+                }
+            )
+        )
 
     async def _send_transcript(self, websocket, role: str, text: str) -> None:
         """Send a transcript line to the browser."""
-        await websocket.send_text(json.dumps({
-            "type": "transcript",
-            "role": role,
-            "text": text,
-        }))
+        await websocket.send_text(
+            json.dumps(
+                {
+                    "type": "transcript",
+                    "role": role,
+                    "text": text,
+                }
+            )
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -569,7 +576,6 @@ def register_voice_routes(app) -> None:
     """
     from fastapi import WebSocket as WS
     from fastapi.responses import FileResponse, HTMLResponse
-    from fastapi.staticfiles import StaticFiles
 
     static_dir = Path(__file__).parent / "static"
 

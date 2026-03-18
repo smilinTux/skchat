@@ -60,10 +60,9 @@ from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
 from .agent_comm import AgentMessenger
-from .group import GroupChat, GroupMember, MemberRole, ParticipantType
+from .group import GroupChat, MemberRole, ParticipantType
 from .history import ChatHistory
 from .identity_bridge import get_sovereign_identity
-from .models import ChatMessage, ContentType, DeliveryStatus
 from .reactions import ReactionManager
 
 logger = logging.getLogger("skchat.mcp")
@@ -337,8 +336,7 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="group_send",
             description=(
-                "Send a message to a group chat. The message is delivered "
-                "to all group members."
+                "Send a message to a group chat. The message is delivered to all group members."
             ),
             inputSchema={
                 "type": "object",
@@ -358,8 +356,7 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="group_members",
             description=(
-                "List all members of a group chat with their roles "
-                "and participant types."
+                "List all members of a group chat with their roles and participant types."
             ),
             inputSchema={
                 "type": "object",
@@ -374,10 +371,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="group_add_member",
-            description=(
-                "Add a new member to an existing group chat. "
-                "Requires admin privileges."
-            ),
+            description=("Add a new member to an existing group chat. Requires admin privileges."),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -1396,21 +1390,25 @@ async def _handle_list_peers(args: dict) -> list[TextContent]:
     for peer in peers:
         handle = peer.get("handle", peer.get("name", ""))
         uri = disc.resolve_identity(handle) or handle
-        result.append({
-            "name": peer.get("name", ""),
-            "uri": uri,
-            "trust_level": peer.get("trust_level", ""),
-            "entity_type": peer.get("entity_type", ""),
-            "capabilities": peer.get("capabilities", []),
-            "fingerprint": peer.get("fingerprint", ""),
-            "last_seen": peer.get("last_seen"),
-            "notes": peer.get("notes", ""),
-        })
+        result.append(
+            {
+                "name": peer.get("name", ""),
+                "uri": uri,
+                "trust_level": peer.get("trust_level", ""),
+                "entity_type": peer.get("entity_type", ""),
+                "capabilities": peer.get("capabilities", []),
+                "fingerprint": peer.get("fingerprint", ""),
+                "last_seen": peer.get("last_seen"),
+                "notes": peer.get("notes", ""),
+            }
+        )
 
-    return _json({
-        "count": len(result),
-        "peers": result,
-    })
+    return _json(
+        {
+            "count": len(result),
+            "peers": result,
+        }
+    )
 
 
 # ─────────────────────────────────────────────────────────────
@@ -1451,21 +1449,25 @@ async def _handle_skchat_peers(args: dict) -> list[TextContent]:
         last_seen: str | None = entry.get("timestamp") if entry else peer.get("last_seen")
         presence_state: str = cache.get_status(uri)  # "online" | "away" | "offline"
 
-        result.append({
-            "name": peer.get("name", ""),
-            "identity": uri,
-            "uri": uri,
-            "entity_type": peer.get("entity_type", ""),
-            "last_seen": last_seen,
-            "status": presence_state,
-            "presence_state": presence_state,
-            "capabilities": peer.get("capabilities", []),
-        })
+        result.append(
+            {
+                "name": peer.get("name", ""),
+                "identity": uri,
+                "uri": uri,
+                "entity_type": peer.get("entity_type", ""),
+                "last_seen": last_seen,
+                "status": presence_state,
+                "presence_state": presence_state,
+                "capabilities": peer.get("capabilities", []),
+            }
+        )
 
-    return _json({
-        "count": len(result),
-        "peers": result,
-    })
+    return _json(
+        {
+            "count": len(result),
+            "peers": result,
+        }
+    )
 
 
 # ─────────────────────────────────────────────────────────────
@@ -1497,6 +1499,7 @@ async def _handle_send_message(args: dict) -> list[TextContent]:
     if not recipient.startswith("capauth:"):
         try:
             from .identity_bridge import resolve_peer_name
+
             recipient = resolve_peer_name(recipient)
         except Exception:
             # Use as-is if resolution fails
@@ -1510,14 +1513,16 @@ async def _handle_send_message(args: dict) -> list[TextContent]:
         reply_to=reply_to,
     )
 
-    return _json({
-        "sent": True,
-        "message_id": result.get("message_id"),
-        "recipient": recipient,
-        "thread_id": thread_id,
-        "delivered": result.get("delivered", False),
-        "transport": result.get("transport", "local"),
-    })
+    return _json(
+        {
+            "sent": True,
+            "message_id": result.get("message_id"),
+            "recipient": recipient,
+            "thread_id": thread_id,
+            "delivered": result.get("delivered", False),
+            "transport": result.get("transport", "local"),
+        }
+    )
 
 
 async def _handle_check_inbox(args: dict) -> list[TextContent]:
@@ -1535,21 +1540,23 @@ async def _handle_check_inbox(args: dict) -> list[TextContent]:
 
     messages = messenger.get_inbox(limit=limit, message_type=message_type)
 
-    return _json({
-        "count": len(messages),
-        "messages": [
-            {
-                "id": m.get("id", m.get("message_id", "")),
-                "sender": m.get("sender", ""),
-                "content": m.get("content", "")[:500],
-                "timestamp": m.get("timestamp", ""),
-                "thread_id": m.get("thread_id"),
-                "message_type": m.get("message_type", "text"),
-                "delivery_status": m.get("delivery_status", "delivered"),
-            }
-            for m in messages
-        ],
-    })
+    return _json(
+        {
+            "count": len(messages),
+            "messages": [
+                {
+                    "id": m.get("id", m.get("message_id", "")),
+                    "sender": m.get("sender", ""),
+                    "content": m.get("content", "")[:500],
+                    "timestamp": m.get("timestamp", ""),
+                    "thread_id": m.get("thread_id"),
+                    "message_type": m.get("message_type", "text"),
+                    "delivery_status": m.get("delivery_status", "delivered"),
+                }
+                for m in messages
+            ],
+        }
+    )
 
 
 async def _handle_search_messages(args: dict) -> list[TextContent]:
@@ -1570,20 +1577,22 @@ async def _handle_search_messages(args: dict) -> list[TextContent]:
 
     results = history.search_messages(query, limit=limit)
 
-    return _json({
-        "query": query,
-        "count": len(results),
-        "results": [
-            {
-                "id": r.get("id", ""),
-                "sender": r.get("sender", ""),
-                "content": r.get("content", "")[:500],
-                "timestamp": r.get("timestamp", ""),
-                "thread_id": r.get("thread_id"),
-            }
-            for r in results
-        ],
-    })
+    return _json(
+        {
+            "query": query,
+            "count": len(results),
+            "results": [
+                {
+                    "id": r.get("id", ""),
+                    "sender": r.get("sender", ""),
+                    "content": r.get("content", "")[:500],
+                    "timestamp": r.get("timestamp", ""),
+                    "thread_id": r.get("thread_id"),
+                }
+                for r in results
+            ],
+        }
+    )
 
 
 # ─────────────────────────────────────────────────────────────
@@ -1625,6 +1634,7 @@ async def _handle_create_group(args: dict) -> list[TextContent]:
         if not identity.startswith("capauth:"):
             try:
                 from .identity_bridge import resolve_peer_name
+
                 identity = resolve_peer_name(identity)
             except Exception as exc:
                 logger.warning("resolve_peer_name(%r) failed: %s", identity, exc)
@@ -1656,21 +1666,23 @@ async def _handle_create_group(args: dict) -> list[TextContent]:
 
     logger.info("Created group '%s' with %d members", name, len(group.members))
 
-    return _json({
-        "group_id": group.id,
-        "name": group.name,
-        "description": group.description,
-        "member_count": len(group.members),
-        "members": [
-            {
-                "identity": gm.identity_uri,
-                "role": gm.role.value,
-                "participant_type": gm.participant_type.value,
-            }
-            for gm in group.members
-        ],
-        "created_by": creator,
-    })
+    return _json(
+        {
+            "group_id": group.id,
+            "name": group.name,
+            "description": group.description,
+            "member_count": len(group.members),
+            "members": [
+                {
+                    "identity": gm.identity_uri,
+                    "role": gm.role.value,
+                    "participant_type": gm.participant_type.value,
+                }
+                for gm in group.members
+            ],
+            "created_by": creator,
+        }
+    )
 
 
 async def _handle_group_send(args: dict) -> list[TextContent]:
@@ -1778,22 +1790,24 @@ async def _handle_group_members(args: dict) -> list[TextContent]:
     if group is None:
         return _error(f"Group not found: {group_id}")
 
-    return _json({
-        "group_id": group_id,
-        "group_name": group.name,
-        "member_count": len(group.members),
-        "members": [
-            {
-                "identity": m.identity_uri,
-                "display_name": m.display_name,
-                "role": m.role.value,
-                "participant_type": m.participant_type.value,
-                "joined_at": m.joined_at.isoformat(),
-                "tool_scope": m.tool_scope,
-            }
-            for m in group.members
-        ],
-    })
+    return _json(
+        {
+            "group_id": group_id,
+            "group_name": group.name,
+            "member_count": len(group.members),
+            "members": [
+                {
+                    "identity": m.identity_uri,
+                    "display_name": m.display_name,
+                    "role": m.role.value,
+                    "participant_type": m.participant_type.value,
+                    "joined_at": m.joined_at.isoformat(),
+                    "tool_scope": m.tool_scope,
+                }
+                for m in group.members
+            ],
+        }
+    )
 
 
 async def _handle_group_add_member(args: dict) -> list[TextContent]:
@@ -1821,6 +1835,7 @@ async def _handle_group_add_member(args: dict) -> list[TextContent]:
     if not identity.startswith("capauth:"):
         try:
             from .identity_bridge import resolve_peer_name
+
             identity = resolve_peer_name(identity)
         except Exception as exc:
             logger.warning("resolve_peer_name(%r) failed: %s", identity, exc)
@@ -1848,14 +1863,16 @@ async def _handle_group_add_member(args: dict) -> list[TextContent]:
 
     _save_group(group)
 
-    return _json({
-        "added": True,
-        "group_id": group_id,
-        "identity": identity,
-        "role": role.value,
-        "participant_type": pt.value,
-        "member_count": len(group.members),
-    })
+    return _json(
+        {
+            "added": True,
+            "group_id": group_id,
+            "identity": identity,
+            "role": role.value,
+            "participant_type": pt.value,
+            "member_count": len(group.members),
+        }
+    )
 
 
 # ─────────────────────────────────────────────────────────────
@@ -1877,20 +1894,22 @@ async def _handle_list_threads(args: dict) -> list[TextContent]:
 
     threads = history.list_threads(limit=limit)
 
-    return _json({
-        "count": len(threads),
-        "threads": [
-            {
-                "id": t.get("id", ""),
-                "title": t.get("title"),
-                "participants": t.get("participants", []),
-                "message_count": t.get("message_count", 0),
-                "created_at": t.get("created_at", ""),
-                "updated_at": t.get("updated_at", ""),
-            }
-            for t in threads
-        ],
-    })
+    return _json(
+        {
+            "count": len(threads),
+            "threads": [
+                {
+                    "id": t.get("id", ""),
+                    "title": t.get("title"),
+                    "participants": t.get("participants", []),
+                    "message_count": t.get("message_count", 0),
+                    "created_at": t.get("created_at", ""),
+                    "updated_at": t.get("updated_at", ""),
+                }
+                for t in threads
+            ],
+        }
+    )
 
 
 async def _handle_get_thread(args: dict) -> list[TextContent]:
@@ -1916,21 +1935,25 @@ async def _handle_get_thread(args: dict) -> list[TextContent]:
         serialised = []
         for m in raw_messages:
             if isinstance(m, dict):
-                serialised.append({
-                    "id": m.get("id", ""),
-                    "sender": m.get("sender", ""),
-                    "content": str(m.get("content", ""))[:500],
-                    "timestamp": m.get("timestamp", ""),
-                    "reply_to_id": m.get("reply_to_id"),
-                })
+                serialised.append(
+                    {
+                        "id": m.get("id", ""),
+                        "sender": m.get("sender", ""),
+                        "content": str(m.get("content", ""))[:500],
+                        "timestamp": m.get("timestamp", ""),
+                        "reply_to_id": m.get("reply_to_id"),
+                    }
+                )
             else:
-                serialised.append({
-                    "id": m.id,
-                    "sender": m.sender,
-                    "content": m.content[:500],
-                    "timestamp": m.timestamp.isoformat(),
-                    "reply_to_id": m.reply_to_id,
-                })
+                serialised.append(
+                    {
+                        "id": m.id,
+                        "sender": m.sender,
+                        "content": m.content[:500],
+                        "timestamp": m.timestamp.isoformat(),
+                        "reply_to_id": m.reply_to_id,
+                    }
+                )
     else:
         raw_messages = history.get_thread(thread_id, limit=limit)
         serialised = [
@@ -1944,11 +1967,13 @@ async def _handle_get_thread(args: dict) -> list[TextContent]:
             for m in raw_messages
         ]
 
-    return _json({
-        "thread_id": thread_id,
-        "count": len(serialised),
-        "messages": serialised,
-    })
+    return _json(
+        {
+            "thread_id": thread_id,
+            "count": len(serialised),
+            "messages": serialised,
+        }
+    )
 
 
 # ─────────────────────────────────────────────────────────────
@@ -1986,10 +2011,12 @@ async def _handle_webrtc_status(args: dict) -> list[TextContent]:
     transport = _get_webrtc_transport()
 
     if transport is None:
-        return _json({
-            "available": False,
-            "reason": "WebRTC transport not configured. Add webrtc to ~/.skcomm/config.yml and pip install 'skcomm[webrtc]'.",
-        })
+        return _json(
+            {
+                "available": False,
+                "reason": "WebRTC transport not configured. Add webrtc to ~/.skcomm/config.yml and pip install 'skcomm[webrtc]'.",
+            }
+        )
 
     health = transport.health_check()
 
@@ -2006,16 +2033,18 @@ async def _handle_webrtc_status(args: dict) -> list[TextContent]:
     except Exception as exc:
         logger.warning("Failed to enumerate WebRTC peers: %s", exc)
 
-    return _json({
-        "available": transport.is_available(),
-        "running": transport._running,
-        "signaling_connected": transport._signaling_connected,
-        "signaling_url": transport._signaling_url,
-        "status": health.status.value,
-        "active_peers": peers_info,
-        "inbox_pending": transport._inbox.qsize(),
-        "error": health.error,
-    })
+    return _json(
+        {
+            "available": transport.is_available(),
+            "running": transport._running,
+            "signaling_connected": transport._signaling_connected,
+            "signaling_url": transport._signaling_url,
+            "status": health.status.value,
+            "active_peers": peers_info,
+            "inbox_pending": transport._inbox.qsize(),
+            "error": health.error,
+        }
+    )
 
 
 async def _handle_initiate_call(args: dict) -> list[TextContent]:
@@ -2045,6 +2074,7 @@ async def _handle_initiate_call(args: dict) -> list[TextContent]:
     if not peer.startswith("capauth:") and len(peer) != 40:
         try:
             from .identity_bridge import resolve_peer_name
+
             peer_uri = resolve_peer_name(peer)
             peer = peer_uri
         except Exception as exc:
@@ -2053,15 +2083,17 @@ async def _handle_initiate_call(args: dict) -> list[TextContent]:
     # Schedule the WebRTC offer (non-blocking)
     transport._schedule_offer(peer)
 
-    return _json({
-        "initiated": True,
-        "peer": peer,
-        "message": (
-            f"ICE negotiation started with {peer[:12]}. "
-            "Check webrtc_status in ~3s to confirm the connection is established."
-        ),
-        "signaling_url": transport._signaling_url,
-    })
+    return _json(
+        {
+            "initiated": True,
+            "peer": peer,
+            "message": (
+                f"ICE negotiation started with {peer[:12]}. "
+                "Check webrtc_status in ~3s to confirm the connection is established."
+            ),
+            "signaling_url": transport._signaling_url,
+        }
+    )
 
 
 async def _handle_accept_call(args: dict) -> list[TextContent]:
@@ -2095,26 +2127,30 @@ async def _handle_accept_call(args: dict) -> list[TextContent]:
         peer_conn = None
 
     if peer_conn and peer_conn.connected:
-        return _json({
-            "accepted": True,
-            "peer": peer,
-            "status": "already_connected",
-            "message": f"Already connected to {peer[:12]} via WebRTC data channel.",
-        })
+        return _json(
+            {
+                "accepted": True,
+                "peer": peer,
+                "status": "already_connected",
+                "message": f"Already connected to {peer[:12]} via WebRTC data channel.",
+            }
+        )
 
     # Schedule an offer to the peer — if they already sent one,
     # the signaling broker will handle the SDP exchange
     transport._schedule_offer(peer)
 
-    return _json({
-        "accepted": True,
-        "peer": peer,
-        "status": "negotiating",
-        "message": (
-            f"WebRTC negotiation initiated with {peer[:12]}. "
-            "Check webrtc_status in ~5s to confirm the connection."
-        ),
-    })
+    return _json(
+        {
+            "accepted": True,
+            "peer": peer,
+            "status": "negotiating",
+            "message": (
+                f"WebRTC negotiation initiated with {peer[:12]}. "
+                "Check webrtc_status in ~5s to confirm the connection."
+            ),
+        }
+    )
 
 
 async def _handle_send_file_p2p(args: dict) -> list[TextContent]:
@@ -2193,16 +2229,18 @@ async def _handle_send_file_p2p(args: dict) -> list[TextContent]:
                     )
                     fut.result(timeout=30.0)
 
-                return _json({
-                    "sent": True,
-                    "transport": "webrtc-direct",
-                    "peer": peer,
-                    "file": file_name,
-                    "size_bytes": file_size,
-                    "chunks": len(chunks),
-                    "transfer_id": transfer.transfer_id,
-                    "description": description,
-                })
+                return _json(
+                    {
+                        "sent": True,
+                        "transport": "webrtc-direct",
+                        "peer": peer,
+                        "file": file_name,
+                        "size_bytes": file_size,
+                        "chunks": len(chunks),
+                        "transfer_id": transfer.transfer_id,
+                        "description": description,
+                    }
+                )
         except Exception as exc:
             logger.warning("WebRTC direct file send failed: %s — falling back to SKComm", exc)
 
@@ -2228,15 +2266,17 @@ async def _handle_send_file_p2p(args: dict) -> list[TextContent]:
                 message_type=MessageType.WEBRTC_FILE,
             )
 
-        return _json({
-            "sent": True,
-            "transport": "skcomm-chunked",
-            "peer": peer,
-            "file": file_name,
-            "size_bytes": file_size,
-            "chunks": len(chunks),
-            "transfer_id": transfer.transfer_id,
-        })
+        return _json(
+            {
+                "sent": True,
+                "transport": "skcomm-chunked",
+                "peer": peer,
+                "file": file_name,
+                "size_bytes": file_size,
+                "chunks": len(chunks),
+                "transfer_id": transfer.transfer_id,
+            }
+        )
     except Exception as exc:
         return _error(f"File send failed: {exc}")
 
@@ -2272,6 +2312,7 @@ async def _handle_send_file(args: dict) -> list[TextContent]:
     skcomm = None
     try:
         from skcomm.core import SKComm
+
         skcomm = SKComm.from_config()
     except Exception as exc:
         logger.warning("SKComm unavailable for file transfer: %s", exc)
@@ -2283,13 +2324,20 @@ async def _handle_send_file(args: dict) -> list[TextContent]:
     except Exception as exc:
         return _error(f"Send failed: {exc}")
 
-    return [TextContent(type="text", text=_json.dumps({
-        "transfer_id": transfer_id,
-        "filename": path.name,
-        "recipient": recipient,
-        "status": "sent" if skcomm else "queued_local",
-        "transport": "skcomm" if skcomm else "none",
-    }))]
+    return [
+        TextContent(
+            type="text",
+            text=_json.dumps(
+                {
+                    "transfer_id": transfer_id,
+                    "filename": path.name,
+                    "recipient": recipient,
+                    "status": "sent" if skcomm else "queued_local",
+                    "transport": "skcomm" if skcomm else "none",
+                }
+            ),
+        )
+    ]
 
 
 async def _handle_list_transfers(args: dict) -> list[TextContent]:
@@ -2335,14 +2383,16 @@ async def _handle_add_reaction(args: dict) -> list[TextContent]:
     added = manager.add_reaction(message_id, emoji, sender)
     summary = manager.summarize(message_id)
 
-    return _json({
-        "added": added,
-        "message_id": message_id,
-        "emoji": emoji,
-        "sender": sender,
-        "reactions": summary.reactions,
-        "total_count": summary.total_count,
-    })
+    return _json(
+        {
+            "added": added,
+            "message_id": message_id,
+            "emoji": emoji,
+            "sender": sender,
+            "reactions": summary.reactions,
+            "total_count": summary.total_count,
+        }
+    )
 
 
 async def _handle_remove_reaction(args: dict) -> list[TextContent]:
@@ -2368,14 +2418,16 @@ async def _handle_remove_reaction(args: dict) -> list[TextContent]:
     removed = manager.remove_reaction(message_id, emoji, sender)
     summary = manager.summarize(message_id)
 
-    return _json({
-        "removed": removed,
-        "message_id": message_id,
-        "emoji": emoji,
-        "sender": sender,
-        "reactions": summary.reactions,
-        "total_count": summary.total_count,
-    })
+    return _json(
+        {
+            "removed": removed,
+            "message_id": message_id,
+            "emoji": emoji,
+            "sender": sender,
+            "reactions": summary.reactions,
+            "total_count": summary.total_count,
+        }
+    )
 
 
 async def _handle_get_reactions(args: dict) -> list[TextContent]:
@@ -2396,19 +2448,21 @@ async def _handle_get_reactions(args: dict) -> list[TextContent]:
     reactions = manager.get_reactions(message_id)
     summary = manager.summarize(message_id)
 
-    return _json({
-        "message_id": message_id,
-        "reactions": [
-            {
-                "emoji": r.emoji,
-                "sender": r.sender,
-                "timestamp": r.timestamp.isoformat(),
-            }
-            for r in reactions
-        ],
-        "summary": {emoji: len(senders) for emoji, senders in summary.reactions.items()},
-        "total_count": summary.total_count,
-    })
+    return _json(
+        {
+            "message_id": message_id,
+            "reactions": [
+                {
+                    "emoji": r.emoji,
+                    "sender": r.sender,
+                    "timestamp": r.timestamp.isoformat(),
+                }
+                for r in reactions
+            ],
+            "summary": {emoji: len(senders) for emoji, senders in summary.reactions.items()},
+            "total_count": summary.total_count,
+        }
+    )
 
 
 # ─────────────────────────────────────────────────────────────
@@ -2427,19 +2481,23 @@ async def _handle_list_groups(args: dict) -> list[TextContent]:
     """
     groups = _get_groups()
 
-    return _json({
-        "count": len(groups),
-        "groups": [
-            {
-                "id": g.id,
-                "name": g.name,
-                "description": g.description,
-                "member_count": len(g.members),
-                "created_at": g.created_at.isoformat() if hasattr(g, "created_at") and g.created_at else None,
-            }
-            for g in groups.values()
-        ],
-    })
+    return _json(
+        {
+            "count": len(groups),
+            "groups": [
+                {
+                    "id": g.id,
+                    "name": g.name,
+                    "description": g.description,
+                    "member_count": len(g.members),
+                    "created_at": g.created_at.isoformat()
+                    if hasattr(g, "created_at") and g.created_at
+                    else None,
+                }
+                for g in groups.values()
+            ],
+        }
+    )
 
 
 # ─────────────────────────────────────────────────────────────
@@ -2505,18 +2563,21 @@ async def _handle_typing_start(args: dict) -> list[TextContent]:
     if not recipient.startswith("capauth:"):
         try:
             from .identity_bridge import resolve_peer_name
+
             recipient = resolve_peer_name(recipient)
         except Exception as exc:
             logger.warning("resolve_peer_name(%r) failed for typing_start: %s", recipient, exc)
 
     sent = _send_typing_indicator(recipient, typing=True, thread_id=thread_id)
 
-    return _json({
-        "typing": True,
-        "recipient": recipient,
-        "thread_id": thread_id,
-        "sent": sent,
-    })
+    return _json(
+        {
+            "typing": True,
+            "recipient": recipient,
+            "thread_id": thread_id,
+            "sent": sent,
+        }
+    )
 
 
 async def _handle_typing_stop(args: dict) -> list[TextContent]:
@@ -2540,18 +2601,21 @@ async def _handle_typing_stop(args: dict) -> list[TextContent]:
     if not recipient.startswith("capauth:"):
         try:
             from .identity_bridge import resolve_peer_name
+
             recipient = resolve_peer_name(recipient)
         except Exception as exc:
             logger.warning("resolve_peer_name(%r) failed for typing_stop: %s", recipient, exc)
 
     sent = _send_typing_indicator(recipient, typing=False, thread_id=thread_id)
 
-    return _json({
-        "typing": False,
-        "recipient": recipient,
-        "thread_id": thread_id,
-        "sent": sent,
-    })
+    return _json(
+        {
+            "typing": False,
+            "recipient": recipient,
+            "thread_id": thread_id,
+            "sent": sent,
+        }
+    )
 
 
 async def _handle_send_typing_indicator(args: dict) -> list[TextContent]:
@@ -2581,17 +2645,21 @@ async def _handle_send_typing_indicator(args: dict) -> list[TextContent]:
 
             recipient = resolve_peer_name(recipient)
         except Exception as exc:
-            logger.warning("resolve_peer_name(%r) failed for send_typing_indicator: %s", recipient, exc)
+            logger.warning(
+                "resolve_peer_name(%r) failed for send_typing_indicator: %s", recipient, exc
+            )
 
     sent = _send_typing_indicator(recipient, typing=True, thread_id=thread_id)
     if sent:
         await asyncio.sleep(0.5)
 
-    return _json({
-        "sent": sent,
-        "recipient": recipient,
-        "thread_id": thread_id,
-    })
+    return _json(
+        {
+            "sent": sent,
+            "recipient": recipient,
+            "thread_id": thread_id,
+        }
+    )
 
 
 # ─────────────────────────────────────────────────────────────
@@ -2618,13 +2686,12 @@ async def _handle_daemon_status(args: dict) -> list[TextContent]:
     # Enrich with live outbox pending count from skcomm PersistentOutbox.
     try:
         from skcomm.outbox import PersistentOutbox
+
         status["outbox_pending"] = PersistentOutbox().pending_count
     except Exception:
         status.setdefault("outbox_pending", 0)
 
     return _json(status)
-
-
 
 
 # ─────────────────────────────────────────────────────────────
@@ -2661,15 +2728,17 @@ async def _handle_get_group_history(args: dict) -> list[TextContent]:
     history = _get_history()
     messages = history.get_thread_messages(group_id, limit=limit)
 
-    return _json([
-        {
-            "sender": m.get("sender", ""),
-            "sender_display": _sender_display(m.get("sender", "")),
-            "content": m.get("content", ""),
-            "timestamp": m.get("timestamp", ""),
-        }
-        for m in messages
-    ])
+    return _json(
+        [
+            {
+                "sender": m.get("sender", ""),
+                "sender_display": _sender_display(m.get("sender", "")),
+                "content": m.get("content", ""),
+                "timestamp": m.get("timestamp", ""),
+            }
+            for m in messages
+        ]
+    )
 
 
 async def _handle_send_to_group(args: dict) -> list[TextContent]:
@@ -2738,11 +2807,13 @@ async def _handle_send_to_group(args: dict) -> list[TextContent]:
 
     _save_group(group)
 
-    return _json({
-        "message_id": message.id,
-        "delivered": delivered,
-        "failed": failed,
-    })
+    return _json(
+        {
+            "message_id": message.id,
+            "delivered": delivered,
+            "failed": failed,
+        }
+    )
 
 
 async def _handle_skchat_group_create(args: dict) -> list[TextContent]:
@@ -2778,6 +2849,7 @@ async def _handle_skchat_group_create(args: dict) -> list[TextContent]:
         if not identity.startswith("capauth:"):
             try:
                 from .identity_bridge import resolve_peer_name
+
                 identity = resolve_peer_name(identity)
             except Exception as exc:
                 logger.warning("resolve_peer_name(%r) failed for group member: %s", identity, exc)
@@ -2788,14 +2860,18 @@ async def _handle_skchat_group_create(args: dict) -> list[TextContent]:
     _get_groups()[group.id] = group
     _save_group(group)
 
-    logger.info("skchat_group_create: '%s' id=%s members=%d", name, group.id[:8], len(group.members))
+    logger.info(
+        "skchat_group_create: '%s' id=%s members=%d", name, group.id[:8], len(group.members)
+    )
 
-    return _json({
-        "group_id": group.id,
-        "name": group.name,
-        "members": [m.identity_uri for m in group.members],
-        "created_at": group.created_at.isoformat(),
-    })
+    return _json(
+        {
+            "group_id": group.id,
+            "name": group.name,
+            "members": [m.identity_uri for m in group.members],
+            "created_at": group.created_at.isoformat(),
+        }
+    )
 
 
 async def _handle_skchat_group_send(args: dict) -> list[TextContent]:
@@ -2864,13 +2940,15 @@ async def _handle_skchat_group_send(args: dict) -> list[TextContent]:
 
     ok = not failed
     status = "ok" if ok else ("partial" if delivered_to else "failed")
-    return _json({
-        "ok": ok,
-        "message_id": message.id,
-        "status": status,
-        "delivered_to": delivered_to,
-        "failed": failed,
-    })
+    return _json(
+        {
+            "ok": ok,
+            "message_id": message.id,
+            "status": status,
+            "delivered_to": delivered_to,
+            "failed": failed,
+        }
+    )
 
 
 async def _handle_skchat_get_group_history(args: dict) -> list[TextContent]:
@@ -2914,6 +2992,7 @@ async def _handle_skchat_send(args: dict) -> list[TextContent]:
     if not recipient.startswith("capauth:"):
         try:
             from .identity_bridge import resolve_peer_name
+
             recipient = resolve_peer_name(recipient)
         except Exception as exc:
             logger.warning("resolve_peer_name(%r) failed for skchat_send: %s", recipient, exc)
@@ -2929,20 +3008,24 @@ async def _handle_skchat_send(args: dict) -> list[TextContent]:
         )
     except Exception as exc:
         logger.warning("skchat_send failed: %s", exc)
-        return _json({
-            "status": "error",
-            "message_id": None,
-            "delivered": False,
-            "recipient": recipient,
-            "error": str(exc),
-        })
+        return _json(
+            {
+                "status": "error",
+                "message_id": None,
+                "delivered": False,
+                "recipient": recipient,
+                "error": str(exc),
+            }
+        )
 
-    return _json({
-        "status": "ok",
-        "message_id": result.get("message_id"),
-        "delivered": result.get("delivered", False),
-        "recipient": recipient,
-    })
+    return _json(
+        {
+            "status": "ok",
+            "message_id": result.get("message_id"),
+            "delivered": result.get("delivered", False),
+            "recipient": recipient,
+        }
+    )
 
 
 # -----------------------------------------------------------------
@@ -2973,12 +3056,15 @@ async def _handle_capture_to_memory(args: dict) -> list[TextContent]:
     if "error" in result:
         return _error(result["error"])
 
-    return _json({
-        "captured": True,
-        "thread_id": thread_id,
-        "min_importance": min_importance,
-        **result,
-    })
+    return _json(
+        {
+            "captured": True,
+            "thread_id": thread_id,
+            "min_importance": min_importance,
+            **result,
+        }
+    )
+
 
 # -----------------------------------------------------------------
 # Tool Handlers -- Session-aware Memory Capture & Context Retrieval
@@ -2999,7 +3085,7 @@ def _call_skcapstone(tool_name: str, arguments: dict) -> dict:
     import urllib.error
     import urllib.request
 
-    from .memory_bridge import SKCAPSTONE_MCP_URL, _CAPTURE_TIMEOUT
+    from .memory_bridge import _CAPTURE_TIMEOUT, SKCAPSTONE_MCP_URL
 
     payload = {
         "jsonrpc": "2.0",
@@ -3097,9 +3183,7 @@ async def _handle_capture_chat_to_memory(args: dict) -> list[TextContent]:
         )
 
         if "error" in result:
-            logger.warning(
-                "capture_chat_to_memory: thread %s — %s", tid[:12], result["error"]
-            )
+            logger.warning("capture_chat_to_memory: thread %s — %s", tid[:12], result["error"])
             continue
 
         mem_id = result.get("memory_id") or result.get("id") or tid
@@ -3165,15 +3249,13 @@ async def _handle_speak_message(args: dict) -> list[TextContent]:
     if not text:
         return _error("speak_message requires non-empty 'text'")
 
-    from .voice import VoicePlayer, DEFAULT_VOICE
+    from .voice import DEFAULT_VOICE, VoicePlayer
 
     voice: str = args.get("voice", DEFAULT_VOICE)
     player = VoicePlayer(voice=voice)
 
     if not player.is_available():
-        logger.warning(
-            "speak_message: Piper TTS not available (binary or voice model missing)"
-        )
+        logger.warning("speak_message: Piper TTS not available (binary or voice model missing)")
         return _json({"spoken": False, "available": False, "text": text})
 
     player.speak(text, blocking=False)
@@ -3200,36 +3282,40 @@ async def _handle_record_voice_message(args: dict) -> list[TextContent]:
     recorder = VoiceRecorder(whisper_model=whisper_model)
 
     if not recorder.available:
-        logger.warning(
-            "record_voice_message: openai-whisper not installed"
+        logger.warning("record_voice_message: openai-whisper not installed")
+        return _json(
+            {
+                "transcribed": False,
+                "available": False,
+                "text": "",
+                "hint": "Install openai-whisper with: pip install openai-whisper",
+            }
         )
-        return _json({
-            "transcribed": False,
-            "available": False,
-            "text": "",
-            "hint": "Install openai-whisper with: pip install openai-whisper",
-        })
 
     text = recorder.record(duration=duration)
 
     if text is None:
-        return _json({
-            "transcribed": False,
-            "available": True,
-            "text": "",
-            "hint": (
-                "Recording failed — ensure arecord (alsa-utils) is installed "
-                "and a microphone is available."
-            ),
-        })
+        return _json(
+            {
+                "transcribed": False,
+                "available": True,
+                "text": "",
+                "hint": (
+                    "Recording failed — ensure arecord (alsa-utils) is installed "
+                    "and a microphone is available."
+                ),
+            }
+        )
 
-    return _json({
-        "transcribed": True,
-        "available": True,
-        "text": text,
-        "duration": duration,
-        "whisper_model": whisper_model,
-    })
+    return _json(
+        {
+            "transcribed": True,
+            "available": True,
+            "text": text,
+            "duration": duration,
+            "whisper_model": whisper_model,
+        }
+    )
 
 
 async def _handle_transcribe_audio_file(args: dict) -> list[TextContent]:
@@ -3269,9 +3355,21 @@ async def _handle_transcribe_audio_file(args: dict) -> list[TextContent]:
         wav_path = tmp_wav.name
         try:
             subprocess.run(
-                ["ffmpeg", "-i", file_path, "-ar", "16000", "-ac", "1",
-                 "-f", "wav", wav_path, "-y"],
-                capture_output=True, timeout=30,
+                [
+                    "ffmpeg",
+                    "-i",
+                    file_path,
+                    "-ar",
+                    "16000",
+                    "-ac",
+                    "1",
+                    "-f",
+                    "wav",
+                    wav_path,
+                    "-y",
+                ],
+                capture_output=True,
+                timeout=30,
             )
         except Exception as exc:
             logger.error("transcribe_audio_file: ffmpeg conversion failed: %s", exc)
@@ -3290,9 +3388,7 @@ async def _handle_transcribe_audio_file(args: dict) -> list[TextContent]:
                 device="cpu",
                 disable_update=True,
             )
-            result = sv_model.generate(
-                input=wav_path, language="auto", use_itn=True
-            )
+            result = sv_model.generate(input=wav_path, language="auto", use_itn=True)
             raw_text = result[0].get("text", "") if result else ""
 
             # Parse SenseVoice output tokens:
@@ -3363,12 +3459,14 @@ async def _handle_transcribe_audio_file(args: dict) -> list[TextContent]:
     except ImportError:
         if tmp_wav:
             os.unlink(wav_path)
-        return _json({
-            "transcribed": False,
-            "available": False,
-            "text": "",
-            "hint": "Install openai-whisper or funasr (SenseVoice)",
-        })
+        return _json(
+            {
+                "transcribed": False,
+                "available": False,
+                "text": "",
+                "hint": "Install openai-whisper or funasr (SenseVoice)",
+            }
+        )
 
     try:
         model = whisper.load_model(whisper_model)
@@ -3381,16 +3479,18 @@ async def _handle_transcribe_audio_file(args: dict) -> list[TextContent]:
         if tmp_wav:
             os.unlink(wav_path)
 
-    return _json({
-        "transcribed": bool(text),
-        "available": True,
-        "text": text,
-        "emotion": None,
-        "events": [],
-        "file_path": file_path,
-        "backend": "whisper",
-        "whisper_model": whisper_model,
-    })
+    return _json(
+        {
+            "transcribed": bool(text),
+            "available": True,
+            "text": text,
+            "emotion": None,
+            "events": [],
+            "file_path": file_path,
+            "backend": "whisper",
+            "whisper_model": whisper_model,
+        }
+    )
 
 
 async def _handle_generate_voice_message(args: dict) -> list[TextContent]:
@@ -3411,22 +3511,24 @@ async def _handle_generate_voice_message(args: dict) -> list[TextContent]:
         return _error("generate_voice_message requires non-empty 'text'")
 
     piper_bin = "/usr/local/piper/piper"
-    voice_model = os.path.expanduser(
-        "~/.local/share/piper-voices/en_US-amy-medium.onnx"
-    )
+    voice_model = os.path.expanduser("~/.local/share/piper-voices/en_US-amy-medium.onnx")
 
     if not os.path.isfile(piper_bin):
-        return _json({
-            "generated": False,
-            "available": False,
-            "hint": "Piper TTS not installed at /usr/local/piper/piper",
-        })
+        return _json(
+            {
+                "generated": False,
+                "available": False,
+                "hint": "Piper TTS not installed at /usr/local/piper/piper",
+            }
+        )
     if not os.path.isfile(voice_model):
-        return _json({
-            "generated": False,
-            "available": False,
-            "hint": f"Voice model not found at {voice_model}",
-        })
+        return _json(
+            {
+                "generated": False,
+                "available": False,
+                "hint": f"Voice model not found at {voice_model}",
+            }
+        )
 
     output_dir = "/tmp/piper-tts"
     os.makedirs(output_dir, exist_ok=True)
@@ -3438,16 +3540,19 @@ async def _handle_generate_voice_message(args: dict) -> list[TextContent]:
         # Generate WAV with Piper
         proc = subprocess.run(
             [piper_bin, "-m", voice_model, "-f", wav_path],
-            input=text, capture_output=True, text=True, timeout=30,
+            input=text,
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
         if proc.returncode != 0:
             return _error(f"Piper failed: {proc.stderr}")
 
         # Convert to OGG Opus
         subprocess.run(
-            ["ffmpeg", "-i", wav_path, "-c:a", "libopus", "-b:a", "64k",
-             ogg_path, "-y"],
-            capture_output=True, timeout=30,
+            ["ffmpeg", "-i", wav_path, "-c:a", "libopus", "-b:a", "64k", ogg_path, "-y"],
+            capture_output=True,
+            timeout=30,
         )
         # Clean up WAV
         os.unlink(wav_path)
@@ -3459,12 +3564,14 @@ async def _handle_generate_voice_message(args: dict) -> list[TextContent]:
     if not os.path.isfile(ogg_path):
         return _error("Voice file generation failed — OGG not created")
 
-    return _json({
-        "generated": True,
-        "available": True,
-        "file_path": ogg_path,
-        "text": text,
-    })
+    return _json(
+        {
+            "generated": True,
+            "available": True,
+            "file_path": ogg_path,
+            "text": text,
+        }
+    )
 
 
 # ─────────────────────────────────────────────────────────────
@@ -3485,7 +3592,6 @@ async def _handle_who_is_online(args: dict) -> list[TextContent]:
         JSON with count, online count, and peers list:
         [{identity, display_name, last_seen, status}].
     """
-    from datetime import datetime, timezone
 
     from .presence import PresenceCache, PresenceState
 
@@ -3538,19 +3644,23 @@ async def _handle_who_is_online(args: dict) -> list[TextContent]:
         else:
             status = "offline"
 
-        peers_out.append({
-            "identity": uri,
-            "display_name": display,
-            "last_seen": last_seen,
-            "status": status,
-        })
+        peers_out.append(
+            {
+                "identity": uri,
+                "display_name": display,
+                "last_seen": last_seen,
+                "status": status,
+            }
+        )
 
     online_count = sum(1 for p in peers_out if p["status"] == "online")
-    return _json({
-        "count": len(peers_out),
-        "online": online_count,
-        "peers": peers_out,
-    })
+    return _json(
+        {
+            "count": len(peers_out),
+            "online": online_count,
+            "peers": peers_out,
+        }
+    )
 
 
 # ─────────────────────────────────────────────────────────────
@@ -3577,7 +3687,7 @@ async def _handle_skchat_inbox(args: dict) -> list[TextContent]:
     Returns:
         JSON {count, identity, filters, messages[]}.
     """
-    from datetime import datetime, timezone as _tz
+    from datetime import timezone as _tz
 
     limit: int = int(args.get("limit", 20))
     sender: Optional[str] = args.get("sender") or None
@@ -3592,6 +3702,7 @@ async def _handle_skchat_inbox(args: dict) -> list[TextContent]:
     if sender and not sender.startswith("capauth:"):
         try:
             from .identity_bridge import resolve_peer_name
+
             resolved_sender = resolve_peer_name(sender)
         except Exception:
             pass  # keep as-is; tag filter will simply miss
@@ -3652,29 +3763,31 @@ async def _handle_skchat_inbox(args: dict) -> list[TextContent]:
     messages.sort(key=lambda d: str(d.get("timestamp") or ""), reverse=True)
     messages = messages[:limit]
 
-    return _json({
-        "count": len(messages),
-        "identity": identity,
-        "filters": {
-            "sender": resolved_sender,
-            "unread_only": unread_only,
-            "since": since,
-        },
-        "messages": [
-            {
-                "id": m.get("chat_message_id") or m.get("memory_id", ""),
-                "sender": m.get("sender", ""),
-                "content": (m.get("content") or "")[:500],
-                "content_type": m.get("content_type"),
-                "timestamp": m.get("timestamp", ""),
-                "thread_id": m.get("thread_id"),
-                "reply_to": m.get("reply_to"),
-                "delivery_status": m.get("delivery_status", "delivered"),
-                "message_type": m.get("message_type", "text"),
-            }
-            for m in messages
-        ],
-    })
+    return _json(
+        {
+            "count": len(messages),
+            "identity": identity,
+            "filters": {
+                "sender": resolved_sender,
+                "unread_only": unread_only,
+                "since": since,
+            },
+            "messages": [
+                {
+                    "id": m.get("chat_message_id") or m.get("memory_id", ""),
+                    "sender": m.get("sender", ""),
+                    "content": (m.get("content") or "")[:500],
+                    "content_type": m.get("content_type"),
+                    "timestamp": m.get("timestamp", ""),
+                    "thread_id": m.get("thread_id"),
+                    "reply_to": m.get("reply_to"),
+                    "delivery_status": m.get("delivery_status", "delivered"),
+                    "message_type": m.get("message_type", "text"),
+                }
+                for m in messages
+            ],
+        }
+    )
 
 
 # ─────────────────────────────────────────────────────────────
@@ -3705,8 +3818,7 @@ async def _handle_skchat_set_presence(args: dict) -> list[TextContent]:
         state = PresenceState(state_raw)
     except ValueError:
         return _error(
-            f"Invalid state '{state_raw}'. "
-            f"Valid values: {[s.value for s in PresenceState]}"
+            f"Invalid state '{state_raw}'. Valid values: {[s.value for s in PresenceState]}"
         )
 
     identity = _get_identity()
@@ -3851,7 +3963,9 @@ async def _handle_skchat_conversation(args: dict) -> list[TextContent]:
                     if hasattr(m.timestamp, "isoformat")
                     else str(m.timestamp)
                 ),
-                "message_type": m.content_type.value if hasattr(m.content_type, "value") else str(m.content_type),
+                "message_type": m.content_type.value
+                if hasattr(m.content_type, "value")
+                else str(m.content_type),
                 "thread_id": m.thread_id,
                 "reply_to_id": m.reply_to_id,
             }
@@ -3874,9 +3988,7 @@ def main() -> None:
 async def _run_server() -> None:
     """Async entry point for the stdio MCP server."""
     async with stdio_server() as (read_stream, write_stream):
-        await server.run(
-            read_stream, write_stream, server.create_initialization_options()
-        )
+        await server.run(read_stream, write_stream, server.create_initialization_options())
 
 
 if __name__ == "__main__":

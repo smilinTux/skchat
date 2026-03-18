@@ -10,18 +10,11 @@ from __future__ import annotations
 def test_tui_imports() -> None:
     """All public symbols in tui.py import without error."""
     import skchat.tui  # noqa: F401
-
     from skchat.tui import (
         GROUP_ID,
         GROUP_NAME,
         KNOWN_PEERS,
         SELF_IDENTITY,
-        SKChatTUI,
-        _common_prefix,
-        _fetch_recent_messages,
-        _peer_css_class,
-        _short_sender,
-        main,
     )
 
     assert GROUP_ID == "d4f3281e-fa92-474c-a8cd-f0a2a4c31c33"

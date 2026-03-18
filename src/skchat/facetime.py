@@ -27,10 +27,8 @@ Dependencies:
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
-import struct
 from pathlib import Path
 
 import websockets
@@ -88,21 +86,21 @@ def register_facetime_routes(app: FastAPI) -> None:
             for agent_dir in agents_dir.iterdir():
                 if agent_dir.is_dir():
                     portrait = agent_dir / "avatar" / "portrait.png"
-                    available.append({
-                        "name": agent_dir.name,
-                        "has_portrait": portrait.exists(),
-                        "portrait_url": f"/api/facetime/portrait/{agent_dir.name}"
-                            if portrait.exists() else None,
-                    })
+                    available.append(
+                        {
+                            "name": agent_dir.name,
+                            "has_portrait": portrait.exists(),
+                            "portrait_url": f"/api/facetime/portrait/{agent_dir.name}"
+                            if portrait.exists()
+                            else None,
+                        }
+                    )
         return {"agents": available}
 
     @app.get("/api/facetime/portrait/{agent_name}")
     async def facetime_portrait(agent_name: str):
         """Serve an agent's portrait image."""
-        portrait = (
-            Path.home() / ".skcapstone" / "agents" / agent_name
-            / "avatar" / "portrait.png"
-        )
+        portrait = Path.home() / ".skcapstone" / "agents" / agent_name / "avatar" / "portrait.png"
         if portrait.exists():
             return FileResponse(portrait, media_type="image/png")
         return HTMLResponse("Portrait not found", status_code=404)
@@ -119,10 +117,7 @@ def register_facetime_routes(app: FastAPI) -> None:
         """
         await _proxy_facetime_ws(ws, agent_name)
 
-    logger.info(
-        "FaceTime routes registered: /facetime, /ws/facetime/{agent}, "
-        "/api/facetime/*"
-    )
+    logger.info("FaceTime routes registered: /facetime, /ws/facetime/{agent}, /api/facetime/*")
 
 
 async def _proxy_facetime_ws(client_ws: WebSocket, agent_name: str) -> None:
@@ -174,10 +169,12 @@ async def _proxy_facetime_ws(client_ws: WebSocket, agent_name: str) -> None:
 
     except Exception as e:
         try:
-            await client_ws.send_json({
-                "type": "error",
-                "message": f"FaceTime service unavailable: {e}",
-            })
+            await client_ws.send_json(
+                {
+                    "type": "error",
+                    "message": f"FaceTime service unavailable: {e}",
+                }
+            )
         except Exception:
             pass
     finally:

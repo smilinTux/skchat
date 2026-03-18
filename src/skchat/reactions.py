@@ -20,11 +20,11 @@ from __future__ import annotations
 import logging
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Optional
 
 from pydantic import BaseModel, Field
 
-from .models import ChatMessage, Reaction
+from .models import Reaction
 
 logger = logging.getLogger("skchat.reactions")
 
@@ -118,9 +118,14 @@ class ReactionManager:
 
         reactions.append(Reaction(emoji=emoji, sender=sender))
 
-        self._event_log.append(ReactionEvent(
-            message_id=message_id, emoji=emoji, sender=sender, action="add",
-        ))
+        self._event_log.append(
+            ReactionEvent(
+                message_id=message_id,
+                emoji=emoji,
+                sender=sender,
+                action="add",
+            )
+        )
 
         logger.debug("Reaction added: %s on %s by %s", emoji, message_id[:8], sender)
         return True
@@ -149,9 +154,14 @@ class ReactionManager:
         removed = len(self._reactions[message_id]) < before
 
         if removed:
-            self._event_log.append(ReactionEvent(
-                message_id=message_id, emoji=emoji, sender=sender, action="remove",
-            ))
+            self._event_log.append(
+                ReactionEvent(
+                    message_id=message_id,
+                    emoji=emoji,
+                    sender=sender,
+                    action="remove",
+                )
+            )
 
         return removed
 
@@ -294,9 +304,7 @@ class ReactionManager:
         Returns:
             list[tuple[str, int]]: (message_id, reaction_count) sorted by count.
         """
-        counts = [
-            (mid, len(rs)) for mid, rs in self._reactions.items() if rs
-        ]
+        counts = [(mid, len(rs)) for mid, rs in self._reactions.items() if rs]
         counts.sort(key=lambda x: x[1], reverse=True)
         return counts[:limit]
 

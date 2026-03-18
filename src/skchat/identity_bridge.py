@@ -105,11 +105,13 @@ def resolve_peer_name(name: str) -> str:
     peer_files_to_check = []
     for peers_dir in [SKCAPSTONE_PEERS_DIR, SKCOMM_PEERS_DIR]:
         if peers_dir.exists():
-            peer_files_to_check.extend([
-                peers_dir / f"{name}.json",
-                peers_dir / f"{name}.yml",
-                peers_dir / f"{name}.yaml",
-            ])
+            peer_files_to_check.extend(
+                [
+                    peers_dir / f"{name}.json",
+                    peers_dir / f"{name}.yml",
+                    peers_dir / f"{name}.yaml",
+                ]
+            )
 
     for peer_file in peer_files_to_check:
         if peer_file.exists():
@@ -120,6 +122,7 @@ def resolve_peer_name(name: str) -> str:
                 else:
                     try:
                         import yaml
+
                         with open(peer_file) as f:
                             peer_data = yaml.safe_load(f)
                     except ImportError:
@@ -237,11 +240,13 @@ def get_peer_transport_address(name: str) -> Optional[dict]:
     peer_files_to_check = []
     for peers_dir in [SKCAPSTONE_PEERS_DIR, SKCOMM_PEERS_DIR]:
         if peers_dir.exists():
-            peer_files_to_check.extend([
-                peers_dir / f"{name}.json",
-                peers_dir / f"{name}.yml",
-                peers_dir / f"{name}.yaml",
-            ])
+            peer_files_to_check.extend(
+                [
+                    peers_dir / f"{name}.json",
+                    peers_dir / f"{name}.yml",
+                    peers_dir / f"{name}.yaml",
+                ]
+            )
 
     for peer_file in peer_files_to_check:
         if peer_file.exists():
@@ -252,6 +257,7 @@ def get_peer_transport_address(name: str) -> Optional[dict]:
                 else:
                     try:
                         import yaml
+
                         with open(peer_file) as f:
                             peer_data = yaml.safe_load(f)
                     except ImportError:

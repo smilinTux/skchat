@@ -62,27 +62,33 @@ def store() -> FakeStore:
     s = FakeStore()
 
     expired_time = (datetime.now(timezone.utc) - timedelta(seconds=120)).isoformat()
-    s.add(FakeMemory(
-        id="msg-expired",
-        tags=["skchat", "skchat:message"],
-        metadata={"ttl": 60, "sender": "alice", "recipient": "bob"},
-        created_at=expired_time,
-    ))
+    s.add(
+        FakeMemory(
+            id="msg-expired",
+            tags=["skchat", "skchat:message"],
+            metadata={"ttl": 60, "sender": "alice", "recipient": "bob"},
+            created_at=expired_time,
+        )
+    )
 
     fresh_time = datetime.now(timezone.utc).isoformat()
-    s.add(FakeMemory(
-        id="msg-fresh",
-        tags=["skchat", "skchat:message"],
-        metadata={"ttl": 3600, "sender": "alice", "recipient": "bob"},
-        created_at=fresh_time,
-    ))
+    s.add(
+        FakeMemory(
+            id="msg-fresh",
+            tags=["skchat", "skchat:message"],
+            metadata={"ttl": 3600, "sender": "alice", "recipient": "bob"},
+            created_at=fresh_time,
+        )
+    )
 
-    s.add(FakeMemory(
-        id="msg-permanent",
-        tags=["skchat", "skchat:message"],
-        metadata={"sender": "alice", "recipient": "bob"},
-        created_at=fresh_time,
-    ))
+    s.add(
+        FakeMemory(
+            id="msg-permanent",
+            tags=["skchat", "skchat:message"],
+            metadata={"sender": "alice", "recipient": "bob"},
+            created_at=fresh_time,
+        )
+    )
 
     return s
 
@@ -149,7 +155,9 @@ class TestIsExpired:
     def test_expired_message(self, reaper: MessageReaper) -> None:
         """Message past TTL is expired."""
         msg = ChatMessage(
-            sender="a@test", recipient="b@test", content="old",
+            sender="a@test",
+            recipient="b@test",
+            content="old",
             ttl=10,
             timestamp=datetime.now(timezone.utc) - timedelta(seconds=20),
         )
@@ -158,7 +166,9 @@ class TestIsExpired:
     def test_fresh_message(self, reaper: MessageReaper) -> None:
         """Message within TTL is not expired."""
         msg = ChatMessage(
-            sender="a@test", recipient="b@test", content="new",
+            sender="a@test",
+            recipient="b@test",
+            content="new",
             ttl=3600,
         )
         assert reaper.is_expired(msg) is False
@@ -166,7 +176,9 @@ class TestIsExpired:
     def test_permanent_message(self, reaper: MessageReaper) -> None:
         """Message without TTL never expires."""
         msg = ChatMessage(
-            sender="a@test", recipient="b@test", content="forever",
+            sender="a@test",
+            recipient="b@test",
+            content="forever",
         )
         assert reaper.is_expired(msg) is False
 
@@ -177,7 +189,9 @@ class TestRejectIfExpired:
     def test_reject_expired_incoming(self, reaper: MessageReaper) -> None:
         """Expired incoming message is rejected."""
         msg = ChatMessage(
-            sender="a@test", recipient="b@test", content="stale",
+            sender="a@test",
+            recipient="b@test",
+            content="stale",
             ttl=5,
             timestamp=datetime.now(timezone.utc) - timedelta(seconds=10),
         )
@@ -186,7 +200,9 @@ class TestRejectIfExpired:
     def test_accept_fresh_incoming(self, reaper: MessageReaper) -> None:
         """Fresh incoming message is accepted."""
         msg = ChatMessage(
-            sender="a@test", recipient="b@test", content="fresh",
+            sender="a@test",
+            recipient="b@test",
+            content="fresh",
             ttl=3600,
         )
         assert reaper.reject_if_expired(msg) is False
@@ -198,7 +214,9 @@ class TestTimeRemaining:
     def test_time_remaining_positive(self, reaper: MessageReaper) -> None:
         """Fresh message has positive time remaining."""
         msg = ChatMessage(
-            sender="a@test", recipient="b@test", content="test",
+            sender="a@test",
+            recipient="b@test",
+            content="test",
             ttl=3600,
         )
         remaining = reaper.time_remaining(msg)
@@ -208,7 +226,9 @@ class TestTimeRemaining:
     def test_time_remaining_expired(self, reaper: MessageReaper) -> None:
         """Expired message has 0.0 remaining."""
         msg = ChatMessage(
-            sender="a@test", recipient="b@test", content="test",
+            sender="a@test",
+            recipient="b@test",
+            content="test",
             ttl=5,
             timestamp=datetime.now(timezone.utc) - timedelta(seconds=10),
         )
@@ -217,7 +237,9 @@ class TestTimeRemaining:
     def test_time_remaining_permanent(self, reaper: MessageReaper) -> None:
         """Permanent message returns None."""
         msg = ChatMessage(
-            sender="a@test", recipient="b@test", content="test",
+            sender="a@test",
+            recipient="b@test",
+            content="test",
         )
         assert reaper.time_remaining(msg) is None
 
@@ -228,7 +250,9 @@ class TestTagEphemeral:
     def test_tag_adds_metadata(self, reaper: MessageReaper) -> None:
         """Ephemeral message gets tagged in metadata."""
         msg = ChatMessage(
-            sender="a@test", recipient="b@test", content="secret",
+            sender="a@test",
+            recipient="b@test",
+            content="secret",
             ttl=60,
         )
         tagged = reaper.tag_ephemeral(msg)
@@ -237,7 +261,9 @@ class TestTagEphemeral:
     def test_tag_noop_for_permanent(self, reaper: MessageReaper) -> None:
         """Permanent message is returned unchanged."""
         msg = ChatMessage(
-            sender="a@test", recipient="b@test", content="forever",
+            sender="a@test",
+            recipient="b@test",
+            content="forever",
         )
         tagged = reaper.tag_ephemeral(msg)
         assert "ephemeral" not in tagged.metadata

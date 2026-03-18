@@ -77,7 +77,7 @@ class CodeFormatPlugin(ChatPlugin):
     author = "smilinTux"
 
     CODE_BLOCK_PATTERN = re.compile(
-        r'```(\w+)?\s*\n(.*?)```',
+        r"```(\w+)?\s*\n(.*?)```",
         re.DOTALL,
     )
 

@@ -16,7 +16,6 @@ import json
 import logging
 import urllib.error
 import urllib.request
-from datetime import timedelta, timezone
 
 from .history import ChatHistory
 

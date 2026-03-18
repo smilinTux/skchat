@@ -138,11 +138,7 @@ class PresenceTracker:
         Returns:
             list[str]: Identity URIs of active participants.
         """
-        return [
-            uri
-            for uri, ind in self._indicators.items()
-            if ind.is_active()
-        ]
+        return [uri for uri, ind in self._indicators.items() if ind.is_active()]
 
     def who_is_typing(self, thread_id: Optional[str] = None) -> list[str]:
         """List participants currently typing, optionally in a specific thread.
@@ -182,11 +178,7 @@ class PresenceTracker:
         Returns:
             int: Number of stale indicators removed.
         """
-        stale = [
-            uri
-            for uri, ind in self._indicators.items()
-            if ind.is_stale(max_age_seconds)
-        ]
+        stale = [uri for uri, ind in self._indicators.items() if ind.is_stale(max_age_seconds)]
         for uri in stale:
             del self._indicators[uri]
         return len(stale)
@@ -383,8 +375,4 @@ class PresenceCache:
             list[str]: Peers whose typing indicator was received within the last 5 s.
         """
         now = time.monotonic()
-        return [
-            uri
-            for uri, ts in list(self._typing.items())
-            if (now - ts) <= self._TYPING_TTL
-        ]
+        return [uri for uri, ts in list(self._typing.items()) if (now - ts) <= self._TYPING_TTL]

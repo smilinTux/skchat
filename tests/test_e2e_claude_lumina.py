@@ -74,9 +74,7 @@ class _FileSKComm:
             try:
                 content = f.read_text(encoding="utf-8")
                 f.unlink()
-                envelopes.append(
-                    SimpleNamespace(payload=SimpleNamespace(content=content))
-                )
+                envelopes.append(SimpleNamespace(payload=SimpleNamespace(content=content)))
             except Exception:
                 continue
         return envelopes
@@ -143,7 +141,7 @@ def test_claude_sends_to_lumina_lumina_responds(tmp_path: Path, monkeypatch) -> 
     lumina_inbox = tmp_path / "lumina_inbox"
     opus_inbox = tmp_path / "opus_inbox"
     lumina_outbox = tmp_path / "lumina_outbox"  # lumina → opus replies land here
-    opus_outbox = tmp_path / "opus_outbox"      # unused; needed for opus ChatTransport
+    opus_outbox = tmp_path / "opus_outbox"  # unused; needed for opus ChatTransport
     for d in (lumina_inbox, opus_inbox, lumina_outbox, opus_outbox):
         d.mkdir()
 
@@ -215,9 +213,7 @@ def test_claude_sends_to_lumina_lumina_responds(tmp_path: Path, monkeypatch) -> 
     # ── 9. Run one poll iteration ─────────────────────────────────────────────
     messages = bridge.check_inbox_for_lumina()
 
-    assert len(messages) == 1, (
-        f"Expected 1 message in lumina's inbox, got {len(messages)}"
-    )
+    assert len(messages) == 1, f"Expected 1 message in lumina's inbox, got {len(messages)}"
 
     for msg in messages:
         key = bridge._msg_key(msg)
@@ -245,9 +241,7 @@ def test_claude_sends_to_lumina_lumina_responds(tmp_path: Path, monkeypatch) -> 
     )
     reply = received[0]
 
-    assert reply.content == "Hello from Lumina", (
-        f"Unexpected reply content: {reply.content!r}"
-    )
+    assert reply.content == "Hello from Lumina", f"Unexpected reply content: {reply.content!r}"
     assert reply.sender == LUMINA_IDENTITY, (
         f"Expected sender {LUMINA_IDENTITY!r}, got {reply.sender!r}"
     )

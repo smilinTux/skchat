@@ -235,9 +235,7 @@ def test_advocacy_engine_responds() -> None:
         try:
             reply = future.result(timeout=30)
         except concurrent.futures.TimeoutError:
-            pytest.fail(
-                "AdvocacyEngine.process_message() did not return within 30 s"
-            )
+            pytest.fail("AdvocacyEngine.process_message() did not return within 30 s")
 
     assert reply is not None, (
         "AdvocacyEngine.process_message() returned None for a message with @opus"

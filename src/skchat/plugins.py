@@ -27,14 +27,12 @@ from __future__ import annotations
 import importlib
 import importlib.metadata
 import logging
-import sys
 from abc import ABC, abstractmethod
-from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from .models import ChatMessage
 

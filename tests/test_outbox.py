@@ -4,12 +4,10 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
 
-from skchat.outbox import OutboxQueue, _backoff, _MAX_ATTEMPTS
-
+from skchat.outbox import _MAX_ATTEMPTS, OutboxQueue, _backoff
 
 # ---------------------------------------------------------------------------
 # Fixtures

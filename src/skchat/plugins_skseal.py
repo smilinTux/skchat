@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Optional
 
 from .models import ChatMessage
 from .plugins import ChatPlugin
@@ -47,8 +47,8 @@ def _get_private_key():
     Returns:
         tuple: (private_key_armor, passphrase) or (None, None).
     """
-    from pathlib import Path
     import json
+    from pathlib import Path
 
     identity_dir = Path.home() / ".skcapstone" / "identity"
 
@@ -110,9 +110,7 @@ class SKSealPlugin(ChatPlugin):
         try:
             import skseal  # noqa: F401
         except ImportError:
-            raise RuntimeError(
-                "skseal not installed. Run: pip install skseal"
-            )
+            raise RuntimeError("skseal not installed. Run: pip install skseal")
 
     def on_inbound(self, message: ChatMessage) -> ChatMessage:
         """Detect signing requests in inbound messages.
@@ -184,8 +182,7 @@ class SKSealPlugin(ChatPlugin):
 
         if signer is None:
             return (
-                f"Error: You ({sender}) are not listed as a signer "
-                f"on document '{document.title}'."
+                f"Error: You ({sender}) are not listed as a signer on document '{document.title}'."
             )
 
         if signer.status.value == "signed":
@@ -213,9 +210,7 @@ class SKSealPlugin(ChatPlugin):
             store.save_document(updated_doc)
 
             status = updated_doc.status.value
-            signed_count = sum(
-                1 for s in updated_doc.signers if s.status.value == "signed"
-            )
+            signed_count = sum(1 for s in updated_doc.signers if s.status.value == "signed")
             total = len(updated_doc.signers)
 
             result = (
@@ -264,7 +259,7 @@ class SKSealPlugin(ChatPlugin):
 
         # Add audit entry
         try:
-            from skseal.models import AuditEntry, AuditAction
+            from skseal.models import AuditAction, AuditEntry
 
             entry = AuditEntry(
                 document_id=document_id,
@@ -277,11 +272,7 @@ class SKSealPlugin(ChatPlugin):
         except Exception as exc:
             logger.warning("Failed to append decline audit entry: %s", exc)
 
-        return (
-            f"**Document Declined**\n"
-            f"Title: {document.title}\n"
-            f"Reason: {reason}"
-        )
+        return f"**Document Declined**\nTitle: {document.title}\nReason: {reason}"
 
     def _handle_doc_status(self, args: str, context: dict) -> str:
         """Handle /doc-status <document_id> command."""
@@ -307,9 +298,7 @@ class SKSealPlugin(ChatPlugin):
                 "viewed": "~",
                 "expired": "!",
             }.get(s.status.value, "?")
-            signers_info.append(
-                f"  [{status_icon}] {s.name} ({s.role.value}) — {s.status.value}"
-            )
+            signers_info.append(f"  [{status_icon}] {s.name} ({s.role.value}) — {s.status.value}")
 
         signers_str = "\n".join(signers_info)
 
@@ -317,7 +306,11 @@ class SKSealPlugin(ChatPlugin):
         recent_audit = audit[-5:] if len(audit) > 5 else audit
         audit_lines = []
         for entry in recent_audit:
-            ts = entry.timestamp.strftime("%Y-%m-%d %H:%M") if hasattr(entry.timestamp, "strftime") else str(entry.timestamp)[:16]
+            ts = (
+                entry.timestamp.strftime("%Y-%m-%d %H:%M")
+                if hasattr(entry.timestamp, "strftime")
+                else str(entry.timestamp)[:16]
+            )
             audit_lines.append(f"  {ts} {entry.action.value}")
         audit_str = "\n".join(audit_lines) if audit_lines else "  (none)"
 
@@ -345,7 +338,7 @@ class SKSealPlugin(ChatPlugin):
             return "Error: skseal not installed."
 
         try:
-            from skseal.models import Document, Signer, DocumentStatus
+            from skseal.models import Document, DocumentStatus, Signer
 
             sender = context.get("sender", "unknown")
             fingerprint = context.get("fingerprint", "")
@@ -443,6 +436,7 @@ class SKSealPlugin(ChatPlugin):
         # Resolve recipient peer name
         try:
             from .identity_bridge import resolve_peer_name
+
             resolved_recipient = resolve_peer_name(recipient)
         except Exception:
             resolved_recipient = recipient
@@ -490,6 +484,7 @@ class SKSealPlugin(ChatPlugin):
         # Store locally
         try:
             from .history import ChatHistory
+
             history = ChatHistory.from_config()
             history.store_message(msg)
         except Exception as exc:
@@ -500,6 +495,7 @@ class SKSealPlugin(ChatPlugin):
         transport_name = None
         try:
             from skcomm import SKComm
+
             from .transport import ChatTransport
 
             skcomm = SKComm.from_config()
@@ -517,7 +513,7 @@ class SKSealPlugin(ChatPlugin):
 
         # Add audit entry for send
         try:
-            from skseal.models import AuditEntry, AuditAction
+            from skseal.models import AuditAction, AuditEntry
 
             entry = AuditEntry(
                 document_id=document_id,
@@ -529,7 +525,9 @@ class SKSealPlugin(ChatPlugin):
         except Exception as exc:
             logger.warning("Failed to append send audit entry: %s", exc)
 
-        display_recipient = recipient if recipient == resolved_recipient else f"{recipient} ({resolved_recipient})"
+        display_recipient = (
+            recipient if recipient == resolved_recipient else f"{recipient} ({resolved_recipient})"
+        )
 
         if delivered:
             return (

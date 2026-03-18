@@ -19,7 +19,6 @@ import pytest
 
 from skchat.watchdog import TransportWatchdog
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -311,8 +310,7 @@ class TestHealthSummary:
 class TestFallbackTransport:
     def test_fallback_used_when_primary_fails(self):
         """When skcomm.send() raises, the fallback transport is tried."""
-        from skchat.history import ChatHistory
-        from skchat.models import ChatMessage, DeliveryStatus
+        from skchat.models import ChatMessage
         from skchat.transport import ChatTransport
 
         mock_primary = MagicMock()

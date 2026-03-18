@@ -19,7 +19,6 @@ Run with:
 
 from __future__ import annotations
 
-import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -30,7 +29,6 @@ import pytest
 
 from skchat.models import ChatMessage, ContentType, DeliveryStatus
 from skchat.transport import ChatTransport
-
 
 # ---------------------------------------------------------------------------
 # pytest mark
@@ -80,9 +78,7 @@ class _FileSKComm:
             try:
                 content = f.read_text(encoding="utf-8")
                 f.unlink()
-                envelopes.append(
-                    SimpleNamespace(payload=SimpleNamespace(content=content))
-                )
+                envelopes.append(SimpleNamespace(payload=SimpleNamespace(content=content)))
             except Exception:
                 continue
         return envelopes
@@ -391,9 +387,7 @@ class TestMultipleMessages:
         assert len(received) == 5
         received_contents = {m.content for m in received}
         for content in payloads:
-            assert content in received_contents, (
-                f"'{content}' not found in received messages"
-            )
+            assert content in received_contents, f"'{content}' not found in received messages"
 
     def test_poll_inbox_is_idempotent_after_consume(
         self,

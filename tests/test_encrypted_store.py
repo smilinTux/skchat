@@ -1,15 +1,16 @@
 """Tests for encrypted message storage."""
 
 import os
-import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
-from skchat.models import ChatMessage, ContentType, Thread
+import pytest
+
 from skchat.encrypted_store import (
     ContentEncryptor,
     EncryptedChatHistory,
     StorageKeyDeriver,
 )
+from skchat.models import ChatMessage, Thread
 
 
 @pytest.fixture
@@ -165,9 +166,7 @@ class TestEncryptedChatHistory:
             {"content": marked, "sender": "capauth:alice@test"}
         ]
 
-        messages = encrypted_history.get_conversation(
-            "capauth:alice@test", "capauth:bob@test"
-        )
+        messages = encrypted_history.get_conversation("capauth:alice@test", "capauth:bob@test")
         assert messages[0]["content"] == plaintext
 
     def test_decryption_failure_graceful(self, encrypted_history, mock_history):
@@ -183,9 +182,7 @@ class TestEncryptedChatHistory:
         assert messages[0]["decryption_error"] is True
 
     def test_list_threads_passthrough(self, encrypted_history, mock_history):
-        mock_history.list_threads.return_value = [
-            {"thread_id": "t1", "title": "Test"}
-        ]
+        mock_history.list_threads.return_value = [{"thread_id": "t1", "title": "Test"}]
         threads = encrypted_history.list_threads()
         assert threads == [{"thread_id": "t1", "title": "Test"}]
 
@@ -216,6 +213,6 @@ class TestEncryptDecryptIntegration:
         assert stored_content.startswith(marker)
 
         # Decrypt
-        encrypted_b64 = stored_content[len(marker):]
+        encrypted_b64 = stored_content[len(marker) :]
         decrypted = encryptor.decrypt(encrypted_b64, storage_key)
         assert decrypted == plaintext

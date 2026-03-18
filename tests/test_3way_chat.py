@@ -234,10 +234,7 @@ def _poll_lumina_reply(
             try:
                 m = json.loads(line)
                 mid = m.get("id", "")
-                if (
-                    m.get("sender") == LUMINA_URI
-                    and mid not in seen
-                ):
+                if m.get("sender") == LUMINA_URI and mid not in seen:
                     return m.get("content", "")
             except Exception:
                 pass
@@ -284,9 +281,7 @@ class TestGroupPersistence:
     def test_lumina_role_is_agent(self) -> None:
         data = _load_group(SKWORLD_GROUP_ID)
         assert data is not None
-        lumina = next(
-            (m for m in data["members"] if m["identity_uri"] == LUMINA_URI), None
-        )
+        lumina = next((m for m in data["members"] if m["identity_uri"] == LUMINA_URI), None)
         assert lumina is not None
         assert lumina["participant_type"] == "agent"
 
@@ -445,9 +440,7 @@ class TestGroupSendE2E:
     @both_services
     def test_group_message_enqueued_in_outbox(self, tmp_path: Path) -> None:
         """Group send via outbox helper creates envelope files."""
-        with patch(
-            "tests.test_3way_chat.SKCOMM_OUTBOX", tmp_path / "outbox"
-        ):
+        with patch("tests.test_3way_chat.SKCOMM_OUTBOX", tmp_path / "outbox"):
             mid = _send_group_via_outbox(
                 group_id=SKWORLD_GROUP_ID,
                 sender=OPUS_URI,
