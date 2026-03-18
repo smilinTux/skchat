@@ -251,8 +251,8 @@ class ChatDaemon:
                                     ["notify-send", "SKChat", f"[{sender_short}] {preview}"],
                                     capture_output=True,
                                 )
-                            except Exception:
-                                pass
+                            except Exception as exc:
+                                logger.warning("notify-send failed: %s", exc)
                             if engine:
                                 try:
                                     reply = engine.process_message(msg)
@@ -703,8 +703,8 @@ class ChatDaemon:
         if presence:
             try:
                 online_peer_count = len(presence.who_is_online())
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("presence.who_is_online() failed: %s", exc)
 
         webrtc_signaling_ok = False
         if skcomm:
@@ -715,8 +715,8 @@ class ChatDaemon:
                             getattr(t, "_signaling_connected", False)
                         )
                         break
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("Failed to read WebRTC signaling state: %s", exc)
 
         stats = {
             "uptime_seconds": uptime_seconds,
