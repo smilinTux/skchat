@@ -13,8 +13,6 @@ Conversation itself is unrestricted — actions are scoped, not speech.
 
 from __future__ import annotations
 
-import hashlib
-import json
 import logging
 import os
 import uuid
@@ -24,7 +22,7 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
-from .models import ChatMessage, ContentType, Thread
+from .models import ChatMessage, Thread
 
 logger = logging.getLogger("skchat.group")
 
@@ -641,8 +639,7 @@ class GroupChat(BaseModel):
             str: Multi-line summary.
         """
         members_str = ", ".join(
-            f"{m.display_name} ({m.role.value}, {m.participant_type.value})"
-            for m in self.members
+            f"{m.display_name} ({m.role.value}, {m.participant_type.value})" for m in self.members
         )
         return (
             f"Group: {self.name}\n"
@@ -733,7 +730,8 @@ class GroupKeyDistributor:
         result: dict[str, Optional[str]] = {}
         for member in group.members:
             encrypted = GroupKeyDistributor.encrypt_key_for_member(
-                group.group_key, member.public_key_armor,
+                group.group_key,
+                member.public_key_armor,
             )
             result[member.identity_uri] = encrypted
         return result

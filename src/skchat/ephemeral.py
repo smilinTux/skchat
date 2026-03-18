@@ -159,7 +159,8 @@ class MessageReaper:
         if self.is_expired(message):
             logger.info(
                 "Rejecting expired message %s (TTL: %ds)",
-                message.id[:8], message.ttl,
+                message.id[:8],
+                message.ttl,
             )
             return True
         return False

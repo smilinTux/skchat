@@ -6,9 +6,8 @@ from unittest.mock import patch
 
 import pytest
 
-from skchat.advocacy import AdvocacyEngine, TRIGGER_PREFIXES, should_advocate
+from skchat.advocacy import TRIGGER_PREFIXES, AdvocacyEngine, should_advocate
 from skchat.models import ChatMessage
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -22,7 +21,6 @@ def _msg(
 ) -> ChatMessage:
     """Build a minimal ChatMessage for testing."""
     return ChatMessage(sender=sender, recipient=recipient, content=content)
-
 
 
 # ---------------------------------------------------------------------------

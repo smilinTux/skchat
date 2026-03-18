@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -11,15 +10,14 @@ import pytest
 from skchat.daemon import (
     ChatDaemon,
     DaemonShutdown,
+    _read_pid,
+    _remove_pid,
+    _write_pid,
     daemon_status,
     is_running,
     run_daemon,
     start_daemon,
     stop_daemon,
-    _pid_file,
-    _read_pid,
-    _write_pid,
-    _remove_pid,
 )
 from skchat.models import ChatMessage, DeliveryStatus
 
@@ -71,19 +69,20 @@ def test_daemon_init_with_log_file(tmp_path):
 def test_daemon_uptime():
     """Test uptime calculation."""
     daemon = ChatDaemon(interval=5, quiet=True)
-    
+
     daemon.poll_count = 0
     daemon.last_poll_time = None
     assert daemon._uptime() == "0s"
-    
+
     from datetime import datetime, timezone
+
     daemon.last_poll_time = datetime.now(timezone.utc)
     daemon.poll_count = 10
     assert daemon._uptime() == "50s"
-    
+
     daemon.poll_count = 120
     assert daemon._uptime() == "10m 0s"
-    
+
     daemon.poll_count = 1440
     assert daemon._uptime() == "2h 0m"
 
@@ -92,7 +91,7 @@ def test_daemon_log_quiet(capsys):
     """Test logging with quiet mode."""
     daemon = ChatDaemon(interval=5, quiet=True)
     daemon._log("Test message")
-    
+
     captured = capsys.readouterr()
     assert captured.out == ""
 
@@ -101,7 +100,7 @@ def test_daemon_log_verbose(capsys):
     """Test logging with verbose mode."""
     daemon = ChatDaemon(interval=5, quiet=False)
     daemon._log("Test message")
-    
+
     captured = capsys.readouterr()
     assert "Test message" in captured.out
 
@@ -128,10 +127,12 @@ def test_daemon_start_no_messages(
 
     # Stop after 3 poll cycles via sleep call count (instant sleeps, count-based)
     call_count = [0]
+
     def _counting_sleep(seconds):
         call_count[0] += 1
         if call_count[0] >= 3:
             daemon.running = False
+
     mock_sleep.side_effect = _counting_sleep
 
     daemon.start()
@@ -163,10 +164,12 @@ def test_daemon_start_with_messages(
     daemon = ChatDaemon(interval=0.1, quiet=True)
 
     call_count = [0]
+
     def _counting_sleep(seconds):
         call_count[0] += 1
         if call_count[0] >= 3:
             daemon.running = False
+
     mock_sleep.side_effect = _counting_sleep
 
     daemon.start()
@@ -186,12 +189,12 @@ def test_daemon_graceful_shutdown(
     """Test daemon graceful shutdown on signal."""
     mock_transport_class.from_config.return_value = mock_transport
     mock_identity.return_value = "capauth:test@capauth.local"
-    
+
     daemon = ChatDaemon(interval=0.1, quiet=True)
-    
+
     with pytest.raises(DaemonShutdown):
         daemon._handle_signal(15, None)
-    
+
     assert daemon.running is False
 
 
@@ -217,10 +220,12 @@ def test_daemon_poll_error_handling(
     daemon = ChatDaemon(interval=0.1, quiet=True)
 
     call_count = [0]
+
     def _counting_sleep(seconds):
         call_count[0] += 1
         if call_count[0] >= 3:
             daemon.running = False
+
     mock_sleep.side_effect = _counting_sleep
 
     daemon.start()
@@ -262,11 +267,14 @@ def test_daemon_from_config_defaults():
 
 def test_daemon_from_config_env_vars():
     """Test creating daemon from environment variables."""
-    with patch.dict("os.environ", {
-        "SKCHAT_DAEMON_INTERVAL": "10.0",
-        "SKCHAT_DAEMON_LOG": "/tmp/daemon.log",
-        "SKCHAT_DAEMON_QUIET": "true",
-    }):
+    with patch.dict(
+        "os.environ",
+        {
+            "SKCHAT_DAEMON_INTERVAL": "10.0",
+            "SKCHAT_DAEMON_LOG": "/tmp/daemon.log",
+            "SKCHAT_DAEMON_QUIET": "true",
+        },
+    ):
         daemon = ChatDaemon.from_config()
         assert daemon.interval == 10.0
         assert daemon.log_file == Path("/tmp/daemon.log")
@@ -276,7 +284,7 @@ def test_daemon_from_config_env_vars():
 def test_daemon_from_config_yaml(tmp_path):
     """Test creating daemon from YAML config file."""
     pytest.importorskip("yaml")
-    
+
     config_file = tmp_path / "config.yml"
     config_content = """
 daemon:
@@ -286,7 +294,7 @@ daemon:
 """
     with open(config_file, "w") as f:
         f.write(config_content)
-    
+
     daemon = ChatDaemon.from_config(config_file)
     assert daemon.interval == 15
     assert daemon.log_file == Path("/var/log/skchat.log")
@@ -298,9 +306,9 @@ def test_run_daemon(mock_daemon_class):
     """Test run_daemon wrapper function."""
     mock_daemon = MagicMock()
     mock_daemon_class.return_value = mock_daemon
-    
+
     run_daemon(interval=10, log_file="/tmp/test.log", quiet=True)
-    
+
     mock_daemon_class.assert_called_once()
     mock_daemon.start.assert_called_once()
 
@@ -311,7 +319,7 @@ def test_run_daemon_with_exception(mock_daemon_class):
     mock_daemon = MagicMock()
     mock_daemon.start.side_effect = Exception("Daemon error")
     mock_daemon_class.return_value = mock_daemon
-    
+
     with pytest.raises(SystemExit):
         run_daemon()
 
@@ -378,6 +386,7 @@ class TestIsRunning:
     def test_running_own_process(self, tmp_path, monkeypatch):
         """Expected: process is running when PID is the current process."""
         import os
+
         import skchat.daemon as daemon_mod
 
         monkeypatch.setattr(daemon_mod, "DAEMON_PID_FILE", tmp_path / "daemon.pid")
@@ -402,6 +411,7 @@ class TestDaemonStatus:
     def test_status_running(self, tmp_path, monkeypatch):
         """Expected: status is running when current PID is stored."""
         import os
+
         import skchat.daemon as daemon_mod
 
         monkeypatch.setattr(daemon_mod, "DAEMON_PID_FILE", tmp_path / "daemon.pid")
@@ -431,6 +441,7 @@ class TestStartStopDaemon:
     def test_start_daemon_already_running_raises(self, tmp_path, monkeypatch):
         """Failure case: starting when already running raises RuntimeError."""
         import os
+
         import skchat.daemon as daemon_mod
 
         monkeypatch.setattr(daemon_mod, "DAEMON_PID_FILE", tmp_path / "daemon.pid")
@@ -459,8 +470,9 @@ class TestDaemonCLI:
     def test_daemon_status_stopped(self, tmp_path, monkeypatch):
         """Expected: daemon status shows stopped when not running."""
         from click.testing import CliRunner
-        from skchat.cli import main
+
         import skchat.daemon as daemon_mod
+        from skchat.cli import main
 
         monkeypatch.setattr(daemon_mod, "DAEMON_PID_FILE", tmp_path / "daemon.pid")
         monkeypatch.setattr(daemon_mod, "DAEMON_LOG_FILE", tmp_path / "daemon.log")
@@ -473,9 +485,11 @@ class TestDaemonCLI:
     def test_daemon_status_running(self, tmp_path, monkeypatch):
         """Expected: daemon status shows running when PID is current process."""
         import os
+
         from click.testing import CliRunner
-        from skchat.cli import main
+
         import skchat.daemon as daemon_mod
+        from skchat.cli import main
 
         monkeypatch.setattr(daemon_mod, "DAEMON_PID_FILE", tmp_path / "daemon.pid")
         monkeypatch.setattr(daemon_mod, "DAEMON_LOG_FILE", tmp_path / "daemon.log")
@@ -490,8 +504,9 @@ class TestDaemonCLI:
     def test_daemon_stop_when_not_running(self, tmp_path, monkeypatch):
         """Expected: daemon stop shows no daemon running message."""
         from click.testing import CliRunner
-        from skchat.cli import main
+
         import skchat.daemon as daemon_mod
+        from skchat.cli import main
 
         monkeypatch.setattr(daemon_mod, "DAEMON_PID_FILE", tmp_path / "daemon.pid")
 
@@ -503,6 +518,7 @@ class TestDaemonCLI:
     def test_daemon_help(self):
         """Expected: daemon help shows subcommands."""
         from click.testing import CliRunner
+
         from skchat.cli import main
 
         runner = CliRunner()

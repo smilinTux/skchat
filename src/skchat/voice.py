@@ -115,9 +115,7 @@ class VoicePlayer:
         """Return ``True`` if piper binary and voice model are both present."""
         return self._piper_bin is not None and self._resolve_model() is not None
 
-    def speak(
-        self, text: str, blocking: bool = False
-    ) -> Optional[subprocess.Popen]:
+    def speak(self, text: str, blocking: bool = False) -> Optional[subprocess.Popen]:
         """Speak *text* via Piper TTS.
 
         Pipes text through::
@@ -267,6 +265,7 @@ class VoiceRecorder:
         """Return ``True`` if the ``openai-whisper`` package is importable."""
         try:
             import whisper  # noqa: F401 — openai-whisper package
+
             return True
         except ImportError:
             logger.warning(
@@ -343,8 +342,7 @@ class VoiceRecorder:
         """
         if not self.available:
             logger.warning(
-                "openai-whisper not available. "
-                "Install with: pip install openai-whisper"
+                "openai-whisper not available. Install with: pip install openai-whisper"
             )
             return None
 
@@ -365,8 +363,7 @@ class VoiceRecorder:
         """
         if not self.available:
             logger.warning(
-                "openai-whisper not available. "
-                "Install with: pip install openai-whisper"
+                "openai-whisper not available. Install with: pip install openai-whisper"
             )
             return None
 

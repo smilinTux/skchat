@@ -7,19 +7,18 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
-from unittest.mock import MagicMock, call, patch
-
-import pytest
+from unittest.mock import MagicMock, patch
 
 from skchat.voice import DEFAULT_VOICE, LUMINA_VOICE, VoicePlayer
-
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-def _make_player(binary: str = "/usr/local/bin/piper", model: str = "/fake/model.onnx") -> VoicePlayer:
+def _make_player(
+    binary: str = "/usr/local/bin/piper", model: str = "/fake/model.onnx"
+) -> VoicePlayer:
     """Return a VoicePlayer with mocked binary/model discovery."""
     player = VoicePlayer.__new__(VoicePlayer)
     player._voice = DEFAULT_VOICE
@@ -63,7 +62,7 @@ def test_is_available_false_when_binary_missing(tmp_path: Path) -> None:
     model = tmp_path / "en_US-lessac-medium.onnx"
     model.touch()
 
-    with patch("shutil.which", return_value=None):
+    with patch("shutil.which", return_value=None), patch("skchat.voice._PIPER_SEARCH_PATHS", []):
         player = VoicePlayer(model_path=str(model))
 
     assert player.is_available() is False

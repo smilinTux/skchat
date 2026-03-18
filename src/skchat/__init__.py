@@ -5,17 +5,11 @@ Chat should be sovereign. Your AI should be in the room.
 SK = staycuriousANDkeepsmilin
 """
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 __author__ = "smilinTux Team"
 __license__ = "GPL-3.0-or-later"
 
-from .models import (
-    ChatMessage,
-    ContentType,
-    DeliveryStatus,
-    Reaction,
-    Thread,
-)
+from .agent_comm import AgentMessenger
 from .crypto import (
     ChatCrypto,
     CryptoError,
@@ -25,21 +19,10 @@ from .crypto import (
     SigningError,
     VerificationError,
 )
-from .presence import (
-    PresenceIndicator,
-    PresenceState,
-    PresenceTracker,
-)
-from .history import ChatHistory
-from .transport import ChatTransport
-from .identity_bridge import (
-    get_sovereign_identity,
-    resolve_peer_name,
-    get_peer_transport_address,
-    IdentityResolutionError,
-    PeerResolutionError,
-)
 from .daemon import ChatDaemon, run_daemon
+from .encrypted_store import EncryptedChatHistory
+from .ephemeral import MessageReaper
+from .files import FileChunk, FileReceiver, FileSender, FileTransfer
 from .group import (
     GroupChat,
     GroupKeyDistributor,
@@ -48,12 +31,29 @@ from .group import (
     MemberRole,
     ParticipantType,
 )
-from .ephemeral import MessageReaper
-from .files import FileChunk, FileReceiver, FileSender, FileTransfer
-from .reactions import ReactionEvent, ReactionManager, ReactionSummary
+from .history import ChatHistory
+from .identity_bridge import (
+    IdentityResolutionError,
+    PeerResolutionError,
+    get_peer_transport_address,
+    get_sovereign_identity,
+    resolve_peer_name,
+)
+from .models import (
+    ChatMessage,
+    ContentType,
+    DeliveryStatus,
+    Reaction,
+    Thread,
+)
 from .plugins import ChatPlugin, PluginMeta, PluginRegistry, PluginState
-from .agent_comm import AgentMessenger
-from .encrypted_store import EncryptedChatHistory
+from .presence import (
+    PresenceIndicator,
+    PresenceState,
+    PresenceTracker,
+)
+from .reactions import ReactionEvent, ReactionManager, ReactionSummary
+from .transport import ChatTransport
 
 __all__ = [
     "ChatMessage",
