@@ -1,0 +1,682 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SK FaceTime</title>
+<style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+        background: #0a0a0f;
+        color: #e0e0e0;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        height: 100vh;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+    }
+
+    #facetime-container {
+        position: relative;
+        width: 100%;
+        max-width: 800px;
+        aspect-ratio: 16 / 9;
+        background: #111;
+        border-radius: 12px;
+        overflow: hidden;
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+    }
+
+    #avatar-video {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        background: #111;
+    }
+
+    /* Captions overlay at the bottom of the video */
+    #captions-overlay {
+        position: absolute;
+        bottom: 60px;
+        left: 5%;
+        right: 5%;
+        text-align: center;
+        pointer-events: none;
+    }
+
+    .caption-line {
+        display: inline-block;
+        background: rgba(0, 0, 0, 0.7);
+        color: #fff;
+        padding: 6px 14px;
+        border-radius: 6px;
+        font-size: 16px;
+        line-height: 1.4;
+        margin-bottom: 4px;
+        max-width: 100%;
+    }
+
+    /* Emotion indicator */
+    #emotion-badge {
+        position: absolute;
+        top: 12px;
+        right: 12px;
+        background: rgba(0, 0, 0, 0.5);
+        padding: 4px 10px;
+        border-radius: 16px;
+        font-size: 13px;
+        display: none;
+    }
+
+    /* Agent name tag */
+    #agent-name {
+        position: absolute;
+        top: 12px;
+        left: 12px;
+        background: rgba(0, 0, 0, 0.5);
+        padding: 4px 12px;
+        border-radius: 16px;
+        font-size: 14px;
+        font-weight: 600;
+    }
+
+    /* Connection status */
+    #status-bar {
+        position: absolute;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        height: 50px;
+        background: rgba(0, 0, 0, 0.6);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 16px;
+    }
+
+    .status-dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: #555;
+    }
+    .status-dot.connected { background: #4caf50; }
+    .status-dot.connecting { background: #ff9800; animation: pulse 1s infinite; }
+    .status-dot.error { background: #f44336; }
+
+    @keyframes pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.4; }
+    }
+
+    #status-text {
+        font-size: 13px;
+        color: #aaa;
+    }
+
+    /* Controls */
+    #controls {
+        margin-top: 16px;
+        display: flex;
+        gap: 12px;
+        align-items: center;
+    }
+
+    button {
+        padding: 10px 24px;
+        border: none;
+        border-radius: 8px;
+        font-size: 15px;
+        cursor: pointer;
+        font-weight: 500;
+        transition: all 0.15s;
+    }
+
+    #btn-start {
+        background: #4caf50;
+        color: #fff;
+    }
+    #btn-start:hover { background: #66bb6a; }
+    #btn-start:disabled { background: #333; color: #666; cursor: not-allowed; }
+
+    #btn-interrupt {
+        background: #ff9800;
+        color: #fff;
+        display: none;
+    }
+    #btn-interrupt:hover { background: #ffb74d; }
+
+    #btn-end {
+        background: #f44336;
+        color: #fff;
+        display: none;
+    }
+    #btn-end:hover { background: #ef5350; }
+
+    #volume-slider {
+        width: 100px;
+    }
+
+    /* Transcript panel */
+    #transcript-panel {
+        width: 100%;
+        max-width: 800px;
+        margin-top: 12px;
+        max-height: 200px;
+        overflow-y: auto;
+        padding: 8px;
+        background: rgba(255, 255, 255, 0.03);
+        border-radius: 8px;
+        font-size: 13px;
+    }
+
+    .transcript-line {
+        padding: 3px 0;
+        line-height: 1.4;
+    }
+    .transcript-line.user { color: #90caf9; }
+    .transcript-line.assistant { color: #a5d6a7; }
+    .transcript-line .role { font-weight: 600; margin-right: 6px; }
+</style>
+</head>
+<body>
+
+<div id="facetime-container">
+    <video id="avatar-video" autoplay playsinline muted></video>
+    <audio id="avatar-audio" autoplay></audio>
+
+    <div id="agent-name">Loading...</div>
+    <div id="emotion-badge"></div>
+
+    <div id="captions-overlay"></div>
+
+    <div id="status-bar">
+        <div class="status-dot" id="status-dot"></div>
+        <span id="status-text">Click Start to begin</span>
+    </div>
+</div>
+
+<div id="controls">
+    <button id="btn-start" onclick="startFaceTime()">Start FaceTime</button>
+    <button id="btn-interrupt" onclick="interruptSpeech()">Interrupt</button>
+    <button id="btn-end" onclick="endFaceTime()">End Call</button>
+    <label style="font-size: 13px; color: #888;">
+        Vol: <input type="range" id="volume-slider" min="0" max="100" value="80"
+                    oninput="setVolume(this.value)">
+    </label>
+</div>
+
+<div id="transcript-panel"></div>
+
+<script>
+"use strict";
+
+// ── Configuration ──────────────────────────────────────────────────
+
+// Extract agent name from URL path: /facetime/{agent} or default
+const pathParts = window.location.pathname.split("/").filter(Boolean);
+const AGENT_NAME = pathParts.length > 1 ? pathParts[pathParts.length - 1] : "lumina";
+
+// Signaling broker WebSocket URL
+// In production, this goes through the skchat reverse proxy
+const SIGNALING_URL = (() => {
+    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+    return `${proto}//${window.location.host}/webrtc/ws`;
+})();
+
+// TURN/STUN configuration
+// In production, TURN credentials are fetched from the server via an API
+const ICE_SERVERS = [
+    { urls: "stun:stun.l.google.com:19302" },
+    // TURN server credentials will be injected by the signaling welcome message
+];
+
+// ── State ──────────────────────────────────────────────────────────
+
+let pc = null;            // RTCPeerConnection
+let signalingWs = null;   // WebSocket to signaling broker
+let dataChannel = null;   // Data channel for captions/control
+let localStream = null;   // User's microphone stream (Phase 3)
+let audioContext = null;   // For audio analysis
+
+// ── UI Helpers ─────────────────────────────────────────────────────
+
+function setStatus(state, text) {
+    const dot = document.getElementById("status-dot");
+    const txt = document.getElementById("status-text");
+    dot.className = "status-dot " + state;
+    txt.textContent = text;
+}
+
+function setAgentName(name) {
+    document.getElementById("agent-name").textContent = name;
+}
+
+function addCaption(text) {
+    const overlay = document.getElementById("captions-overlay");
+    const line = document.createElement("div");
+    line.className = "caption-line";
+    line.textContent = text;
+    overlay.innerHTML = "";
+    overlay.appendChild(line);
+
+    // Auto-clear after 8 seconds
+    setTimeout(() => {
+        if (overlay.contains(line)) line.remove();
+    }, 8000);
+}
+
+function addTranscript(role, text) {
+    const panel = document.getElementById("transcript-panel");
+    const line = document.createElement("div");
+    line.className = "transcript-line " + role;
+    line.innerHTML = `<span class="role">${role === "user" ? "You" : AGENT_NAME}:</span>${escapeHtml(text)}`;
+    panel.appendChild(line);
+    panel.scrollTop = panel.scrollHeight;
+
+    // Also show as caption
+    if (role === "assistant") addCaption(text);
+}
+
+function showEmotion(emotion, intensity) {
+    const badge = document.getElementById("emotion-badge");
+    badge.textContent = `${emotion} (${Math.round(intensity * 100)}%)`;
+    badge.style.display = "block";
+    setTimeout(() => { badge.style.display = "none"; }, 5000);
+}
+
+function escapeHtml(text) {
+    const div = document.createElement("div");
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+function setVolume(val) {
+    const audio = document.getElementById("avatar-audio");
+    audio.volume = val / 100;
+}
+
+// ── WebRTC ─────────────────────────────────────────────────────────
+
+async function startFaceTime() {
+    const btn = document.getElementById("btn-start");
+    btn.disabled = true;
+    setStatus("connecting", "Connecting...");
+    setAgentName(AGENT_NAME);
+
+    try {
+        await connectSignaling();
+    } catch (err) {
+        console.error("Failed to start FaceTime:", err);
+        setStatus("error", "Connection failed: " + err.message);
+        btn.disabled = false;
+
+        // Try WebSocket fallback
+        console.warn("Attempting WebSocket fallback...");
+        connectWebSocketFallback();
+    }
+}
+
+async function connectSignaling() {
+    // Connect to the signaling broker
+    const room = `facetime-${AGENT_NAME}`;
+    // Browser identifies as "browser-" + random ID
+    const browserId = "browser-" + crypto.randomUUID().slice(0, 8);
+
+    const url = `${SIGNALING_URL}?room=${room}&peer=${browserId}`;
+    signalingWs = new WebSocket(url);
+
+    signalingWs.onopen = () => {
+        console.log("Signaling connected");
+        setStatus("connecting", "Waiting for " + AGENT_NAME + "...");
+    };
+
+    signalingWs.onmessage = async (event) => {
+        const msg = JSON.parse(event.data);
+        await handleSignalingMessage(msg);
+    };
+
+    signalingWs.onclose = (event) => {
+        console.log("Signaling closed:", event.code, event.reason);
+        if (pc && pc.connectionState !== "closed") {
+            setStatus("error", "Signaling disconnected");
+        }
+    };
+
+    signalingWs.onerror = (event) => {
+        console.error("Signaling error:", event);
+        setStatus("error", "Signaling error");
+    };
+}
+
+async function handleSignalingMessage(msg) {
+    switch (msg.type) {
+        case "welcome":
+            console.log("Welcome, existing peers:", msg.peers);
+            break;
+
+        case "peer_joined":
+            console.log("Server peer joined:", msg.peer);
+            break;
+
+        case "signal":
+            await handleSignal(msg.from, msg.data);
+            break;
+
+        case "peer_left":
+            console.log("Server peer left:", msg.peer);
+            setStatus("connecting", "Agent disconnected, waiting...");
+            break;
+    }
+}
+
+async function handleSignal(fromPeer, data) {
+    if (data.type === "offer" && data.sdp) {
+        console.log("Received SDP offer from", fromPeer);
+
+        // Create peer connection if needed
+        if (!pc) {
+            createPeerConnection();
+        }
+
+        // Set remote description (the server's offer)
+        await pc.setRemoteDescription(new RTCSessionDescription({
+            type: data.type,
+            sdp: data.sdp,
+        }));
+
+        // Create answer
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+
+        // Wait for ICE gathering
+        await waitForIceGathering();
+
+        // Send answer back via signaling
+        signalingWs.send(JSON.stringify({
+            type: "signal",
+            to: fromPeer,
+            data: {
+                type: pc.localDescription.type,
+                sdp: pc.localDescription.sdp,
+            },
+        }));
+
+        console.log("SDP answer sent to", fromPeer);
+
+    } else if (data.candidate) {
+        // ICE candidate
+        if (pc) {
+            try {
+                await pc.addIceCandidate(new RTCIceCandidate({
+                    candidate: data.candidate,
+                    sdpMid: data.sdpMid,
+                    sdpMLineIndex: data.sdpMLineIndex,
+                }));
+            } catch (err) {
+                console.warn("Failed to add ICE candidate:", err);
+            }
+        }
+    }
+}
+
+function createPeerConnection() {
+    pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+
+    // Handle incoming media tracks
+    pc.ontrack = (event) => {
+        console.log("Track received:", event.track.kind);
+
+        if (event.track.kind === "video") {
+            const videoEl = document.getElementById("avatar-video");
+            videoEl.srcObject = event.streams[0];
+            console.log("Video track attached to <video> element");
+        } else if (event.track.kind === "audio") {
+            const audioEl = document.getElementById("avatar-audio");
+            audioEl.srcObject = event.streams[0];
+            // Resume audio context (autoplay policy)
+            audioEl.play().catch(err => {
+                console.warn("Audio autoplay blocked:", err);
+                setStatus("connected", "Click anywhere to enable audio");
+                document.body.addEventListener("click", () => {
+                    audioEl.play();
+                }, { once: true });
+            });
+            console.log("Audio track attached to <audio> element");
+        }
+    };
+
+    // Handle data channel from server
+    pc.ondatachannel = (event) => {
+        dataChannel = event.channel;
+        console.log("Data channel received:", dataChannel.label);
+
+        dataChannel.onmessage = (e) => {
+            try {
+                const msg = JSON.parse(e.data);
+                handleDataChannelMessage(msg);
+            } catch (err) {
+                console.warn("Bad data channel message:", e.data);
+            }
+        };
+
+        dataChannel.onopen = () => {
+            console.log("Data channel open");
+        };
+    };
+
+    // Connection state changes
+    pc.onconnectionstatechange = () => {
+        console.log("Connection state:", pc.connectionState);
+        switch (pc.connectionState) {
+            case "connected":
+                setStatus("connected", "Connected to " + AGENT_NAME);
+                document.getElementById("btn-start").style.display = "none";
+                document.getElementById("btn-interrupt").style.display = "";
+                document.getElementById("btn-end").style.display = "";
+                break;
+            case "disconnected":
+                setStatus("error", "Connection lost");
+                break;
+            case "failed":
+                setStatus("error", "Connection failed");
+                break;
+            case "closed":
+                setStatus("error", "Call ended");
+                resetUI();
+                break;
+        }
+    };
+
+    // Send ICE candidates to server via signaling
+    pc.onicecandidate = (event) => {
+        if (event.candidate && signalingWs && signalingWs.readyState === WebSocket.OPEN) {
+            // We need the server's peer ID. Store it from the offer.
+            // For now, broadcast to all peers in the room via the signaling relay.
+            signalingWs.send(JSON.stringify({
+                type: "signal",
+                to: "*",  // Server should be the only other peer in the room
+                data: {
+                    candidate: event.candidate.candidate,
+                    sdpMid: event.candidate.sdpMid,
+                    sdpMLineIndex: event.candidate.sdpMLineIndex,
+                },
+            }));
+        }
+    };
+
+    pc.onicecandidateerror = (event) => {
+        console.warn("ICE candidate error:", event.errorText);
+    };
+}
+
+function handleDataChannelMessage(msg) {
+    switch (msg.type) {
+        case "transcript":
+            addTranscript(msg.role, msg.text);
+            break;
+        case "emotion":
+            showEmotion(msg.emotion, msg.intensity);
+            break;
+        case "status":
+            setStatus("connected", msg.message);
+            break;
+        case "pong":
+            break;
+        default:
+            console.log("Unknown data channel message:", msg);
+    }
+}
+
+function waitForIceGathering() {
+    return new Promise((resolve) => {
+        if (pc.iceGatheringState === "complete") {
+            resolve();
+            return;
+        }
+        const check = () => {
+            if (pc.iceGatheringState === "complete") {
+                pc.removeEventListener("icegatheringstatechange", check);
+                resolve();
+            }
+        };
+        pc.addEventListener("icegatheringstatechange", check);
+        // Timeout: don't wait forever
+        setTimeout(resolve, 5000);
+    });
+}
+
+// ── User Actions ───────────────────────────────────────────────────
+
+function interruptSpeech() {
+    if (dataChannel && dataChannel.readyState === "open") {
+        dataChannel.send(JSON.stringify({ type: "interrupt" }));
+    }
+}
+
+function endFaceTime() {
+    if (pc) {
+        pc.close();
+        pc = null;
+    }
+    if (signalingWs) {
+        signalingWs.close();
+        signalingWs = null;
+    }
+    dataChannel = null;
+    resetUI();
+    setStatus("", "Call ended");
+}
+
+function resetUI() {
+    document.getElementById("btn-start").style.display = "";
+    document.getElementById("btn-start").disabled = false;
+    document.getElementById("btn-interrupt").style.display = "none";
+    document.getElementById("btn-end").style.display = "none";
+
+    const videoEl = document.getElementById("avatar-video");
+    const audioEl = document.getElementById("avatar-audio");
+    videoEl.srcObject = null;
+    audioEl.srcObject = null;
+}
+
+// ── WebSocket Fallback ─────────────────────────────────────────────
+
+function connectWebSocketFallback() {
+    setStatus("connecting", "Connecting via WebSocket fallback...");
+
+    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const wsUrl = `${proto}//${window.location.host}/ws/facetime/${AGENT_NAME}`;
+    const ws = new WebSocket(wsUrl);
+
+    // For MJPEG fallback, we render frames to a canvas
+    const videoEl = document.getElementById("avatar-video");
+    const canvas = document.createElement("canvas");
+    canvas.width = 1280;
+    canvas.height = 720;
+    const ctx = canvas.getContext("2d");
+
+    ws.binaryType = "arraybuffer";
+
+    ws.onopen = () => {
+        setStatus("connected", "Connected (WebSocket fallback)");
+        document.getElementById("btn-start").style.display = "none";
+        document.getElementById("btn-end").style.display = "";
+
+        // Replace video element with canvas stream
+        const stream = canvas.captureStream(0);
+        videoEl.srcObject = stream;
+    };
+
+    ws.onmessage = (event) => {
+        if (event.data instanceof ArrayBuffer) {
+            // Binary frame: parse header
+            const view = new DataView(event.data);
+            const frameType = view.getUint32(0, true);
+            const timestampMs = view.getUint32(4, true);
+            const payloadLen = view.getUint32(8, true);
+            const payload = new Uint8Array(event.data, 12, payloadLen);
+
+            if (frameType === 0x01) {
+                // Video frame: JPEG
+                const blob = new Blob([payload], { type: "image/jpeg" });
+                const url = URL.createObjectURL(blob);
+                const img = new Image();
+                img.onload = () => {
+                    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                    URL.revokeObjectURL(url);
+                    // Request canvas stream to capture the new frame
+                    const track = videoEl.srcObject?.getVideoTracks()[0];
+                    if (track && track.requestFrame) track.requestFrame();
+                };
+                img.src = url;
+            } else if (frameType === 0x02) {
+                // Audio frame: decode and play via Web Audio API
+                // (Simplified — production would use AudioWorklet)
+                playAudioChunk(payload);
+            }
+        } else {
+            // Text frame: JSON control message
+            try {
+                const msg = JSON.parse(event.data);
+                handleDataChannelMessage(msg);
+            } catch (err) {
+                console.warn("Bad WS text message:", event.data);
+            }
+        }
+    };
+
+    ws.onclose = () => {
+        setStatus("", "Disconnected");
+        resetUI();
+    };
+}
+
+async function playAudioChunk(opusData) {
+    // Simplified audio playback via Web Audio API
+    // In production, use AudioWorklet for gapless playback
+    if (!audioContext) {
+        audioContext = new AudioContext({ sampleRate: 48000 });
+    }
+    try {
+        const buffer = await audioContext.decodeAudioData(opusData.buffer.slice(0));
+        const source = audioContext.createBufferSource();
+        source.buffer = buffer;
+        source.connect(audioContext.destination);
+        source.start();
+    } catch (err) {
+        // Opus raw packets cannot be decoded by decodeAudioData;
+        // a proper implementation would use an AudioWorklet with an Opus decoder.
+        console.debug("Audio decode error (expected for raw Opus):", err);
+    }
+}
+
+// ── Init ───────────────────────────────────────────────────────────
+
+setAgentName(AGENT_NAME);
+setVolume(80);
+</script>
+</body>
+</html>

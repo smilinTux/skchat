@@ -2,204 +2,830 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>SKChat Voice</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
-* { box-sizing: border-box; margin: 0; padding: 0; }
-body {
-  background: #0a0a0a;
-  color: #e0e0e0;
-  font-family: 'JetBrains Mono', 'Fira Code', monospace;
-  display: flex;
-  flex-direction: column;
-  height: 100vh;
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg: #000000;
+  --surface-raised: #0A0A0F;
+  --surface-glass: rgba(255,255,255,0.06);
+  --surface-glass-border: rgba(255,255,255,0.08);
+  --text-primary: #E8E8F0;
+  --text-secondary: #808098;
+  --text-tertiary: #505068;
+  --accent-encrypt: #10B981;
+  --accent-danger: #EF4444;
+  --soul-color: #BB86FC;
+  --soul-color-18: rgba(187,134,252,0.18);
+  --soul-color-30: rgba(187,134,252,0.30);
+  --font-primary: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+}
+
+html, body {
+  height: 100%;
   overflow: hidden;
 }
 
-header {
-  padding: 12px 20px;
-  border-bottom: 1px solid #1e1e1e;
+body {
+  background: var(--bg);
+  color: var(--text-primary);
+  font-family: var(--font-primary);
   display: flex;
-  align-items: center;
-  gap: 12px;
+  flex-direction: column;
+  height: 100dvh;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
-header h1 {
-  font-size: 1.1em;
-  color: #c084fc;
+/* ─── Header ─── */
+.app-header {
+  padding: 12px 16px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--surface-raised);
+  border-bottom: 1px solid var(--surface-glass-border);
+  flex-shrink: 0;
+  z-index: 10;
+}
+
+.agent-avatar-header {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--soul-color);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 14px;
+  color: #000;
+  flex-shrink: 0;
+}
+
+.header-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.agent-name {
+  font-size: 16px;
   font-weight: 600;
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.soul-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--soul-color);
+  flex-shrink: 0;
+}
+
+.header-subtitle {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-top: 1px;
 }
 
 #status-badge {
-  font-size: 0.8em;
-  padding: 2px 10px;
+  font-size: 11px;
+  font-weight: 500;
+  padding: 3px 10px;
   border-radius: 12px;
-  background: #1a1a1a;
-  border: 1px solid #333;
-  color: #888;
+  background: var(--surface-glass);
+  border: 1px solid var(--surface-glass-border);
+  color: var(--text-tertiary);
+  transition: all 0.3s ease;
+  white-space: nowrap;
 }
 
-#status-badge.connected { border-color: #4ade80; color: #4ade80; }
-#status-badge.listening { border-color: #f97316; color: #f97316; animation: pulse 1s infinite; }
-#status-badge.processing { border-color: #60a5fa; color: #60a5fa; }
-#status-badge.thinking { border-color: #a78bfa; color: #a78bfa; animation: pulse 1.5s infinite; }
-#status-badge.speaking { border-color: #c084fc; color: #c084fc; animation: pulse 0.8s infinite; }
-#status-badge.error { border-color: #ef4444; color: #ef4444; }
+#status-badge.connected { border-color: var(--accent-encrypt); color: var(--accent-encrypt); }
+#status-badge.listening { border-color: #F59E0B; color: #F59E0B; animation: pulse 1s infinite; }
+#status-badge.processing { border-color: #60A5FA; color: #60A5FA; }
+#status-badge.thinking { border-color: var(--soul-color); color: var(--soul-color); animation: pulse 1.5s infinite; }
+#status-badge.speaking { border-color: var(--soul-color); color: var(--soul-color); animation: pulse 0.8s infinite; }
+#status-badge.error { border-color: var(--accent-danger); color: var(--accent-danger); }
+
+.header-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.btn-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  border: 1px solid var(--surface-glass-border);
+  background: var(--surface-glass);
+  color: var(--text-secondary);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+  font-size: 16px;
+}
+
+.btn-icon:hover {
+  background: rgba(255,255,255,0.10);
+  color: var(--text-primary);
+}
+
+.btn-icon.voice-active {
+  background: rgba(239,68,68,0.15);
+  border-color: rgba(239,68,68,0.4);
+  color: var(--accent-danger);
+  animation: pulse-ring 1.5s infinite;
+}
 
 @keyframes pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.5; }
 }
 
-#transcript {
-  flex: 1;
-  overflow-y: auto;
-  padding: 16px 20px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.msg {
-  max-width: 80%;
-  padding: 8px 14px;
-  border-radius: 8px;
-  font-size: 0.95em;
-  line-height: 1.5;
-  word-wrap: break-word;
-}
-
-.msg.user {
-  align-self: flex-end;
-  background: #1d3a5c;
-  border: 1px solid #2563eb;
-  color: #93c5fd;
-}
-
-.msg.assistant {
-  align-self: flex-start;
-  background: #1a1030;
-  border: 1px solid #7c3aed;
-  color: #ddd6fe;
-}
-
-.msg .role {
-  font-size: 0.75em;
-  font-weight: bold;
-  margin-bottom: 2px;
-  text-transform: uppercase;
-  letter-spacing: 1px;
-}
-
-.msg.user .role { color: #60a5fa; }
-.msg.assistant .role { color: #c084fc; }
-
-.msg .text { display: block; }
-
-#controls {
-  padding: 16px 20px;
-  border-top: 1px solid #1e1e1e;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 16px;
-}
-
-#btn-voice {
-  width: 72px;
-  height: 72px;
-  border-radius: 50%;
-  border: 3px solid #333;
-  background: #1a1a1a;
-  color: #888;
-  font-size: 1.8em;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-#btn-voice:hover { border-color: #4ade80; color: #4ade80; }
-#btn-voice.active {
-  border-color: #ef4444;
-  color: #ef4444;
-  background: #1a0a0a;
-  animation: pulse-ring 1.5s infinite;
-}
-
 @keyframes pulse-ring {
-  0% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4); }
-  70% { box-shadow: 0 0 0 12px rgba(239, 68, 68, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+  0% { box-shadow: 0 0 0 0 rgba(239,68,68,0.3); }
+  70% { box-shadow: 0 0 0 8px rgba(239,68,68,0); }
+  100% { box-shadow: 0 0 0 0 rgba(239,68,68,0); }
 }
 
-#btn-clear {
-  background: none;
-  border: 1px solid #333;
-  color: #666;
-  padding: 8px 14px;
-  border-radius: 6px;
-  cursor: pointer;
-  font-family: inherit;
-  font-size: 0.8em;
-}
-
-#btn-clear:hover { border-color: #888; color: #aaa; }
-
-#status-text {
-  font-size: 0.85em;
-  color: #555;
-  text-align: center;
-  padding: 4px 0;
-}
-
-/* Visualizer */
-#visualizer {
-  height: 40px;
+/* ─── Voice Visualizer Bar ─── */
+#voice-visualizer {
+  height: 0;
+  overflow: hidden;
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 2px;
+  background: var(--surface-raised);
+  border-bottom: 1px solid var(--surface-glass-border);
+  transition: height 0.3s ease;
+  flex-shrink: 0;
+}
+
+#voice-visualizer.active {
+  height: 40px;
+  padding: 4px 16px;
 }
 
 .viz-bar {
   width: 3px;
-  background: #4ade80;
+  background: var(--soul-color);
   border-radius: 2px;
   transition: height 0.05s ease;
   height: 4px;
+  opacity: 0.7;
 }
 
-#btn-voice.active ~ #visualizer .viz-bar { background: #ef4444; }
+/* ─── Chat Area ─── */
+#chat-area {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  scroll-behavior: smooth;
+  overscroll-behavior: contain;
+}
+
+#chat-area::-webkit-scrollbar {
+  width: 4px;
+}
+
+#chat-area::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+#chat-area::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,0.1);
+  border-radius: 2px;
+}
+
+/* ─── Messages ─── */
+.message-row {
+  display: flex;
+  gap: 8px;
+  max-width: 85%;
+  animation: msg-in 0.25s ease-out;
+}
+
+.message-row.user {
+  align-self: flex-end;
+  flex-direction: row-reverse;
+}
+
+.message-row.assistant {
+  align-self: flex-start;
+}
+
+@keyframes msg-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.msg-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 600;
+  font-size: 12px;
+  flex-shrink: 0;
+  align-self: flex-end;
+  margin-bottom: 2px;
+}
+
+.msg-avatar.agent {
+  background: var(--soul-color);
+  color: #000;
+}
+
+.msg-avatar.user {
+  background: #FFC107;
+  color: #000;
+}
+
+.msg-bubble {
+  padding: 8px 12px;
+  font-size: 14px;
+  line-height: 1.5;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+}
+
+.msg-bubble.user {
+  background: var(--soul-color-18);
+  border: 1px solid var(--soul-color-30);
+  border-radius: 16px 16px 4px 16px;
+  color: var(--text-primary);
+}
+
+.msg-bubble.assistant {
+  background: var(--surface-glass);
+  border: 1px solid var(--surface-glass-border);
+  border-left: 3px solid var(--soul-color);
+  border-radius: 16px 16px 16px 4px;
+  color: var(--text-primary);
+}
+
+.msg-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.msg-time {
+  font-size: 10px;
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+}
+
+.msg-via {
+  font-size: 10px;
+  color: var(--text-tertiary);
+  font-style: italic;
+}
+
+/* Status indicator in chat */
+.status-indicator {
+  align-self: flex-start;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  animation: msg-in 0.25s ease-out;
+}
+
+.status-indicator .typing-dots {
+  display: flex;
+  gap: 3px;
+}
+
+.status-indicator .typing-dots span {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--soul-color);
+  animation: typing-bounce 1.2s infinite;
+}
+
+.status-indicator .typing-dots span:nth-child(2) { animation-delay: 0.2s; }
+.status-indicator .typing-dots span:nth-child(3) { animation-delay: 0.4s; }
+
+@keyframes typing-bounce {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
+  30% { transform: translateY(-4px); opacity: 1; }
+}
+
+/* ─── Input Area ─── */
+.input-area {
+  padding: 8px 12px;
+  padding-bottom: max(8px, env(safe-area-inset-bottom));
+  background: rgba(10,10,15,0.85);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border-top: 1px solid var(--surface-glass-border);
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  flex-shrink: 0;
+  z-index: 10;
+}
+
+.input-wrapper {
+  flex: 1;
+  display: flex;
+  align-items: flex-end;
+  background: var(--surface-glass);
+  border: 1px solid var(--surface-glass-border);
+  border-radius: 20px;
+  padding: 4px 4px 4px 14px;
+  transition: border-color 0.2s ease;
+  min-height: 40px;
+}
+
+.input-wrapper:focus-within {
+  border-color: rgba(255,255,255,0.15);
+}
+
+#text-input {
+  flex: 1;
+  background: none;
+  border: none;
+  outline: none;
+  color: var(--text-primary);
+  font-family: var(--font-primary);
+  font-size: 14px;
+  line-height: 1.4;
+  resize: none;
+  max-height: 120px;
+  padding: 6px 0;
+}
+
+#text-input::placeholder {
+  color: var(--text-tertiary);
+}
+
+.btn-send {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: none;
+  background: var(--soul-color);
+  color: #000;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: all 0.2s ease;
+  font-size: 14px;
+}
+
+.btn-send:hover {
+  transform: scale(1.05);
+  filter: brightness(1.1);
+}
+
+.btn-send:disabled {
+  background: var(--text-tertiary);
+  cursor: default;
+  transform: none;
+  filter: none;
+}
+
+.btn-voice-input {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: 2px solid var(--surface-glass-border);
+  background: var(--surface-glass);
+  color: var(--text-secondary);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: all 0.2s ease;
+  font-size: 18px;
+}
+
+.btn-voice-input:hover {
+  border-color: var(--soul-color);
+  color: var(--soul-color);
+}
+
+.btn-voice-input.active {
+  border-color: var(--accent-danger);
+  color: var(--accent-danger);
+  background: rgba(239,68,68,0.12);
+  animation: pulse-ring 1.5s infinite;
+}
+
+/* ─── Empty State ─── */
+.empty-state {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: var(--text-tertiary);
+  padding: 32px;
+  text-align: center;
+}
+
+.empty-state .agent-icon {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: var(--soul-color);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 24px;
+  font-weight: 700;
+  color: #000;
+  margin-bottom: 4px;
+}
+
+.empty-state h2 {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.empty-state p {
+  font-size: 13px;
+  line-height: 1.5;
+  max-width: 280px;
+}
+
+/* ─── Agent Picker Panel ─── */
+.agent-panel-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.5);
+  z-index: 100;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.3s ease, visibility 0.3s ease;
+}
+
+.agent-panel-overlay.open {
+  opacity: 1;
+  visibility: visible;
+}
+
+.agent-panel {
+  position: fixed;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: 280px;
+  max-width: 85vw;
+  background: rgba(10,10,15,0.92);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border-right: 1px solid var(--surface-glass-border);
+  z-index: 101;
+  transform: translateX(-100%);
+  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.agent-panel.open {
+  transform: translateX(0);
+}
+
+.agent-panel-header {
+  padding: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--surface-glass-border);
+  flex-shrink: 0;
+}
+
+.agent-panel-header h3 {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.agent-panel-close {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  border: 1px solid var(--surface-glass-border);
+  background: var(--surface-glass);
+  color: var(--text-secondary);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  transition: all 0.2s ease;
+}
+
+.agent-panel-close:hover {
+  background: rgba(255,255,255,0.10);
+  color: var(--text-primary);
+}
+
+.agent-panel-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+}
+
+.agent-panel-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  cursor: pointer;
+  transition: background 0.2s ease;
+  text-decoration: none;
+  color: inherit;
+}
+
+.agent-panel-item:hover {
+  background: rgba(255,255,255,0.06);
+}
+
+.agent-panel-item.active {
+  background: rgba(255,255,255,0.08);
+}
+
+.agent-panel-avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 15px;
+  color: #000;
+  flex-shrink: 0;
+}
+
+.agent-panel-avatar.group-icon {
+  background: linear-gradient(135deg, #BB86FC, #00E5FF, #10B981, #FFC107);
+  font-size: 16px;
+}
+
+.agent-panel-name {
+  flex: 1;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.agent-panel-badge {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 8px;
+  background: rgba(16,185,129,0.15);
+  color: var(--accent-encrypt);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* ─── Responsive ─── */
+@media (min-width: 640px) {
+  #chat-area { padding: 20px 32px; }
+  .message-row { max-width: 70%; }
+  .input-area { padding: 12px 24px; }
+}
+
+@media (min-width: 1024px) {
+  body {
+    max-width: 800px;
+    margin: 0 auto;
+    border-left: 1px solid var(--surface-glass-border);
+    border-right: 1px solid var(--surface-glass-border);
+  }
+}
 </style>
 </head>
 <body>
 
-<header>
-  <h1>SKChat Voice</h1>
-  <span id="status-badge">disconnected</span>
+<!-- Agent Picker Panel -->
+<div class="agent-panel-overlay" id="agent-panel-overlay" onclick="closeAgentPanel()"></div>
+<div class="agent-panel" id="agent-panel">
+  <div class="agent-panel-header">
+    <h3>Agents</h3>
+    <button class="agent-panel-close" onclick="closeAgentPanel()">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+    </button>
+  </div>
+  <div class="agent-panel-list" id="agent-panel-list"></div>
+</div>
+
+<!-- Header -->
+<header class="app-header">
+  <div class="agent-avatar-header" id="header-avatar">L</div>
+  <div class="header-info">
+    <div class="agent-name">
+      <span id="agent-name-text">Lumina</span>
+      <span class="soul-dot" id="soul-dot"></span>
+    </div>
+    <div class="header-subtitle" id="header-subtitle">Voice + Text Chat</div>
+  </div>
+  <span id="status-badge">connecting</span>
+  <div class="header-actions">
+    <button class="btn-icon" id="btn-agents" title="Switch agent" onclick="openAgentPanel()">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+    </button>
+    <button class="btn-icon" id="btn-clear" title="Clear conversation" onclick="clearHistory()">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+    </button>
+    <button class="btn-icon" id="btn-voice-toggle" title="Toggle voice mode" onclick="toggleVoice()">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+    </button>
+  </div>
 </header>
 
-<div id="transcript"></div>
+<!-- Voice Visualizer -->
+<div id="voice-visualizer"></div>
 
-<div id="controls">
-  <button id="btn-clear" onclick="clearHistory()">Clear</button>
-  <div>
-    <button id="btn-voice" onclick="toggleVoice()">&#9899;</button>
-    <div id="visualizer"></div>
+<!-- Chat Area -->
+<div id="chat-area">
+  <div class="empty-state" id="empty-state">
+    <div class="agent-icon" id="empty-avatar">L</div>
+    <h2 id="empty-greeting">Chat with Lumina</h2>
+    <p>Type a message or tap the microphone to start a voice conversation.</p>
   </div>
-  <div id="status-text">Click to start voice chat</div>
+</div>
+
+<!-- Status Indicator (typing/thinking) -->
+<div class="status-indicator" id="status-indicator" style="display:none;">
+  <div class="typing-dots"><span></span><span></span><span></span></div>
+  <span id="status-label">Thinking...</span>
+</div>
+
+<!-- Input Area -->
+<div class="input-area">
+  <div class="input-wrapper">
+    <textarea id="text-input" rows="1" placeholder="Message..." autocomplete="off"></textarea>
+    <button class="btn-send" id="btn-send" onclick="sendTextMessage()" disabled title="Send message">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+    </button>
+  </div>
+  <button class="btn-voice-input" id="btn-voice-bottom" onclick="toggleVoice()" title="Hold to talk">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+  </button>
 </div>
 
 <script>
 (function() {
-  // --- State ---
+  'use strict';
+
+  // ─── Agent & Soul Colors ───
+  const SOUL_COLORS = {
+    lumina:    '#BB86FC',
+    jarvis:    '#00E5FF',
+    chef:      '#FFC107',
+    opus:      '#10B981',
+    artisan:   '#808098',
+    coder:     '#808098',
+    architect: '#808098',
+    scholar:   '#808098',
+    herald:    '#808098',
+    sentinel:  '#808098',
+    steward:   '#808098',
+  };
+
+  const KNOWN_AGENTS = [
+    { name: 'lumina',    color: '#BB86FC' },
+    { name: 'jarvis',    color: '#00E5FF' },
+    { name: 'opus',      color: '#10B981' },
+    { name: 'artisan',   color: '#808098' },
+    { name: 'coder',     color: '#808098' },
+    { name: 'architect', color: '#808098' },
+    { name: 'scholar',   color: '#808098' },
+    { name: 'herald',    color: '#808098' },
+    { name: 'sentinel',  color: '#808098' },
+    { name: 'steward',   color: '#808098' },
+  ];
+
+  // Extract agent from URL path: /voice/{agent_name}
+  const pathParts = location.pathname.split('/');
+  const agentName = (pathParts.length >= 3 && pathParts[1] === 'voice' && pathParts[2])
+    ? pathParts[2].toLowerCase()
+    : 'lumina';
+
+  const agentDisplayName = agentName.charAt(0).toUpperCase() + agentName.slice(1);
+  const soulColor = SOUL_COLORS[agentName] || '#BB86FC';
+  const agentInitial = agentDisplayName.charAt(0);
+
+  // Apply soul color to CSS custom properties
+  const root = document.documentElement;
+  root.style.setProperty('--soul-color', soulColor);
+
+  // Parse soul color for alpha variants
+  function hexToRgb(hex) {
+    const r = parseInt(hex.slice(1,3), 16);
+    const g = parseInt(hex.slice(3,5), 16);
+    const b = parseInt(hex.slice(5,7), 16);
+    return `${r},${g},${b}`;
+  }
+  const soulRgb = hexToRgb(soulColor);
+  root.style.setProperty('--soul-color-18', `rgba(${soulRgb},0.18)`);
+  root.style.setProperty('--soul-color-30', `rgba(${soulRgb},0.30)`);
+
+  // Set agent info in header
+  document.getElementById('agent-name-text').textContent = agentDisplayName;
+  document.getElementById('header-avatar').textContent = agentInitial;
+  document.getElementById('empty-avatar').textContent = agentInitial;
+  document.getElementById('empty-greeting').textContent = 'Chat with ' + agentDisplayName;
+  document.title = agentDisplayName + ' \u2014 SKChat';
+
+  // ─── Agent Panel ───
+  function buildAgentPanel() {
+    const list = document.getElementById('agent-panel-list');
+    list.innerHTML = '';
+
+    // Group Chat item at top
+    const groupItem = document.createElement('a');
+    groupItem.className = 'agent-panel-item';
+    groupItem.href = '/voice-group';
+    groupItem.innerHTML =
+      '<div class="agent-panel-avatar group-icon">G</div>' +
+      '<span class="agent-panel-name">Group Chat</span>';
+    list.appendChild(groupItem);
+
+    // Divider
+    const divider = document.createElement('div');
+    divider.style.cssText = 'height:1px;background:var(--surface-glass-border);margin:4px 12px;';
+    list.appendChild(divider);
+
+    // Agent items
+    KNOWN_AGENTS.forEach(function(agent) {
+      const item = document.createElement('a');
+      item.className = 'agent-panel-item' + (agent.name === agentName ? ' active' : '');
+      item.href = '/voice/' + agent.name;
+
+      const displayName = agent.name.charAt(0).toUpperCase() + agent.name.slice(1);
+      const initial = displayName.charAt(0);
+
+      let badgeHtml = '';
+      if (agent.name === agentName) {
+        badgeHtml = '<span class="agent-panel-badge">Active</span>';
+      }
+
+      item.innerHTML =
+        '<div class="agent-panel-avatar" style="background:' + agent.color + ';">' + initial + '</div>' +
+        '<span class="agent-panel-name">' + displayName + '</span>' +
+        badgeHtml;
+
+      list.appendChild(item);
+    });
+  }
+
+  buildAgentPanel();
+
+  window.openAgentPanel = function() {
+    document.getElementById('agent-panel').classList.add('open');
+    document.getElementById('agent-panel-overlay').classList.add('open');
+  };
+
+  window.closeAgentPanel = function() {
+    document.getElementById('agent-panel').classList.remove('open');
+    document.getElementById('agent-panel-overlay').classList.remove('open');
+  };
+
+  // ─── State ───
   let ws = null;
   let audioCtx = null;
   let mediaStream = null;
   let scriptProcessor = null;
-  let isActive = false;
+  let isVoiceActive = false;
+  let messageCount = 0;
 
   // Audio playback queue
   let playbackQueue = [];
@@ -207,34 +833,45 @@ header h1 {
 
   const SAMPLE_RATE = 16000;
 
-  // --- DOM refs ---
-  const btnVoice = document.getElementById('btn-voice');
-  const statusBadge = document.getElementById('status-badge');
-  const statusText = document.getElementById('status-text');
-  const transcriptDiv = document.getElementById('transcript');
-  const visualizer = document.getElementById('visualizer');
+  // ─── DOM Refs ───
+  const statusBadge     = document.getElementById('status-badge');
+  const chatArea        = document.getElementById('chat-area');
+  const emptyState      = document.getElementById('empty-state');
+  const textInput       = document.getElementById('text-input');
+  const btnSend         = document.getElementById('btn-send');
+  const btnVoiceToggle  = document.getElementById('btn-voice-toggle');
+  const btnVoiceBottom  = document.getElementById('btn-voice-bottom');
+  const visualizer      = document.getElementById('voice-visualizer');
+  const statusIndicator = document.getElementById('status-indicator');
+  const statusLabel     = document.getElementById('status-label');
 
   // Create visualizer bars
-  for (let i = 0; i < 20; i++) {
+  for (let i = 0; i < 32; i++) {
     const bar = document.createElement('div');
     bar.className = 'viz-bar';
     visualizer.appendChild(bar);
   }
   const vizBars = visualizer.querySelectorAll('.viz-bar');
 
-  // --- WebSocket ---
-  // Support /voice/{agent_name} URLs — extract agent from path
-  const pathParts = location.pathname.split('/');
-  const agentName = (pathParts.length >= 3 && pathParts[1] === 'voice' && pathParts[2]) ? pathParts[2] : '';
-  if (agentName) {
-    document.querySelector('header h1').textContent = agentName.charAt(0).toUpperCase() + agentName.slice(1) + ' Voice';
-  }
+  // ─── Text Input Auto-resize ───
+  textInput.addEventListener('input', function() {
+    this.style.height = 'auto';
+    this.style.height = Math.min(this.scrollHeight, 120) + 'px';
+    btnSend.disabled = !this.value.trim();
+  });
 
+  textInput.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      if (this.value.trim()) sendTextMessage();
+    }
+  });
+
+  // ─── WebSocket ───
   function connectWS() {
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsPath = agentName ? '/ws/voice/' + agentName : '/ws/voice';
     ws = new WebSocket(proto + '//' + location.host + wsPath);
-
     ws.binaryType = 'arraybuffer';
 
     ws.onopen = function() {
@@ -243,20 +880,20 @@ header h1 {
 
     ws.onmessage = function(evt) {
       if (evt.data instanceof ArrayBuffer) {
-        // Binary: audio data from TTS
         playbackQueue.push(evt.data);
         if (!isPlaying) drainPlaybackQueue();
       } else {
-        // Text: JSON control message
         try {
           const msg = JSON.parse(evt.data);
           handleServerMessage(msg);
-        } catch(e) {}
+        } catch(e) {
+          // non-JSON text message, ignore
+        }
       }
     };
 
     ws.onclose = function() {
-      setStatus('disconnected', 'Disconnected. Reconnecting...');
+      setStatus('disconnected', 'Reconnecting...');
       setTimeout(connectWS, 3000);
     };
 
@@ -267,17 +904,31 @@ header h1 {
 
   function handleServerMessage(msg) {
     if (msg.type === 'status') {
-      setStatus(msg.status, msg.message);
+      const state = msg.status || msg.state || '';
+      const message = msg.message || state;
+      setStatus(state, message);
+
+      if (state === 'thinking' || state === 'processing') {
+        showStatusIndicator(state === 'thinking' ? 'Thinking...' : 'Processing...');
+      } else if (state === 'speaking') {
+        showStatusIndicator('Speaking...');
+      } else {
+        hideStatusIndicator();
+      }
     } else if (msg.type === 'transcript') {
-      addTranscript(msg.role, msg.text);
+      hideStatusIndicator();
+      addMessage(msg.role, msg.text, msg.via);
+    } else if (msg.type === 'error') {
+      hideStatusIndicator();
+      addMessage('system', msg.message || 'An error occurred');
     } else if (msg.type === 'audio_end') {
-      // All audio chunks received; queue will drain naturally
+      // Audio stream ended, queue drains naturally
     } else if (msg.type === 'pong') {
-      // heartbeat response
+      // Heartbeat
     }
   }
 
-  // --- Audio Capture ---
+  // ─── Audio Capture ───
   async function startCapture() {
     try {
       audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
@@ -293,30 +944,27 @@ header h1 {
       });
 
       const source = audioCtx.createMediaStreamSource(mediaStream);
-
-      // ScriptProcessorNode for raw PCM access (deprecated but universally supported)
-      // Buffer size 512 matches Silero VAD window size
       scriptProcessor = audioCtx.createScriptProcessor(512, 1, 1);
 
-      // Client-side VAD: detect speech vs silence
+      // Client-side VAD
       let isSpeaking = false;
       let silenceFrames = 0;
-      const SILENCE_THRESHOLD = 0.01; // RMS energy threshold
-      const SILENCE_FRAMES_NEEDED = 30; // ~0.96s of silence at 512 samples/16kHz
-      const SPEECH_FRAMES_NEEDED = 3;  // ~0.1s of speech to start
       let speechFrames = 0;
+      const SILENCE_THRESHOLD = 0.01;
+      const SILENCE_FRAMES_NEEDED = 30; // ~0.96s at 512/16kHz
+      const SPEECH_FRAMES_NEEDED = 3;
 
       scriptProcessor.onaudioprocess = function(e) {
-        if (!isActive || !ws || ws.readyState !== WebSocket.OPEN) return;
+        if (!isVoiceActive || !ws || ws.readyState !== WebSocket.OPEN) return;
 
-        const inputData = e.inputBuffer.getChannelData(0); // Float32Array
+        const inputData = e.inputBuffer.getChannelData(0);
 
-        // Calculate RMS energy for VAD
+        // RMS energy
         let sum = 0;
         for (let i = 0; i < inputData.length; i++) sum += inputData[i] * inputData[i];
         const rms = Math.sqrt(sum / inputData.length);
 
-        // Convert float32 [-1,1] to int16 PCM
+        // Float32 to Int16 PCM
         const pcm = new Int16Array(inputData.length);
         for (let i = 0; i < inputData.length; i++) {
           const s = Math.max(-1, Math.min(1, inputData[i]));
@@ -334,83 +982,65 @@ header h1 {
           if (isSpeaking) {
             silenceFrames++;
             if (silenceFrames >= SILENCE_FRAMES_NEEDED) {
-              // Speech ended — tell server to process
               isSpeaking = false;
               silenceFrames = 0;
-              ws.send("END_OF_SPEECH");
+              ws.send('END_OF_SPEECH');
             }
           }
         }
 
-        // Only send audio while speaking (or just started)
         if (isSpeaking || silenceFrames < SILENCE_FRAMES_NEEDED) {
           ws.send(pcm.buffer);
         }
 
-        // Update visualizer
         updateVisualizer(inputData);
       };
 
       source.connect(scriptProcessor);
-      scriptProcessor.connect(audioCtx.destination); // Required for onaudioprocess to fire
+      scriptProcessor.connect(audioCtx.destination);
     } catch (err) {
-      setStatus('error', 'Microphone access denied: ' + err.message);
-      isActive = false;
-      btnVoice.classList.remove('active');
+      setStatus('error', 'Mic denied: ' + err.message);
+      isVoiceActive = false;
+      updateVoiceUI();
     }
   }
 
   function stopCapture() {
-    if (scriptProcessor) {
-      scriptProcessor.disconnect();
-      scriptProcessor = null;
-    }
-    if (mediaStream) {
-      mediaStream.getTracks().forEach(t => t.stop());
-      mediaStream = null;
-    }
-    if (audioCtx) {
-      audioCtx.close();
-      audioCtx = null;
-    }
-    // Reset visualizer
+    if (scriptProcessor) { scriptProcessor.disconnect(); scriptProcessor = null; }
+    if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
+    if (audioCtx) { audioCtx.close(); audioCtx = null; }
     vizBars.forEach(b => b.style.height = '4px');
   }
 
-  // --- Audio Playback ---
+  // ─── Audio Playback ───
   function drainPlaybackQueue() {
     if (playbackQueue.length === 0) {
       isPlaying = false;
       return;
     }
-
     isPlaying = true;
 
-    // Concatenate all queued buffers into one blob
     const chunks = [];
-    while (playbackQueue.length > 0) {
-      chunks.push(playbackQueue.shift());
-    }
-    // Chatterbox sends WAV data — play it as-is via Audio element
+    while (playbackQueue.length > 0) chunks.push(playbackQueue.shift());
+
     const blob = new Blob(chunks, { type: 'audio/wav' });
     const url = URL.createObjectURL(blob);
     const audio = new Audio(url);
     audio.onended = function() {
       URL.revokeObjectURL(url);
-      // Check if more audio arrived while playing
       if (playbackQueue.length > 0) {
         drainPlaybackQueue();
       } else {
         isPlaying = false;
       }
     };
-    audio.play().catch(e => {
-      console.error('Audio playback failed:', e);
+    audio.play().catch(function(e) {
+      console.error('Playback failed:', e);
       isPlaying = false;
     });
   }
 
-  // --- Visualizer ---
+  // ─── Visualizer ───
   function updateVisualizer(samples) {
     const step = Math.floor(samples.length / vizBars.length);
     for (let i = 0; i < vizBars.length; i++) {
@@ -419,63 +1049,272 @@ header h1 {
         sum += Math.abs(samples[i * step + j] || 0);
       }
       const avg = sum / step;
-      const height = Math.max(4, Math.min(36, avg * 300));
+      const height = Math.max(4, Math.min(32, avg * 400));
       vizBars[i].style.height = height + 'px';
     }
   }
 
-  // --- UI ---
+  // ─── UI Helpers ───
   function setStatus(status, message) {
-    statusBadge.textContent = status;
+    statusBadge.textContent = message || status;
     statusBadge.className = status;
-    statusText.textContent = message;
   }
 
-  function addTranscript(role, text) {
-    const div = document.createElement('div');
-    div.className = 'msg ' + role;
-    div.innerHTML = '<span class="role">' + (role === 'user' ? 'You' : 'Lumina') + '</span>'
-                  + '<span class="text">' + escapeHtml(text) + '</span>';
-    transcriptDiv.appendChild(div);
-    transcriptDiv.scrollTop = transcriptDiv.scrollHeight;
+  function showStatusIndicator(text) {
+    statusLabel.textContent = text;
+    statusIndicator.style.display = 'flex';
+    scrollToBottom();
+  }
+
+  function hideStatusIndicator() {
+    statusIndicator.style.display = 'none';
+  }
+
+  function updateVoiceUI() {
+    if (isVoiceActive) {
+      btnVoiceToggle.classList.add('voice-active');
+      btnVoiceBottom.classList.add('active');
+      visualizer.classList.add('active');
+    } else {
+      btnVoiceToggle.classList.remove('voice-active');
+      btnVoiceBottom.classList.remove('active');
+      visualizer.classList.remove('active');
+    }
+  }
+
+  function formatTime(date) {
+    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   }
 
   function escapeHtml(str) {
-    return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
   }
 
-  // --- Exposed functions ---
+  function scrollToBottom() {
+    requestAnimationFrame(function() {
+      chatArea.scrollTop = chatArea.scrollHeight;
+    });
+  }
+
+  // ─── Session Cache (localStorage) ───
+  const SESSION_KEY = 'skvoice_session_' + agentName;
+  const SESSION_EMOTION_KEY = 'skvoice_emotion_' + agentName;
+  let sessionMessages = []; // {role, content, timestamp}
+
+  function saveSession() {
+    try {
+      localStorage.setItem(SESSION_KEY, JSON.stringify(sessionMessages.slice(-50)));
+    } catch(e) {}
+  }
+
+  function loadCachedSession() {
+    try {
+      const raw = localStorage.getItem(SESSION_KEY);
+      if (raw) return JSON.parse(raw);
+    } catch(e) {}
+    return null;
+  }
+
+  function clearCachedSession() {
+    try {
+      localStorage.removeItem(SESSION_KEY);
+      localStorage.removeItem(SESSION_EMOTION_KEY);
+    } catch(e) {}
+    sessionMessages = [];
+  }
+
+  function injectSession(cached) {
+    // Restore messages to chat UI
+    cached.forEach(function(msg) {
+      addMessage(msg.role, msg.content, null, true);
+    });
+    // Send to server so LLM has context
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({
+        type: 'inject_session',
+        messages: cached.map(function(m) { return { role: m.role, content: m.content }; }),
+        emotion_state: localStorage.getItem(SESSION_EMOTION_KEY) || '',
+      }));
+    }
+  }
+
+  function showResumePrompt(cached) {
+    if (emptyState) emptyState.remove();
+
+    const prompt = document.createElement('div');
+    prompt.className = 'empty-state';
+    prompt.id = 'resume-prompt';
+    const lastMsg = cached[cached.length - 1];
+    const preview = lastMsg ? lastMsg.content.slice(0, 80) + (lastMsg.content.length > 80 ? '...' : '') : '';
+    const timeStr = lastMsg && lastMsg.timestamp ? new Date(lastMsg.timestamp).toLocaleString() : '';
+    prompt.innerHTML =
+      '<div class="agent-icon">' + agentInitial + '</div>' +
+      '<h2>Welcome back</h2>' +
+      '<p style="color:var(--text-secondary);margin-bottom:4px;">' + cached.length + ' messages from previous session' + (timeStr ? '<br><span style="font-size:11px;color:var(--text-tertiary);">' + timeStr + '</span>' : '') + '</p>' +
+      '<p style="color:var(--text-tertiary);font-style:italic;margin-bottom:12px;">"' + escapeHtml(preview) + '"</p>' +
+      '<div style="display:flex;gap:8px;">' +
+        '<button onclick="resumeSession()" style="padding:8px 20px;border-radius:12px;border:1px solid var(--soul-color);background:var(--soul-color-18);color:var(--soul-color);font-family:var(--font-primary);font-size:13px;font-weight:600;cursor:pointer;">Resume</button>' +
+        '<button onclick="newSession()" style="padding:8px 20px;border-radius:12px;border:1px solid var(--surface-glass-border);background:var(--surface-glass);color:var(--text-secondary);font-family:var(--font-primary);font-size:13px;cursor:pointer;">New Session</button>' +
+      '</div>';
+    chatArea.appendChild(prompt);
+  }
+
+  window.resumeSession = function() {
+    const el = document.getElementById('resume-prompt');
+    if (el) el.remove();
+    const cached = loadCachedSession();
+    if (cached && cached.length > 0) {
+      sessionMessages = cached;
+      injectSession(cached);
+    }
+  };
+
+  window.newSession = function() {
+    const el = document.getElementById('resume-prompt');
+    if (el) el.remove();
+    clearCachedSession();
+    // Show empty state
+    const es = document.createElement('div');
+    es.className = 'empty-state';
+    es.id = 'empty-state';
+    es.innerHTML =
+      '<div class="agent-icon">' + agentInitial + '</div>' +
+      '<h2>Chat with ' + agentDisplayName + '</h2>' +
+      '<p>Type a message or tap the microphone to start a voice conversation.</p>';
+    chatArea.appendChild(es);
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send('CLEAR_HISTORY');
+    }
+  };
+
+  function addMessage(role, text, via, isReplay) {
+    // Hide empty state on first message
+    var es = document.getElementById('empty-state') || document.getElementById('resume-prompt');
+    if (es) es.remove();
+    messageCount++;
+
+    // Cache to session (unless replaying)
+    if (!isReplay && (role === 'user' || role === 'assistant')) {
+      sessionMessages.push({ role: role, content: text, timestamp: Date.now() });
+      saveSession();
+    }
+
+    const row = document.createElement('div');
+    row.className = 'message-row ' + role;
+
+    const now = formatTime(new Date());
+
+    if (role === 'user') {
+      row.innerHTML =
+        '<div class="msg-avatar user">C</div>' +
+        '<div>' +
+          '<div class="msg-bubble user">' + escapeHtml(text) + '</div>' +
+          '<div class="msg-meta" style="justify-content:flex-end;">' +
+            (via ? '<span class="msg-via">' + escapeHtml(via) + '</span>' : '') +
+            '<span class="msg-time">' + now + '</span>' +
+          '</div>' +
+        '</div>';
+    } else if (role === 'assistant') {
+      row.innerHTML =
+        '<div class="msg-avatar agent">' + agentInitial + '</div>' +
+        '<div>' +
+          '<div class="msg-bubble assistant">' + escapeHtml(text) + '</div>' +
+          '<div class="msg-meta">' +
+            '<span class="msg-time">' + now + '</span>' +
+          '</div>' +
+        '</div>';
+    } else {
+      // System / error message
+      row.className = 'message-row assistant';
+      row.innerHTML =
+        '<div class="msg-avatar agent" style="background:var(--accent-danger);">!</div>' +
+        '<div>' +
+          '<div class="msg-bubble assistant" style="border-left-color:var(--accent-danger);">' + escapeHtml(text) + '</div>' +
+          '<div class="msg-meta"><span class="msg-time">' + now + '</span></div>' +
+        '</div>';
+    }
+
+    chatArea.appendChild(row);
+    scrollToBottom();
+  }
+
+  // ─── Exposed Functions ───
   window.toggleVoice = async function() {
-    if (isActive) {
-      isActive = false;
-      btnVoice.classList.remove('active');
-      btnVoice.innerHTML = '&#9899;';
+    if (isVoiceActive) {
+      isVoiceActive = false;
       stopCapture();
-      setStatus('connected', 'Voice chat paused');
+      updateVoiceUI();
+      setStatus('connected', 'Voice paused');
     } else {
       if (!ws || ws.readyState !== WebSocket.OPEN) {
-        setStatus('error', 'Not connected to server');
+        setStatus('error', 'Not connected');
         return;
       }
-      isActive = true;
-      btnVoice.classList.add('active');
-      btnVoice.innerHTML = '&#9632;';
+      isVoiceActive = true;
+      updateVoiceUI();
       await startCapture();
       setStatus('listening', 'Listening...');
     }
   };
 
+  window.sendTextMessage = function() {
+    const text = textInput.value.trim();
+    if (!text) return;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      setStatus('error', 'Not connected');
+      return;
+    }
+
+    // Send to server
+    ws.send(JSON.stringify({ type: 'text_message', text: text }));
+
+    // Show in chat
+    addMessage('user', text, 'text');
+
+    // Clear input
+    textInput.value = '';
+    textInput.style.height = 'auto';
+    btnSend.disabled = true;
+    textInput.focus();
+  };
+
   window.clearHistory = function() {
-    transcriptDiv.innerHTML = '';
+    chatArea.innerHTML = '';
+    messageCount = 0;
+    clearCachedSession();
+
+    const es = document.createElement('div');
+    es.className = 'empty-state';
+    es.id = 'empty-state';
+    es.innerHTML =
+      '<div class="agent-icon">' + agentInitial + '</div>' +
+      '<h2>Chat with ' + agentDisplayName + '</h2>' +
+      '<p>Type a message or tap the microphone to start a voice conversation.</p>';
+    chatArea.appendChild(es);
+
     if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: 'clear_history' }));
+      ws.send('CLEAR_HISTORY');
     }
   };
 
-  // --- Init ---
+  // ─── Init ───
   connectWS();
 
-  // Keep-alive ping
+  // Check for cached session after WebSocket connects
+  const _origOnOpen = null;
+  const _wsCheckInterval = setInterval(function() {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      clearInterval(_wsCheckInterval);
+      const cached = loadCachedSession();
+      if (cached && cached.length > 0) {
+        showResumePrompt(cached);
+      }
+    }
+  }, 200);
+
+  // Keep-alive ping every 15s
   setInterval(function() {
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: 'ping' }));
