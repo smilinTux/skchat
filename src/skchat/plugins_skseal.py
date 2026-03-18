@@ -65,8 +65,8 @@ def _get_private_key():
                     armor = key_path.read_text()
                     passphrase = data.get("passphrase", "")
                     return armor, passphrase
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("Failed to load private key from identity.json: %s", exc)
 
     # Check GPG keyring via gpg export
     try:
@@ -80,8 +80,8 @@ def _get_private_key():
         )
         if result.returncode == 0 and "PGP PRIVATE KEY" in result.stdout:
             return result.stdout, ""
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("gpg export failed: %s", exc)
 
     return None, None
 
@@ -274,8 +274,8 @@ class SKSealPlugin(ChatPlugin):
             )
             store.append_audit(entry)
             store.save_document(document)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("Failed to append decline audit entry: %s", exc)
 
         return (
             f"**Document Declined**\n"
@@ -492,8 +492,8 @@ class SKSealPlugin(ChatPlugin):
             from .history import ChatHistory
             history = ChatHistory.from_config()
             history.store_message(msg)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("Failed to store signing request in local history: %s", exc)
 
         # Deliver via SKComm transport
         delivered = False
@@ -512,8 +512,8 @@ class SKSealPlugin(ChatPlugin):
             result = transport.send_message(msg)
             delivered = result.get("delivered", False)
             transport_name = result.get("transport")
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("SKComm delivery of signing request failed: %s", exc)
 
         # Add audit entry for send
         try:
@@ -526,8 +526,8 @@ class SKSealPlugin(ChatPlugin):
                 details=f"Signing request sent to {resolved_recipient} via SKComm",
             )
             store.append_audit(entry)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("Failed to append send audit entry: %s", exc)
 
         display_recipient = recipient if recipient == resolved_recipient else f"{recipient} ({resolved_recipient})"
 

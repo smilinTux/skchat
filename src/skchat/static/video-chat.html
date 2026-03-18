@@ -1,0 +1,1509 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>SKChat Video</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg: #000000;
+  --surface-raised: #0A0A0F;
+  --surface-glass: rgba(255,255,255,0.06);
+  --surface-glass-border: rgba(255,255,255,0.08);
+  --text-primary: #E8E8F0;
+  --text-secondary: #808098;
+  --text-tertiary: #505068;
+  --accent-encrypt: #10B981;
+  --accent-danger: #EF4444;
+  --soul-color: #BB86FC;
+  --soul-color-18: rgba(187,134,252,0.18);
+  --soul-color-30: rgba(187,134,252,0.30);
+  --font-primary: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+}
+
+html, body {
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text-primary);
+  font-family: var(--font-primary);
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ---- Full-screen video container ---- */
+.video-container {
+  position: relative;
+  flex: 1;
+  overflow: hidden;
+  background: #000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Agent video / avatar canvas (full screen) */
+#agent-video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: none;
+}
+
+#agent-canvas {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: none;
+}
+
+/* Fallback avatar (voice-only mode) */
+.avatar-fallback {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  width: 100%;
+  height: 100%;
+}
+
+.avatar-fallback .avatar-circle {
+  width: 120px;
+  height: 120px;
+  border-radius: 50%;
+  background: var(--soul-color);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 48px;
+  font-weight: 700;
+  color: #000;
+  position: relative;
+}
+
+.avatar-fallback .avatar-circle::after {
+  content: '';
+  position: absolute;
+  inset: -6px;
+  border-radius: 50%;
+  border: 2px solid var(--soul-color-30);
+  animation: avatar-ring-pulse 2s ease-in-out infinite;
+}
+
+.avatar-fallback.speaking .avatar-circle::after {
+  border-color: var(--soul-color);
+  animation: avatar-ring-pulse 0.8s ease-in-out infinite;
+}
+
+@keyframes avatar-ring-pulse {
+  0%, 100% { transform: scale(1); opacity: 0.4; }
+  50% { transform: scale(1.08); opacity: 1; }
+}
+
+.avatar-fallback .avatar-name {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.avatar-fallback .avatar-status {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+/* ---- PiP user camera ---- */
+.pip-container {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  width: 140px;
+  height: 105px;
+  border-radius: 12px;
+  overflow: hidden;
+  border: 2px solid var(--surface-glass-border);
+  background: #111;
+  z-index: 20;
+  cursor: grab;
+  transition: opacity 0.3s ease;
+  display: none;
+}
+
+.pip-container.visible {
+  display: block;
+}
+
+.pip-container.dragging {
+  cursor: grabbing;
+  opacity: 0.85;
+}
+
+#user-video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transform: scaleX(-1);
+}
+
+.pip-off-label {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  background: rgba(0,0,0,0.7);
+}
+
+/* ---- Top status bar (overlay on video) ---- */
+.video-overlay-top {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  padding: 12px 16px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: linear-gradient(to bottom, rgba(0,0,0,0.7) 0%, transparent 100%);
+  z-index: 15;
+}
+
+.overlay-agent-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--soul-color);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 14px;
+  color: #000;
+  flex-shrink: 0;
+}
+
+.overlay-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.overlay-agent-name {
+  font-size: 15px;
+  font-weight: 600;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.soul-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--soul-color);
+  flex-shrink: 0;
+}
+
+.overlay-subtitle {
+  font-size: 11px;
+  color: rgba(255,255,255,0.6);
+  margin-top: 1px;
+}
+
+#status-badge {
+  font-size: 11px;
+  font-weight: 500;
+  padding: 3px 10px;
+  border-radius: 12px;
+  background: rgba(0,0,0,0.4);
+  border: 1px solid rgba(255,255,255,0.15);
+  color: rgba(255,255,255,0.6);
+  transition: all 0.3s ease;
+  white-space: nowrap;
+}
+
+#status-badge.connected { border-color: var(--accent-encrypt); color: var(--accent-encrypt); }
+#status-badge.listening { border-color: #F59E0B; color: #F59E0B; animation: pulse 1s infinite; }
+#status-badge.processing { border-color: #60A5FA; color: #60A5FA; }
+#status-badge.thinking { border-color: var(--soul-color); color: var(--soul-color); animation: pulse 1.5s infinite; }
+#status-badge.speaking { border-color: var(--soul-color); color: var(--soul-color); animation: pulse 0.8s infinite; }
+#status-badge.error { border-color: var(--accent-danger); color: var(--accent-danger); }
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+/* ---- Audio Visualizer (bottom overlay on video) ---- */
+.video-overlay-visualizer {
+  position: absolute;
+  bottom: 100px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 2px;
+  height: 40px;
+  z-index: 15;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+  pointer-events: none;
+}
+
+.video-overlay-visualizer.active {
+  opacity: 1;
+}
+
+.viz-bar {
+  width: 3px;
+  background: var(--soul-color);
+  border-radius: 2px;
+  transition: height 0.05s ease;
+  height: 4px;
+  opacity: 0.8;
+}
+
+/* ---- Bottom Controls Bar ---- */
+.controls-bar {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 16px;
+  padding-bottom: max(16px, env(safe-area-inset-bottom));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  background: linear-gradient(to top, rgba(0,0,0,0.8) 0%, transparent 100%);
+  z-index: 15;
+}
+
+.ctrl-btn {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  border: 1px solid rgba(255,255,255,0.15);
+  background: rgba(255,255,255,0.10);
+  color: #fff;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+  flex-shrink: 0;
+  position: relative;
+}
+
+.ctrl-btn:hover {
+  background: rgba(255,255,255,0.18);
+}
+
+.ctrl-btn.active {
+  background: rgba(255,255,255,0.20);
+  border-color: var(--soul-color);
+  color: var(--soul-color);
+}
+
+.ctrl-btn.muted {
+  background: rgba(239,68,68,0.25);
+  border-color: rgba(239,68,68,0.5);
+  color: var(--accent-danger);
+}
+
+.ctrl-btn.end-call {
+  width: 56px;
+  height: 56px;
+  background: var(--accent-danger);
+  border-color: var(--accent-danger);
+  color: #fff;
+}
+
+.ctrl-btn.end-call:hover {
+  background: #DC2626;
+}
+
+.ctrl-btn .slash-line {
+  position: absolute;
+  width: 2px;
+  height: 28px;
+  background: var(--accent-danger);
+  border-radius: 1px;
+  transform: rotate(45deg);
+  display: none;
+}
+
+.ctrl-btn.muted .slash-line {
+  display: block;
+}
+
+.ctrl-label {
+  position: absolute;
+  bottom: -18px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 9px;
+  color: rgba(255,255,255,0.5);
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+/* ---- Text Chat Overlay ---- */
+.chat-overlay {
+  position: absolute;
+  bottom: 90px;
+  left: 0;
+  right: 0;
+  max-height: 40vh;
+  display: flex;
+  flex-direction: column;
+  z-index: 14;
+  pointer-events: none;
+  transition: opacity 0.3s ease;
+}
+
+.chat-overlay.hidden {
+  opacity: 0;
+}
+
+.chat-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  mask-image: linear-gradient(to bottom, transparent 0%, black 20%);
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 20%);
+  pointer-events: auto;
+}
+
+.chat-messages::-webkit-scrollbar { width: 0; }
+
+.chat-msg {
+  max-width: 75%;
+  padding: 6px 10px;
+  border-radius: 12px;
+  font-size: 13px;
+  line-height: 1.4;
+  animation: chat-msg-in 0.2s ease-out;
+  word-wrap: break-word;
+}
+
+@keyframes chat-msg-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.chat-msg.user {
+  align-self: flex-end;
+  background: var(--soul-color-18);
+  border: 1px solid var(--soul-color-30);
+  color: var(--text-primary);
+}
+
+.chat-msg.assistant {
+  align-self: flex-start;
+  background: rgba(0,0,0,0.6);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-left: 3px solid var(--soul-color);
+  color: var(--text-primary);
+}
+
+.chat-msg.system {
+  align-self: center;
+  background: rgba(0,0,0,0.5);
+  color: var(--text-tertiary);
+  font-size: 11px;
+  border: 1px solid rgba(255,255,255,0.05);
+}
+
+/* Status indicator in chat */
+.chat-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  animation: chat-msg-in 0.2s ease-out;
+}
+
+.typing-dots {
+  display: flex;
+  gap: 3px;
+}
+
+.typing-dots span {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--soul-color);
+  animation: typing-bounce 1.2s infinite;
+}
+
+.typing-dots span:nth-child(2) { animation-delay: 0.2s; }
+.typing-dots span:nth-child(3) { animation-delay: 0.4s; }
+
+@keyframes typing-bounce {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
+  30% { transform: translateY(-4px); opacity: 1; }
+}
+
+/* Chat input bar (slides up when toggled) */
+.chat-input-bar {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 6px 16px;
+  pointer-events: auto;
+  opacity: 0;
+  max-height: 0;
+  overflow: hidden;
+  transition: opacity 0.3s ease, max-height 0.3s ease;
+}
+
+.chat-input-bar.visible {
+  opacity: 1;
+  max-height: 80px;
+}
+
+.chat-input-wrapper {
+  flex: 1;
+  display: flex;
+  align-items: flex-end;
+  background: rgba(0,0,0,0.6);
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 20px;
+  padding: 4px 4px 4px 14px;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+#chat-text-input {
+  flex: 1;
+  background: none;
+  border: none;
+  outline: none;
+  color: var(--text-primary);
+  font-family: var(--font-primary);
+  font-size: 13px;
+  line-height: 1.4;
+  resize: none;
+  max-height: 60px;
+  padding: 5px 0;
+}
+
+#chat-text-input::placeholder {
+  color: var(--text-tertiary);
+}
+
+.chat-send-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: none;
+  background: var(--soul-color);
+  color: #000;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: all 0.2s ease;
+}
+
+.chat-send-btn:disabled {
+  background: var(--text-tertiary);
+  cursor: default;
+}
+
+/* ---- Agent Picker Panel ---- */
+.agent-panel-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.5);
+  z-index: 100;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.3s ease, visibility 0.3s ease;
+}
+
+.agent-panel-overlay.open {
+  opacity: 1;
+  visibility: visible;
+}
+
+.agent-panel {
+  position: fixed;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: 280px;
+  max-width: 85vw;
+  background: rgba(10,10,15,0.92);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border-right: 1px solid var(--surface-glass-border);
+  z-index: 101;
+  transform: translateX(-100%);
+  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.agent-panel.open {
+  transform: translateX(0);
+}
+
+.agent-panel-header {
+  padding: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--surface-glass-border);
+  flex-shrink: 0;
+}
+
+.agent-panel-header h3 {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.agent-panel-close {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  border: 1px solid var(--surface-glass-border);
+  background: var(--surface-glass);
+  color: var(--text-secondary);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  transition: all 0.2s ease;
+}
+
+.agent-panel-close:hover {
+  background: rgba(255,255,255,0.10);
+  color: var(--text-primary);
+}
+
+.agent-panel-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+}
+
+.agent-panel-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  cursor: pointer;
+  transition: background 0.2s ease;
+  text-decoration: none;
+  color: inherit;
+}
+
+.agent-panel-item:hover {
+  background: rgba(255,255,255,0.06);
+}
+
+.agent-panel-item.active {
+  background: rgba(255,255,255,0.08);
+}
+
+.agent-panel-avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 15px;
+  color: #000;
+  flex-shrink: 0;
+}
+
+.agent-panel-name {
+  flex: 1;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.agent-panel-badge {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 8px;
+  background: rgba(16,185,129,0.15);
+  color: var(--accent-encrypt);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* ---- Responsive ---- */
+@media (max-width: 480px) {
+  .pip-container {
+    width: 100px;
+    height: 75px;
+    top: 12px;
+    right: 12px;
+  }
+  .ctrl-btn { width: 42px; height: 42px; }
+  .ctrl-btn.end-call { width: 50px; height: 50px; }
+  .ctrl-label { font-size: 8px; }
+  .chat-msg { max-width: 85%; }
+}
+
+@media (min-width: 640px) {
+  .pip-container {
+    width: 180px;
+    height: 135px;
+  }
+}
+
+@media (min-width: 1024px) {
+  .pip-container {
+    width: 220px;
+    height: 165px;
+  }
+}
+</style>
+</head>
+<body>
+
+<!-- Agent Picker Panel -->
+<div class="agent-panel-overlay" id="agent-panel-overlay" onclick="closeAgentPanel()"></div>
+<div class="agent-panel" id="agent-panel">
+  <div class="agent-panel-header">
+    <h3>Agents</h3>
+    <button class="agent-panel-close" onclick="closeAgentPanel()">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+    </button>
+  </div>
+  <div class="agent-panel-list" id="agent-panel-list"></div>
+</div>
+
+<!-- Main Video Container -->
+<div class="video-container" id="video-container">
+
+  <!-- Agent video (MuseTalk lip-synced) -->
+  <video id="agent-video" autoplay playsinline></video>
+  <!-- Canvas fallback for JPEG frame sequences -->
+  <canvas id="agent-canvas"></canvas>
+
+  <!-- Fallback avatar when no video -->
+  <div class="avatar-fallback" id="avatar-fallback">
+    <div class="avatar-circle" id="avatar-circle">L</div>
+    <div class="avatar-name" id="avatar-name">Lumina</div>
+    <div class="avatar-status" id="avatar-status">Connecting...</div>
+  </div>
+
+  <!-- PiP user camera -->
+  <div class="pip-container" id="pip-container">
+    <video id="user-video" autoplay playsinline muted></video>
+    <div class="pip-off-label" id="pip-off-label" style="display:none;">Camera off</div>
+  </div>
+
+  <!-- Top overlay: agent info + status -->
+  <div class="video-overlay-top">
+    <div class="overlay-agent-avatar" id="overlay-avatar">L</div>
+    <div class="overlay-info">
+      <div class="overlay-agent-name">
+        <span id="overlay-agent-name">Lumina</span>
+        <span class="soul-dot" id="soul-dot"></span>
+      </div>
+      <div class="overlay-subtitle" id="overlay-subtitle">Video Chat</div>
+    </div>
+    <span id="status-badge">connecting</span>
+  </div>
+
+  <!-- Audio Visualizer (overlaid on video) -->
+  <div class="video-overlay-visualizer" id="voice-visualizer"></div>
+
+  <!-- Text Chat Overlay -->
+  <div class="chat-overlay" id="chat-overlay">
+    <div class="chat-messages" id="chat-messages"></div>
+    <div class="chat-status" id="chat-status" style="display:none;">
+      <div class="typing-dots"><span></span><span></span><span></span></div>
+      <span id="chat-status-label">Thinking...</span>
+    </div>
+    <div class="chat-input-bar" id="chat-input-bar">
+      <div class="chat-input-wrapper">
+        <textarea id="chat-text-input" rows="1" placeholder="Type a message..." autocomplete="off"></textarea>
+        <button class="chat-send-btn" id="chat-send-btn" disabled>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Bottom Controls -->
+  <div class="controls-bar" id="controls-bar">
+    <!-- Mute Mic -->
+    <button class="ctrl-btn" id="btn-mute" onclick="toggleMute()" title="Toggle microphone">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+      <div class="slash-line"></div>
+      <span class="ctrl-label">Mic</span>
+    </button>
+    <!-- Toggle Camera -->
+    <button class="ctrl-btn" id="btn-camera" onclick="toggleCamera()" title="Toggle camera">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
+      <div class="slash-line"></div>
+      <span class="ctrl-label">Camera</span>
+    </button>
+    <!-- Toggle Avatar Video -->
+    <button class="ctrl-btn" id="btn-avatar-toggle" onclick="toggleAvatarVideo()" title="Toggle avatar video">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+      <span class="ctrl-label">Avatar</span>
+    </button>
+    <!-- Chat Toggle -->
+    <button class="ctrl-btn" id="btn-chat" onclick="toggleChat()" title="Toggle text chat">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+      <span class="ctrl-label">Chat</span>
+    </button>
+    <!-- Switch Agent -->
+    <button class="ctrl-btn" id="btn-agents" onclick="openAgentPanel()" title="Switch agent">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+      <span class="ctrl-label">Agents</span>
+    </button>
+    <!-- End Call -->
+    <button class="ctrl-btn end-call" id="btn-end" onclick="endCall()" title="End call">
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.68 13.31a16 16 0 0 0 3.41 2.6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7 2 2 0 0 1 1.72 2v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 2.59 3.4z" transform="rotate(135 12 12)"/></svg>
+    </button>
+  </div>
+
+</div>
+
+<script>
+(function() {
+  'use strict';
+
+  // ---- Agent & Soul Colors ----
+  var SOUL_COLORS = {
+    lumina:    '#BB86FC',
+    jarvis:    '#00E5FF',
+    chef:      '#FFC107',
+    opus:      '#10B981',
+    ava:       '#FF6B6B',
+    artisan:   '#808098',
+    coder:     '#808098',
+    architect: '#808098',
+    scholar:   '#808098',
+    herald:    '#808098',
+    sentinel:  '#808098',
+    steward:   '#808098',
+  };
+
+  var KNOWN_AGENTS = [
+    { name: 'lumina',    color: '#BB86FC' },
+    { name: 'jarvis',    color: '#00E5FF' },
+    { name: 'opus',      color: '#10B981' },
+    { name: 'ava',       color: '#FF6B6B' },
+    { name: 'artisan',   color: '#808098' },
+    { name: 'coder',     color: '#808098' },
+    { name: 'architect', color: '#808098' },
+    { name: 'scholar',   color: '#808098' },
+    { name: 'herald',    color: '#808098' },
+    { name: 'sentinel',  color: '#808098' },
+    { name: 'steward',   color: '#808098' },
+  ];
+
+  // Extract agent from URL path: /video/{agent_name}
+  var pathParts = location.pathname.split('/');
+  var agentName = (pathParts.length >= 3 && pathParts[1] === 'video' && pathParts[2])
+    ? pathParts[2].toLowerCase()
+    : 'lumina';
+
+  var agentDisplayName = agentName.charAt(0).toUpperCase() + agentName.slice(1);
+  var soulColor = SOUL_COLORS[agentName] || '#BB86FC';
+  var agentInitial = agentDisplayName.charAt(0);
+
+  // Apply soul color
+  var root = document.documentElement;
+  root.style.setProperty('--soul-color', soulColor);
+
+  function hexToRgb(hex) {
+    var r = parseInt(hex.slice(1,3), 16);
+    var g = parseInt(hex.slice(3,5), 16);
+    var b = parseInt(hex.slice(5,7), 16);
+    return r + ',' + g + ',' + b;
+  }
+  var soulRgb = hexToRgb(soulColor);
+  root.style.setProperty('--soul-color-18', 'rgba(' + soulRgb + ',0.18)');
+  root.style.setProperty('--soul-color-30', 'rgba(' + soulRgb + ',0.30)');
+
+  // Set agent info
+  document.getElementById('overlay-agent-name').textContent = agentDisplayName;
+  document.getElementById('overlay-avatar').textContent = agentInitial;
+  document.getElementById('avatar-circle').textContent = agentInitial;
+  document.getElementById('avatar-name').textContent = agentDisplayName;
+  document.title = agentDisplayName + ' \u2014 SKChat Video';
+
+  // ---- Agent Panel ----
+  function buildAgentPanel() {
+    var list = document.getElementById('agent-panel-list');
+    list.innerHTML = '';
+
+    KNOWN_AGENTS.forEach(function(agent) {
+      var item = document.createElement('a');
+      item.className = 'agent-panel-item' + (agent.name === agentName ? ' active' : '');
+      item.href = '/video/' + agent.name;
+
+      var displayName = agent.name.charAt(0).toUpperCase() + agent.name.slice(1);
+      var initial = displayName.charAt(0);
+      var badgeHtml = '';
+      if (agent.name === agentName) {
+        badgeHtml = '<span class="agent-panel-badge">Active</span>';
+      }
+
+      item.innerHTML =
+        '<div class="agent-panel-avatar" style="background:' + agent.color + ';">' + initial + '</div>' +
+        '<span class="agent-panel-name">' + displayName + '</span>' +
+        badgeHtml;
+
+      list.appendChild(item);
+    });
+  }
+  buildAgentPanel();
+
+  window.openAgentPanel = function() {
+    document.getElementById('agent-panel').classList.add('open');
+    document.getElementById('agent-panel-overlay').classList.add('open');
+  };
+
+  window.closeAgentPanel = function() {
+    document.getElementById('agent-panel').classList.remove('open');
+    document.getElementById('agent-panel-overlay').classList.remove('open');
+  };
+
+  // ---- State ----
+  var ws = null;
+  var audioCtx = null;
+  var mediaStream = null;     // mic audio
+  var cameraStream = null;    // user camera
+  var scriptProcessor = null;
+  var isMicActive = true;     // mic starts active
+  var isMuted = false;
+  var isCameraOn = false;
+  var isAvatarEnabled = true;
+  var isChatVisible = false;
+  var hasVideoTrack = false;  // server is sending video frames
+  var messageCount = 0;
+
+  // Audio playback
+  var playbackQueue = [];
+  var isPlaying = false;
+
+  // Video frame rendering
+  var pendingVideoFrame = false;
+
+  var SAMPLE_RATE = 16000;
+
+  // ---- DOM Refs ----
+  var statusBadge    = document.getElementById('status-badge');
+  var agentVideo     = document.getElementById('agent-video');
+  var agentCanvas    = document.getElementById('agent-canvas');
+  var canvasCtx      = agentCanvas.getContext('2d');
+  var avatarFallback = document.getElementById('avatar-fallback');
+  var avatarStatus   = document.getElementById('avatar-status');
+  var pipContainer   = document.getElementById('pip-container');
+  var userVideo      = document.getElementById('user-video');
+  var pipOffLabel    = document.getElementById('pip-off-label');
+  var visualizer     = document.getElementById('voice-visualizer');
+  var chatOverlay    = document.getElementById('chat-overlay');
+  var chatMessages   = document.getElementById('chat-messages');
+  var chatInputBar   = document.getElementById('chat-input-bar');
+  var chatTextInput  = document.getElementById('chat-text-input');
+  var chatSendBtn    = document.getElementById('chat-send-btn');
+  var chatStatusEl   = document.getElementById('chat-status');
+  var chatStatusLabel = document.getElementById('chat-status-label');
+
+  // Create visualizer bars
+  for (var i = 0; i < 32; i++) {
+    var bar = document.createElement('div');
+    bar.className = 'viz-bar';
+    visualizer.appendChild(bar);
+  }
+  var vizBars = visualizer.querySelectorAll('.viz-bar');
+
+  // ---- PiP Drag ----
+  (function initPipDrag() {
+    var isDragging = false;
+    var startX, startY, startLeft, startTop;
+
+    pipContainer.addEventListener('mousedown', onDown);
+    pipContainer.addEventListener('touchstart', onDown, { passive: false });
+
+    function onDown(e) {
+      isDragging = true;
+      pipContainer.classList.add('dragging');
+      var touch = e.touches ? e.touches[0] : e;
+      startX = touch.clientX;
+      startY = touch.clientY;
+      startLeft = pipContainer.offsetLeft;
+      startTop = pipContainer.offsetTop;
+      if (e.touches) e.preventDefault();
+
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+      document.addEventListener('touchmove', onMove, { passive: false });
+      document.addEventListener('touchend', onUp);
+    }
+
+    function onMove(e) {
+      if (!isDragging) return;
+      var touch = e.touches ? e.touches[0] : e;
+      var dx = touch.clientX - startX;
+      var dy = touch.clientY - startY;
+      var newLeft = Math.max(0, Math.min(window.innerWidth - pipContainer.offsetWidth, startLeft + dx));
+      var newTop = Math.max(0, Math.min(window.innerHeight - pipContainer.offsetHeight, startTop + dy));
+      pipContainer.style.left = newLeft + 'px';
+      pipContainer.style.top = newTop + 'px';
+      pipContainer.style.right = 'auto';
+      if (e.touches) e.preventDefault();
+    }
+
+    function onUp() {
+      isDragging = false;
+      pipContainer.classList.remove('dragging');
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      document.removeEventListener('touchmove', onMove);
+      document.removeEventListener('touchend', onUp);
+    }
+  })();
+
+  // ---- Chat Input ----
+  chatTextInput.addEventListener('input', function() {
+    this.style.height = 'auto';
+    this.style.height = Math.min(this.scrollHeight, 60) + 'px';
+    chatSendBtn.disabled = !this.value.trim();
+  });
+
+  chatTextInput.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      if (this.value.trim()) sendTextMessage();
+    }
+  });
+
+  // ---- WebSocket ----
+  function connectWS() {
+    var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    var wsPath = '/ws/video/' + agentName;
+    ws = new WebSocket(proto + '//' + location.host + wsPath);
+    ws.binaryType = 'arraybuffer';
+
+    ws.onopen = function() {
+      setStatus('connected', 'Connected');
+      avatarStatus.textContent = 'Connected';
+      // Start mic capture automatically
+      startAudioCapture();
+    };
+
+    ws.onmessage = function(evt) {
+      if (evt.data instanceof ArrayBuffer) {
+        handleBinaryMessage(evt.data);
+      } else {
+        try {
+          var msg = JSON.parse(evt.data);
+          handleServerMessage(msg);
+        } catch(e) {
+          // non-JSON text, ignore
+        }
+      }
+    };
+
+    ws.onclose = function() {
+      setStatus('disconnected', 'Reconnecting...');
+      avatarStatus.textContent = 'Reconnecting...';
+      setTimeout(connectWS, 3000);
+    };
+
+    ws.onerror = function() {
+      setStatus('error', 'Connection error');
+      avatarStatus.textContent = 'Connection error';
+    };
+  }
+
+  // Binary protocol: check if it's a video frame or audio
+  // Video frames are preceded by a JSON {type:"video_frame"} message
+  function handleBinaryMessage(data) {
+    if (pendingVideoFrame) {
+      pendingVideoFrame = false;
+      renderVideoFrame(data);
+    } else {
+      // Treat as audio
+      playbackQueue.push(data);
+      if (!isPlaying) drainPlaybackQueue();
+    }
+  }
+
+  function handleServerMessage(msg) {
+    if (msg.type === 'video_frame') {
+      // Next binary message is a video frame (JPEG/WebP)
+      pendingVideoFrame = true;
+      if (!hasVideoTrack) {
+        hasVideoTrack = true;
+        showVideoMode();
+      }
+    } else if (msg.type === 'status') {
+      var state = msg.status || msg.state || '';
+      var message = msg.message || state;
+      setStatus(state, message);
+      avatarStatus.textContent = message;
+
+      // Update avatar fallback animation
+      if (state === 'speaking') {
+        avatarFallback.classList.add('speaking');
+      } else {
+        avatarFallback.classList.remove('speaking');
+      }
+
+      if (state === 'thinking' || state === 'processing') {
+        showChatStatus(state === 'thinking' ? 'Thinking...' : 'Processing...');
+      } else if (state === 'speaking') {
+        showChatStatus('Speaking...');
+      } else {
+        hideChatStatus();
+      }
+    } else if (msg.type === 'transcript') {
+      hideChatStatus();
+      addChatMessage(msg.role, msg.text);
+    } else if (msg.type === 'error') {
+      hideChatStatus();
+      addChatMessage('system', msg.message || 'An error occurred');
+    } else if (msg.type === 'audio_end') {
+      // Audio stream ended
+    } else if (msg.type === 'video_end') {
+      // Video stream ended, fall back
+      hasVideoTrack = false;
+      showFallbackMode();
+    } else if (msg.type === 'pong') {
+      // Heartbeat
+    }
+  }
+
+  // ---- Video Frame Rendering ----
+  function renderVideoFrame(jpegData) {
+    if (!isAvatarEnabled) return;
+
+    var blob = new Blob([jpegData], { type: 'image/jpeg' });
+    var url = URL.createObjectURL(blob);
+    var img = new Image();
+    img.onload = function() {
+      agentCanvas.width = img.width;
+      agentCanvas.height = img.height;
+      canvasCtx.drawImage(img, 0, 0);
+      URL.revokeObjectURL(url);
+    };
+    img.src = url;
+  }
+
+  function showVideoMode() {
+    if (!isAvatarEnabled) return;
+    avatarFallback.style.display = 'none';
+    agentVideo.style.display = 'none';
+    agentCanvas.style.display = 'block';
+    document.getElementById('overlay-subtitle').textContent = 'Video Chat';
+  }
+
+  function showFallbackMode() {
+    agentCanvas.style.display = 'none';
+    agentVideo.style.display = 'none';
+    avatarFallback.style.display = 'flex';
+    document.getElementById('overlay-subtitle').textContent = 'Voice Chat (no video)';
+  }
+
+  // ---- Audio Capture ----
+  async function startAudioCapture() {
+    try {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
+
+      mediaStream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          sampleRate: SAMPLE_RATE,
+          channelCount: 1,
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        }
+      });
+
+      var source = audioCtx.createMediaStreamSource(mediaStream);
+      scriptProcessor = audioCtx.createScriptProcessor(512, 1, 1);
+
+      // Client-side VAD
+      var isSpeaking = false;
+      var silenceFrames = 0;
+      var speechFrames = 0;
+      var SILENCE_THRESHOLD = 0.01;
+      var SILENCE_FRAMES_NEEDED = 30;
+      var SPEECH_FRAMES_NEEDED = 3;
+
+      scriptProcessor.onaudioprocess = function(e) {
+        if (isMuted || !ws || ws.readyState !== WebSocket.OPEN) return;
+
+        var inputData = e.inputBuffer.getChannelData(0);
+
+        // RMS energy
+        var sum = 0;
+        for (var i = 0; i < inputData.length; i++) sum += inputData[i] * inputData[i];
+        var rms = Math.sqrt(sum / inputData.length);
+
+        // Float32 to Int16 PCM
+        var pcm = new Int16Array(inputData.length);
+        for (var i = 0; i < inputData.length; i++) {
+          var s = Math.max(-1, Math.min(1, inputData[i]));
+          pcm[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+        }
+
+        if (rms > SILENCE_THRESHOLD) {
+          speechFrames++;
+          silenceFrames = 0;
+          if (!isSpeaking && speechFrames >= SPEECH_FRAMES_NEEDED) {
+            isSpeaking = true;
+          }
+        } else {
+          speechFrames = 0;
+          if (isSpeaking) {
+            silenceFrames++;
+            if (silenceFrames >= SILENCE_FRAMES_NEEDED) {
+              isSpeaking = false;
+              silenceFrames = 0;
+              ws.send('END_OF_SPEECH');
+            }
+          }
+        }
+
+        if (isSpeaking || silenceFrames < SILENCE_FRAMES_NEEDED) {
+          ws.send(pcm.buffer);
+        }
+
+        updateVisualizer(inputData);
+      };
+
+      source.connect(scriptProcessor);
+      scriptProcessor.connect(audioCtx.destination);
+
+      isMicActive = true;
+      visualizer.classList.add('active');
+      setStatus('listening', 'Listening...');
+
+    } catch (err) {
+      setStatus('error', 'Mic denied: ' + err.message);
+      avatarStatus.textContent = 'Mic access denied';
+    }
+  }
+
+  function stopAudioCapture() {
+    if (scriptProcessor) { scriptProcessor.disconnect(); scriptProcessor = null; }
+    if (mediaStream) { mediaStream.getTracks().forEach(function(t) { t.stop(); }); mediaStream = null; }
+    if (audioCtx) { audioCtx.close(); audioCtx = null; }
+    vizBars.forEach(function(b) { b.style.height = '4px'; });
+    visualizer.classList.remove('active');
+    isMicActive = false;
+  }
+
+  // ---- Audio Playback ----
+  function drainPlaybackQueue() {
+    if (playbackQueue.length === 0) {
+      isPlaying = false;
+      return;
+    }
+    isPlaying = true;
+
+    var chunks = [];
+    while (playbackQueue.length > 0) chunks.push(playbackQueue.shift());
+
+    var blob = new Blob(chunks, { type: 'audio/wav' });
+    var url = URL.createObjectURL(blob);
+    var audio = new Audio(url);
+    audio.onended = function() {
+      URL.revokeObjectURL(url);
+      if (playbackQueue.length > 0) {
+        drainPlaybackQueue();
+      } else {
+        isPlaying = false;
+      }
+    };
+    audio.play().catch(function(e) {
+      console.error('Playback failed:', e);
+      isPlaying = false;
+    });
+  }
+
+  // ---- Visualizer ----
+  function updateVisualizer(samples) {
+    var step = Math.floor(samples.length / vizBars.length);
+    for (var i = 0; i < vizBars.length; i++) {
+      var sum = 0;
+      for (var j = 0; j < step; j++) {
+        sum += Math.abs(samples[i * step + j] || 0);
+      }
+      var avg = sum / step;
+      var height = Math.max(4, Math.min(32, avg * 400));
+      vizBars[i].style.height = height + 'px';
+    }
+  }
+
+  // ---- Camera ----
+  async function startCamera() {
+    try {
+      cameraStream = await navigator.mediaDevices.getUserMedia({
+        video: { width: { ideal: 320 }, height: { ideal: 240 }, facingMode: 'user' }
+      });
+      userVideo.srcObject = cameraStream;
+      pipContainer.classList.add('visible');
+      pipOffLabel.style.display = 'none';
+      isCameraOn = true;
+      document.getElementById('btn-camera').classList.add('active');
+      document.getElementById('btn-camera').classList.remove('muted');
+    } catch (err) {
+      console.error('Camera error:', err);
+      addChatMessage('system', 'Camera access denied');
+    }
+  }
+
+  function stopCamera() {
+    if (cameraStream) {
+      cameraStream.getTracks().forEach(function(t) { t.stop(); });
+      cameraStream = null;
+    }
+    userVideo.srcObject = null;
+    pipContainer.classList.remove('visible');
+    isCameraOn = false;
+    document.getElementById('btn-camera').classList.remove('active');
+    document.getElementById('btn-camera').classList.add('muted');
+  }
+
+  // ---- UI Helpers ----
+  function setStatus(status, message) {
+    statusBadge.textContent = message || status;
+    statusBadge.className = status;
+  }
+
+  function showChatStatus(text) {
+    chatStatusLabel.textContent = text;
+    chatStatusEl.style.display = 'flex';
+    scrollChatToBottom();
+  }
+
+  function hideChatStatus() {
+    chatStatusEl.style.display = 'none';
+  }
+
+  function escapeHtml(str) {
+    var div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+  }
+
+  function scrollChatToBottom() {
+    requestAnimationFrame(function() {
+      chatMessages.scrollTop = chatMessages.scrollHeight;
+    });
+  }
+
+  function addChatMessage(role, text) {
+    messageCount++;
+    var msg = document.createElement('div');
+    msg.className = 'chat-msg ' + role;
+    msg.textContent = text;
+    chatMessages.appendChild(msg);
+
+    // Keep max 50 visible messages
+    while (chatMessages.children.length > 50) {
+      chatMessages.removeChild(chatMessages.firstChild);
+    }
+
+    scrollChatToBottom();
+
+    // Make chat visible if it was hidden and this is an assistant message
+    if (!isChatVisible && role === 'assistant') {
+      // Show briefly then auto-fade after 5s
+      chatOverlay.classList.remove('hidden');
+      clearTimeout(chatAutoHideTimer);
+      chatAutoHideTimer = setTimeout(function() {
+        if (!isChatVisible) chatOverlay.classList.add('hidden');
+      }, 5000);
+    }
+  }
+
+  var chatAutoHideTimer = null;
+
+  // ---- Session Cache ----
+  var SESSION_KEY = 'skvideo_session_' + agentName;
+  var sessionMessages = [];
+
+  function saveSession() {
+    try {
+      localStorage.setItem(SESSION_KEY, JSON.stringify(sessionMessages.slice(-50)));
+    } catch(e) {}
+  }
+
+  function loadCachedSession() {
+    try {
+      var raw = localStorage.getItem(SESSION_KEY);
+      if (raw) return JSON.parse(raw);
+    } catch(e) {}
+    return null;
+  }
+
+  // ---- Exposed Controls ----
+  window.toggleMute = function() {
+    isMuted = !isMuted;
+    var btn = document.getElementById('btn-mute');
+    if (isMuted) {
+      btn.classList.add('muted');
+      btn.classList.remove('active');
+      visualizer.classList.remove('active');
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'control', action: 'mute' }));
+      }
+    } else {
+      btn.classList.remove('muted');
+      btn.classList.add('active');
+      visualizer.classList.add('active');
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'control', action: 'unmute' }));
+      }
+    }
+  };
+
+  window.toggleCamera = function() {
+    if (isCameraOn) {
+      stopCamera();
+    } else {
+      startCamera();
+    }
+  };
+
+  window.toggleAvatarVideo = function() {
+    isAvatarEnabled = !isAvatarEnabled;
+    var btn = document.getElementById('btn-avatar-toggle');
+    if (isAvatarEnabled) {
+      btn.classList.add('active');
+      if (hasVideoTrack) {
+        showVideoMode();
+      } else {
+        showFallbackMode();
+      }
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'control', action: 'avatar_on' }));
+      }
+    } else {
+      btn.classList.remove('active');
+      agentCanvas.style.display = 'none';
+      agentVideo.style.display = 'none';
+      avatarFallback.style.display = 'flex';
+      avatarStatus.textContent = 'Avatar disabled';
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'control', action: 'avatar_off' }));
+      }
+    }
+  };
+
+  window.toggleChat = function() {
+    isChatVisible = !isChatVisible;
+    var btn = document.getElementById('btn-chat');
+    if (isChatVisible) {
+      btn.classList.add('active');
+      chatOverlay.classList.remove('hidden');
+      chatInputBar.classList.add('visible');
+      clearTimeout(chatAutoHideTimer);
+      chatTextInput.focus();
+    } else {
+      btn.classList.remove('active');
+      chatOverlay.classList.add('hidden');
+      chatInputBar.classList.remove('visible');
+    }
+  };
+
+  window.sendTextMessage = function() {
+    var text = chatTextInput.value.trim();
+    if (!text) return;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      addChatMessage('system', 'Not connected');
+      return;
+    }
+
+    ws.send(JSON.stringify({ type: 'text_message', text: text }));
+    addChatMessage('user', text);
+
+    sessionMessages.push({ role: 'user', content: text, timestamp: Date.now() });
+    saveSession();
+
+    chatTextInput.value = '';
+    chatTextInput.style.height = 'auto';
+    chatSendBtn.disabled = true;
+    chatTextInput.focus();
+  };
+
+  window.endCall = function() {
+    // Stop everything and redirect
+    stopAudioCapture();
+    stopCamera();
+    if (ws) {
+      try {
+        ws.send(JSON.stringify({ type: 'control', action: 'end_call' }));
+        ws.close();
+      } catch(e) {}
+      ws = null;
+    }
+    // Redirect to voice chat as fallback
+    location.href = '/voice/' + agentName;
+  };
+
+  // ---- Init ----
+  connectWS();
+
+  // Set initial button states
+  document.getElementById('btn-avatar-toggle').classList.add('active');
+  document.getElementById('btn-camera').classList.add('muted');
+  chatOverlay.classList.add('hidden');
+
+  // Load cached session messages into chat overlay
+  var cached = loadCachedSession();
+  if (cached && cached.length > 0) {
+    sessionMessages = cached;
+    cached.forEach(function(m) {
+      addChatMessage(m.role, m.content);
+    });
+  }
+
+  // Keep-alive ping every 15s
+  setInterval(function() {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'ping' }));
+    }
+  }, 15000);
+
+})();
+</script>
+</body>
+</html>

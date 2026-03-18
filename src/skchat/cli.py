@@ -17,6 +17,7 @@ transport is wired) sent via SKComm.
 
 from __future__ import annotations
 
+import logging
 import platform
 import re
 import subprocess
@@ -50,6 +51,7 @@ from .identity_bridge import (
 from .reactions import ReactionStore
 from .peer_discovery import PeerDiscovery
 
+logger = logging.getLogger(__name__)
 
 SKCHAT_HOME = "~/.skchat"
 
@@ -77,8 +79,8 @@ def _suppress_pgp_warnings_if_configured() -> None:
                 cfg = yaml.safe_load(_f) or {}
             if cfg.get("crypto", {}).get("suppress_passphrase_warning"):
                 warnings.filterwarnings("ignore", category=UserWarning, module="pgpy")
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("Failed to apply PGP warning suppression from config: %s", exc)
 
 
 _suppress_pgp_warnings_if_configured()
@@ -151,8 +153,8 @@ def _get_identity() -> str:
                 with open(config_path) as f:
                     cfg = yaml.safe_load(f)
                 return cfg.get("skchat", {}).get("identity", {}).get("uri", "capauth:local@skchat")
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("Failed to read identity from config %s: %s", config_path, exc)
 
         return "capauth:local@skchat"
 
@@ -232,8 +234,8 @@ def _send_typing_before_message(
     try:
         transport.send_typing_indicator(recipient, thread_id=thread_id)
         _time.sleep(delay)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("send_typing_indicator to %r failed: %s", recipient, exc)
 
 
 def _try_deliver(msg: "ChatMessage") -> dict:
@@ -545,8 +547,8 @@ def _display_name(identity: str) -> str:
     try:
         from .identity_bridge import resolve_display_name
         return resolve_display_name(identity)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("resolve_display_name(%r) failed: %s", identity, exc)
     # bare string fallback (no identity_bridge available)
     try:
         local = identity
@@ -592,8 +594,8 @@ def _load_read_state() -> dict:
         try:
             import json as _json
             return _json.loads(path.read_text())
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("Failed to load read state from %s: %s", path, exc)
     return {}
 
 
@@ -1015,8 +1017,8 @@ def _watch_inbox(interval: float = 5.0, limit: int = 50) -> None:
         ]
         all_messages.sort(key=lambda d: str(d.get("timestamp", "")))
         all_messages = all_messages[-limit:]
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("Failed to pre-populate inbox from history: %s", exc)
 
     def _build_live_table() -> "Panel":
         from rich.console import Group as RichGroup
@@ -1697,16 +1699,16 @@ def chat(peer: str, interval: float, thread: Optional[str], group: bool) -> None
                     message_type=MessageType.HEARTBEAT,
                 )
                 return
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("SKComm presence broadcast failed: %s", exc)
         # File-transport fallback: drop JSON in shared inbox dir
         try:
             import uuid as _uuid
             inbox_dir = Path("~/.skchat/inbox").expanduser()
             inbox_dir.mkdir(parents=True, exist_ok=True)
             (inbox_dir / f"presence-{_uuid.uuid4().hex[:8]}.json").write_text(payload)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("File-transport presence fallback failed: %s", exc)
 
     # Throttle: at most 1 TYPING broadcast per 2 s using threading.Timer
     _TYPING_THROTTLE = 2.0
@@ -1741,8 +1743,8 @@ def chat(peer: str, interval: float, thread: Optional[str], group: bool) -> None
                     if buf and buf != _prev_buf[0]:
                         _prev_buf[0] = buf
                         _on_typing()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning("readline buffer poll failed: %s", exc)
             _stop_poller.wait(0.3)
 
     _poller = threading.Thread(target=_poll_readline, daemon=True)
@@ -1824,8 +1826,8 @@ def chat(peer: str, interval: float, thread: Optional[str], group: bool) -> None
                         click.echo(f"  [{ts_str}] {peer_display}: {content}")
                     sys.stdout.write(_prompt_text)
                     sys.stdout.flush()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("Chat poll loop error: %s", exc)
             stop_event.wait(interval)
 
     poll_thread = threading.Thread(target=_poll_loop, daemon=True)
@@ -2134,8 +2136,8 @@ def send_file_cmd(recipient: str, file_path: Path) -> None:
     try:
         from skcomm.core import SKComm
         skcomm = SKComm.from_config()
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("SKComm unavailable for CLI file send: %s", exc)
 
     service = FileTransferService(identity=identity, skcomm=skcomm)
 
@@ -2680,8 +2682,8 @@ def _load_group(group_id: str) -> "Optional[GroupChat]":
     if json_path.exists():
         try:
             return GroupChat.model_validate_json(json_path.read_text(encoding="utf-8"))
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("Failed to load group from %s: %s", json_path.name, exc)
 
     return None
 
@@ -3475,8 +3477,8 @@ def status() -> None:
                     except ValueError:
                         lumina_pid = -1
                 break
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("Failed to detect lumina-bridge PID: %s", exc)
 
     # Syncthing
     syncthing_ok = False
@@ -3487,8 +3489,8 @@ def status() -> None:
                 capture_output=True, timeout=3,
             ).returncode == 0
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("syncthing process check failed: %s", exc)
 
     # Presence peers
     peers_info: list[tuple[str, str, str]] = []  # (uri, status, age_str)
@@ -3510,15 +3512,15 @@ def status() -> None:
         peers_info.sort(
             key=lambda x: (0 if x[1] == "online" else 1 if x[1] == "away" else 2)
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("Failed to load presence peers for status: %s", exc)
 
     # Recent messages
     recent_msgs: list[dict] = []
     try:
         recent_msgs = chat_history.get_messages_since(minutes=120, limit=100)[-4:]
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("Failed to load recent messages for status: %s", exc)
 
     # ── Build output lines ────────────────────────────────────────
     out: list[str] = []
@@ -3549,8 +3551,8 @@ def status() -> None:
     if not running and msg_recv == 0:
         try:
             msg_recv = chat_history.message_count()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("chat_history.message_count() failed: %s", exc)
     out.append(_row(
         f"Messages:   {msg_recv} received, {msg_sent} sent",
         "Messages:   "
@@ -3826,8 +3828,8 @@ def config_show() -> None:
             try:
                 with open(config_path) as fh:
                     _print("\n" + fh.read()[:800])
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("Failed to read config file for display: %s", exc)
     _print("")
 
 
@@ -3908,8 +3910,8 @@ def who() -> None:
                 name = data.get("display_name") or data.get("name", peer_file.stem)
                 if uri:
                     KNOWN_PEERS[uri] = name
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("Failed to load peer file %s: %s", peer_file.name, exc)
 
     cache = PresenceCache()
     all_entries = cache.get_all()
@@ -3991,8 +3993,8 @@ def presence() -> None:
                 name = data.get("display_name") or data.get("name", peer_file.stem)
                 if uri:
                     KNOWN_PEERS[uri] = name
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("Failed to load peer file %s: %s", peer_file.name, exc)
 
     cache = PresenceCache()
     all_entries = cache.get_all()
@@ -4331,8 +4333,8 @@ def rooms(limit: int) -> None:
                 dm_peer_uri[pk] = other
                 if _is_unread(ts):
                     dm_unread[pk] = dm_unread.get(pk, 0) + 1
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("Failed to build conversations DM list: %s", exc)
 
     # ── Load groups, deduplicate by name (keep latest updated_at) ─
     groups_dir = Path(SKCHAT_HOME).expanduser() / "groups"
