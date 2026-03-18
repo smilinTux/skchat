@@ -17,7 +17,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional
 
-logger = logging.getLogger('skchat.watchdog')
+logger = logging.getLogger("skchat.watchdog")
 
 _FAILURE_THRESHOLD = 3
 _PING_TIMEOUT = 5.0
@@ -42,11 +42,11 @@ class TransportWatchdog:
     def __init__(
         self,
         transport: object,
-        skcomm_url: str = 'http://127.0.0.1:9384',
+        skcomm_url: str = "http://127.0.0.1:9384",
         failure_threshold: int = _FAILURE_THRESHOLD,
     ) -> None:
         self._transport = transport
-        self._skcomm_base = skcomm_url.rstrip('/')
+        self._skcomm_base = skcomm_url.rstrip("/")
         self._health_url = f"{self._skcomm_base}/health"
         self._failure_threshold = failure_threshold
         self.consecutive_failures: int = 0
@@ -81,16 +81,16 @@ class TransportWatchdog:
             if resp.status_code == 200:
                 if self.consecutive_failures > 0:
                     logger.info(
-                        'Watchdog: SKComm healthy again (was %d consecutive failures)',
+                        "Watchdog: SKComm healthy again (was %d consecutive failures)",
                         self.consecutive_failures,
                     )
                 self.consecutive_failures = 0
                 self.last_success_at = datetime.now(timezone.utc)
                 self._reconnect_pending = False
                 return True
-            logger.debug('Watchdog: SKComm health returned HTTP %d', resp.status_code)
+            logger.debug("Watchdog: SKComm health returned HTTP %d", resp.status_code)
         except Exception as exc:
-            logger.debug('Watchdog: SKComm health ping error: %s', exc)
+            logger.debug("Watchdog: SKComm health ping error: %s", exc)
 
         self.consecutive_failures += 1
         self.last_failure_at = datetime.now(timezone.utc)
@@ -110,14 +110,11 @@ class TransportWatchdog:
             return True
 
         logger.warning(
-            'Watchdog: SKComm health check failed (consecutive=%d/%d)',
+            "Watchdog: SKComm health check failed (consecutive=%d/%d)",
             self.consecutive_failures,
             self._failure_threshold,
         )
-        if (
-            self.consecutive_failures >= self._failure_threshold
-            and not self._reconnect_pending
-        ):
+        if self.consecutive_failures >= self._failure_threshold and not self._reconnect_pending:
             self._reconnect_pending = True
             self._trigger_reconnect()
         return False
@@ -150,25 +147,23 @@ class TransportWatchdog:
             # 101 = Switching Protocols, 400/426 = server up but requires upgrade.
             signaling_ok = resp.status_code in (101, 200, 400, 426)
         except Exception as exc:
-            logger.debug('Watchdog: WebRTC signaling check error: %s', exc)
+            logger.debug("Watchdog: WebRTC signaling check error: %s", exc)
 
         ice_url = f"{self._skcomm_base}/api/v1/webrtc/ice-config"
         try:
             resp = httpx.get(ice_url, timeout=_PING_TIMEOUT)
             if resp.status_code == 200:
                 data = resp.json()
-                servers = data.get('ice_servers') or data.get('iceServers') or []
+                servers = data.get("ice_servers") or data.get("iceServers") or []
                 ice_servers_configured = bool(servers)
-                active_peers = int(
-                    data.get('active_peers') or data.get('activePeers') or 0
-                )
+                active_peers = int(data.get("active_peers") or data.get("activePeers") or 0)
         except Exception as exc:
-            logger.debug('Watchdog: WebRTC ICE config check error: %s', exc)
+            logger.debug("Watchdog: WebRTC ICE config check error: %s", exc)
 
         return {
-            'signaling_ok': signaling_ok,
-            'ice_servers_configured': ice_servers_configured,
-            'active_peers': active_peers,
+            "signaling_ok": signaling_ok,
+            "ice_servers_configured": ice_servers_configured,
+            "active_peers": active_peers,
         }
 
     def health_summary(self) -> dict:
@@ -186,12 +181,12 @@ class TransportWatchdog:
         skcomm_ok = self.ping_skcomm()
         webrtc = self.check_webrtc()
         return {
-            'skcomm_ok': skcomm_ok,
-            'transport_status': self.transport_status,
-            'webrtc': webrtc,
-            'file_transport_available': True,
-            'uptime_seconds': self.uptime_seconds,
-            'consecutive_failures': self.consecutive_failures,
+            "skcomm_ok": skcomm_ok,
+            "transport_status": self.transport_status,
+            "webrtc": webrtc,
+            "file_transport_available": True,
+            "uptime_seconds": self.uptime_seconds,
+            "consecutive_failures": self.consecutive_failures,
         }
 
     # ------------------------------------------------------------------
@@ -213,10 +208,10 @@ class TransportWatchdog:
             'unreachable' -- at or above failure_threshold.
         """
         if self.consecutive_failures == 0:
-            return 'healthy'
+            return "healthy"
         if self.consecutive_failures < self._failure_threshold:
-            return 'degraded'
-        return 'unreachable'
+            return "degraded"
+        return "unreachable"
 
     @property
     def is_healthy(self) -> bool:
@@ -230,20 +225,21 @@ class TransportWatchdog:
     def _trigger_reconnect(self) -> None:
         """Attempt to reconnect the transport by calling reconnect()."""
         logger.warning(
-            'Watchdog: triggering transport.reconnect() after %d consecutive failures',
+            "Watchdog: triggering transport.reconnect() after %d consecutive failures",
             self.consecutive_failures,
         )
         if self._transport is None:
             return
-        reconnect = getattr(self._transport, 'reconnect', None)
+        reconnect = getattr(self._transport, "reconnect", None)
         if reconnect is None:
-            logger.warning('Watchdog: transport has no reconnect() method -- skipping')
+            logger.warning("Watchdog: transport has no reconnect() method -- skipping")
             return
         try:
             reconnect()
-            logger.info('Watchdog: transport.reconnect() returned')
+            logger.info("Watchdog: transport.reconnect() returned")
         except Exception as exc:
-            logger.error('Watchdog: reconnect() raised: %s', exc)
+            logger.error("Watchdog: reconnect() raised: %s", exc)
+
 
 # Alias for backwards compatibility and external tooling that imports ChatWatchdog.
 ChatWatchdog = TransportWatchdog

@@ -16,7 +16,6 @@ from pgpy.constants import (
 from skchat.group import (
     GroupChat,
     GroupKeyDistributor,
-    GroupMember,
     GroupMessageEncryptor,
     MemberRole,
     ParticipantType,
@@ -29,8 +28,12 @@ def _keygen(name: str) -> tuple[str, str]:
     """Generate a test PGP keypair."""
     key = pgpy.PGPKey.new(PubKeyAlgorithm.RSAEncryptOrSign, 2048)
     uid = pgpy.PGPUID.new(name, email=f"{name.lower()}@test.io")
-    key.add_uid(uid, usage={KeyFlags.Sign, KeyFlags.Certify},
-                hashes=[HashAlgorithm.SHA256], ciphers=[SymmetricKeyAlgorithm.AES256])
+    key.add_uid(
+        uid,
+        usage={KeyFlags.Sign, KeyFlags.Certify},
+        hashes=[HashAlgorithm.SHA256],
+        ciphers=[SymmetricKeyAlgorithm.AES256],
+    )
     sub = pgpy.PGPKey.new(PubKeyAlgorithm.RSAEncryptOrSign, 2048)
     key.add_subkey(sub, usage={KeyFlags.EncryptCommunications, KeyFlags.EncryptStorage})
     key.protect(PASSPHRASE, SymmetricKeyAlgorithm.AES256, HashAlgorithm.SHA256)
@@ -288,7 +291,8 @@ class TestGroupKeyDistribution:
         """Group key encrypted for a member is non-empty."""
         _, alice_pub = alice_keys
         encrypted = GroupKeyDistributor.encrypt_key_for_member(
-            "ab" * 32, alice_pub,
+            "ab" * 32,
+            alice_pub,
         )
         assert encrypted is not None
         assert "PGP MESSAGE" in encrypted
@@ -308,7 +312,9 @@ class TestGroupKeyDistribution:
         assert result is None
 
     def test_distribute_key_to_all(
-        self, group: GroupChat, bob_keys: tuple[str, str],
+        self,
+        group: GroupChat,
+        bob_keys: tuple[str, str],
     ) -> None:
         """distribute_key encrypts for all members with public keys."""
         _, bob_pub = bob_keys
@@ -398,7 +404,7 @@ class TestGroupMulticast:
 
         result = group.send(
             content="Hello group!",
-            sender=f"capauth:alice-transport@test",
+            sender="capauth:alice-transport@test",
             transport=transport,
         )
 

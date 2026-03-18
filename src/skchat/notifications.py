@@ -54,9 +54,12 @@ class DesktopNotifier:
             return False
         cmd = [
             "notify-send",
-            "--urgency", urgency,
-            "--icon", icon,
-            "--expire-time", str(timeout_ms),
+            "--urgency",
+            urgency,
+            "--icon",
+            icon,
+            "--expire-time",
+            str(timeout_ms),
             title,
             body,
         ]
@@ -78,7 +81,9 @@ class DesktopNotifier:
         Returns:
             True if the notification was sent successfully.
         """
-        urgency = NotificationLevel.CRITICAL.value if is_mention else NotificationLevel.NORMAL.value
+        urgency = (
+            NotificationLevel.CRITICAL.value if is_mention else NotificationLevel.NORMAL.value
+        )
         return self.notify(
             title=f"SKChat: {sender_name}",
             body=preview,

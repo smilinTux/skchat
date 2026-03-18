@@ -19,28 +19,26 @@ Covers:
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from skchat.mcp_server import (
-    _handle_send_message,
-    _handle_check_inbox,
-    _handle_search_messages,
-    _handle_create_group,
-    _handle_group_send,
-    _handle_group_members,
-    _handle_group_add_member,
-    _handle_list_threads,
-    _handle_get_thread,
-    _handle_webrtc_status,
-    _handle_initiate_call,
-    _handle_accept_call,
-    _handle_send_file_p2p,
     _groups,
+    _handle_accept_call,
+    _handle_check_inbox,
+    _handle_create_group,
+    _handle_get_thread,
+    _handle_group_add_member,
+    _handle_group_members,
+    _handle_group_send,
+    _handle_initiate_call,
+    _handle_list_threads,
+    _handle_search_messages,
+    _handle_send_file_p2p,
+    _handle_send_message,
+    _handle_webrtc_status,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -118,10 +116,12 @@ class TestSendMessage:
     async def test_send_success(self):
         messenger = _mock_messenger()
         with patch("skchat.mcp_server._get_messenger", return_value=messenger):
-            result = await _handle_send_message({
-                "recipient": "capauth:lumina@skworld.io",
-                "content": "Hello Lumina!",
-            })
+            result = await _handle_send_message(
+                {
+                    "recipient": "capauth:lumina@skworld.io",
+                    "content": "Hello Lumina!",
+                }
+            )
 
         data = _parse_result(result)
         assert data["sent"] is True
@@ -144,12 +144,14 @@ class TestSendMessage:
     async def test_send_with_thread(self):
         messenger = _mock_messenger()
         with patch("skchat.mcp_server._get_messenger", return_value=messenger):
-            result = await _handle_send_message({
-                "recipient": "capauth:lumina@skworld.io",
-                "content": "Reply in thread",
-                "thread_id": "thread-001",
-                "message_type": "response",
-            })
+            result = await _handle_send_message(
+                {
+                    "recipient": "capauth:lumina@skworld.io",
+                    "content": "Reply in thread",
+                    "thread_id": "thread-001",
+                    "message_type": "response",
+                }
+            )
 
         data = _parse_result(result)
         assert data["sent"] is True
@@ -227,14 +229,16 @@ class TestCreateGroup:
     @pytest.mark.asyncio
     async def test_create_group_success(self):
         with patch("skchat.mcp_server._get_identity", return_value="capauth:opus@skworld.io"):
-            result = await _handle_create_group({
-                "name": "Test Group",
-                "description": "A test group",
-                "members": [
-                    {"identity": "capauth:lumina@skworld.io", "role": "member"},
-                    {"identity": "capauth:jarvis@skworld.io", "participant_type": "agent"},
-                ],
-            })
+            result = await _handle_create_group(
+                {
+                    "name": "Test Group",
+                    "description": "A test group",
+                    "members": [
+                        {"identity": "capauth:lumina@skworld.io", "role": "member"},
+                        {"identity": "capauth:jarvis@skworld.io", "participant_type": "agent"},
+                    ],
+                }
+            )
 
         data = _parse_result(result)
         assert data["name"] == "Test Group"
@@ -274,6 +278,7 @@ class TestGroupSend:
     async def test_group_send_success(self):
         # Create a group first
         from skchat.group import GroupChat
+
         group = GroupChat.create(
             name="Send Test",
             creator_uri="capauth:opus@skworld.io",
@@ -283,10 +288,12 @@ class TestGroupSend:
         history = _mock_history()
         with patch("skchat.mcp_server._get_identity", return_value="capauth:opus@skworld.io"):
             with patch("skchat.mcp_server._get_history", return_value=history):
-                result = await _handle_group_send({
-                    "group_id": group.id,
-                    "content": "Hello group!",
-                })
+                result = await _handle_group_send(
+                    {
+                        "group_id": group.id,
+                        "content": "Hello group!",
+                    }
+                )
 
         data = _parse_result(result)
         assert data["sent"] is True
@@ -296,10 +303,12 @@ class TestGroupSend:
 
     @pytest.mark.asyncio
     async def test_group_send_missing_group(self):
-        result = await _handle_group_send({
-            "group_id": "nonexistent",
-            "content": "Hello",
-        })
+        result = await _handle_group_send(
+            {
+                "group_id": "nonexistent",
+                "content": "Hello",
+            }
+        )
         data = _parse_result(result)
         assert "error" in data
 
@@ -321,6 +330,7 @@ class TestGroupMembers:
     @pytest.mark.asyncio
     async def test_group_members_success(self):
         from skchat.group import GroupChat
+
         group = GroupChat.create(
             name="Members Test",
             creator_uri="capauth:opus@skworld.io",
@@ -352,18 +362,21 @@ class TestGroupAddMember:
     @pytest.mark.asyncio
     async def test_add_member_success(self):
         from skchat.group import GroupChat
+
         group = GroupChat.create(
             name="Add Test",
             creator_uri="capauth:opus@skworld.io",
         )
         _groups[group.id] = group
 
-        result = await _handle_group_add_member({
-            "group_id": group.id,
-            "identity": "capauth:lumina@skworld.io",
-            "role": "member",
-            "participant_type": "agent",
-        })
+        result = await _handle_group_add_member(
+            {
+                "group_id": group.id,
+                "identity": "capauth:lumina@skworld.io",
+                "role": "member",
+                "participant_type": "agent",
+            }
+        )
 
         data = _parse_result(result)
         assert data["added"] is True
@@ -373,10 +386,12 @@ class TestGroupAddMember:
 
     @pytest.mark.asyncio
     async def test_add_member_missing_group(self):
-        result = await _handle_group_add_member({
-            "group_id": "nope",
-            "identity": "capauth:x@y",
-        })
+        result = await _handle_group_add_member(
+            {
+                "group_id": "nope",
+                "identity": "capauth:x@y",
+            }
+        )
         data = _parse_result(result)
         assert "error" in data
 
@@ -449,7 +464,8 @@ def _mock_webrtc_transport(
 ) -> MagicMock:
     """Create a mock WebRTCTransport for MCP tool tests."""
     from queue import Queue
-    from skcomm.transport import TransportStatus, HealthStatus
+
+    from skcomm.transport import HealthStatus, TransportStatus
 
     transport = MagicMock()
     transport._running = running
@@ -463,8 +479,10 @@ def _mock_webrtc_transport(
         q.put(b"msg")
     transport._inbox = q
 
-    status = TransportStatus.AVAILABLE if (running and signaling_connected) else (
-        TransportStatus.DEGRADED if running else TransportStatus.UNAVAILABLE
+    status = (
+        TransportStatus.AVAILABLE
+        if (running and signaling_connected)
+        else (TransportStatus.DEGRADED if running else TransportStatus.UNAVAILABLE)
     )
     transport.health_check.return_value = HealthStatus(
         transport_name="webrtc",
@@ -521,6 +539,7 @@ class TestWebRTCStatus:
         """Expected: active_peers includes info for connected peers."""
         pytest.importorskip("aiortc")
         from skcomm.transports.webrtc import PeerConnection
+
         mock_pc = MagicMock()
         peer = PeerConnection(
             peer_fingerprint=PEER_FP,
@@ -619,6 +638,7 @@ class TestAcceptCall:
         """Expected: status=already_connected when peer is already connected."""
         pytest.importorskip("aiortc")
         from skcomm.transports.webrtc import PeerConnection
+
         peer = PeerConnection(peer_fingerprint=PEER_FP, pc=MagicMock(), connected=True)
         transport = _mock_webrtc_transport(peers={PEER_FP: peer})
         with patch("skchat.mcp_server._get_webrtc_transport", return_value=transport):
@@ -673,10 +693,12 @@ class TestSendFileP2P:
     @pytest.mark.asyncio
     async def test_file_not_found_returns_error(self):
         """Expected: error when the specified file does not exist."""
-        result = await _handle_send_file_p2p({
-            "peer": PEER_FP,
-            "file_path": "/nonexistent/path/to/file.txt",
-        })
+        result = await _handle_send_file_p2p(
+            {
+                "peer": PEER_FP,
+                "file_path": "/nonexistent/path/to/file.txt",
+            }
+        )
         data = _parse_result(result)
         assert "error" in data
         assert "not found" in data["error"].lower() or "File not found" in data["error"]
@@ -684,10 +706,12 @@ class TestSendFileP2P:
     @pytest.mark.asyncio
     async def test_directory_path_returns_error(self, tmp_path):
         """Expected: error when file_path points to a directory."""
-        result = await _handle_send_file_p2p({
-            "peer": PEER_FP,
-            "file_path": str(tmp_path),
-        })
+        result = await _handle_send_file_p2p(
+            {
+                "peer": PEER_FP,
+                "file_path": str(tmp_path),
+            }
+        )
         data = _parse_result(result)
         assert "error" in data
 
@@ -716,10 +740,12 @@ class TestSendFileP2P:
             with patch("skchat.mcp_server._get_identity", return_value="capauth:opus@skworld.io"):
                 with patch("skchat.files.FileSender", return_value=mock_sender):
                     with patch("skcomm.SKComm.from_config", return_value=mock_comm):
-                        result = await _handle_send_file_p2p({
-                            "peer": PEER_FP,
-                            "file_path": str(test_file),
-                        })
+                        result = await _handle_send_file_p2p(
+                            {
+                                "peer": PEER_FP,
+                                "file_path": str(test_file),
+                            }
+                        )
 
         data = _parse_result(result)
         assert data["sent"] is True
@@ -734,6 +760,7 @@ class TestSendFileP2P:
         test_file.write_bytes(b"direct transfer")
 
         from skcomm.transports.webrtc import PeerConnection
+
         mock_channel = MagicMock()
         peer = PeerConnection(
             peer_fingerprint=PEER_FP,
@@ -763,11 +790,13 @@ class TestSendFileP2P:
             with patch("skchat.mcp_server._get_identity", return_value="capauth:opus@skworld.io"):
                 with patch("skchat.files.FileSender", return_value=mock_sender):
                     with patch("asyncio.run_coroutine_threadsafe", return_value=mock_future):
-                        result = await _handle_send_file_p2p({
-                            "peer": PEER_FP,
-                            "file_path": str(test_file),
-                            "description": "test transfer",
-                        })
+                        result = await _handle_send_file_p2p(
+                            {
+                                "peer": PEER_FP,
+                                "file_path": str(test_file),
+                                "description": "test transfer",
+                            }
+                        )
 
         data = _parse_result(result)
         assert data["sent"] is True

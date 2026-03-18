@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
@@ -97,7 +96,7 @@ class TestCLIVersion:
         result = runner.invoke(main, ["--version"])
         assert result.exit_code == 0
         assert "skchat" in result.output
-        assert "0.1.0" in result.output
+        assert "0.1.2" in result.output
 
     def test_help(self, runner: CliRunner) -> None:
         """Happy path: --help shows command list."""
@@ -112,7 +111,10 @@ class TestCLIVersion:
 class TestSendCommand:
     """Tests for the 'skchat send' command."""
 
-    @patch("skchat.cli._try_deliver", return_value={"delivered": False, "error": "no transport", "transport": None})
+    @patch(
+        "skchat.cli._try_deliver",
+        return_value={"delivered": False, "error": "no transport", "transport": None},
+    )
     @patch("skchat.cli._get_history")
     @patch("skchat.cli._get_identity", return_value="capauth:local@skchat")
     def test_send_basic(
@@ -131,7 +133,10 @@ class TestSendCommand:
         assert "bob@test" in result.output
         mock_history.store_message.assert_called_once()
 
-    @patch("skchat.cli._try_deliver", return_value={"delivered": False, "error": "no transport", "transport": None})
+    @patch(
+        "skchat.cli._try_deliver",
+        return_value={"delivered": False, "error": "no transport", "transport": None},
+    )
     @patch("skchat.cli._get_history")
     @patch("skchat.cli._get_identity", return_value="capauth:local@skchat")
     def test_send_with_thread(
@@ -152,7 +157,10 @@ class TestSendCommand:
         call_args = mock_history.store_message.call_args[0][0]
         assert call_args.thread_id == "abc123"
 
-    @patch("skchat.cli._try_deliver", return_value={"delivered": False, "error": "no transport", "transport": None})
+    @patch(
+        "skchat.cli._try_deliver",
+        return_value={"delivered": False, "error": "no transport", "transport": None},
+    )
     @patch("skchat.cli._get_history")
     @patch("skchat.cli._get_identity", return_value="capauth:local@skchat")
     def test_send_ephemeral(
@@ -166,9 +174,7 @@ class TestSendCommand:
         """Send with TTL creates an ephemeral message."""
         mock_hist_fn.return_value = mock_history
 
-        result = runner.invoke(
-            main, ["send", "capauth:bob@test", "Secret", "--ttl", "60"]
-        )
+        result = runner.invoke(main, ["send", "capauth:bob@test", "Secret", "--ttl", "60"])
         assert result.exit_code == 0
         call_args = mock_history.store_message.call_args[0][0]
         assert call_args.ttl == 60
@@ -245,6 +251,7 @@ class TestInboxCommand:
         result = runner.invoke(main, ["inbox", "--json"])
         assert result.exit_code == 0
         import json
+
         data = json.loads(result.output)
         assert isinstance(data, list)
         assert len(data) == 1
@@ -350,6 +357,7 @@ class TestInboxHelpers:
     def test_display_name_capauth_uri(self) -> None:
         """capauth URI extracts local part and capitalises it."""
         from skchat.cli import _display_name
+
         assert _display_name("capauth:lumina@skworld.io") == "Lumina"
         assert _display_name("capauth:chef@skworld.io") == "Chef"
         assert _display_name("capauth:local@skchat") == "Local"
@@ -357,50 +365,61 @@ class TestInboxHelpers:
     def test_display_name_plain(self) -> None:
         """Plain strings are returned capitalised."""
         from skchat.cli import _display_name
+
         assert _display_name("alice") == "Alice"
 
     def test_sender_color_self(self) -> None:
         """Own identity returns blue."""
         from skchat.cli import _sender_color
+
         assert _sender_color("capauth:me@test", "capauth:me@test") == "blue"
 
     def test_sender_color_lumina(self) -> None:
         """Lumina gets magenta."""
         from skchat.cli import _sender_color
+
         assert _sender_color("capauth:lumina@skworld.io", "capauth:me@test") == "magenta"
 
     def test_sender_color_chef(self) -> None:
         """Chef gets yellow."""
         from skchat.cli import _sender_color
+
         assert _sender_color("capauth:chef@skworld.io", "capauth:me@test") == "yellow"
 
     def test_sender_color_other(self) -> None:
         """Unknown senders get cyan."""
         from skchat.cli import _sender_color
+
         assert _sender_color("capauth:bob@test", "capauth:me@test") == "cyan"
 
     def test_ts_ago_seconds(self) -> None:
         """Recent timestamp returns 'Xs ago'."""
-        from skchat.cli import _ts_ago
         from datetime import timedelta
+
+        from skchat.cli import _ts_ago
+
         ts = (datetime.now(timezone.utc) - timedelta(seconds=30)).isoformat()
         assert "s ago" in _ts_ago(ts)
 
     def test_ts_ago_minutes(self) -> None:
         """Minute-range timestamp returns 'Nmin ago'."""
-        from skchat.cli import _ts_ago
         from datetime import timedelta
+
+        from skchat.cli import _ts_ago
+
         ts = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
         assert "min ago" in _ts_ago(ts)
 
     def test_ts_hhmm_string(self) -> None:
         """ISO string extracts HH:MM."""
         from skchat.cli import _ts_hhmm
+
         assert _ts_hhmm("2026-02-23T14:35:00") == "14:35"
 
     def test_ts_hhmm_short(self) -> None:
         """Short strings return as-is truncated."""
         from skchat.cli import _ts_hhmm
+
         assert _ts_hhmm("14:35") == "14:35"
 
 
