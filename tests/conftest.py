@@ -11,13 +11,13 @@ from __future__ import annotations
 # first, giving us the real package with MemoryStore, SQLiteBackend, etc.
 # ---------------------------------------------------------------------------
 import sys as _sys
-_SKMEMORY_ROOT = '/home/cbrd21/dkloud.douno.it/p/smilintux-org/skmemory'
+
+_SKMEMORY_ROOT = "/home/cbrd21/dkloud.douno.it/p/smilintux-org/skmemory"
 if _SKMEMORY_ROOT not in _sys.path:
     _sys.path.insert(0, _SKMEMORY_ROOT)
 
 import asyncio
 import json
-import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -26,15 +26,13 @@ from unittest.mock import MagicMock
 import pgpy
 import pytest
 from pgpy.constants import (
-    EllipticCurveOID,
     HashAlgorithm,
     KeyFlags,
     PubKeyAlgorithm,
     SymmetricKeyAlgorithm,
 )
 
-from skchat.models import ChatMessage, ContentType, DeliveryStatus, Thread
-
+from skchat.models import ChatMessage, ContentType, Thread
 
 PASSPHRASE = "test-passphrase-123"
 
@@ -303,6 +301,7 @@ def mock_messenger(tmp_skchat_dir: Path):
         AgentMessenger: Ready for agent-to-agent messaging in tests.
     """
     from skcomm.transports.file import FileTransport
+
     from skchat.agent_comm import AgentMessenger
     from skchat.history import ChatHistory
     from skchat.transport import ChatTransport

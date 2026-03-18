@@ -2,6 +2,7 @@
 
 Usage:  skchat webui [--port 8765] [--no-browser]
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -21,12 +22,14 @@ _SKCHAT_HOME = Path("~/.skchat").expanduser()
 # Register voice streaming routes (/ws/voice, /voice)
 try:
     from .voice_stream import register_voice_routes as _register_voice_routes
+
     _register_voice_routes(app)
     _voice_routes_loaded = True
 except ImportError:
     # torch/silero not available — use lightweight handler (client-side VAD)
     try:
         from .voice_ws_lite import register_voice_routes_lite as _register_voice_routes_lite
+
         _register_voice_routes_lite(app)
         _voice_routes_loaded = True
     except ImportError:
@@ -79,6 +82,7 @@ async def _ws_broadcast(msg_dict: dict) -> None:
 def _get_identity() -> str:
     try:
         from .identity_bridge import get_sovereign_identity
+
         return get_sovereign_identity()
     except Exception:
         pass
@@ -89,6 +93,7 @@ def _get_identity() -> str:
     if config.exists():
         try:
             import yaml
+
             with open(config) as f:
                 cfg = yaml.safe_load(f)
             return cfg.get("skchat", {}).get("identity", {}).get("uri", "capauth:local@skchat")
@@ -99,13 +104,16 @@ def _get_identity() -> str:
 
 def _get_history():
     from .history import ChatHistory
+
     return ChatHistory()
 
 
 def _get_transport(identity: str):
     try:
         from skcomm import SKComm
+
         from .transport import ChatTransport
+
         comm = SKComm.from_config()
         return ChatTransport(skcomm=comm, history=_get_history(), identity=identity)
     except Exception:
@@ -117,6 +125,7 @@ def _display_name(uri: str) -> str:
         return ""
     try:
         from .identity_bridge import resolve_display_name
+
         return resolve_display_name(uri)
     except Exception:
         pass
@@ -248,7 +257,7 @@ def _render_messages(history, identity: str) -> str:
             f'<span class="ts">{ts_str}</span>'
             f'<span class="who">{name}</span>'
             f'<span class="text">{safe}</span>'
-            f'</div>'
+            f"</div>"
         )
     return "\n".join(parts)
 
@@ -277,6 +286,7 @@ async def send(recipient: str = Form(...), content: str = Form(...)) -> HTMLResp
             transport.send_and_store(recipient=recipient, content=content)
         else:
             from .models import ChatMessage
+
             msg = ChatMessage(sender=identity, recipient=recipient, content=content)
             _get_history().save(msg)
         # Notify WS clients so they refresh
@@ -301,18 +311,20 @@ async def inbox(limit: int = 100, since_minutes: int = 1440) -> JSONResponse:
         else None
     )
     msgs = history.load(since=since, limit=limit)
-    return JSONResponse([
-        {
-            "id": m.id,
-            "sender": m.sender,
-            "recipient": m.recipient,
-            "content": m.content,
-            "timestamp": m.timestamp.isoformat() if m.timestamp else None,
-            "delivery_status": m.delivery_status.value,
-            "thread_id": m.thread_id,
-        }
-        for m in msgs
-    ])
+    return JSONResponse(
+        [
+            {
+                "id": m.id,
+                "sender": m.sender,
+                "recipient": m.recipient,
+                "content": m.content,
+                "timestamp": m.timestamp.isoformat() if m.timestamp else None,
+                "delivery_status": m.delivery_status.value,
+                "thread_id": m.thread_id,
+            }
+            for m in msgs
+        ]
+    )
 
 
 @app.get("/groups")
@@ -324,24 +336,27 @@ async def groups() -> JSONResponse:
         for f in sorted(groups_dir.glob("*.json")):
             try:
                 from .group import GroupChat
+
                 grp = GroupChat.model_validate_json(f.read_text(encoding="utf-8"))
-                result.append({
-                    "id": grp.id,
-                    "name": grp.name,
-                    "description": grp.description,
-                    "member_count": grp.member_count,
-                    "members": [
-                        {
-                            "uri": m.identity_uri,
-                            "role": m.role.value,
-                            "display_name": m.display_name,
-                        }
-                        for m in grp.members
-                    ],
-                    "message_count": grp.message_count,
-                    "created_at": grp.created_at.isoformat(),
-                    "updated_at": grp.updated_at.isoformat(),
-                })
+                result.append(
+                    {
+                        "id": grp.id,
+                        "name": grp.name,
+                        "description": grp.description,
+                        "member_count": grp.member_count,
+                        "members": [
+                            {
+                                "uri": m.identity_uri,
+                                "role": m.role.value,
+                                "display_name": m.display_name,
+                            }
+                            for m in grp.members
+                        ],
+                        "message_count": grp.message_count,
+                        "created_at": grp.created_at.isoformat(),
+                        "updated_at": grp.updated_at.isoformat(),
+                    }
+                )
             except Exception:
                 pass
     return JSONResponse(result)
@@ -411,6 +426,7 @@ async def _startup() -> None:
 def run(port: int = 8765, open_browser: bool = True, host: str = "") -> None:
     """Start the SKChat Web UI server (blocking)."""
     import uvicorn
+
     if not host:
         host = os.environ.get("SKCHAT_HOST", "127.0.0.1")
     if open_browser:

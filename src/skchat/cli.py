@@ -42,14 +42,14 @@ except ImportError:
 
 from . import __version__
 from .agent_comm import AgentMessenger
-from .models import ChatMessage, ContentType, DeliveryStatus, Thread
 from .identity_bridge import (
+    PeerResolutionError,
     get_sovereign_identity,
     resolve_peer_name,
-    PeerResolutionError,
 )
-from .reactions import ReactionStore
+from .models import ChatMessage, ContentType, DeliveryStatus
 from .peer_discovery import PeerDiscovery
+from .reactions import ReactionStore
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +96,7 @@ def _get_chat_transport():
     """
     try:
         from skcomm.core import SKComm
+
         from .transport import ChatTransport
 
         comm = SKComm.from_config()
@@ -373,7 +374,9 @@ def send(
     # Guard: must look like an identity address (has "@" or a scheme ":")
     if "@" not in resolved_recipient and ":" not in resolved_recipient:
         _print(f"\n  [red]Error:[/] Cannot resolve [cyan]'{recipient}'[/] to a valid identity.")
-        _print(f"  [yellow]Hint:[/] Register the peer with: [cyan]skcapstone peer add {recipient}[/]\n")
+        _print(
+            f"  [yellow]Hint:[/] Register the peer with: [cyan]skcapstone peer add {recipient}[/]\n"
+        )
         sys.exit(1)
 
     content_type = ContentType.PLAIN if ctype == "plain" else ContentType.MARKDOWN
@@ -402,20 +405,26 @@ def send(
         if transport_info["delivered"]:
             status_str = f"[green]sent[/] via {transport_info['transport']}"
         else:
-            status_str = f"[yellow]stored locally[/] ({transport_info.get('error', 'no transport')})"
-        
-        display_recipient = recipient if recipient == resolved_recipient else f"{recipient} ({resolved_recipient})"
-        
-        console.print(Panel(
-            f"[bold]To:[/] [cyan]{display_recipient}[/]\n"
-            f"[bold]Content:[/] {message[:120]}\n"
-            f"[bold]Thread:[/] {thread or '[dim]none[/]'}\n"
-            f"[bold]TTL:[/] {f'{ttl}s' if ttl else '[dim]permanent[/]'}\n"
-            f"[bold]Status:[/] {status_str}\n"
-            f"[dim]Memory ID: {mem_id}[/]",
-            title="Message Sent",
-            border_style="green",
-        ))
+            status_str = (
+                f"[yellow]stored locally[/] ({transport_info.get('error', 'no transport')})"
+            )
+
+        display_recipient = (
+            recipient if recipient == resolved_recipient else f"{recipient} ({resolved_recipient})"
+        )
+
+        console.print(
+            Panel(
+                f"[bold]To:[/] [cyan]{display_recipient}[/]\n"
+                f"[bold]Content:[/] {message[:120]}\n"
+                f"[bold]Thread:[/] {thread or '[dim]none[/]'}\n"
+                f"[bold]TTL:[/] {f'{ttl}s' if ttl else '[dim]permanent[/]'}\n"
+                f"[bold]Status:[/] {status_str}\n"
+                f"[dim]Memory ID: {mem_id}[/]",
+                title="Message Sent",
+                border_style="green",
+            )
+        )
     else:
         _print(f"  Sent to {resolved_recipient}: {message[:80]}")
         if transport_info["delivered"]:
@@ -480,7 +489,9 @@ def reply(message_id: str, content: str, thread: Optional[str], ctype: str) -> N
 
     if orig is None:
         _print(f"\n  [red]Error:[/] Message [dim]{message_id}[/] not found in local history.")
-        _print("  [yellow]Hint:[/] Get the Memory ID from [cyan]skchat send[/] output or [cyan]skchat inbox[/].\n")
+        _print(
+            "  [yellow]Hint:[/] Get the Memory ID from [cyan]skchat send[/] output or [cyan]skchat inbox[/].\n"
+        )
         sys.exit(1)
 
     # Reply goes to whoever sent the original message
@@ -514,15 +525,17 @@ def reply(message_id: str, content: str, thread: Optional[str], ctype: str) -> N
             else f"[yellow]stored locally[/] ({transport_info.get('error', 'no transport')})"
         )
         orig_preview = (orig.get("content") or "")[:60]
-        console.print(Panel(
-            f"[bold]Reply to:[/] [dim]{message_id[:12]}…[/] {orig_preview}\n"
-            f"[bold]To:[/]       [cyan]{recipient_uri}[/]\n"
-            f"[bold]Content:[/]  {content[:120]}\n"
-            f"[bold]Status:[/]   {status_str}\n"
-            f"[dim]Memory ID: {mem_id}[/]",
-            title="Reply Sent",
-            border_style="green",
-        ))
+        console.print(
+            Panel(
+                f"[bold]Reply to:[/] [dim]{message_id[:12]}…[/] {orig_preview}\n"
+                f"[bold]To:[/]       [cyan]{recipient_uri}[/]\n"
+                f"[bold]Content:[/]  {content[:120]}\n"
+                f"[bold]Status:[/]   {status_str}\n"
+                f"[dim]Memory ID: {mem_id}[/]",
+                title="Reply Sent",
+                border_style="green",
+            )
+        )
     else:
         _print(f"  Reply to {message_id[:12]} → {recipient_uri}: {content[:80]}")
         _print(f"  Memory ID: {mem_id}")
@@ -530,6 +543,7 @@ def reply(message_id: str, content: str, thread: Optional[str], ctype: str) -> N
 
 
 # ─────────────── inbox display helpers ───────────────
+
 
 def _display_name(identity: str) -> str:
     """Resolve a CapAuth identity URI to a friendly display name.
@@ -546,6 +560,7 @@ def _display_name(identity: str) -> str:
         return ""
     try:
         from .identity_bridge import resolve_display_name
+
         return resolve_display_name(identity)
     except Exception as exc:
         logger.warning("resolve_display_name(%r) failed: %s", identity, exc)
@@ -593,6 +608,7 @@ def _load_read_state() -> dict:
     if path.exists():
         try:
             import json as _json
+
             return _json.loads(path.read_text())
         except Exception as exc:
             logger.warning("Failed to load read state from %s: %s", path, exc)
@@ -602,6 +618,7 @@ def _load_read_state() -> dict:
 def _save_read_state(state: dict) -> None:
     """Persist per-conversation last-read timestamps to disk."""
     import json as _json
+
     path = _READ_STATE_PATH.expanduser()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(_json.dumps(state, indent=2))
@@ -656,11 +673,13 @@ def _msg_key(msg: dict) -> str:
         msg.get("memory_id")
         or msg.get("message_id")
         or msg.get("id")
-        or ":".join([
-            str(msg.get("sender", "")),
-            str(msg.get("timestamp", "")),
-            str(msg.get("content", ""))[:30],
-        ])
+        or ":".join(
+            [
+                str(msg.get("sender", "")),
+                str(msg.get("timestamp", "")),
+                str(msg.get("content", ""))[:30],
+            ]
+        )
     )
 
 
@@ -790,10 +809,10 @@ def _inbox_display_threads(messages: list, my_identity: str) -> None:
         if HAS_RICH and console:
             console.print(
                 f"[dim][{count} msg{plural}][/] [cyan]{name}[/]"
-                f" - [dim]\"{preview}\"[/] - [dim]{ago}[/]"
+                f' - [dim]"{preview}"[/] - [dim]{ago}[/]'
             )
         else:
-            click.echo(f"[{count} msg{plural}] {name} - \"{preview}\" - {ago}")
+            click.echo(f'[{count} msg{plural}] {name} - "{preview}" - {ago}')
 
 
 @main.command()
@@ -927,14 +946,12 @@ def inbox(
     # --from: filter by sender (substring match on name or full URI)
     if from_peer:
         fp_lower = from_peer.lower()
-        messages = [
-            m for m in messages
-            if fp_lower in m.get("sender", "").lower()
-        ]
+        messages = [m for m in messages if fp_lower in m.get("sender", "").lower()]
 
     # --json: raw output for scripting (handles empty case too)
     if as_json:
         import json as _json
+
         click.echo(_json.dumps(messages, default=str, indent=2))
         return
 
@@ -954,10 +971,7 @@ def inbox(
         read_state = _load_read_state()
         last_read = read_state.get("_global", "")
         if last_read:
-            messages = [
-                m for m in messages
-                if str(m.get("timestamp", "")) > last_read
-            ]
+            messages = [m for m in messages if str(m.get("timestamp", "")) > last_read]
         if not messages:
             _print("  [dim]No unread messages.[/]")
             _print("")
@@ -1011,9 +1025,7 @@ def _watch_inbox(interval: float = 5.0, limit: int = 50) -> None:
     try:
         stored = history._store.list_memories(tags=["skchat:message"], limit=limit)
         all_messages = [
-            history._memory_to_chat_dict(m)
-            for m in stored
-            if "skchat:message" in m.tags
+            history._memory_to_chat_dict(m) for m in stored if "skchat:message" in m.tags
         ]
         all_messages.sort(key=lambda d: str(d.get("timestamp", "")))
         all_messages = all_messages[-limit:]
@@ -1067,9 +1079,7 @@ def _watch_inbox(interval: float = 5.0, limit: int = 50) -> None:
         footer = "  [dim]" + " | ".join(status_parts) + "[/]"
 
         if recent_notes:
-            notes_text = "\n".join(
-                f"  [bold green]▶ {n}[/]" for n in recent_notes[-3:]
-            )
+            notes_text = "\n".join(f"  [bold green]▶ {n}[/]" for n in recent_notes[-3:])
             return Panel(
                 RichGroup(tbl, notes_text, footer),
                 title="[bold cyan]SKChat Live Inbox — Watch Mode[/]",
@@ -1124,7 +1134,9 @@ def _watch_inbox(interval: float = 5.0, limit: int = 50) -> None:
                             new_msgs = transport.poll_inbox()
                             if new_msgs:
                                 for m in new_msgs:
-                                    msg_key = getattr(m, "id", None) or f"{m.sender}:{m.content[:30]}"
+                                    msg_key = (
+                                        getattr(m, "id", None) or f"{m.sender}:{m.content[:30]}"
+                                    )
                                     if msg_key in seen_ids:
                                         continue
                                     seen_ids.add(msg_key)
@@ -1160,9 +1172,7 @@ def _watch_inbox(interval: float = 5.0, limit: int = 50) -> None:
         _print("  [yellow]Rich Live not available.[/]\n")
         return
 
-    _print(
-        f"\n  [dim]Watch stopped. {total_received} message(s) received this session.[/]\n"
-    )
+    _print(f"\n  [dim]Watch stopped. {total_received} message(s) received this session.[/]\n")
 
 
 @main.command()
@@ -1197,9 +1207,7 @@ def history(participant: Optional[str], limit: int) -> None:
             limit=limit,
         )
         messages = [
-            chat_history._memory_to_chat_dict(m)
-            for m in all_mems
-            if "skchat:message" in m.tags
+            chat_history._memory_to_chat_dict(m) for m in all_mems if "skchat:message" in m.tags
         ]
         messages.sort(key=lambda d: str(d.get("timestamp", "")), reverse=True)
         messages = messages[:limit]
@@ -1212,7 +1220,8 @@ def history(participant: Optional[str], limit: int) -> None:
 
         messages = chat_history.get_conversation(identity, resolved_participant, limit=limit)
         display_participant = (
-            participant if participant == resolved_participant
+            participant
+            if participant == resolved_participant
             else f"{participant} ({resolved_participant})"
         )
         header = f"Conversation with {display_participant}"
@@ -1227,11 +1236,13 @@ def history(participant: Optional[str], limit: int) -> None:
         return
 
     if HAS_RICH and console:
-        console.print(Panel(
-            f"[bold cyan]{header}[/]\n"
-            f"[dim]{len(messages)} message{'s' if len(messages) != 1 else ''}[/]",
-            border_style="cyan",
-        ))
+        console.print(
+            Panel(
+                f"[bold cyan]{header}[/]\n"
+                f"[dim]{len(messages)} message{'s' if len(messages) != 1 else ''}[/]",
+                border_style="cyan",
+            )
+        )
 
         for msg in reversed(messages):
             sender = msg.get("sender", "unknown")
@@ -1357,13 +1368,17 @@ def search(
         try:
             after_dt = datetime.fromisoformat(after_date).replace(tzinfo=timezone.utc)
         except ValueError:
-            click.echo(f"  Error: --after '{after_date}' is not a valid date (YYYY-MM-DD).", err=True)
+            click.echo(
+                f"  Error: --after '{after_date}' is not a valid date (YYYY-MM-DD).", err=True
+            )
             raise SystemExit(1)
     if before_date:
         try:
             before_dt = datetime.fromisoformat(before_date).replace(tzinfo=timezone.utc)
         except ValueError:
-            click.echo(f"  Error: --before '{before_date}' is not a valid date (YYYY-MM-DD).", err=True)
+            click.echo(
+                f"  Error: --before '{before_date}' is not a valid date (YYYY-MM-DD).", err=True
+            )
             raise SystemExit(1)
 
     # Fetch more when filtering so we can trim to --limit after
@@ -1374,12 +1389,14 @@ def search(
     # Peer filter
     if peer:
         results = [
-            m for m in results
+            m
+            for m in results
             if peer in (m.get("sender") or "") or peer in (m.get("recipient") or "")
         ]
 
     # Date filters
     if after_dt or before_dt:
+
         def _to_aware(ts: object) -> Optional[datetime]:
             if ts is None:
                 return None
@@ -1441,6 +1458,7 @@ def search(
     def _rich_highlight(text: str, q: str) -> "Text":
         """Return a Rich Text object with query terms highlighted bold yellow."""
         from rich.text import Text as RText
+
         t = RText()
         if not q:
             t.append(text)
@@ -1448,7 +1466,7 @@ def search(
         pattern = re.compile(re.escape(q), re.IGNORECASE)
         last = 0
         for m in pattern.finditer(text):
-            t.append(text[last:m.start()])
+            t.append(text[last : m.start()])
             t.append(m.group(), style="bold yellow")
             last = m.end()
         t.append(text[last:])
@@ -1459,6 +1477,7 @@ def search(
 
     if HAS_RICH and console:
         from rich.box import SIMPLE_HEAD
+
         table = Table(
             show_header=True,
             header_style="bold cyan",
@@ -1473,7 +1492,7 @@ def search(
 
         for msg in results:
             sender = _short_uri(msg.get("sender") or "?")
-            recip  = _short_uri(msg.get("recipient") or "")
+            recip = _short_uri(msg.get("recipient") or "")
             content = str(msg.get("content") or "").replace("\n", " ")
             preview_text = content[:60] + ("\u2026" if len(content) > 60 else "")
             preview_rich = _rich_highlight(preview_text, query)
@@ -1487,7 +1506,7 @@ def search(
         click.echo("  " + "-" * 80)
         for msg in results:
             sender = _short_uri(msg.get("sender") or "?")
-            recip  = _short_uri(msg.get("recipient") or "")
+            recip = _short_uri(msg.get("recipient") or "")
             content = str(msg.get("content") or "").replace("\n", " ")
             raw_preview = content[:50] + ("\u2026" if len(content) > 50 else "")
             preview = _highlight_query(raw_preview, query)
@@ -1546,9 +1565,7 @@ def export(fmt: str, output: Optional[str], peer: Optional[str]) -> None:
     else:
         all_mems = chat_history._store.list_memories(tags=["skchat:message"], limit=10000)
         messages = [
-            chat_history._memory_to_chat_dict(m)
-            for m in all_mems
-            if "skchat:message" in m.tags
+            chat_history._memory_to_chat_dict(m) for m in all_mems if "skchat:message" in m.tags
         ]
         messages.sort(key=lambda d: str(d.get("timestamp", "")))
 
@@ -1618,20 +1635,24 @@ def export(fmt: str, output: Optional[str], peer: Optional[str]) -> None:
 
     _print("")
     if HAS_RICH and console:
-        console.print(Panel(
-            f"[bold]Format:[/]   {fmt}\n"
-            f"[bold]Messages:[/] {len(messages)}\n"
-            f"[bold]Output:[/]   [cyan]{out_path}[/]",
-            title="Export Complete",
-            border_style="green",
-        ))
+        console.print(
+            Panel(
+                f"[bold]Format:[/]   {fmt}\n"
+                f"[bold]Messages:[/] {len(messages)}\n"
+                f"[bold]Output:[/]   [cyan]{out_path}[/]",
+                title="Export Complete",
+                border_style="green",
+            )
+        )
     else:
         _print(f"  Exported {len(messages)} message(s) ({fmt}) → {out_path}")
     _print("")
 
 
 @main.command()
-@click.option("--to", "peer", default="lumina", show_default=True, help="Recipient peer name or capauth URI.")
+@click.option(
+    "--to", "peer", default="lumina", show_default=True, help="Recipient peer name or capauth URI."
+)
 @click.option(
     "--interval",
     "-i",
@@ -1641,7 +1662,9 @@ def export(fmt: str, output: Optional[str], peer: Optional[str]) -> None:
     help="Poll interval in seconds.",
 )
 @click.option("--thread", "-t", default=None, help="Thread ID for this conversation.")
-@click.option("--group", is_flag=True, default=False, help="Address a group conversation instead of a peer.")
+@click.option(
+    "--group", is_flag=True, default=False, help="Address a group conversation instead of a peer."
+)
 def chat(peer: str, interval: float, thread: Optional[str], group: bool) -> None:
     """Open an interactive chat session with a peer.
 
@@ -1659,10 +1682,10 @@ def chat(peer: str, interval: float, thread: Optional[str], group: bool) -> None
         skchat chat --to lumina --thread proj-alpha
     """
     import threading
-    import time
 
     try:
         import readline as _readline
+
         _HAS_READLINE = True
     except ImportError:
         _readline = None  # type: ignore[assignment]
@@ -1691,6 +1714,7 @@ def chat(peer: str, interval: float, thread: Optional[str], group: bool) -> None
         payload = indicator.model_dump_json()
         try:
             from skcomm.models import MessageType
+
             xport = messenger._transport
             if xport is not None and hasattr(xport, "_skcomm"):
                 xport._skcomm.send(
@@ -1704,6 +1728,7 @@ def chat(peer: str, interval: float, thread: Optional[str], group: bool) -> None
         # File-transport fallback: drop JSON in shared inbox dir
         try:
             import uuid as _uuid
+
             inbox_dir = Path("~/.skchat/inbox").expanduser()
             inbox_dir.mkdir(parents=True, exist_ok=True)
             (inbox_dir / f"presence-{_uuid.uuid4().hex[:8]}.json").write_text(payload)
@@ -1727,9 +1752,7 @@ def chat(peer: str, interval: float, thread: Optional[str], group: bool) -> None
             t.daemon = True
             t.start()
             _typing_timer[0] = t
-        threading.Thread(
-            target=_send_presence, args=(PresenceState.TYPING,), daemon=True
-        ).start()
+        threading.Thread(target=_send_presence, args=(PresenceState.TYPING,), daemon=True).start()
 
     # Readline-buffer polling thread: detects when the user starts typing
     _stop_poller = threading.Event()
@@ -1752,13 +1775,15 @@ def chat(peer: str, interval: float, thread: Optional[str], group: bool) -> None
 
     _print("")
     if HAS_RICH and console:
-        console.print(Panel(
-            f"[bold]Peer:[/]     [cyan]{peer_label}[/]\n"
-            f"[bold]You:[/]      [blue]{_display_name(identity)}[/]\n"
-            f"[dim]Polling every {interval}s · type + Enter to send · Ctrl+C to quit[/]",
-            title="[bold cyan]SKChat Interactive[/]",
-            border_style="cyan",
-        ))
+        console.print(
+            Panel(
+                f"[bold]Peer:[/]     [cyan]{peer_label}[/]\n"
+                f"[bold]You:[/]      [blue]{_display_name(identity)}[/]\n"
+                f"[dim]Polling every {interval}s · type + Enter to send · Ctrl+C to quit[/]",
+                title="[bold cyan]SKChat Interactive[/]",
+                border_style="cyan",
+            )
+        )
     else:
         click.echo(f"  Chat with {peer_label}  (Ctrl+C to exit)\n")
 
@@ -1819,9 +1844,7 @@ def chat(peer: str, interval: float, thread: Optional[str], group: bool) -> None
                     # Clear current input line, print message, re-show prompt
                     sys.stdout.write("\r")
                     if HAS_RICH and console:
-                        console.print(
-                            f"  [dim]{ts_str}[/] [green]{peer_display}:[/] {content}"
-                        )
+                        console.print(f"  [dim]{ts_str}[/] [green]{peer_display}:[/] {content}")
                     else:
                         click.echo(f"  [{ts_str}] {peer_display}: {content}")
                     sys.stdout.write(_prompt_text)
@@ -1848,8 +1871,11 @@ def chat(peer: str, interval: float, thread: Optional[str], group: bool) -> None
                 result = _transport.send_and_store(peer_uri, text, thread_id=thread)
             else:
                 _msg = ChatMessage(
-                    sender=identity, recipient=peer_uri, content=text,
-                    thread_id=thread, delivery_status=DeliveryStatus.PENDING,
+                    sender=identity,
+                    recipient=peer_uri,
+                    content=text,
+                    thread_id=thread,
+                    delivery_status=DeliveryStatus.PENDING,
                 )
                 history.save(_msg)
                 result = {"delivered": False}
@@ -1930,7 +1956,9 @@ def receive_cmd() -> None:
 
 
 @main.command()
-@click.option("--interval", "-i", type=float, default=3.0, help="Poll interval in seconds (default: 3).")
+@click.option(
+    "--interval", "-i", type=float, default=3.0, help="Poll interval in seconds (default: 3)."
+)
 @click.option("--limit", "-n", default=20, help="Max messages to show per poll.")
 @click.option(
     "--notify",
@@ -2069,7 +2097,9 @@ def watch(
         except KeyboardInterrupt:
             pass
         except ImportError:
-            _print("  [yellow]Rich Live not available. Use 'skchat receive' for one-shot poll.[/]\n")
+            _print(
+                "  [yellow]Rich Live not available. Use 'skchat receive' for one-shot poll.[/]\n"
+            )
     else:
         last_heartbeat = time.monotonic()
         try:
@@ -2135,6 +2165,7 @@ def send_file_cmd(recipient: str, file_path: Path) -> None:
     skcomm = None
     try:
         from skcomm.core import SKComm
+
         skcomm = SKComm.from_config()
     except Exception as exc:
         logger.warning("SKComm unavailable for CLI file send: %s", exc)
@@ -2304,7 +2335,8 @@ def _notify(sender_short: str, preview: str) -> None:
     if platform.system() == "Darwin":
         subprocess.run(
             [
-                "osascript", "-e",
+                "osascript",
+                "-e",
                 f'display notification "{preview}" with title "SKChat from {sender_short}"',
             ],
             capture_output=True,
@@ -2346,7 +2378,7 @@ _LUMINA_ID = "capauth:lumina@skworld.io"
 def _speak_message(sender: str, sender_short: str, preview: str) -> None:
     """Read a message aloud via Piper TTS (best-effort, silently degrades)."""
     try:
-        from .voice import VoicePlayer, LUMINA_VOICE, DEFAULT_VOICE
+        from .voice import DEFAULT_VOICE, LUMINA_VOICE, VoicePlayer
 
         voice = LUMINA_VOICE if sender == _LUMINA_ID else DEFAULT_VOICE
         player = VoicePlayer(voice=voice)
@@ -2481,10 +2513,16 @@ def daemon() -> None:
 
 
 @daemon.command("start")
-@click.option("--interval", "-i", type=float, default=5.0, help="Poll interval in seconds (default: 5).")
-@click.option("--log-file", "-l", default=None, help="Path to log file (default: ~/.skchat/daemon.log).")
+@click.option(
+    "--interval", "-i", type=float, default=5.0, help="Poll interval in seconds (default: 5)."
+)
+@click.option(
+    "--log-file", "-l", default=None, help="Path to log file (default: ~/.skchat/daemon.log)."
+)
 @click.option("--quiet", "-q", is_flag=True, help="Suppress console output in daemon process.")
-@click.option("--foreground", "-f", is_flag=True, help="Run in foreground (blocking, for debugging).")
+@click.option(
+    "--foreground", "-f", is_flag=True, help="Run in foreground (blocking, for debugging)."
+)
 def daemon_start(interval: float, log_file: Optional[str], quiet: bool, foreground: bool) -> None:
     """Start the receive daemon in the background.
 
@@ -2500,7 +2538,7 @@ def daemon_start(interval: float, log_file: Optional[str], quiet: bool, foregrou
         skchat daemon start --foreground
     """
     try:
-        from .daemon import start_daemon, is_running, _read_pid
+        from .daemon import _read_pid, is_running, start_daemon
 
         if is_running():
             pid = _read_pid()
@@ -2508,8 +2546,9 @@ def daemon_start(interval: float, log_file: Optional[str], quiet: bool, foregrou
             return
 
         if foreground:
-            _print(f"\n  [cyan]Starting daemon in foreground[/] (Ctrl+C to stop)...\n")
+            _print("\n  [cyan]Starting daemon in foreground[/] (Ctrl+C to stop)...\n")
             from .daemon import run_daemon
+
             try:
                 run_daemon(interval=interval, log_file=log_file, quiet=quiet)
             except KeyboardInterrupt:
@@ -2518,13 +2557,14 @@ def daemon_start(interval: float, log_file: Optional[str], quiet: bool, foregrou
 
         pid = start_daemon(interval=interval, log_file=log_file, quiet=quiet, background=True)
         from .daemon import DAEMON_LOG_FILE
+
         log_path = Path(log_file).expanduser() if log_file else DAEMON_LOG_FILE.expanduser()
 
         _print(f"\n  [green]Daemon started[/] (PID {pid})")
         _print(f"  Poll interval: [cyan]{interval}s[/]")
         _print(f"  Log: [dim]{log_path}[/]")
-        _print(f"  PID file: [dim]~/.skchat/daemon.pid[/]")
-        _print(f"  Stop with: [cyan]skchat daemon stop[/]\n")
+        _print("  PID file: [dim]~/.skchat/daemon.pid[/]")
+        _print("  Stop with: [cyan]skchat daemon stop[/]\n")
 
     except RuntimeError as exc:
         _print(f"\n  [red]Error:[/] {exc}\n")
@@ -2545,7 +2585,7 @@ def daemon_stop() -> None:
         skchat daemon stop
     """
     try:
-        from .daemon import stop_daemon, is_running
+        from .daemon import is_running, stop_daemon
 
         if not is_running():
             _print("\n  [dim]No daemon running.[/]\n")
@@ -2583,14 +2623,16 @@ def daemon_status_cmd() -> None:
         running_str = "[green]running[/]" if info["running"] else "[red]stopped[/]"
         pid_str = str(info["pid"]) if info["pid"] else "[dim]none[/]"
 
-        console.print(_Panel(
-            f"[bold]Status:[/]   {running_str}\n"
-            f"[bold]PID:[/]      {pid_str}\n"
-            f"[bold]PID file:[/] [dim]{info['pid_file']}[/]\n"
-            f"[bold]Log file:[/] [dim]{info['log_file']}[/]",
-            title="SKChat Daemon",
-            border_style="bright_blue",
-        ))
+        console.print(
+            _Panel(
+                f"[bold]Status:[/]   {running_str}\n"
+                f"[bold]PID:[/]      {pid_str}\n"
+                f"[bold]PID file:[/] [dim]{info['pid_file']}[/]\n"
+                f"[bold]Log file:[/] [dim]{info['log_file']}[/]",
+                title="SKChat Daemon",
+                border_style="bright_blue",
+            )
+        )
     else:
         status_str = "running" if info["running"] else "stopped"
         _print(f"  Status:   {status_str}")
@@ -2646,9 +2688,7 @@ def _store_group(grp: "GroupChat") -> str:
     try:
         groups_dir = Path(SKCHAT_HOME).expanduser() / "groups"
         groups_dir.mkdir(parents=True, exist_ok=True)
-        (groups_dir / f"{grp.id}.json").write_text(
-            grp.model_dump_json(indent=2), encoding="utf-8"
-        )
+        (groups_dir / f"{grp.id}.json").write_text(grp.model_dump_json(indent=2), encoding="utf-8")
     except Exception:
         pass  # Non-fatal — primary store succeeded
 
@@ -2716,15 +2756,17 @@ def group_create(name: str, description: str) -> None:
 
     _print("")
     if HAS_RICH and console:
-        console.print(Panel(
-            f"[bold]Name:[/] [cyan]{grp.name}[/]\n"
-            f"[bold]ID:[/] [dim]{grp.id}[/]\n"
-            f"[bold]Admin:[/] {identity}\n"
-            f"[bold]Description:[/] {description or '[dim]none[/]'}\n"
-            f"[bold]Key version:[/] {grp.key_version}",
-            title="Group Created",
-            border_style="green",
-        ))
+        console.print(
+            Panel(
+                f"[bold]Name:[/] [cyan]{grp.name}[/]\n"
+                f"[bold]ID:[/] [dim]{grp.id}[/]\n"
+                f"[bold]Admin:[/] {identity}\n"
+                f"[bold]Description:[/] {description or '[dim]none[/]'}\n"
+                f"[bold]Key version:[/] {grp.key_version}",
+                title="Group Created",
+                border_style="green",
+            )
+        )
     else:
         _print(f"  Created group '{name}' (ID: {grp.id[:12]})")
         _print(f"  Admin: {identity}")
@@ -2744,8 +2786,7 @@ def group_list(limit: int) -> None:
     threads = history.list_threads(limit=limit)
 
     group_threads = [
-        t for t in threads
-        if t.get("participants") and len(t.get("participants", [])) > 0
+        t for t in threads if t.get("participants") and len(t.get("participants", [])) > 0
     ]
 
     _print("")
@@ -2848,18 +2889,13 @@ def group_send(group_id: str, message: str, ttl: Optional[int]) -> None:
 
         _print("")
         total = len(grp.members) - 1  # exclude self
-        mention_note = (
-            f" · mentions: {', '.join('@' + m for m in mentions)}" if mentions else ""
-        )
+        mention_note = f" · mentions: {', '.join('@' + m for m in mentions)}" if mentions else ""
         if delivered_names:
             _print(
-                f"  [green]Broadcast to {len(delivered_names)}/{total} members[/]"
-                f"{mention_note}"
+                f"  [green]Broadcast to {len(delivered_names)}/{total} members[/]{mention_note}"
             )
         else:
-            _print(
-                f"  [yellow]Stored locally[/] — 0/{total} delivered{mention_note}"
-            )
+            _print(f"  [yellow]Stored locally[/] — 0/{total} delivered{mention_note}")
         if failed_names:
             _print(f"  [dim]No transport for: {', '.join(failed_names)}[/]")
         _print("")
@@ -2884,8 +2920,7 @@ def group_send(group_id: str, message: str, ttl: Optional[int]) -> None:
         _print("")
         if transport_info.get("delivered"):
             _print(
-                f"  [green]Sent to group {group_id[:12]}[/]"
-                f" via {transport_info.get('transport')}"
+                f"  [green]Sent to group {group_id[:12]}[/] via {transport_info.get('transport')}"
             )
         else:
             _print(
@@ -2913,7 +2948,11 @@ def group_send(group_id: str, message: str, ttl: Optional[int]) -> None:
 )
 @click.option("--display-name", "-n", default="", help="Display name for the member.")
 def group_add_member(
-    group_id: str, identity: str, role: str, ptype: str, display_name: str,
+    group_id: str,
+    identity: str,
+    role: str,
+    ptype: str,
+    display_name: str,
 ) -> None:
     """Add a member to an existing group.
 
@@ -2939,8 +2978,16 @@ def group_add_member(
         _print(f"\n  [red]Error:[/] Group '{group_id[:12]}' not found.\n")
         sys.exit(1)
 
-    role_map = {"admin": MemberRole.ADMIN, "member": MemberRole.MEMBER, "observer": MemberRole.OBSERVER}
-    type_map = {"human": ParticipantType.HUMAN, "agent": ParticipantType.AGENT, "service": ParticipantType.SERVICE}
+    role_map = {
+        "admin": MemberRole.ADMIN,
+        "member": MemberRole.MEMBER,
+        "observer": MemberRole.OBSERVER,
+    }
+    type_map = {
+        "human": ParticipantType.HUMAN,
+        "agent": ParticipantType.AGENT,
+        "service": ParticipantType.SERVICE,
+    }
 
     member = grp.add_member(
         identity_uri=resolved,
@@ -2957,15 +3004,17 @@ def group_add_member(
 
     _print("")
     if HAS_RICH and console:
-        console.print(Panel(
-            f"[bold]Group:[/] [cyan]{grp.name}[/]\n"
-            f"[bold]Added:[/] {resolved}\n"
-            f"[bold]Role:[/] {role}\n"
-            f"[bold]Type:[/] {ptype}\n"
-            f"[bold]Members:[/] {grp.member_count}",
-            title="Member Added",
-            border_style="green",
-        ))
+        console.print(
+            Panel(
+                f"[bold]Group:[/] [cyan]{grp.name}[/]\n"
+                f"[bold]Added:[/] {resolved}\n"
+                f"[bold]Role:[/] {role}\n"
+                f"[bold]Type:[/] {ptype}\n"
+                f"[bold]Members:[/] {grp.member_count}",
+                title="Member Added",
+                border_style="green",
+            )
+        )
     else:
         _print(f"  Added {resolved} to '{grp.name}' as {role}")
     _print("")
@@ -3005,14 +3054,16 @@ def group_remove_member(group_id: str, identity: str) -> None:
 
     _print("")
     if HAS_RICH and console:
-        console.print(Panel(
-            f"[bold]Group:[/] [cyan]{grp.name}[/]\n"
-            f"[bold]Removed:[/] {resolved}\n"
-            f"[bold]Key rotated:[/] v{grp.key_version}\n"
-            f"[bold]Remaining:[/] {grp.member_count}",
-            title="Member Removed",
-            border_style="yellow",
-        ))
+        console.print(
+            Panel(
+                f"[bold]Group:[/] [cyan]{grp.name}[/]\n"
+                f"[bold]Removed:[/] {resolved}\n"
+                f"[bold]Key rotated:[/] v{grp.key_version}\n"
+                f"[bold]Remaining:[/] {grp.member_count}",
+                title="Member Removed",
+                border_style="yellow",
+            )
+        )
     else:
         _print(f"  Removed {resolved} from '{grp.name}' (key rotated to v{grp.key_version})")
     _print("")
@@ -3044,16 +3095,20 @@ def group_rotate_key(group_id: str, reason: str) -> None:
 
     _print("")
     if HAS_RICH and console:
-        console.print(Panel(
-            f"[bold]Group:[/] [cyan]{grp.name}[/]\n"
-            f"[bold]Key version:[/] v{old_version} → v{grp.key_version}\n"
-            f"[bold]Reason:[/] {reason}\n"
-            f"[bold]Members:[/] {grp.member_count}",
-            title="Key Rotated",
-            border_style="green",
-        ))
+        console.print(
+            Panel(
+                f"[bold]Group:[/] [cyan]{grp.name}[/]\n"
+                f"[bold]Key version:[/] v{old_version} → v{grp.key_version}\n"
+                f"[bold]Reason:[/] {reason}\n"
+                f"[bold]Members:[/] {grp.member_count}",
+                title="Key Rotated",
+                border_style="green",
+            )
+        )
     else:
-        _print(f"  Key rotated for '{grp.name}' (v{old_version} → v{grp.key_version}, reason: {reason})")
+        _print(
+            f"  Key rotated for '{grp.name}' (v{old_version} → v{grp.key_version}, reason: {reason})"
+        )
     _print("")
 
 
@@ -3077,19 +3132,21 @@ def group_info(group_id: str) -> None:
             f"  {m.display_name} [{m.role.value}] ({m.participant_type.value})"
             for m in grp.members
         )
-        console.print(Panel(
-            f"[bold]Name:[/] [cyan]{grp.name}[/]\n"
-            f"[bold]ID:[/] [dim]{grp.id}[/]\n"
-            f"[bold]Description:[/] {grp.description or '[dim]none[/]'}\n"
-            f"[bold]Created by:[/] {grp.created_by}\n"
-            f"[bold]Created:[/] {grp.created_at.strftime('%Y-%m-%d %H:%M')}\n"
-            f"[bold]Updated:[/] {grp.updated_at.strftime('%Y-%m-%d %H:%M')}\n"
-            f"[bold]Messages:[/] {grp.message_count}\n"
-            f"[bold]Key version:[/] {grp.key_version}\n"
-            f"[bold]Members ({grp.member_count}):[/]\n{members_list}",
-            title="Group Info",
-            border_style="cyan",
-        ))
+        console.print(
+            Panel(
+                f"[bold]Name:[/] [cyan]{grp.name}[/]\n"
+                f"[bold]ID:[/] [dim]{grp.id}[/]\n"
+                f"[bold]Description:[/] {grp.description or '[dim]none[/]'}\n"
+                f"[bold]Created by:[/] {grp.created_by}\n"
+                f"[bold]Created:[/] {grp.created_at.strftime('%Y-%m-%d %H:%M')}\n"
+                f"[bold]Updated:[/] {grp.updated_at.strftime('%Y-%m-%d %H:%M')}\n"
+                f"[bold]Messages:[/] {grp.message_count}\n"
+                f"[bold]Key version:[/] {grp.key_version}\n"
+                f"[bold]Members ({grp.member_count}):[/]\n{members_list}",
+                title="Group Info",
+                border_style="cyan",
+            )
+        )
     else:
         _print(grp.summary())
     _print("")
@@ -3143,7 +3200,9 @@ def group_members(group_id: str) -> None:
         for m in grp.members:
             scope_str = ", ".join(m.tool_scope) if m.tool_scope else "unrestricted"
             joined_str = m.joined_at.strftime("%Y-%m-%d")
-            _print(f"  {m.display_name} ({m.role.value}, {m.participant_type.value}) joined={joined_str} scope={scope_str}")
+            _print(
+                f"  {m.display_name} ({m.role.value}, {m.participant_type.value}) joined={joined_str} scope={scope_str}"
+            )
     _print("")
 
 
@@ -3176,7 +3235,7 @@ def group_set_role(group_id: str, identity: str, role: str) -> None:
 
     caller = _get_identity()
     if not grp.is_admin(caller):
-        _print(f"\n  [red]Error:[/] You are not an admin of this group.\n")
+        _print("\n  [red]Error:[/] You are not an admin of this group.\n")
         sys.exit(1)
 
     member = grp.get_member(resolved)
@@ -3184,20 +3243,26 @@ def group_set_role(group_id: str, identity: str, role: str) -> None:
         _print(f"\n  [red]Error:[/] '{resolved}' is not a member of this group.\n")
         sys.exit(1)
 
-    role_map = {"admin": MemberRole.ADMIN, "member": MemberRole.MEMBER, "observer": MemberRole.OBSERVER}
+    role_map = {
+        "admin": MemberRole.ADMIN,
+        "member": MemberRole.MEMBER,
+        "observer": MemberRole.OBSERVER,
+    }
     member.role = role_map[role]
     grp.updated_at = datetime.now(timezone.utc)
     _store_group(grp)
 
     _print("")
     if HAS_RICH and console:
-        console.print(Panel(
-            f"[bold]Group:[/] [cyan]{grp.name}[/]\n"
-            f"[bold]Member:[/] {resolved}\n"
-            f"[bold]New role:[/] {role}",
-            title="Role Updated",
-            border_style="green",
-        ))
+        console.print(
+            Panel(
+                f"[bold]Group:[/] [cyan]{grp.name}[/]\n"
+                f"[bold]Member:[/] {resolved}\n"
+                f"[bold]New role:[/] {role}",
+                title="Role Updated",
+                border_style="green",
+            )
+        )
     else:
         _print(f"  Set {resolved} role to {role} in '{grp.name}'")
     _print("")
@@ -3209,7 +3274,10 @@ def group_set_role(group_id: str, identity: str, role: str) -> None:
 @click.argument("tools", nargs=-1)
 @click.option("--clear", is_flag=True, help="Clear scope (unrestricted access).")
 def group_set_tool_scope(
-    group_id: str, identity: str, tools: tuple[str, ...], clear: bool,
+    group_id: str,
+    identity: str,
+    tools: tuple[str, ...],
+    clear: bool,
 ) -> None:
     """Set the tool scope for a member in a group.
 
@@ -3239,7 +3307,7 @@ def group_set_tool_scope(
     ok = grp.set_tool_scope(resolved, scope, by_admin=caller)
     if not ok:
         if not grp.is_admin(caller):
-            _print(f"\n  [red]Error:[/] You are not an admin of this group.\n")
+            _print("\n  [red]Error:[/] You are not an admin of this group.\n")
         else:
             _print(f"\n  [red]Error:[/] '{resolved}' is not a member of this group.\n")
         sys.exit(1)
@@ -3249,13 +3317,15 @@ def group_set_tool_scope(
     scope_display = ", ".join(scope) if scope else "unrestricted"
     _print("")
     if HAS_RICH and console:
-        console.print(Panel(
-            f"[bold]Group:[/] [cyan]{grp.name}[/]\n"
-            f"[bold]Member:[/] {resolved}\n"
-            f"[bold]Tool scope:[/] {scope_display}",
-            title="Tool Scope Updated",
-            border_style="green",
-        ))
+        console.print(
+            Panel(
+                f"[bold]Group:[/] [cyan]{grp.name}[/]\n"
+                f"[bold]Member:[/] {resolved}\n"
+                f"[bold]Tool scope:[/] {scope_display}",
+                title="Tool Scope Updated",
+                border_style="green",
+            )
+        )
     else:
         _print(f"  Set tool scope for {resolved}: {scope_display}")
     _print("")
@@ -3316,19 +3386,20 @@ def group_quick_start(name: str, members: tuple[str, ...], description: str) -> 
     _print("")
     if HAS_RICH and console:
         members_list = "\n".join(
-            f"  + {name} ({uri}) [{ptype}]"
-            for name, uri, ptype in resolved_members
+            f"  + {name} ({uri}) [{ptype}]" for name, uri, ptype in resolved_members
         )
-        console.print(Panel(
-            f"[bold]Name:[/] [cyan]{grp.name}[/]\n"
-            f"[bold]ID:[/] [dim]{grp.id}[/]\n"
-            f"[bold]Admin:[/] {identity}\n"
-            f"[bold]Members ({grp.member_count}):[/]\n{members_list}\n"
-            f"[bold]Description:[/] {description or '[dim]none[/]'}\n\n"
-            f"[dim]Send a message: skchat group send {grp.id[:12]} \"Hello team!\"[/]",
-            title="Group Ready",
-            border_style="green",
-        ))
+        console.print(
+            Panel(
+                f"[bold]Name:[/] [cyan]{grp.name}[/]\n"
+                f"[bold]ID:[/] [dim]{grp.id}[/]\n"
+                f"[bold]Admin:[/] {identity}\n"
+                f"[bold]Members ({grp.member_count}):[/]\n{members_list}\n"
+                f"[bold]Description:[/] {description or '[dim]none[/]'}\n\n"
+                f'[dim]Send a message: skchat group send {grp.id[:12]} "Hello team!"[/]',
+                title="Group Ready",
+                border_style="green",
+            )
+        )
     else:
         _print(f"  Created group '{name}' with {grp.member_count} members (ID: {grp.id[:12]})")
         for name, uri, ptype in resolved_members:
@@ -3408,12 +3479,13 @@ def status() -> None:
     chat_history = _get_history()
 
     from .daemon import daemon_status
+
     ds = daemon_status()
 
     # ── Box layout constants ──────────────────────────────────────
-    TOTAL_W = 47   # full line width including ╔/╗
-    INNER_W = TOTAL_W - 2   # 45 — space between ║ and ║
-    TEXT_W  = INNER_W - 2   # 43 — text after leading space, before trailing space
+    TOTAL_W = 47  # full line width including ╔/╗
+    INNER_W = TOTAL_W - 2  # 45 — space between ║ and ║
+    TEXT_W = INNER_W - 2  # 43 — text after leading space, before trailing space
 
     def _wlen(s: str) -> int:
         """Visual column width, accounting for wide Unicode (emoji etc.)."""
@@ -3432,7 +3504,7 @@ def status() -> None:
 
     def _section(title: str, *, top: bool = False) -> str:
         """╠══ Title ══╣  (or ╔/╗ for top)."""
-        fill = INNER_W - len(title) - 2   # 2 for surrounding spaces
+        fill = INNER_W - len(title) - 2  # 2 for surrounding spaces
         left = fill // 2
         right = fill - left
         lc, rc = ("╔", "╗") if top else ("╠", "╣")
@@ -3441,12 +3513,12 @@ def status() -> None:
     _bot = "╚" + "═" * INNER_W + "╝"
 
     # ── Data gathering ────────────────────────────────────────────
-    running        = ds.get("running", False)
-    uptime_s       = int(ds.get("uptime_seconds", 0))
-    msg_recv       = int(ds.get("messages_received", 0))
-    msg_sent       = int(ds.get("messages_sent", 0))
+    running = ds.get("running", False)
+    uptime_s = int(ds.get("uptime_seconds", 0))
+    msg_recv = int(ds.get("messages_received", 0))
+    msg_sent = int(ds.get("messages_sent", 0))
     advocacy_count = int(ds.get("advocacy_responses", 0))
-    webrtc_ok      = bool(ds.get("webrtc_signaling_ok", False))
+    webrtc_ok = bool(ds.get("webrtc_signaling_ok", False))
 
     def _fmt_uptime(s: int) -> str:
         if s < 60:
@@ -3486,8 +3558,10 @@ def status() -> None:
         syncthing_ok = (
             subprocess.run(
                 ["pgrep", "-x", "syncthing"],
-                capture_output=True, timeout=3,
-            ).returncode == 0
+                capture_output=True,
+                timeout=3,
+            ).returncode
+            == 0
         )
     except Exception as exc:
         logger.warning("syncthing process check failed: %s", exc)
@@ -3496,6 +3570,7 @@ def status() -> None:
     peers_info: list[tuple[str, str, str]] = []  # (uri, status, age_str)
     try:
         from .presence import PresenceCache
+
         pc = PresenceCache()
         all_peers = pc.get_all()
         now = datetime.now(timezone.utc)
@@ -3509,9 +3584,7 @@ def status() -> None:
                 age_str = ""
                 st = "offline"
             peers_info.append((uri, st, age_str))
-        peers_info.sort(
-            key=lambda x: (0 if x[1] == "online" else 1 if x[1] == "away" else 2)
-        )
+        peers_info.sort(key=lambda x: 0 if x[1] == "online" else 1 if x[1] == "away" else 2)
     except Exception as exc:
         logger.warning("Failed to load presence peers for status: %s", exc)
 
@@ -3530,22 +3603,24 @@ def status() -> None:
     # Daemon
     if running:
         up_str = _fmt_uptime(uptime_s)
-        d_plain  = f"Daemon:     \u2713 RUNNING (uptime: {up_str})"
+        d_plain = f"Daemon:     \u2713 RUNNING (uptime: {up_str})"
         d_styled = (
             "Daemon:     "
             + click.style("\u2713 RUNNING", fg="green", bold=True)
             + f" (uptime: {up_str})"
         )
     else:
-        d_plain  = "Daemon:     \u2717 STOPPED"
+        d_plain = "Daemon:     \u2717 STOPPED"
         d_styled = "Daemon:     " + click.style("\u2717 STOPPED", fg="red", bold=True)
     out.append(_row(d_plain, d_styled))
 
     # Identity
-    out.append(_row(
-        f"Identity:   {identity}",
-        "Identity:   " + click.style(identity, fg="cyan"),
-    ))
+    out.append(
+        _row(
+            f"Identity:   {identity}",
+            "Identity:   " + click.style(identity, fg="cyan"),
+        )
+    )
 
     # Messages (fall back to history count when daemon not running)
     if not running and msg_recv == 0:
@@ -3553,40 +3628,40 @@ def status() -> None:
             msg_recv = chat_history.message_count()
         except Exception as exc:
             logger.warning("chat_history.message_count() failed: %s", exc)
-    out.append(_row(
-        f"Messages:   {msg_recv} received, {msg_sent} sent",
-        "Messages:   "
-        + click.style(str(msg_recv), fg="yellow") + " received, "
-        + click.style(str(msg_sent), fg="yellow") + " sent",
-    ))
+    out.append(
+        _row(
+            f"Messages:   {msg_recv} received, {msg_sent} sent",
+            "Messages:   "
+            + click.style(str(msg_recv), fg="yellow")
+            + " received, "
+            + click.style(str(msg_sent), fg="yellow")
+            + " sent",
+        )
+    )
 
     # Advocacy
     if advocacy_count:
-        adv_plain  = f"Advocacy:   \u2713 active ({advocacy_count} auto-replies)"
+        adv_plain = f"Advocacy:   \u2713 active ({advocacy_count} auto-replies)"
         adv_styled = (
             "Advocacy:   "
             + click.style("\u2713 active", fg="green")
             + f" ({advocacy_count} auto-replies)"
         )
     else:
-        adv_plain  = "Advocacy:   active (no auto-replies yet)"
-        adv_styled = (
-            "Advocacy:   "
-            + click.style("active", fg="green")
-            + " (no auto-replies yet)"
-        )
+        adv_plain = "Advocacy:   active (no auto-replies yet)"
+        adv_styled = "Advocacy:   " + click.style("active", fg="green") + " (no auto-replies yet)"
     out.append(_row(adv_plain, adv_styled))
 
     # Lumina bridge
     if lumina_pid:
-        br_plain  = f"Bridge:     \u2713 lumina-bridge (pid: {lumina_pid})"
+        br_plain = f"Bridge:     \u2713 lumina-bridge (pid: {lumina_pid})"
         br_styled = (
             "Bridge:     "
             + click.style("\u2713 lumina-bridge", fg="green")
             + f" (pid: {lumina_pid})"
         )
     else:
-        br_plain  = "Bridge:     \u2717 lumina-bridge not running"
+        br_plain = "Bridge:     \u2717 lumina-bridge not running"
         br_styled = "Bridge:     " + click.style("\u2717 lumina-bridge not running", fg="red")
     out.append(_row(br_plain, br_styled))
 
@@ -3597,24 +3672,27 @@ def status() -> None:
             name = uri.split("@")[0].replace("capauth:", "").replace("nostr:", "")
             name = name[:14]
             if pst == "online":
-                icon, col, label = "\u25cf", "green", (f"online ({age_str})" if age_str else "online")
+                icon, col, label = (
+                    "\u25cf",
+                    "green",
+                    (f"online ({age_str})" if age_str else "online"),
+                )
             elif pst == "away":
                 icon, col, label = "\u25cf", "yellow", (f"away ({age_str})" if age_str else "away")
             else:
                 icon, col, label = "\u25cb", "white", "offline"
-            peer_plain  = f"  {icon} {name:<14} {label}"
+            peer_plain = f"  {icon} {name:<14} {label}"
             peer_styled = (
-                "  "
-                + click.style(icon, fg=col)
-                + f" {name:<14} "
-                + click.style(label, fg=col)
+                "  " + click.style(icon, fg=col) + f" {name:<14} " + click.style(label, fg=col)
             )
             out.append(_row(peer_plain, peer_styled))
     else:
-        out.append(_row(
-            "  (no peers in presence cache)",
-            "  " + click.style("(no peers in presence cache)", dim=True),
-        ))
+        out.append(
+            _row(
+                "  (no peers in presence cache)",
+                "  " + click.style("(no peers in presence cache)", dim=True),
+            )
+        )
 
     # ── Recent Activity ───────────────────────────────────────────
     out.append(_section("Recent Activity"))
@@ -3631,29 +3709,32 @@ def status() -> None:
             except Exception:
                 time_str = "??:??"
 
-            sender  = msg.get("sender") or "?"
+            sender = msg.get("sender") or "?"
             s_short_full = sender.split("@")[0].replace("capauth:", "").replace("nostr:", "")
             s_short = s_short_full[:16]
             content = str(msg.get("content") or "")
 
             if s_short_full == my_short:
-                recip   = (msg.get("recipient") or "?")
-                r_short = recip.split("@")[0].replace("capauth:", "").replace("nostr:", "").replace("group:", "grp/")[:16]
-                label_plain  = f"You \u2192 {r_short}"
+                recip = msg.get("recipient") or "?"
+                r_short = (
+                    recip.split("@")[0]
+                    .replace("capauth:", "")
+                    .replace("nostr:", "")
+                    .replace("group:", "grp/")[:16]
+                )
+                label_plain = f"You \u2192 {r_short}"
                 label_styled = (
-                    click.style("You", fg="blue")
-                    + " \u2192 "
-                    + click.style(r_short, fg="cyan")
+                    click.style("You", fg="blue") + " \u2192 " + click.style(r_short, fg="cyan")
                 )
             else:
-                label_plain  = s_short
+                label_plain = s_short
                 label_styled = click.style(s_short, fg="magenta")
 
             max_body = TEXT_W - len(time_str) - len(label_plain) - 5
             if len(content) > max(max_body, 6):
                 content = content[: max(max_body - 2, 6)] + ".."
 
-            act_plain  = f"[{time_str}] {label_plain}: {content}"
+            act_plain = f"[{time_str}] {label_plain}: {content}"
             act_styled = (
                 click.style(f"[{time_str}]", dim=True)
                 + f" {label_styled}: "
@@ -3661,17 +3742,19 @@ def status() -> None:
             )
             out.append(_row(act_plain, act_styled))
     else:
-        out.append(_row(
-            "  (no recent messages)",
-            "  " + click.style("(no recent messages)", dim=True),
-        ))
+        out.append(
+            _row(
+                "  (no recent messages)",
+                "  " + click.style("(no recent messages)", dim=True),
+            )
+        )
 
     # ── Transports ────────────────────────────────────────────────
     out.append(_section("Transports"))
 
     def _t(name: str, ok: bool) -> tuple[str, str]:
         mark = "\u2713" if ok else "\u2717"
-        col  = "green" if ok else "red"
+        col = "green" if ok else "red"
         return f"{name} {mark}", f"{name} " + click.style(mark, fg=col)
 
     t_items = [
@@ -3679,7 +3762,7 @@ def status() -> None:
         _t("file", True),
         _t("webrtc", webrtc_ok),
     ]
-    tr_plain  = "  " + "  \u2502  ".join(p for p, _ in t_items)
+    tr_plain = "  " + "  \u2502  ".join(p for p, _ in t_items)
     tr_styled = "  " + "  \u2502  ".join(s for _, s in t_items)
     out.append(_row(tr_plain, tr_styled))
 
@@ -3794,6 +3877,7 @@ def config_show() -> None:
 
     _print("")
     if HAS_RICH and console:
+
         def _status(p: Path) -> str:
             return "[green]exists[/]" if p.exists() else "[red]missing[/]"
 
@@ -3805,17 +3889,19 @@ def config_show() -> None:
             except Exception:
                 raw_cfg = "\n\n[red](could not read)[/]"
 
-        console.print(Panel(
-            f"[bold]Config file:[/]   {config_path}  {_status(config_path)}\n"
-            f"[bold]Identity file:[/] {identity_file}  {_status(identity_file)}\n"
-            f"[bold]Memory dir:[/]    {memory_dir}  {_status(memory_dir)}\n"
-            f"[bold]PID file:[/]      {pid_file}  {_status(pid_file)}\n"
-            f"[bold]Peers dir:[/]     {peers_dir}  {_status(peers_dir)}"
-            + raw_cfg,
-            title="SKChat Configuration",
-            border_style="bright_blue",
-        ))
+        console.print(
+            Panel(
+                f"[bold]Config file:[/]   {config_path}  {_status(config_path)}\n"
+                f"[bold]Identity file:[/] {identity_file}  {_status(identity_file)}\n"
+                f"[bold]Memory dir:[/]    {memory_dir}  {_status(memory_dir)}\n"
+                f"[bold]PID file:[/]      {pid_file}  {_status(pid_file)}\n"
+                f"[bold]Peers dir:[/]     {peers_dir}  {_status(peers_dir)}" + raw_cfg,
+                title="SKChat Configuration",
+                border_style="bright_blue",
+            )
+        )
     else:
+
         def _s(p: Path) -> str:
             return "exists" if p.exists() else "missing"
 
@@ -3893,6 +3979,7 @@ def who() -> None:
         skchat who
     """
     import json as _json
+
     from .presence import PresenceCache, PresenceState
 
     KNOWN_PEERS: dict[str, str] = {
@@ -3924,7 +4011,7 @@ def who() -> None:
     now = datetime.now(timezone.utc)
     click.echo("")
     click.echo(f"  {'Agent':<22} {'Last Seen':<12} Status")
-    click.echo(f"  {'-'*22} {'-'*12} {'-'*10}")
+    click.echo(f"  {'-' * 22} {'-' * 12} {'-' * 10}")
 
     for uri in all_uris:
         display = KNOWN_PEERS.get(uri, uri.split("@")[0].replace("capauth:", ""))
@@ -3976,6 +4063,7 @@ def presence() -> None:
         skchat presence
     """
     import json as _json
+
     from .presence import PresenceCache, PresenceState
 
     KNOWN_PEERS: dict[str, str] = {
@@ -4051,7 +4139,7 @@ def presence() -> None:
     else:
         click.echo("")
         click.echo(f"  {'Agent':<22} {'Last Seen':<12} Status")
-        click.echo(f"  {'-'*22} {'-'*12} {'-'*10}")
+        click.echo(f"  {'-' * 22} {'-' * 12} {'-' * 10}")
 
         for uri in all_uris:
             display = KNOWN_PEERS.get(uri, uri.split("@")[0].replace("capauth:", ""))
@@ -4129,7 +4217,9 @@ def peers_list(entity_type: Optional[str]) -> None:
     peer_list = disc.list_peers()
 
     if entity_type:
-        peer_list = [p for p in peer_list if p.get("entity_type", "").lower() == entity_type.lower()]
+        peer_list = [
+            p for p in peer_list if p.get("entity_type", "").lower() == entity_type.lower()
+        ]
 
     _print("")
     if not peer_list:
@@ -4174,7 +4264,6 @@ def peers_list(entity_type: Optional[str]) -> None:
             _print(f"    {name:<16} {uri:<42} {etype:<12} {trust}")
 
     _print("")
-
 
 
 @main.command()
@@ -4284,23 +4373,28 @@ def rooms(limit: int) -> None:
             return False
 
     def _short_name(uri: str) -> str:
-        return uri.split("@")[0].replace("capauth:", "").replace("nostr:", "").replace("group:", "grp/")[:20]
+        return (
+            uri.split("@")[0]
+            .replace("capauth:", "")
+            .replace("nostr:", "")
+            .replace("group:", "grp/")[:20]
+        )
 
     def _msg_preview(msg: Optional[dict], width: int = 30) -> str:
         if msg is None:
             return ""
         content = str(msg.get("content") or "").replace("\n", " ").strip()
         if len(content) > width:
-            return content[:width - 1] + "\u2026"
+            return content[: width - 1] + "\u2026"
         return content
 
     # ── Scan history for last-msg + unread per group and DM ──────
     history = _get_history()
-    group_last: dict[str, dict] = {}   # group_id -> last msg dict
+    group_last: dict[str, dict] = {}  # group_id -> last msg dict
     group_unread: dict[str, int] = {}  # group_id -> unread count
-    dm_last: dict[str, dict] = {}      # peer_key -> last msg dict
-    dm_unread: dict[str, int] = {}     # peer_key -> unread count
-    dm_peer_uri: dict[str, str] = {}   # peer_key -> other peer URI
+    dm_last: dict[str, dict] = {}  # peer_key -> last msg dict
+    dm_unread: dict[str, int] = {}  # peer_key -> unread count
+    dm_peer_uri: dict[str, str] = {}  # peer_key -> other peer URI
     try:
         all_mems = history._store.list_memories(tags=["skchat:message"], limit=2000)
         for m in all_mems:
@@ -4311,7 +4405,7 @@ def rooms(limit: int) -> None:
             ts_str = str(ts) if ts else ""
 
             if recipient.startswith("group:"):
-                gid = recipient[len("group:"):]
+                gid = recipient[len("group:") :]
                 cur = group_last.get(gid)
                 if cur is None or ts_str > str(cur.get("timestamp") or ""):
                     group_last[gid] = msg_dict
@@ -4341,6 +4435,7 @@ def rooms(limit: int) -> None:
     unique_groups: dict[str, object] = {}  # name -> GroupChat (latest)
     if groups_dir.exists():
         from .group import GroupChat
+
         for p in sorted(groups_dir.glob("*.json")):
             try:
                 grp = GroupChat.model_validate_json(p.read_text(encoding="utf-8"))
@@ -4400,7 +4495,9 @@ def rooms(limit: int) -> None:
                 tbl.add_row(grp.name, str(grp.member_count), preview, age, unread_cell)  # type: ignore[attr-defined]
             console.print(tbl)
         else:
-            console.print("  [dim]No groups found. Create one with: skchat group create <name>[/dim]")
+            console.print(
+                "  [dim]No groups found. Create one with: skchat group create <name>[/dim]"
+            )
 
         # ── DM threads table ─────────────────────────────────────
         if dm_entries:
@@ -4438,9 +4535,11 @@ def rooms(limit: int) -> None:
                 preview = _msg_preview(msg, 28)
                 age = _ts_ago(msg.get("timestamp")) if msg else _ts_ago(grp.updated_at)  # type: ignore[union-attr]
                 unread = group_unread.get(grp.id, 0)  # type: ignore[attr-defined]
-                click.echo(f"  {grp.name:<22} {grp.member_count:>2}  {preview:<30}  {age:<10}  {unread or '-'}")  # type: ignore[attr-defined]
+                click.echo(
+                    f"  {grp.name:<22} {grp.member_count:>2}  {preview:<30}  {age:<10}  {unread or '-'}"
+                )  # type: ignore[attr-defined]
         if dm_entries:
-            click.echo(f"\n  DM Threads")
+            click.echo("\n  DM Threads")
             click.echo("  " + "-" * 72)
             click.echo(f"  {'Peer':<22}  {'Last message':<36}  {'When':<10}  Unread")
             click.echo("  " + "-" * 72)
@@ -4481,7 +4580,9 @@ def tui() -> None:
 
 @main.command()
 @click.option("--port", "-p", default=8765, show_default=True, help="TCP port to listen on.")
-@click.option("--no-browser", is_flag=True, default=False, help="Do not open browser automatically.")
+@click.option(
+    "--no-browser", is_flag=True, default=False, help="Do not open browser automatically."
+)
 def webui(port: int, no_browser: bool) -> None:
     """Launch the web-based chat UI (requires fastapi + uvicorn).
 

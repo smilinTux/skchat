@@ -19,7 +19,6 @@ from skchat.files import (
     FileChunk,
     FileReceiver,
     FileSender,
-    FileTransfer,
     FileTransferService,
     TransferStatus,
 )
@@ -31,8 +30,12 @@ def _keygen() -> tuple[str, str]:
     """Generate a test PGP keypair."""
     key = pgpy.PGPKey.new(PubKeyAlgorithm.RSAEncryptOrSign, 2048)
     uid = pgpy.PGPUID.new("FileTest", email="file@test.io")
-    key.add_uid(uid, usage={KeyFlags.Sign, KeyFlags.Certify},
-                hashes=[HashAlgorithm.SHA256], ciphers=[SymmetricKeyAlgorithm.AES256])
+    key.add_uid(
+        uid,
+        usage={KeyFlags.Sign, KeyFlags.Certify},
+        hashes=[HashAlgorithm.SHA256],
+        ciphers=[SymmetricKeyAlgorithm.AES256],
+    )
     sub = pgpy.PGPKey.new(PubKeyAlgorithm.RSAEncryptOrSign, 2048)
     key.add_subkey(sub, usage={KeyFlags.EncryptCommunications, KeyFlags.EncryptStorage})
     key.protect(PASSPHRASE, SymmetricKeyAlgorithm.AES256, HashAlgorithm.SHA256)
@@ -129,6 +132,7 @@ class TestChunking:
         chunks = sender.chunks(transfer, f)
 
         import base64
+
         decoded = base64.b64decode(chunks[0].data)
         assert decoded != raw
 
@@ -155,7 +159,8 @@ class TestFileReceiver:
 
         output = tmp_path / "received.bin"
         result = receiver.assemble(
-            transfer.transfer_id, output,
+            transfer.transfer_id,
+            output,
             transfer_key_hex=transfer.transfer_key,
         )
 
@@ -179,7 +184,8 @@ class TestFileReceiver:
 
         output = tmp_path / "large_received.bin"
         result = receiver.assemble(
-            transfer.transfer_id, output,
+            transfer.transfer_id,
+            output,
             transfer_key_hex=transfer.transfer_key,
         )
 
@@ -228,11 +234,14 @@ class TestFileReceiver:
         receiver.receive_chunk(chunks[0])
 
         with pytest.raises(ValueError, match="Missing chunks"):
-            receiver.assemble(transfer.transfer_id, tmp_path / "out.bin",
-                              transfer_key_hex=transfer.transfer_key)
+            receiver.assemble(
+                transfer.transfer_id, tmp_path / "out.bin", transfer_key_hex=transfer.transfer_key
+            )
 
     def test_pgp_key_encrypted_transfer(
-        self, tmp_path: Path, receiver_keys: tuple[str, str],
+        self,
+        tmp_path: Path,
+        receiver_keys: tuple[str, str],
     ) -> None:
         """Full transfer with PGP-encrypted transfer key."""
         priv, pub = receiver_keys
@@ -260,8 +269,11 @@ class TestFileChunkSerialization:
     def test_roundtrip(self) -> None:
         """Chunk survives JSON roundtrip."""
         chunk = FileChunk(
-            transfer_id="t-001", sequence=0, total_chunks=3,
-            data="base64data", chunk_hash="abc123",
+            transfer_id="t-001",
+            sequence=0,
+            total_chunks=3,
+            data="base64data",
+            chunk_hash="abc123",
         )
         json_str = chunk.to_json()
         loaded = FileChunk.from_json(json_str)
@@ -276,9 +288,7 @@ class TestFileTransferService:
     def test_send_file_returns_transfer_id(self, tmp_path: Path) -> None:
         """send_file() returns a non-empty UUID string."""
         f = _create_test_file(tmp_path, "doc.txt", 1000)
-        service = FileTransferService(
-            identity="capauth:alice@test", base_dir=tmp_path / ".skchat"
-        )
+        service = FileTransferService(identity="capauth:alice@test", base_dir=tmp_path / ".skchat")
         transfer_id = service.send_file("capauth:bob@test", f)
 
         assert transfer_id != ""
@@ -304,17 +314,13 @@ class TestFileTransferService:
 
     def test_send_file_missing_raises(self, tmp_path: Path) -> None:
         """send_file() raises FileNotFoundError for missing files."""
-        service = FileTransferService(
-            identity="capauth:alice@test", base_dir=tmp_path / ".skchat"
-        )
+        service = FileTransferService(identity="capauth:alice@test", base_dir=tmp_path / ".skchat")
         with pytest.raises(FileNotFoundError):
             service.send_file("capauth:bob@test", tmp_path / "nonexistent.bin")
 
     def test_list_transfers_empty(self, tmp_path: Path) -> None:
         """list_transfers() returns [] when no transfers exist."""
-        service = FileTransferService(
-            identity="capauth:alice@test", base_dir=tmp_path / ".skchat"
-        )
+        service = FileTransferService(identity="capauth:alice@test", base_dir=tmp_path / ".skchat")
         assert service.list_transfers() == []
 
     def test_list_transfers_shows_sent(self, tmp_path: Path) -> None:
@@ -332,9 +338,7 @@ class TestFileTransferService:
 
     def test_progress_unknown_returns_zero(self, tmp_path: Path) -> None:
         """progress() returns 0.0 for an unknown transfer_id."""
-        service = FileTransferService(
-            identity="capauth:alice@test", base_dir=tmp_path / ".skchat"
-        )
+        service = FileTransferService(identity="capauth:alice@test", base_dir=tmp_path / ".skchat")
         assert service.progress("nonexistent-id") == 0.0
 
     def test_progress_after_send_no_transport(self, tmp_path: Path) -> None:
@@ -357,31 +361,37 @@ class TestFileTransferService:
         base = tmp_path / ".skchat"
         service = FileTransferService(identity="capauth:alice@test", base_dir=base)
 
-        service.store_incoming_chunk({
-            "type": "FILE_TRANSFER_INIT",
-            "transfer_id": transfer.transfer_id,
-            "filename": transfer.filename,
-            "size": transfer.file_size,
-            "sha256": transfer.sha256,
-            "total_chunks": transfer.total_chunks,
-            "sender": transfer.sender,
-            "transfer_key": transfer.transfer_key,
-        })
+        service.store_incoming_chunk(
+            {
+                "type": "FILE_TRANSFER_INIT",
+                "transfer_id": transfer.transfer_id,
+                "filename": transfer.filename,
+                "size": transfer.file_size,
+                "sha256": transfer.sha256,
+                "total_chunks": transfer.total_chunks,
+                "sender": transfer.sender,
+                "transfer_key": transfer.transfer_key,
+            }
+        )
 
         for chunk in chunks:
-            service.store_incoming_chunk({
-                "type": "FILE_CHUNK",
-                "transfer_id": transfer.transfer_id,
-                "chunk_idx": chunk.sequence,
-                "total_chunks": chunk.total_chunks,
-                "data_b64": chunk.data,
-                "chunk_hash": chunk.chunk_hash,
-            })
+            service.store_incoming_chunk(
+                {
+                    "type": "FILE_CHUNK",
+                    "transfer_id": transfer.transfer_id,
+                    "chunk_idx": chunk.sequence,
+                    "total_chunks": chunk.total_chunks,
+                    "data_b64": chunk.data,
+                    "chunk_hash": chunk.chunk_hash,
+                }
+            )
 
-        service.store_incoming_chunk({
-            "type": "FILE_TRANSFER_DONE",
-            "transfer_id": transfer.transfer_id,
-        })
+        service.store_incoming_chunk(
+            {
+                "type": "FILE_TRANSFER_DONE",
+                "transfer_id": transfer.transfer_id,
+            }
+        )
 
         out_path = service.receive_file(transfer.transfer_id)
         assert out_path is not None
@@ -398,34 +408,36 @@ class TestFileTransferService:
         base = tmp_path / ".skchat"
         service = FileTransferService(identity="capauth:alice@test", base_dir=base)
 
-        service.store_incoming_chunk({
-            "type": "FILE_TRANSFER_INIT",
-            "transfer_id": transfer.transfer_id,
-            "filename": transfer.filename,
-            "size": transfer.file_size,
-            "sha256": transfer.sha256,
-            "total_chunks": transfer.total_chunks,
-            "sender": transfer.sender,
-            "transfer_key": transfer.transfer_key,
-        })
+        service.store_incoming_chunk(
+            {
+                "type": "FILE_TRANSFER_INIT",
+                "transfer_id": transfer.transfer_id,
+                "filename": transfer.filename,
+                "size": transfer.file_size,
+                "sha256": transfer.sha256,
+                "total_chunks": transfer.total_chunks,
+                "sender": transfer.sender,
+                "transfer_key": transfer.transfer_key,
+            }
+        )
         # Only first chunk — deliberately incomplete
-        service.store_incoming_chunk({
-            "type": "FILE_CHUNK",
-            "transfer_id": transfer.transfer_id,
-            "chunk_idx": chunks[0].sequence,
-            "total_chunks": chunks[0].total_chunks,
-            "data_b64": chunks[0].data,
-            "chunk_hash": chunks[0].chunk_hash,
-        })
+        service.store_incoming_chunk(
+            {
+                "type": "FILE_CHUNK",
+                "transfer_id": transfer.transfer_id,
+                "chunk_idx": chunks[0].sequence,
+                "total_chunks": chunks[0].total_chunks,
+                "data_b64": chunks[0].data,
+                "chunk_hash": chunks[0].chunk_hash,
+            }
+        )
 
         result = service.receive_file(transfer.transfer_id)
         assert result is None
 
     def test_receive_file_no_metadata_returns_none(self, tmp_path: Path) -> None:
         """receive_file() returns None for an unknown transfer_id."""
-        service = FileTransferService(
-            identity="capauth:alice@test", base_dir=tmp_path / ".skchat"
-        )
+        service = FileTransferService(identity="capauth:alice@test", base_dir=tmp_path / ".skchat")
         result = service.receive_file("totally-unknown-id")
         assert result is None
 
@@ -439,25 +451,29 @@ class TestFileTransferService:
         base = tmp_path / ".skchat"
         service = FileTransferService(identity="capauth:alice@test", base_dir=base)
 
-        service.store_incoming_chunk({
-            "type": "FILE_TRANSFER_INIT",
-            "transfer_id": transfer.transfer_id,
-            "filename": transfer.filename,
-            "size": transfer.file_size,
-            "sha256": transfer.sha256,
-            "total_chunks": transfer.total_chunks,
-            "sender": transfer.sender,
-            "transfer_key": transfer.transfer_key,
-        })
-        for chunk in chunks:
-            service.store_incoming_chunk({
-                "type": "FILE_CHUNK",
+        service.store_incoming_chunk(
+            {
+                "type": "FILE_TRANSFER_INIT",
                 "transfer_id": transfer.transfer_id,
-                "chunk_idx": chunk.sequence,
-                "total_chunks": chunk.total_chunks,
-                "data_b64": chunk.data,
-                "chunk_hash": chunk.chunk_hash,
-            })
+                "filename": transfer.filename,
+                "size": transfer.file_size,
+                "sha256": transfer.sha256,
+                "total_chunks": transfer.total_chunks,
+                "sender": transfer.sender,
+                "transfer_key": transfer.transfer_key,
+            }
+        )
+        for chunk in chunks:
+            service.store_incoming_chunk(
+                {
+                    "type": "FILE_CHUNK",
+                    "transfer_id": transfer.transfer_id,
+                    "chunk_idx": chunk.sequence,
+                    "total_chunks": chunk.total_chunks,
+                    "data_b64": chunk.data,
+                    "chunk_hash": chunk.chunk_hash,
+                }
+            )
 
         custom_dir = tmp_path / "my_downloads"
         out_path = service.receive_file(transfer.transfer_id, output_dir=custom_dir)

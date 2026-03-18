@@ -17,13 +17,11 @@ Usage:
 
 from __future__ import annotations
 
-import json
 import logging
-from datetime import datetime, timezone
 from typing import Any, Optional
 
 from .history import ChatHistory
-from .models import ChatMessage, ContentType, DeliveryStatus
+from .models import ChatMessage, ContentType
 
 logger = logging.getLogger("skchat.agent_comm")
 
@@ -79,6 +77,7 @@ class AgentMessenger:
         """
         if identity is None:
             from .identity_bridge import get_sovereign_identity
+
             identity = get_sovereign_identity()
 
         history = ChatHistory.from_config()
@@ -110,6 +109,7 @@ class AgentMessenger:
         try:
             if skcomm is None:
                 from skcomm import SKComm
+
                 skcomm = SKComm.from_config()
             from .transport import ChatTransport
 
@@ -388,7 +388,8 @@ class AgentMessenger:
             delivered = sum(1 for r in results if r.get("delivered"))
             logger.info(
                 "Broadcast to %d agents (%d delivered)",
-                len(results), delivered,
+                len(results),
+                delivered,
             )
 
         return results
@@ -437,18 +438,20 @@ class AgentMessenger:
             if message_type and m.metadata.get("message_type") != message_type:
                 continue
 
-            results.append({
-                "memory_id": m.id,
-                "message_id": m.metadata.get("chat_message_id"),
-                "sender": m.metadata.get("sender"),
-                "content": m.content,
-                "message_type": m.metadata.get("message_type", "text"),
-                "payload": m.metadata.get("payload"),
-                "team_id": m.metadata.get("team_id"),
-                "thread_id": m.metadata.get("thread_id"),
-                "reply_to": m.metadata.get("reply_to"),
-                "timestamp": m.created_at,
-            })
+            results.append(
+                {
+                    "memory_id": m.id,
+                    "message_id": m.metadata.get("chat_message_id"),
+                    "sender": m.metadata.get("sender"),
+                    "content": m.content,
+                    "message_type": m.metadata.get("message_type", "text"),
+                    "payload": m.metadata.get("payload"),
+                    "team_id": m.metadata.get("team_id"),
+                    "thread_id": m.metadata.get("thread_id"),
+                    "reply_to": m.metadata.get("reply_to"),
+                    "timestamp": m.created_at,
+                }
+            )
 
         results.sort(key=lambda d: d.get("timestamp", ""), reverse=True)
         return results[:limit]
@@ -475,6 +478,7 @@ class AgentMessenger:
         """
         try:
             from .identity_bridge import _list_peers
+
             peers = _list_peers()
             return [p["identity_uri"] for p in peers if p.get("identity_uri")]
         except Exception:

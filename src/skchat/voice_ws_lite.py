@@ -5,24 +5,21 @@ agent profile loading, LLM, TTS) happens on the GPU box via SKVoice.
 
 Browser ↔ skchat (Traefik/TLS) ↔ SKVoice (.100 GPU)
 """
+
 from __future__ import annotations
 
 import asyncio
 import os
+from pathlib import Path
 
 import websockets
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse
-from pathlib import Path
 
 # SKVoice service on GPU box — handles the entire voice pipeline
-SKVOICE_URL = os.getenv(
-    "SKCHAT_SKVOICE_URL", "ws://192.168.0.100:18800/ws/voice"
-)
+SKVOICE_URL = os.getenv("SKCHAT_SKVOICE_URL", "ws://192.168.0.100:18800/ws/voice")
 # SKVoice video endpoint (MuseTalk lip-synced avatar pipeline)
-SKVOICE_VIDEO_URL = os.getenv(
-    "SKCHAT_SKVOICE_VIDEO_URL", "ws://192.168.0.100:18800/ws/video"
-)
+SKVOICE_VIDEO_URL = os.getenv("SKCHAT_SKVOICE_VIDEO_URL", "ws://192.168.0.100:18800/ws/video")
 DEFAULT_AGENT = os.getenv("SKCHAT_VOICE_AGENT", "lumina")
 
 
@@ -56,6 +53,7 @@ def register_voice_routes_lite(app: FastAPI) -> None:
     async def voice_agents_api():
         """Return list of available agents from SKVoice."""
         import httpx
+
         skvoice_http = SKVOICE_URL.replace("ws://", "http://").replace("/ws/voice", "")
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:
@@ -144,10 +142,12 @@ async def _proxy_voice(client_ws: WebSocket, agent_name: str) -> None:
 
     except Exception as e:
         try:
-            await client_ws.send_json({
-                "type": "error",
-                "message": f"Voice service unavailable: {e}",
-            })
+            await client_ws.send_json(
+                {
+                    "type": "error",
+                    "message": f"Voice service unavailable: {e}",
+                }
+            )
         except Exception:
             pass
     finally:
@@ -216,10 +216,12 @@ async def _proxy_video(client_ws: WebSocket, agent_name: str) -> None:
 
     except Exception as e:
         try:
-            await client_ws.send_json({
-                "type": "error",
-                "message": f"Video service unavailable: {e}",
-            })
+            await client_ws.send_json(
+                {
+                    "type": "error",
+                    "message": f"Video service unavailable: {e}",
+                }
+            )
         except Exception:
             pass
     finally:

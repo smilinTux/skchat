@@ -17,7 +17,6 @@ from typing import Optional
 
 import pgpy
 from pgpy.constants import (
-    HashAlgorithm,
     SymmetricKeyAlgorithm,
 )
 
@@ -303,9 +302,7 @@ class ChatCrypto:
             SigningError: If signing fails.
         """
         try:
-            pgp_message = pgpy.PGPMessage.new(
-                message.content.encode("utf-8"), cleartext=False
-            )
+            pgp_message = pgpy.PGPMessage.new(message.content.encode("utf-8"), cleartext=False)
 
             with self._private_key.unlock(self._passphrase):
                 sig = self._private_key.sign(pgp_message)

@@ -23,7 +23,6 @@ import pytest
 from skchat.daemon import ChatDaemon, DaemonShutdown
 from skchat.models import ChatMessage, ContentType, DeliveryStatus
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -253,9 +252,7 @@ def test_daemon_health_endpoint(inbox_dir):
 
     try:
         # Wait for health server to bind and daemon to execute at least one poll
-        assert health_started.wait(timeout=3.0), (
-            "Health server did not start within 3 s"
-        )
+        assert health_started.wait(timeout=3.0), "Health server did not start within 3 s"
         _wait_for(lambda: daemon.poll_count >= 1, timeout=2.0)
 
         url = f"http://127.0.0.1:{health_port}/health"

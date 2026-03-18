@@ -1,10 +1,8 @@
 """Tests for the SKChat plugin system."""
 
-import pytest
 from unittest.mock import MagicMock, patch
-from pathlib import Path
 
-from skchat.models import ChatMessage, ContentType
+from skchat.models import ChatMessage
 from skchat.plugins import (
     ChatPlugin,
     PluginMeta,
@@ -309,9 +307,7 @@ class TestEphemeralHelperPlugin:
 class TestReactShortcutPlugin:
     def test_react_command(self):
         plugin = ReactShortcutPlugin()
-        result = plugin.on_command(
-            "react", "msg-123 thumbsup", {"sender": "capauth:alice@test"}
-        )
+        result = plugin.on_command("react", "msg-123 thumbsup", {"sender": "capauth:alice@test"})
         assert "__reaction__:msg-123:thumbsup:capauth:alice@test" in result
 
     def test_react_missing_args(self):
@@ -328,7 +324,9 @@ class TestStatusPlugin:
 
     def test_status_command(self):
         plugin = StatusPlugin()
-        result = plugin.on_command("status", "", {"sender": "capauth:alice@test", "thread_id": "t1"})
+        result = plugin.on_command(
+            "status", "", {"sender": "capauth:alice@test", "thread_id": "t1"}
+        )
         assert "SKChat Status" in result
         assert "capauth:alice@test" in result
 
@@ -343,7 +341,13 @@ class TestGetBuiltinPlugins:
         plugins = get_builtin_plugins()
         assert len(plugins) == 5
         names = {p.name for p in plugins}
-        assert names == {"link-preview", "code-format", "ephemeral-helper", "react-shortcut", "status"}
+        assert names == {
+            "link-preview",
+            "code-format",
+            "ephemeral-helper",
+            "react-shortcut",
+            "status",
+        }
 
 
 # ---------------------------------------------------------------------------
