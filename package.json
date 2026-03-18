@@ -1,6 +1,6 @@
 {
   "name": "@smilintux/skchat",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "SKChat - AI-native encrypted P2P chat daemon. Sovereign communication for humans and AI agents with 40+ MCP tools.",
   "main": "index.js",
   "types": "index.d.ts",
