@@ -13,11 +13,11 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from unittest.mock import MagicMock, PropertyMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-from skchat.models import ChatMessage, ContentType, DeliveryStatus
+from skchat.models import ChatMessage, DeliveryStatus
 from skchat.transport import ChatTransport
 
 
@@ -238,9 +238,7 @@ class TestFileInboxPoll:
             "recipient": msg.recipient,
             "payload": {"content": msg.model_dump_json(), "content_type": "text"},
         }
-        (inbox / "aabbccdd.skc.json").write_text(
-            json.dumps(envelope), encoding="utf-8"
-        )
+        (inbox / "aabbccdd.skc.json").write_text(json.dumps(envelope), encoding="utf-8")
 
         messages = ct._poll_file_inbox()
 
@@ -326,9 +324,7 @@ class TestFileInboxPoll:
             "envelope_id": "ff998877",
             "payload": {"content": msg.model_dump_json()},
         }
-        (inbox / "ff998877.skc.json").write_text(
-            json.dumps(envelope), encoding="utf-8"
-        )
+        (inbox / "ff998877.skc.json").write_text(json.dumps(envelope), encoding="utf-8")
 
         # SKComm receive returns nothing
         mock_skcomm.receive.return_value = []
@@ -368,9 +364,7 @@ class TestLoopback:
 
     def test_loopback_send_writes_to_file_inbox(self, tmp_path):
         """Self-addressed message creates a .skc.json file in own inbox dir."""
-        ct, _, _ = _make_transport(
-            tmp_path, identity="capauth:self@skworld.io"
-        )
+        ct, _, _ = _make_transport(tmp_path, identity="capauth:self@skworld.io")
         ct._get_own_fingerprint = lambda: "SELFTEST"  # type: ignore[method-assign]
 
         msg = ChatMessage(
@@ -387,9 +381,7 @@ class TestLoopback:
 
     def test_loopback_message_is_recoverable_on_next_poll(self, tmp_path):
         """Send-then-poll roundtrip works end-to-end for loopback."""
-        ct, _, mock_history = _make_transport(
-            tmp_path, identity="capauth:self@skworld.io"
-        )
+        ct, _, mock_history = _make_transport(tmp_path, identity="capauth:self@skworld.io")
         ct._get_own_fingerprint = lambda: "SELFTEST"  # type: ignore[method-assign]
 
         # Reset call count to track history writes from poll separately
@@ -410,9 +402,7 @@ class TestLoopback:
 
     def test_get_own_fingerprint_fallback_slug(self, tmp_path):
         """Falls back to identity slug when no ~/.skcomm/config.yml fingerprint."""
-        ct, _, _ = _make_transport(
-            tmp_path, identity="capauth:opus@skworld.io"
-        )
+        ct, _, _ = _make_transport(tmp_path, identity="capauth:opus@skworld.io")
         # Point config to a non-existent path to force fallback
         with patch("builtins.open", side_effect=FileNotFoundError):
             fp = ct._get_own_fingerprint()

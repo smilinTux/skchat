@@ -176,7 +176,8 @@ class FileSender:
 
         if recipient_public_armor:
             transfer.encrypted_key = self._encrypt_key(
-                transfer.transfer_key, recipient_public_armor,
+                transfer.transfer_key,
+                recipient_public_armor,
             )
 
         return transfer
@@ -204,13 +205,15 @@ class FileSender:
                 chunk_hash = hashlib.sha256(raw).hexdigest()
                 encrypted = self._encrypt_chunk(raw, transfer.transfer_key)
 
-                result.append(FileChunk(
-                    transfer_id=transfer.transfer_id,
-                    sequence=seq,
-                    total_chunks=transfer.total_chunks,
-                    data=encrypted,
-                    chunk_hash=chunk_hash,
-                ))
+                result.append(
+                    FileChunk(
+                        transfer_id=transfer.transfer_id,
+                        sequence=seq,
+                        total_chunks=transfer.total_chunks,
+                        data=encrypted,
+                        chunk_hash=chunk_hash,
+                    )
+                )
                 seq += 1
 
         return result
@@ -304,7 +307,9 @@ class FileReceiver:
         self._chunks.setdefault(transfer.transfer_id, {})
         logger.info(
             "Registered transfer %s: %s (%d chunks)",
-            transfer.transfer_id[:8], transfer.filename, transfer.total_chunks,
+            transfer.transfer_id[:8],
+            transfer.filename,
+            transfer.total_chunks,
         )
 
     def receive_chunk(self, chunk: FileChunk) -> bool:
@@ -389,9 +394,7 @@ class FileReceiver:
         transfer = self._transfers.get(transfer_id)
 
         if transfer and len(chunks) < transfer.total_chunks:
-            raise ValueError(
-                f"Missing chunks: have {len(chunks)}/{transfer.total_chunks}"
-            )
+            raise ValueError(f"Missing chunks: have {len(chunks)}/{transfer.total_chunks}")
 
         if not transfer_key_hex and transfer and transfer.encrypted_key:
             transfer_key_hex = self._decrypt_transfer_key(transfer.encrypted_key)
@@ -584,39 +587,45 @@ class FileTransferService:
     ) -> None:
         import json as _json
 
-        init_msg = _json.dumps({
-            "type": "FILE_TRANSFER_INIT",
-            "transfer_id": transfer.transfer_id,
-            "filename": transfer.filename,
-            "size": transfer.file_size,
-            "sha256": transfer.sha256,
-            "total_chunks": transfer.total_chunks,
-            "transfer_key": transfer.transfer_key,
-            "sender": self._identity,
-        })
+        init_msg = _json.dumps(
+            {
+                "type": "FILE_TRANSFER_INIT",
+                "transfer_id": transfer.transfer_id,
+                "filename": transfer.filename,
+                "size": transfer.file_size,
+                "sha256": transfer.sha256,
+                "total_chunks": transfer.total_chunks,
+                "transfer_key": transfer.transfer_key,
+                "sender": self._identity,
+            }
+        )
         self._skcomm.send(  # type: ignore[union-attr]
             recipient=recipient, message=init_msg, thread_id=transfer.transfer_id
         )
 
         for chunk in chunks:
-            chunk_msg = _json.dumps({
-                "type": "FILE_CHUNK",
-                "transfer_id": transfer.transfer_id,
-                "chunk_idx": chunk.sequence,
-                "total_chunks": chunk.total_chunks,
-                "data_b64": chunk.data,
-                "chunk_hash": chunk.chunk_hash,
-            })
+            chunk_msg = _json.dumps(
+                {
+                    "type": "FILE_CHUNK",
+                    "transfer_id": transfer.transfer_id,
+                    "chunk_idx": chunk.sequence,
+                    "total_chunks": chunk.total_chunks,
+                    "data_b64": chunk.data,
+                    "chunk_hash": chunk.chunk_hash,
+                }
+            )
             self._skcomm.send(  # type: ignore[union-attr]
                 recipient=recipient, message=chunk_msg, thread_id=transfer.transfer_id
             )
             meta["chunks_sent"] = chunk.sequence + 1
             meta_path.write_text(_json.dumps(meta, indent=2))
 
-        done_msg = _json.dumps({
-            "type": "FILE_TRANSFER_DONE",
-            "transfer_id": transfer.transfer_id,
-        })
+        done_msg = _json.dumps(
+            {
+                "type": "FILE_TRANSFER_DONE",
+                "transfer_id": transfer.transfer_id,
+            }
+        )
         self._skcomm.send(  # type: ignore[union-attr]
             recipient=recipient, message=done_msg, thread_id=transfer.transfer_id
         )
@@ -625,7 +634,9 @@ class FileTransferService:
         meta_path.write_text(_json.dumps(meta, indent=2))
         logger.info(
             "Sent %d chunks for transfer %s (%s)",
-            len(chunks), transfer.transfer_id[:8], transfer.filename,
+            len(chunks),
+            transfer.transfer_id[:8],
+            transfer.filename,
         )
 
     # ------------------------------------------------------------ inbound
@@ -660,9 +671,7 @@ class FileTransferService:
                 "direction": "inbound",
                 "created_at": datetime.now(timezone.utc).isoformat(),
             }
-            (self._transfers_dir / f"{transfer_id}.json").write_text(
-                _json.dumps(meta, indent=2)
-            )
+            (self._transfers_dir / f"{transfer_id}.json").write_text(_json.dumps(meta, indent=2))
 
         elif msg_type == "FILE_CHUNK":
             chunks_dir = self._transfers_dir / transfer_id / "chunks"
@@ -687,9 +696,7 @@ class FileTransferService:
 
     # ------------------------------------------------------------ receive
 
-    def receive_file(
-        self, transfer_id: str, output_dir: Optional[Path] = None
-    ) -> Optional[Path]:
+    def receive_file(self, transfer_id: str, output_dir: Optional[Path] = None) -> Optional[Path]:
         """Reassemble a completed inbound file transfer.
 
         Reads chunk files from disk, calls FileReceiver.assemble(), and
@@ -745,9 +752,7 @@ class FileTransferService:
         out_dir.mkdir(parents=True, exist_ok=True)
         out_path = out_dir / filename
 
-        result = receiver.assemble(
-            transfer_id, out_path, transfer_key_hex=transfer_key or None
-        )
+        result = receiver.assemble(transfer_id, out_path, transfer_key_hex=transfer_key or None)
 
         meta["status"] = "complete"
         meta["received_path"] = str(result["filepath"])
@@ -785,9 +790,9 @@ class FileTransferService:
                 else:
                     done = self._count_received_chunks(tid)
                 meta["progress"] = (
-                    round(done / total, 2) if total else (
-                        1.0 if meta.get("status") == "complete" else 0.0
-                    )
+                    round(done / total, 2)
+                    if total
+                    else (1.0 if meta.get("status") == "complete" else 0.0)
                 )
                 result.append(meta)
             except Exception:

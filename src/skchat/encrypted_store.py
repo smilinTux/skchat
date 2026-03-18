@@ -57,8 +57,8 @@ class StorageKeyDeriver:
             salt = cls._load_or_create_salt()
 
         try:
-            from cryptography.hazmat.primitives.kdf.hkdf import HKDF
             from cryptography.hazmat.primitives import hashes
+            from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
             hkdf = HKDF(
                 algorithm=hashes.SHA256(),
@@ -69,9 +69,7 @@ class StorageKeyDeriver:
             return hkdf.derive(fingerprint.encode("utf-8"))
         except ImportError:
             # Fallback: SHA-256 of fingerprint + salt
-            return hashlib.sha256(
-                fingerprint.encode("utf-8") + salt + cls.INFO
-            ).digest()
+            return hashlib.sha256(fingerprint.encode("utf-8") + salt + cls.INFO).digest()
 
     @classmethod
     def _load_or_create_salt(cls) -> bytes:
@@ -215,8 +213,9 @@ class EncryptedChatHistory:
                 return fp
 
         # Fallback: derive from hostname + username
-        import socket
         import getpass
+        import socket
+
         fallback = f"{getpass.getuser()}@{socket.gethostname()}"
         logger.warning("No PGP fingerprint found, using fallback key derivation")
         return hashlib.sha256(fallback.encode()).hexdigest()
@@ -292,9 +291,7 @@ class EncryptedChatHistory:
         Returns:
             list[dict]: Decrypted message dicts.
         """
-        messages = self._history.get_conversation(
-            participant_a, participant_b, limit=limit
-        )
+        messages = self._history.get_conversation(participant_a, participant_b, limit=limit)
         return [self._decrypt_dict(m) for m in messages]
 
     def search_messages(self, query: str, limit: int = 20) -> list[dict]:
@@ -350,11 +347,9 @@ class EncryptedChatHistory:
         """
         content = msg_dict.get("content", "")
         if content.startswith(self.ENCRYPTED_MARKER):
-            encrypted_b64 = content[len(self.ENCRYPTED_MARKER):]
+            encrypted_b64 = content[len(self.ENCRYPTED_MARKER) :]
             try:
-                msg_dict["content"] = self._encryptor.decrypt(
-                    encrypted_b64, self._key
-                )
+                msg_dict["content"] = self._encryptor.decrypt(encrypted_b64, self._key)
             except ValueError:
                 msg_dict["content"] = "[decryption failed]"
                 msg_dict["decryption_error"] = True

@@ -14,10 +14,7 @@ is not importable.
 
 from __future__ import annotations
 
-import importlib
-import tempfile
 from pathlib import Path
-from typing import Generator
 
 import pytest
 
@@ -27,6 +24,7 @@ import pytest
 
 try:
     import skmemory  # noqa: F401
+
     _SKMEMORY_AVAILABLE = True
 except ImportError:
     _SKMEMORY_AVAILABLE = False
@@ -194,10 +192,7 @@ class TestDirectMessageRoundtrip:
         inbox = recipient_agent.get_inbox(limit=50)
         # Inbox filters by tag skchat:recipient:<identity>
         # The message was tagged skchat:recipient:capauth:lumina@skworld.io
-        found = any(
-            m.get("content", "").strip() == "Are you there, Lumina?"
-            for m in inbox
-        )
+        found = any(m.get("content", "").strip() == "Are you there, Lumina?" for m in inbox)
         assert found, f"Message not found in inbox. inbox={inbox!r}"
 
     def test_message_type_preserved(self, messenger):
@@ -357,7 +352,6 @@ class TestGroupMessageRoundtrip:
     def test_create_group_and_send_message(self, history):
         """Create a group, send a message, verify it is stored in the thread."""
         from skchat.group import GroupChat, ParticipantType
-        from skchat.models import ChatMessage, ContentType
 
         group = GroupChat.create(
             name="Integration Test Group",
@@ -383,8 +377,7 @@ class TestGroupMessageRoundtrip:
         thread_msgs = history.get_thread_messages(group.id, limit=10)
         assert len(thread_msgs) >= 1
         found = any(
-            m.get("content", "").strip() == "Hello integration test group!"
-            for m in thread_msgs
+            m.get("content", "").strip() == "Hello integration test group!" for m in thread_msgs
         )
         assert found, f"Group message not in thread. thread_msgs={thread_msgs!r}"
 

@@ -1,9 +1,8 @@
 """Tests for the SKSeal integration plugin."""
 
-import pytest
 from unittest.mock import MagicMock, patch
 
-from skchat.models import ChatMessage, ContentType
+from skchat.models import ChatMessage
 from skchat.plugins_skseal import SKSealPlugin
 
 
@@ -118,10 +117,14 @@ class TestSignCommand:
         mock_skseal.return_value = (engine, store)
 
         plugin = SKSealPlugin()
-        result = plugin.on_command("sign", "doc-123", {
-            "sender": "capauth:alice@test",
-            "fingerprint": "AABB",
-        })
+        result = plugin.on_command(
+            "sign",
+            "doc-123",
+            {
+                "sender": "capauth:alice@test",
+                "fingerprint": "AABB",
+            },
+        )
         assert "not listed as a signer" in result
 
     @patch("skchat.plugins_skseal._get_private_key")
@@ -155,10 +158,14 @@ class TestSignCommand:
         mock_key.return_value = ("-----PGP KEY-----", "passphrase")
 
         plugin = SKSealPlugin()
-        result = plugin.on_command("sign", "doc-123", {
-            "sender": "capauth:alice@test",
-            "fingerprint": "AABB",
-        })
+        result = plugin.on_command(
+            "sign",
+            "doc-123",
+            {
+                "sender": "capauth:alice@test",
+                "fingerprint": "AABB",
+            },
+        )
         assert "Document Signed" in result
         assert "1/1" in result
         assert "complete" in result.lower()
@@ -189,7 +196,8 @@ class TestDeclineCommand:
 
         plugin = SKSealPlugin()
         result = plugin.on_command(
-            "decline", "doc-123 I disagree with clause 3",
+            "decline",
+            "doc-123 I disagree with clause 3",
             {"sender": "capauth:alice@test", "fingerprint": "AABB"},
         )
         assert "Document Declined" in result
@@ -279,7 +287,8 @@ class TestDocCreateCommand:
         with patch("skchat.plugins_skseal._get_skseal", return_value=(engine, store)):
             plugin = SKSealPlugin()
             result = plugin.on_command(
-                "doc-create", "tmpl-nda New NDA Agreement",
+                "doc-create",
+                "tmpl-nda New NDA Agreement",
                 {"sender": "capauth:alice@test", "fingerprint": "AABB"},
             )
             # Will try to import skseal.models — if not available,
@@ -337,7 +346,8 @@ class TestDocSendCommand:
 
         plugin = SKSealPlugin()
         result = plugin.on_command(
-            "doc-send", "doc-123 capauth:bob@skworld.io",
+            "doc-send",
+            "doc-123 capauth:bob@skworld.io",
             {"sender": "capauth:alice@test", "fingerprint": "AABB"},
         )
         assert "Signing Request" in result

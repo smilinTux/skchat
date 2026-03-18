@@ -122,9 +122,9 @@ class ChatDaemon:
             Exception: If transport cannot be initialized.
         """
         try:
-            from .transport import ChatTransport
             from .history import ChatHistory
             from .identity_bridge import get_sovereign_identity
+            from .transport import ChatTransport
         except ImportError as exc:
             self._log(f"Failed to import required modules: {exc}", "error")
             raise
@@ -145,9 +145,12 @@ class ChatDaemon:
             logger.warning("ChatHistory.from_config() failed, trying in-memory fallback: %s", exc)
             try:
                 from skmemory import MemoryStore
+
                 history = ChatHistory(store=MemoryStore())
             except Exception as fallback_exc:
-                logger.error("In-memory fallback also failed (%s); re-raising original error", fallback_exc)
+                logger.error(
+                    "In-memory fallback also failed (%s); re-raising original error", fallback_exc
+                )
                 raise exc
 
         identity = get_sovereign_identity()
@@ -187,20 +190,26 @@ class ChatDaemon:
             watchdog = self._init_watchdog(skcomm)
             try:
                 from skchat.advocacy import AdvocacyEngine
+
                 engine = AdvocacyEngine(identity=identity)
             except Exception as exc:
                 self._log(f"AdvocacyEngine init skipped: {exc}", "warning")
             try:
                 from .plugins import PluginRegistry
+
                 pr = PluginRegistry()
                 pr.discover()
                 plugin_registry = pr
             except Exception as exc:
                 self._log(f"PluginRegistry init skipped: {exc}", "warning")
             subsystems = [
-                k for k, v in [
-                    ("reaper", reaper), ("presence", presence), ("queue", queue),
-                    ("watchdog", watchdog), ("memory-bridge", bridge),
+                k
+                for k, v in [
+                    ("reaper", reaper),
+                    ("presence", presence),
+                    ("queue", queue),
+                    ("watchdog", watchdog),
+                    ("memory-bridge", bridge),
                 ]
                 if v
             ]
@@ -239,7 +248,9 @@ class ChatDaemon:
 
                     if messages:
                         self.total_received += len(messages)
-                        self._log(f"Received {len(messages)} message(s) (total: {self.total_received})")
+                        self._log(
+                            f"Received {len(messages)} message(s) (total: {self.total_received})"
+                        )
 
                         for msg in messages:
                             sender_short = msg.sender.split("@")[0].replace("capauth:", "")
@@ -247,6 +258,7 @@ class ChatDaemon:
                             self._log(f"  [{sender_short}] {preview}")
                             try:
                                 import subprocess
+
                                 subprocess.run(
                                     ["notify-send", "SKChat", f"[{sender_short}] {preview}"],
                                     capture_output=True,
@@ -269,10 +281,14 @@ class ChatDaemon:
                                             if plugin_reply:
                                                 transport.send_and_store(msg.sender, plugin_reply)
                                         except Exception as exc:
-                                            self._log(f"Plugin '{plugin.name}' error: {exc}", "warning")
+                                            self._log(
+                                                f"Plugin '{plugin.name}' error: {exc}", "warning"
+                                            )
                     else:
                         if self.poll_count % 12 == 0:
-                            self._log(f"No new messages (polls: {self.poll_count}, uptime: {self._uptime()})")
+                            self._log(
+                                f"No new messages (polls: {self.poll_count}, uptime: {self._uptime()})"
+                            )
 
                 except Exception as exc:
                     self._consecutive_failures += 1
@@ -294,7 +310,7 @@ class ChatDaemon:
                     # Attempt transport reconnect on the 2nd consecutive failure
                     # so recovery is faster than waiting for the watchdog cycle.
                     if self._consecutive_failures == 2 and self._skcomm is not None:
-                        reconnect_fn = getattr(self._skcomm, 'reconnect', None)
+                        reconnect_fn = getattr(self._skcomm, "reconnect", None)
                         if reconnect_fn:
                             try:
                                 logger.info(
@@ -319,7 +335,9 @@ class ChatDaemon:
                     try:
                         result = reaper.sweep(create_tombstones=True)
                         if result.expired > 0:
-                            self._log(f"Reaper: {result.expired} expired, {result.active_ephemeral} still active")
+                            self._log(
+                                f"Reaper: {result.expired} expired, {result.active_ephemeral} still active"
+                            )
                     except Exception as exc:
                         self._log(f"Reaper error: {exc}", "warning")
 
@@ -396,6 +414,7 @@ class ChatDaemon:
         """
         try:
             from .ephemeral import MessageReaper
+
             return MessageReaper(store=history._store)
         except Exception as exc:
             self._log(f"Reaper init skipped: {exc}", "warning")
@@ -412,6 +431,7 @@ class ChatDaemon:
         """
         try:
             from .presence import PresenceTracker
+
             return PresenceTracker()
         except Exception as exc:
             self._log(f"Presence init skipped: {exc}", "warning")
@@ -431,14 +451,12 @@ class ChatDaemon:
             OutboxQueue or None if initialization fails.
         """
         try:
-            from .outbox import OutboxQueue
             from .agent_comm import AgentMessenger
+            from .outbox import OutboxQueue
 
             queue = OutboxQueue()
             try:
-                self._outbox_messenger = AgentMessenger.from_identity(
-                    identity, skcomm=skcomm
-                )
+                self._outbox_messenger = AgentMessenger.from_identity(identity, skcomm=skcomm)
             except Exception as exc:
                 self._log(f"Outbox messenger init skipped: {exc}", "warning")
             return queue
@@ -477,7 +495,6 @@ class ChatDaemon:
         except Exception as exc:
             self._log(f"WebRTC init skipped: {exc}", "warning")
 
-
     def _init_memory_bridge(self, history: object) -> object:
         """Initialize the MemoryBridge for hourly auto-capture to skcapstone.
 
@@ -489,6 +506,7 @@ class ChatDaemon:
         """
         try:
             from .memory_bridge import MemoryBridge
+
             return MemoryBridge(history=history)
         except Exception as exc:
             self._log(f"MemoryBridge init skipped: {exc}", "warning")
@@ -522,6 +540,7 @@ class ChatDaemon:
         # (skchat who, who_is_online) can read it without being in-process.
         try:
             from .presence import PresenceCache
+
             PresenceCache().record(identity, state, indicator.timestamp)
         except Exception as exc:
             logger.debug("PresenceCache.record failed: %s", exc)
@@ -529,6 +548,7 @@ class ChatDaemon:
         try:
             payload = indicator.model_dump_json()
             from skcomm.models import MessageType
+
             skcomm.send(
                 recipient="*",
                 message=payload,
@@ -549,7 +569,7 @@ class ChatDaemon:
             uptime_seconds = int(self.poll_count * self.interval)
         else:
             return "0s"
-        
+
         if uptime_seconds < 60:
             return f"{uptime_seconds}s"
         elif uptime_seconds < 3600:
@@ -585,23 +605,23 @@ class ChatDaemon:
                     advocacy_responses = getattr(daemon_ref, "advocacy_responses", 0)
                     online_peers = getattr(daemon_ref, "_online_peer_count", 0)
                     body = (
-                        f'# HELP skchat_uptime_seconds Daemon uptime in seconds\n'
-                        f'# TYPE skchat_uptime_seconds gauge\n'
+                        f"# HELP skchat_uptime_seconds Daemon uptime in seconds\n"
+                        f"# TYPE skchat_uptime_seconds gauge\n"
                         f'skchat_uptime_seconds{{identity="{identity}"}} {uptime_s}\n'
-                        f'# HELP skchat_messages_received_total Total messages received\n'
-                        f'# TYPE skchat_messages_received_total counter\n'
+                        f"# HELP skchat_messages_received_total Total messages received\n"
+                        f"# TYPE skchat_messages_received_total counter\n"
                         f'skchat_messages_received_total{{identity="{identity}"}} {daemon_ref.total_received}\n'
-                        f'# HELP skchat_messages_sent_total Total messages sent\n'
-                        f'# TYPE skchat_messages_sent_total counter\n'
+                        f"# HELP skchat_messages_sent_total Total messages sent\n"
+                        f"# TYPE skchat_messages_sent_total counter\n"
                         f'skchat_messages_sent_total{{identity="{identity}"}} {getattr(daemon_ref, "total_sent", 0)}\n'
-                        f'# HELP skchat_advocacy_responses_total Total advocacy auto-responses\n'
-                        f'# TYPE skchat_advocacy_responses_total counter\n'
+                        f"# HELP skchat_advocacy_responses_total Total advocacy auto-responses\n"
+                        f"# TYPE skchat_advocacy_responses_total counter\n"
                         f'skchat_advocacy_responses_total{{identity="{identity}"}} {advocacy_responses}\n'
-                        f'# HELP skchat_peers_online Number of online peers\n'
-                        f'# TYPE skchat_peers_online gauge\n'
+                        f"# HELP skchat_peers_online Number of online peers\n"
+                        f"# TYPE skchat_peers_online gauge\n"
                         f'skchat_peers_online{{identity="{identity}"}} {online_peers}\n'
-                        f'# HELP skchat_transport_ok Transport health (1=ok, 0=down)\n'
-                        f'# TYPE skchat_transport_ok gauge\n'
+                        f"# HELP skchat_transport_ok Transport health (1=ok, 0=down)\n"
+                        f"# TYPE skchat_transport_ok gauge\n"
                         f'skchat_transport_ok{{identity="{identity}"}} {transport_ok}\n'
                     ).encode()
                     self.send_response(200)
@@ -617,18 +637,18 @@ class ChatDaemon:
                     return
 
                 last_poll_at = (
-                    daemon_ref.last_poll_time.isoformat()
-                    if daemon_ref.last_poll_time
-                    else None
+                    daemon_ref.last_poll_time.isoformat() if daemon_ref.last_poll_time else None
                 )
 
-                body = json.dumps({
-                    "status": "ok" if daemon_ref.running else "stopping",
-                    "uptime_s": uptime_s,
-                    "messages_received": daemon_ref.total_received,
-                    "last_poll_at": last_poll_at,
-                    "transport_ok": daemon_ref._transport_ok,
-                }).encode()
+                body = json.dumps(
+                    {
+                        "status": "ok" if daemon_ref.running else "stopping",
+                        "uptime_s": uptime_s,
+                        "messages_received": daemon_ref.total_received,
+                        "last_poll_at": last_poll_at,
+                        "transport_ok": daemon_ref._transport_ok,
+                    }
+                ).encode()
 
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
@@ -666,6 +686,7 @@ class ChatDaemon:
         """
         try:
             from .watchdog import TransportWatchdog
+
             return TransportWatchdog(transport=skcomm)
         except Exception as exc:
             self._log(f"Watchdog init skipped: {exc}", "warning")
@@ -691,9 +712,7 @@ class ChatDaemon:
 
         uptime_seconds = 0
         if self.start_time:
-            uptime_seconds = int(
-                (datetime.now(timezone.utc) - self.start_time).total_seconds()
-            )
+            uptime_seconds = int((datetime.now(timezone.utc) - self.start_time).total_seconds())
 
         transport_status = "unknown"
         if watchdog:
@@ -711,9 +730,7 @@ class ChatDaemon:
             try:
                 for t in skcomm.router.transports:
                     if t.name == "webrtc":
-                        webrtc_signaling_ok = bool(
-                            getattr(t, "_signaling_connected", False)
-                        )
+                        webrtc_signaling_ok = bool(getattr(t, "_signaling_connected", False))
                         break
             except Exception as exc:
                 logger.warning("Failed to read WebRTC signaling state: %s", exc)
@@ -725,9 +742,7 @@ class ChatDaemon:
             "transport_status": transport_status,
             "webrtc_signaling_ok": webrtc_signaling_ok,
             "last_heartbeat_at": (
-                self.last_heartbeat_at.isoformat()
-                if self.last_heartbeat_at
-                else None
+                self.last_heartbeat_at.isoformat() if self.last_heartbeat_at else None
             ),
             "online_peer_count": online_peer_count,
             "advocacy_responses": self.advocacy_responses,
@@ -766,6 +781,7 @@ class ChatDaemon:
         if config_path is not None and config_path.exists():
             try:
                 import yaml
+
                 with open(config_path) as f:
                     cfg = yaml.safe_load(f) or {}
 
@@ -944,9 +960,13 @@ def start_daemon(
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
     cmd = [
-        sys.executable, "-m", "skchat._daemon_entry",
-        "--interval", str(interval),
-        "--log-file", str(log_path),
+        sys.executable,
+        "-m",
+        "skchat._daemon_entry",
+        "--interval",
+        str(interval),
+        "--log-file",
+        str(log_path),
     ]
     if quiet:
         cmd.append("--quiet")

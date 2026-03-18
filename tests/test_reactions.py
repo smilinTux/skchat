@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from skchat.reactions import ReactionEvent, ReactionManager, ReactionSummary
+from skchat.reactions import ReactionEvent, ReactionManager
 
 
 @pytest.fixture()
@@ -127,7 +127,9 @@ class TestSyncEvents:
     def test_apply_event(self, manager: ReactionManager) -> None:
         """Applying a remote event updates local state."""
         event = ReactionEvent(
-            message_id="msg-remote", emoji="star", sender="capauth:peer@test",
+            message_id="msg-remote",
+            emoji="star",
+            sender="capauth:peer@test",
         )
         assert manager.apply_event(event) is True
         assert manager.has_reaction("msg-remote", "star", "capauth:peer@test")
@@ -135,7 +137,9 @@ class TestSyncEvents:
     def test_apply_duplicate_event_rejected(self, manager: ReactionManager) -> None:
         """Same event applied twice is deduplicated."""
         event = ReactionEvent(
-            message_id="msg-1", emoji="star", sender="capauth:peer@test",
+            message_id="msg-1",
+            emoji="star",
+            sender="capauth:peer@test",
         )
         manager.apply_event(event)
         assert manager.apply_event(event) is False

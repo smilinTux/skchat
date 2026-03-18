@@ -9,7 +9,6 @@ vector-search / thread helpers remain available.
 
 from __future__ import annotations
 
-import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
@@ -290,11 +289,7 @@ class ChatHistory:
         """
         tag = f"{self.THREAD_TAG_PREFIX}{thread_id}"
         memories = self._store.list_memories(tags=[tag], limit=limit)
-        return [
-            self._memory_to_chat_dict(m)
-            for m in memories
-            if self.MESSAGE_TAG in m.tags
-        ]
+        return [self._memory_to_chat_dict(m) for m in memories if self.MESSAGE_TAG in m.tags]
 
     def get_conversation(
         self,
@@ -335,10 +330,9 @@ class ChatHistory:
                 continue
             seen_ids.add(m.id)
             meta = m.metadata
-            a_involved = (
-                meta.get("sender") in (participant_a, participant_b)
-                and meta.get("recipient") in (participant_a, participant_b)
-            )
+            a_involved = meta.get("sender") in (participant_a, participant_b) and meta.get(
+                "recipient"
+            ) in (participant_a, participant_b)
             if a_involved:
                 all_messages.append(self._memory_to_chat_dict(m))
 
@@ -535,11 +529,7 @@ class ChatHistory:
         if self._store is None:
             return []
 
-        cutoff = (
-            datetime.now(timezone.utc) - timedelta(minutes=minutes)
-            if minutes > 0
-            else None
-        )
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=minutes) if minutes > 0 else None
         all_memories = self._store.list_memories(
             tags=[self.MESSAGE_TAG],
             limit=limit,

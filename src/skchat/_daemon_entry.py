@@ -7,8 +7,6 @@ Not intended to be used directly.
 from __future__ import annotations
 
 import argparse
-import sys
-from pathlib import Path
 
 
 def main() -> None:
@@ -23,6 +21,7 @@ def main() -> None:
     args = parser.parse_args()
 
     from .daemon import run_daemon
+
     run_daemon(
         interval=args.interval,
         log_file=args.log_file,
