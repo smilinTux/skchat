@@ -8,7 +8,7 @@ Wants=network-online.target
 Type=forking
 WorkingDirectory=%h
 PIDFile=%h/.skchat/daemon.pid
-ExecStart=%h/.pyenv/shims/skchat daemon start --interval 5 --log-file %h/.skchat/daemon.log
+ExecStart=%h/.skenv/bin/skchat daemon start --interval 5 --log-file %h/.skchat/daemon.log
 ExecStop=/bin/kill -TERM $MAINPID
 Restart=on-failure
 RestartSec=5
@@ -16,7 +16,12 @@ WatchdogSec=30
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=skchat
+Environment=PYTHONUNBUFFERED=1
+Environment=SKAGENT=opus
+Environment=SKCAPSTONE_AGENT=opus
+Environment=SKMEMORY_AGENT=opus
 Environment=SKCHAT_IDENTITY=capauth:opus@skworld.io
+Environment=PATH=%h/.skenv/bin:/usr/local/bin:/usr/bin:/bin
 
 [Install]
 WantedBy=default.target
