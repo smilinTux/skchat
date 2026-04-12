@@ -558,7 +558,7 @@ def spawn_tmux_session(agent_name: str, msg: dict) -> None:
     # 3. Clean up prompt file
     # 4. Exit (closes window)
     claude_cmd = (
-        f"export SKCAPSTONE_AGENT={agent_name} && "
+        f"export SKAGENT={agent_name} && export SKCAPSTONE_AGENT={agent_name} && "
         f"export SKCHAT_IDENTITY={identity} && "
         f"export PATH={SKENV_BIN}:$PATH && "
         f"echo '━━━ {agent_name.upper()} handling message from {_friendly_sender(sender)} ━━━' && "
