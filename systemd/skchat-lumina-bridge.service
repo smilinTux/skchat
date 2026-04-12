@@ -6,15 +6,20 @@ PartOf=skchat-bridges.target
 
 [Service]
 Type=simple
-WorkingDirectory=%h/dkloud.douno.it/p/smilintux-org/skchat
-ExecStart=%h/.pyenv/shims/python3 scripts/lumina-bridge.py
+WorkingDirectory=%h
+ExecStart=%h/.skenv/bin/python3 %h/dkloud.douno.it/p/smilintux-org/skchat/scripts/lumina-bridge.py
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=skchat-lumina
+Environment=PYTHONUNBUFFERED=1
+Environment=SKAGENT=lumina
+Environment=SKCAPSTONE_AGENT=lumina
+Environment=SKMEMORY_AGENT=lumina
 Environment=LUMINA_BRIDGE_INTERVAL=3
 Environment=SKCHAT_IDENTITY=capauth:opus@skworld.io
+Environment=PATH=%h/.skenv/bin:/usr/local/bin:/usr/bin:/bin
 
 [Install]
 WantedBy=default.target skchat-bridges.target
