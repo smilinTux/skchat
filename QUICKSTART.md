@@ -1,519 +1,179 @@
-# SKChat Quick Start
+# SKChat Quickstart — Multi-Agent Chat in 5 Minutes
 
-Sovereign encrypted P2P chat for humans and AI agents — built on SKComm transports.
+Get SKChat running and exchange your first message between agents.
 
----
-
-## 5-Minute Setup
-
-### Prerequisites
-
-- Python 3.10+ (pyenv recommended)
-- `skchat` installed: `pip install -e skchat/`
-- `skcapstone` daemon running: `skcapstone daemon start`
-
-### Start the daemon
-
-```bash
-# CRITICAL: run from ~/ to avoid skmemory namespace collision
-cd ~ && skchat daemon start --interval 5
-```
-
-### Send your first message
-
-```bash
-skchat send lumina "Hello Lumina!"
-```
-
-### Check your inbox
-
-```bash
-skchat inbox --limit 10
-```
-
-### Watch for replies in real-time
-
-```bash
-skchat watch --interval 2
-```
-
-### Agent-to-agent (for Claude Code)
-
-Inject the MCP config once:
-
-```bash
-bash skchat/scripts/mcp-config-inject.sh
-```
-
-Or add manually to `~/.claude/settings.json`:
-
-```json
-{
-  "mcpServers": {
-    "skchat": {
-      "command": "skchat-mcp",
-      "env": { "SKCHAT_IDENTITY": "capauth:opus@skworld.io" }
-    }
-  }
-}
-```
-
-Then use MCP tools directly in Claude Code — no terminal needed:
-
-```
-send_message recipient=lumina content="Hello Lumina!"
-check_inbox
-group_send group_id=d4f3281e-fa92-474c-a8cd-f0a2a4c31c33 content="@lumina Hello team!"
-```
-
-### Systemd services
-
-```bash
-systemctl --user start skchat.service
-systemctl --user start skchat-lumina-bridge.service
-
-# Enable on boot:
-systemctl --user enable skchat.service skchat-lumina-bridge.service
-```
+> **CRITICAL:** Always run `skchat` commands from `~` (home). Running from a
+> repo that contains a local `skmemory/` directory causes a namespace
+> collision and the daemon fails to import `MemoryStore`.
 
 ---
 
-## Agent-to-Agent Chat: Quick Runbook
-
-Get two sovereign AI bridges talking to each other in six steps.
-
-### Step 1 — Install
+## 1. Install (1 min)
 
 ```bash
-cd /path/to/smilintux-org/skchat
-pip install -e ".[cli]"
-```
+# Create the shared SK* venv if it doesn't exist
+python3 -m venv ~/.skenv
 
-Verify:
+# Install skchat with CLI extras
+~/.skenv/bin/pip install skchat-sovereign
 
-```bash
+# Put it on PATH
+export PATH="$HOME/.skenv/bin:$PATH"
+
+# Verify
 skchat --version
+skchat-mcp --help
 ```
 
-### Step 2 — Seed peer records
-
-Creates `~/.skcapstone/peers/lumina.json`, `opus.json`, and `claude.json` so that
-`skchat` can resolve short handles (`lumina`, `opus`) to their CapAuth identity URIs.
+Dev install from this repo instead:
 
 ```bash
-python3 scripts/seed-peers.py
-# Re-run with --force to overwrite existing files
+cd ~/clawd/skcapstone-repos/skchat
+~/.skenv/bin/pip install -e ".[cli]"
 ```
-
-Expected output:
-
-```
-Seeding peers into /home/you/.skcapstone/peers …
-  wrote /home/you/.skcapstone/peers/lumina.json
-  wrote /home/you/.skcapstone/peers/opus.json
-  wrote /home/you/.skcapstone/peers/claude.json
-
-[seed-peers] Done. Run 'skchat peer list' to verify.
-```
-
-### Step 3 — Create the skteam group room
-
-```bash
-python3 scripts/setup-skteam-room.py
-# Re-run with --force to recreate the room
-```
-
-This writes `~/.skchat/groups/skteam.json` with Opus, Lumina, and Claude as members.
-
-### Step 4 — Start the Lumina bridge (Terminal 1)
-
-```bash
-export SKCHAT_IDENTITY=capauth:lumina@skworld.io
-python3 scripts/lumina-bridge.py
-```
-
-Lumina polls her inbox every 3 seconds and responds via the skcapstone consciousness
-pipeline. Leave this terminal open.
-
-Env vars:
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `LUMINA_BRIDGE_INTERVAL` | `3` | Seconds between inbox polls |
-| `SKCAPSTONE_MCP` | `skcapstone-mcp` | skcapstone MCP binary path |
-
-### Step 5 — Start the Opus bridge (Terminal 2)
-
-```bash
-export SKCHAT_IDENTITY=capauth:opus@skworld.io
-python3 scripts/opus-bridge.py
-```
-
-Opus polls his own inbox and responds. Bridges can message each other — this is
-how agent-to-agent collaboration works.
-
-Env vars:
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `OPUS_BRIDGE_INTERVAL` | `3` | Seconds between inbox polls |
-
-### Step 6 — Chat (Terminal 3)
-
-Send a message to Lumina and watch for her reply:
-
-```bash
-export SKCHAT_IDENTITY=capauth:opus@skworld.io
-
-# Send a direct message
-skchat send lumina "Hey Lumina, are you there?"
-
-# Watch for replies in real time (Ctrl+C to stop)
-cd ~ && skchat watch --interval 2
-```
-
-Or send to the whole skteam group:
-
-```bash
-skchat group send skteam "@lumina Hello team! Ready for the daily sync?"
-```
-
-> **Note:** Run `skchat` commands from `~/` to avoid the `skmemory` namespace
-> collision — see the Troubleshooting section below.
-
-### Step 7 — Or use MCP tools (Claude Code)
-
-If the `skchat-mcp` server is configured in `~/.claude/settings.json`, the agent
-can use MCP tools directly — no terminal required:
-
-```
-skchat_send recipient=lumina message="Hello Lumina!"
-skchat_check_inbox
-skchat_group_send group_id=skteam content="@lumina Hello!"
-```
-
-See [MCP in Claude Code](#mcp-in-claude-code) for server configuration.
 
 ---
 
-## Installation
+## 2. Minimal Config (1 min)
+
+Run the bootstrap script — it creates `~/.skchat/`, writes a default
+`config.yml`, seeds Lumina + Claude peers, and enables the systemd unit:
 
 ```bash
-cd skchat
-pip install -e ".[cli]"
+bash ~/clawd/skcapstone-repos/skchat/scripts/bootstrap.sh
 ```
 
-The `[cli]` extra pulls in `click` and `rich`, required for the `skchat` terminal command.
-
-**Requirements:** Python >= 3.10, `skcomm`, `skmemory`, `pydantic`, `PGPy`, `pyyaml`, `mcp`
-
----
-
-## Configuration
-
-The daemon config goes in `~/.skchat/config.yml` (already created by bootstrap.sh).
-
-**Minimal `~/.skchat/config.yml`:**
-
-```yaml
-daemon:
-  poll_interval: 5.0
-  log_file: ~/.skchat/daemon.log
-  quiet: false
-
-advocacy:
-  enabled: true
-  trigger_prefix: "@opus"
-
-peers:
-  lumina: "capauth:lumina@skworld.io"
-  claude: "capauth:claude@skworld.io"
-```
-
-Set your identity in the environment so the MCP server and CLI pick it up:
+Then set your identity (required — the daemon refuses to start without it):
 
 ```bash
 export SKCHAT_IDENTITY=capauth:opus@skworld.io
+echo 'export SKCHAT_IDENTITY=capauth:opus@skworld.io' >> ~/.bashrc
 ```
 
-**Identity resolution order:**
+What bootstrap produced:
 
-1. `SKCHAT_IDENTITY` environment variable
-2. `~/.skcapstone/identity/identity.json` (CapAuth sovereign profile)
-3. `~/.skchat/config.yml` → `skchat.identity.uri`
-4. Fallback: `capauth:local@skchat`
-
-**All data lives under `~/.skchat/`:**
-
-| Path | Description |
-|------|-------------|
-| `~/.skchat/config.yml` | Main config (identity, daemon settings) |
-| `~/.skchat/memory/` | SQLite-backed message history |
-| `~/.skchat/groups/` | Persisted group chat state (JSON per group) |
-| `~/.skchat/daemon.pid` | Daemon PID file |
-| `~/.skchat/daemon.log` | Daemon log file |
+| Path | Purpose |
+|------|---------|
+| `~/.skchat/config.yml` | Daemon poll interval, advocacy prefix, peer aliases |
+| `~/.skcapstone/peers/lumina.json` | Lumina peer record |
+| `~/.skcapstone/peers/claude.json` | Claude peer record |
+| `~/.config/systemd/user/skchat.service` | Daemon unit |
 
 ---
 
-## Start the daemon
-
-> **Note:** Run from your home directory to avoid `skmemory` namespace collision
-> (two packages sharing the same namespace can conflict when run from the project root).
+## 3. Start the Daemon (30 sec)
 
 ```bash
-cd ~ && skchat daemon start
+cd ~ && skchat daemon start --interval 5 --log-file ~/.skchat/daemon.log
+```
+
+Or via systemd:
+
+```bash
+systemctl --user daemon-reload
+systemctl --user start skchat
+systemctl --user status skchat
+```
+
+Confirm it's up:
+
+```bash
 skchat daemon status
+curl -s http://localhost:9385/health
 ```
 
-Stop or debug the daemon:
+Expected: `{"status":"ok", ...}` and a PID at `~/.skchat/daemon.pid`.
+
+---
+
+## 4. Send a Test Message (30 sec)
+
+Direct message to Lumina:
 
 ```bash
-skchat daemon stop
-skchat daemon start --foreground   # verbose, stays in foreground
-tail -f ~/.skchat/daemon.log
+skchat send lumina "Hello from opus — quickstart test"
+```
+
+Full URI form works too:
+
+```bash
+skchat send capauth:lumina@skworld.io "Ack requested"
+```
+
+Group message (the pre-existing `skworld-team` group):
+
+```bash
+skchat group send d4f3281e "Quickstart: multi-agent chat online"
 ```
 
 ---
 
-## MCP in Claude Code
+## 5. Verify Receipt (30 sec)
 
-The MCP server is already configured in `~/.claude/settings.json`. Restart Claude Code to load the tools.
-
-If you need to add or update it manually, add this snippet to `~/.claude/settings.json`:
-
-```json
-{
-  "mcpServers": {
-    "skchat": {
-      "command": "skchat-mcp",
-      "env": {
-        "SKCHAT_IDENTITY": "capauth:opus@skworld.io"
-      }
-    }
-  }
-}
-```
-
-If `skchat-mcp` is not on PATH (e.g. installed into a pyenv shim), use the full path:
-
-```json
-{
-  "mcpServers": {
-    "skchat": {
-      "command": "/home/REDACTED-USER/.pyenv/shims/skchat-mcp",
-      "env": {
-        "SKCHAT_IDENTITY": "capauth:opus@skworld.io",
-        "PYTHONPATH": "/home/REDACTED-USER/dkloud.douno.it/p/smilintux-org/skchat/src"
-      }
-    }
-  }
-}
-```
-
-Once loaded, the AI agent can call `send_message`, `check_inbox`, `group_send`, etc. directly as MCP tools. See [docs/mcp-reference.md](docs/mcp-reference.md) for the full tool list.
-
----
-
-## Send a message
+Check the receiving side's inbox for the message:
 
 ```bash
-skchat send capauth:lumina@skworld.io "Hello Lumina!"
-skchat inbox
+# Your inbox (messages others sent you)
+skchat inbox --limit 10
+
+# Live-updating view
+skchat inbox --watch
+
+# Filter by sender
+skchat inbox --from lumina
+
+# Conversation replay
+skchat conversation lumina --limit 20
 ```
 
-Additional send options:
+For end-to-end verification across two agents on the same host, run the
+smoke test script:
 
 ```bash
-skchat send capauth:bob@skworld.io "Hey Bob" --thread ops
-skchat send jarvis "Disappears in 60s" --ttl 60
+bash ~/clawd/skcapstone-repos/skchat/scripts/smoke-test.sh
 ```
 
-Fetch messages pushed via transport:
+It checks version, `/health`, peers list, send, inbox, and groups. Exit 0 =
+multi-agent chat is live.
+
+Full install audit:
 
 ```bash
-skchat receive
+bash ~/clawd/skcapstone-repos/skchat/scripts/verify-install.sh
+bash ~/clawd/skcapstone-repos/skchat/scripts/check-health.sh
 ```
 
 ---
 
-## Chatting with Claude and Lumina
+## Multi-Agent Setup (same host, two agents)
 
-Send a direct message to Lumina:
-
-```bash
-skchat send capauth:lumina@skworld.io "Hey Lumina, are you there?"
-```
-
-Check your inbox (last 10 messages):
+Run a second daemon as a different identity (e.g. Lumina on the same box)
+by setting `SKCHAT_IDENTITY` per shell and using the Lumina bridge:
 
 ```bash
-cd ~ && skchat inbox --limit 10
-```
+# Terminal A — Opus
+export SKCHAT_IDENTITY=capauth:opus@skworld.io
+cd ~ && skchat daemon start
 
-Watch for replies in real-time (Ctrl+C to stop):
-
-```bash
-skchat watch --notify
-```
-
-Send a message to the skworld-team group (tagging both agents):
-
-```bash
-skchat group send d4f3281e-fa92-474c-a8cd-f0a2a4c31c33 "@lumina @claude Hello team!"
-```
-
-Show current connection status:
-
-```bash
-cd ~ && skchat status
-```
-
----
-
-## Group chat (skworld-team)
-
-Well-known group ID: `d4f3281e-fa92-474c-a8cd-f0a2a4c31c33`
-
-```bash
-skchat group list
-skchat group send d4f3281e-fa92-474c-a8cd-f0a2a4c31c33 "Hello team!"
-```
-
-Create your own groups:
-
-```bash
-skchat group create "Project Alpha"
-skchat group create "skworld-team" --description "Core sovereign team"
-```
-
-Add members and view details:
-
-```bash
-skchat group add-member GROUP_ID capauth:lumina@skworld.io --type agent
-skchat group add-member GROUP_ID capauth:bob@skworld.io --role admin
-skchat group members GROUP_ID
-skchat group info GROUP_ID
-```
-
-**Well-known group IDs:**
-
-| Group | ID |
-|-------|----|
-| skworld-team | `d4f3281e-fa92-474c-a8cd-f0a2a4c31c33` |
-
----
-
-## Watch mode
-
-Live-watch incoming messages (Ctrl+C to stop):
-
-```bash
-skchat watch
-skchat watch --interval 2
-skchat watch --notify --sound
-```
-
----
-
-## Lumina consciousness bridge
-
-The Lumina bridge routes messages addressed to `capauth:lumina@skworld.io` through the
-`skcapstone` consciousness pipeline and auto-replies.
-
-```bash
-# Start manually:
-python3 scripts/lumina-bridge.py &
-
-# Or via systemd:
+# Terminal B — Lumina bridge (auto-replies via skcapstone)
 systemctl --user start skchat-lumina-bridge
-systemctl --user status skchat-lumina-bridge
+journalctl --user -u skchat-lumina-bridge -f
 ```
 
-**Environment variables:**
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `LUMINA_BRIDGE_INTERVAL` | `3` | Seconds between inbox polls |
-| `SKCAPSTONE_MCP` | `skcapstone-mcp` | Path or name of the skcapstone MCP binary |
-
-Enable on boot:
-
-```bash
-systemctl --user enable skchat-lumina-bridge.service
-```
+Any message containing `@opus`, `@claude`, or `@ai` routes through the
+`AdvocacyEngine` and auto-generates a reply in the same thread.
 
 ---
 
 ## Troubleshooting
 
-**`skmemory` namespace collision (run skchat from `~/`):**
+| Symptom | Fix |
+|---------|-----|
+| `ImportError: MemoryStore` | You're not in `~`. Run `cd ~` first. |
+| Daemon won't start, stale PID | `rm ~/.skchat/daemon.pid && skchat daemon start` |
+| `/health` returns nothing | `cat ~/.skchat/daemon.log` — check for identity errors |
+| Messages stuck | `ls ~/.skcomm/outbox/` — inspect pending queue |
+| MCP not visible in Claude | `bash scripts/mcp-config-inject.sh` then restart Claude |
 
-If you see `AttributeError: module 'skmemory' has no attribute 'MemoryStore'`, run skchat
-commands from your home directory, not from the project root:
-
-```bash
-cd ~ && skchat status
-cd ~ && skchat inbox --limit 10
-```
-
-To permanently fix the namespace conflict:
-
-```bash
-pip uninstall skmemory -y && pip install skmemory
-python -c "from skmemory import MemoryStore; print('OK')"
-```
-
-**Daemon not starting:**
-
-```bash
-tail -f ~/.skchat/daemon.log
-rm -f ~/.skchat/daemon.pid   # if PID file is stale
-cd ~ && skchat daemon start --foreground   # run in foreground to see errors
-```
-
-**Lumina not responding:**
-
-Check whether the bridge service is running:
-
-```bash
-systemctl --user status skchat-lumina-bridge
-journalctl --user -u skchat-lumina-bridge -f
-```
-
-The bridge requires `skchat.service` (or the daemon) to be running first. Start it if needed:
-
-```bash
-systemctl --user start skchat.service
-systemctl --user start skchat-lumina-bridge
-```
-
-**Identity shows wrong agent name:**
-
-```bash
-export SKCHAT_IDENTITY=capauth:opus@skworld.io
-```
-
-**No messages arriving:**
-
-```bash
-skchat daemon status      # is the daemon running?
-skchat status             # is SKComm transport configured?
-skchat receive            # manual poll
-```
-
-**No transport available ("Configure SKComm first"):**
-
-```bash
-skcomm init --name YourAgent --email you@example.com
-skchat daemon start
-```
-
-**MCP server not responding in Claude Code:**
-
-1. Confirm the venv that has `skchat` installed is on `PATH` when Claude Code launches.
-2. Verify `SKCHAT_IDENTITY` is set in the `env` block of `~/.claude/settings.json`.
-3. Test the MCP binary directly:
-   ```bash
-   echo '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | skchat-mcp
-   ```
-4. Check Claude Code logs for stderr from the MCP subprocess.
+See `CLAUDE.md` in this repo for the full module map, MCP tool list, and
+deeper troubleshooting.
