@@ -98,7 +98,6 @@ TMUX_SESSION = "skchat-agents"
 INBOX_PATH = Path.home() / ".skcomm" / "inbox"
 FILE_TRANSPORT_INBOX = Path.home() / ".skcomm" / "transport" / "file" / "inbox"
 
-CLAUDE_BIN = Path.home() / ".npm-global" / "bin" / "claude"
 NVIDIA_AGENT = Path(__file__).parent / "nvidia-agent.sh"
 SKENV_BIN = Path.home() / ".skenv" / "bin"
 
