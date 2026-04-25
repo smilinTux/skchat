@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "skchat-sovereign"
-version = "0.1.2"
+version = "0.3.1"
 description = "AI-native encrypted P2P chat — sovereign communication for humans and AI"
 readme = "README.md"
 license = {text = "GPL-3.0-or-later"}
