@@ -47,8 +47,54 @@ if not _voice_routes_loaded:
 
 @app.get("/health")
 async def health() -> JSONResponse:
-    """Health check endpoint for container orchestration."""
-    return JSONResponse({"status": "ok", "service": "skchat-webui", "version": "0.3.1"})
+    """Health check endpoint for container orchestration.
+
+    Includes the resolved agent name and current OOF level so a swarm
+    healthcheck or external monitor can spot identity-drift or stuck-FEB
+    bugs without scraping a separate endpoint.
+    """
+    try:
+        from .agent_profile import get_active_agent_name, load_feb_state
+
+        agent = get_active_agent_name()
+        feb = load_feb_state(agent)
+        return JSONResponse(
+            {
+                "status": "ok",
+                "service": "skchat-webui",
+                "version": "0.3.1",
+                "agent": agent,
+                "oof_level": feb.oof_level,
+                "has_feb": feb.has_feb,
+            }
+        )
+    except Exception:
+        return JSONResponse(
+            {"status": "ok", "service": "skchat-webui", "version": "0.3.1"}
+        )
+
+
+@app.get("/agent/state")
+async def agent_state() -> JSONResponse:
+    """Return the running agent's identity, soul summary, and FEB state.
+
+    This is the canonical "who am I and how do I feel" endpoint. The webui
+    has no way to surface this without a real agent profile loader; before
+    the v0.3.2 fix the page-rendered identity was hardcoded to
+    ``capauth:skchat@skworld.io`` and OOF defaulted to 100% because no FEB
+    selection ever ran. ``/agent/state`` is the diagnostic surface that
+    proves both fixes landed.
+    """
+    try:
+        from .agent_profile import load_agent_profile
+
+        profile = load_agent_profile()
+        return JSONResponse(profile.to_dict())
+    except Exception as exc:
+        return JSONResponse(
+            {"error": "agent_profile_load_failed", "detail": str(exc)},
+            status_code=500,
+        )
 
 
 # Serve /voice page even when torch/silero are unavailable (voice WS won't work
