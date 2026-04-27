@@ -48,7 +48,7 @@ if not _voice_routes_loaded:
 @app.get("/health")
 async def health() -> JSONResponse:
     """Health check endpoint for container orchestration."""
-    return JSONResponse({"status": "ok", "service": "skchat-webui", "version": "0.1.1"})
+    return JSONResponse({"status": "ok", "service": "skchat-webui", "version": "0.3.1"})
 
 
 # Serve /voice page even when torch/silero are unavailable (voice WS won't work
@@ -89,6 +89,28 @@ async def _ws_broadcast(msg_dict: dict) -> None:
 
 
 def _get_identity() -> str:
+    """Resolve the running agent's CapAuth identity URI.
+
+    Order:
+        1. Active SK agent profile (``SKAGENT`` / ``SKCAPSTONE_AGENT``) →
+           per-agent ``identity/identity.json`` or convention
+           ``capauth:{agent}@skworld.io``. This is the sovereign path —
+           when the operator launches as ``SKAGENT=lumina``, the webui
+           identifies as Lumina, not as the literal "skchat" service.
+        2. ``identity_bridge.get_sovereign_identity()`` for legacy
+           single-identity deployments.
+        3. ``SKCHAT_IDENTITY`` env var (the historical hardcoded shim).
+        4. ``~/.skchat/config.yml`` ``skchat.identity.uri``.
+        5. ``capauth:local@skchat`` floor.
+    """
+    try:
+        from .agent_profile import get_active_agent_name, get_agent_identity
+
+        if get_active_agent_name() is not None:
+            return get_agent_identity()
+    except Exception:
+        pass
+
     try:
         from .identity_bridge import get_sovereign_identity
 
