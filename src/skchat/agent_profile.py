@@ -80,9 +80,14 @@ def get_agent_identity(agent: Optional[str] = None) -> str:
 
     Resolution order:
         1. ``~/.skcapstone/agents/{agent}/identity/identity.json`` —
-           explicit ``capauth_uri``, ``handle``, or email.
-        2. Convention: ``capauth:{agent}@skworld.io`` (mirrors the bridge
-           scripts and the existing peer registry).
+           ONLY honored when it carries an explicit ``capauth_uri`` /
+           ``uri`` / ``handle`` field. The legacy identity.json holds
+           the *operator's* GPG key (Chef's email + fingerprint), not
+           the agent's wire identity, so we deliberately do NOT fall
+           back to ``email`` here — that would surface Chef's address
+           when the running agent is Lumina.
+        2. Convention: ``capauth:{agent}@skworld.io`` — what the bridge
+           scripts and peer registry already use, the de-facto standard.
         3. ``SKCHAT_IDENTITY`` env var (last-resort, the historical default).
         4. ``capauth:local@skchat`` (the absolute floor).
 
@@ -100,17 +105,15 @@ def get_agent_identity(agent: Optional[str] = None) -> str:
         if identity_file.exists():
             try:
                 data = json.loads(identity_file.read_text(encoding="utf-8"))
-                # Explicit URI wins.
+                # Explicit URI wins (only field that overrides convention).
                 uri = data.get("capauth_uri") or data.get("uri")
                 if isinstance(uri, str) and uri.startswith("capauth:"):
                     return uri
-                # Email/handle composition.
-                email = data.get("email")
-                if isinstance(email, str) and "@" in email:
-                    return f"capauth:{email.split('@', 1)[0]}@skworld.io"
+                # Pre-formed CapAuth handle.
                 handle = data.get("handle")
-                if isinstance(handle, str) and "@" in handle:
-                    return f"capauth:{handle}"
+                if isinstance(handle, str) and handle.startswith("capauth:"):
+                    return handle
+                # Note: deliberately NOT reading 'email' here — see docstring.
             except (json.JSONDecodeError, OSError) as exc:
                 logger.warning("identity.json parse failed for %s: %s", agent, exc)
 
@@ -252,20 +255,55 @@ _PROFILE_CACHE: dict[str, tuple[float, AgentProfile]] = {}
 
 
 def _load_soul(agent: str) -> tuple[dict[str, Any], float]:
-    """Return (soul_dict, mtime). Empty dict + 0.0 if no soul found."""
-    base = _agent_base(agent)
-    candidates = [
-        base / "soul" / "active.json",
-        base / "soul" / "base.json",
-    ]
-    for path in candidates:
-        if path.exists():
-            try:
-                soul = json.loads(path.read_text(encoding="utf-8"))
-                if isinstance(soul, dict):
-                    return soul, path.stat().st_mtime
-            except (json.JSONDecodeError, OSError) as exc:
-                logger.warning("soul parse failed for %s: %s", path, exc)
+    """Return (soul_dict, mtime). Empty dict + 0.0 if no soul found.
+
+    Resolution order:
+      1. ``soul/active.json`` carries an ``active_soul`` pointer; load
+         ``soul/installed/{active_soul}.json`` (the unhinged variant
+         when it's selected, base soul otherwise).
+      2. ``soul/installed/{agent}.json`` — direct installed soul.
+      3. ``soul/base.json`` — the legacy single-soul layout.
+    """
+    base = _agent_base(agent) / "soul"
+
+    # 1. active.json → installed/{name}.json
+    active_path = base / "active.json"
+    if active_path.exists():
+        try:
+            active = json.loads(active_path.read_text(encoding="utf-8"))
+            active_name = active.get("active_soul") or active.get("base_soul")
+            if isinstance(active_name, str):
+                target = base / "installed" / f"{active_name}.json"
+                if target.exists():
+                    try:
+                        soul = json.loads(target.read_text(encoding="utf-8"))
+                        if isinstance(soul, dict):
+                            return soul, target.stat().st_mtime
+                    except (json.JSONDecodeError, OSError) as exc:
+                        logger.warning("installed soul parse failed: %s", exc)
+        except (json.JSONDecodeError, OSError) as exc:
+            logger.warning("active.json parse failed for %s: %s", agent, exc)
+
+    # 2. installed/{agent}.json — fallback when active.json is missing
+    direct = base / "installed" / f"{agent}.json"
+    if direct.exists():
+        try:
+            soul = json.loads(direct.read_text(encoding="utf-8"))
+            if isinstance(soul, dict):
+                return soul, direct.stat().st_mtime
+        except (json.JSONDecodeError, OSError) as exc:
+            logger.warning("installed/{agent}.json parse failed: %s", exc)
+
+    # 3. base.json — legacy single-soul layout
+    legacy = base / "base.json"
+    if legacy.exists():
+        try:
+            soul = json.loads(legacy.read_text(encoding="utf-8"))
+            if isinstance(soul, dict):
+                return soul, legacy.stat().st_mtime
+        except (json.JSONDecodeError, OSError) as exc:
+            logger.warning("base.json parse failed for %s: %s", agent, exc)
+
     return {}, 0.0
 
 
