@@ -616,6 +616,53 @@ body {
 }
 
 /* ─── Responsive ─── */
+/* Phone-first overrides — keep everything visible at <=480px */
+@media (max-width: 480px) {
+  .app-header {
+    padding: 10px 12px;
+    gap: 8px;
+  }
+  .agent-avatar-header { width: 30px; height: 30px; font-size: 13px; }
+  .agent-name { font-size: 14px; gap: 4px; }
+  .header-subtitle { display: none; }
+  .soul-dot { width: 6px; height: 6px; }
+  /* Collapse status text into a colored dot */
+  #status-badge {
+    font-size: 0;
+    padding: 0;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--surface-glass);
+    border: 1px solid var(--surface-glass-border);
+    flex-shrink: 0;
+  }
+  #status-badge.connected { background: var(--accent-encrypt); border-color: var(--accent-encrypt); }
+  #status-badge.listening { background: #F59E0B; border-color: #F59E0B; }
+  #status-badge.thinking,
+  #status-badge.speaking,
+  #status-badge.processing { background: var(--soul-color); border-color: var(--soul-color); }
+  #status-badge.error { background: var(--accent-danger); border-color: var(--accent-danger); }
+  .header-actions { gap: 6px; }
+  .btn-icon { width: 34px; height: 34px; border-radius: 8px; }
+  .input-area {
+    padding: 6px 8px;
+    gap: 6px;
+    padding-bottom: max(6px, env(safe-area-inset-bottom));
+  }
+  .input-wrapper {
+    padding: 4px 4px 4px 12px;
+    min-height: 38px;
+    border-radius: 19px;
+  }
+  #text-input { font-size: 15px; padding: 5px 0; }
+  .btn-send { width: 30px; height: 30px; }
+  .btn-voice-input { width: 40px; height: 40px; }
+  .empty-state { padding: 20px; }
+  .empty-state h2 { font-size: 17px; }
+  .empty-state p { font-size: 13px; }
+}
+
 @media (min-width: 640px) {
   #chat-area { padding: 20px 32px; }
   .message-row { max-width: 70%; }
