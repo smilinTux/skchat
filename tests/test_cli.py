@@ -92,11 +92,17 @@ class TestCLIVersion:
     """Tests for the top-level CLI group."""
 
     def test_version(self, runner: CliRunner) -> None:
-        """Happy path: --version prints the version string."""
+        """Happy path: --version prints the version string.
+
+        Reads the canonical __version__ off the package so the test stays
+        in sync with pyproject.toml (was previously pinned to 0.1.2).
+        """
+        from skchat import __version__
+
         result = runner.invoke(main, ["--version"])
         assert result.exit_code == 0
         assert "skchat" in result.output
-        assert "0.1.2" in result.output
+        assert __version__ in result.output
 
     def test_help(self, runner: CliRunner) -> None:
         """Happy path: --help shows command list."""
