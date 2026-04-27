@@ -14,23 +14,32 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, Form, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 app = FastAPI(title="SKChat Web UI")
 _SKCHAT_HOME = Path("~/.skchat").expanduser()
 
-# Register voice streaming routes (/ws/voice, /voice)
-try:
-    from .voice_stream import register_voice_routes as _register_voice_routes
+# Register voice routes — prefer the SKVoice proxy (voice_ws_lite) which delegates
+# the full STT/LLM/TTS chain to the skvoice service. Fall back to the legacy
+# voice_stream (in-process pipeline) only if the lite module fails to import or
+# SKCHAT_VOICE_MODE=local is set.
+_voice_mode = os.getenv("SKCHAT_VOICE_MODE", "proxy").lower()
+_voice_routes_loaded = False
 
-    _register_voice_routes(app)
-    _voice_routes_loaded = True
-except ImportError:
-    # torch/silero not available — use lightweight handler (client-side VAD)
+if _voice_mode != "local":
     try:
         from .voice_ws_lite import register_voice_routes_lite as _register_voice_routes_lite
 
         _register_voice_routes_lite(app)
+        _voice_routes_loaded = True
+    except ImportError:
+        pass
+
+if not _voice_routes_loaded:
+    try:
+        from .voice_stream import register_voice_routes as _register_voice_routes
+
+        _register_voice_routes(app)
         _voice_routes_loaded = True
     except ImportError:
         _voice_routes_loaded = False
@@ -265,8 +274,13 @@ def _render_messages(history, identity: str) -> str:
 # ── routes ────────────────────────────────────────────────────────────────────
 
 
-@app.get("/", response_class=HTMLResponse)
-async def index() -> HTMLResponse:
+@app.get("/")
+async def index() -> RedirectResponse:
+    return RedirectResponse(url="/voice", status_code=307)
+
+
+@app.get("/legacy", response_class=HTMLResponse)
+async def legacy_index() -> HTMLResponse:
     return HTMLResponse(_HTML)
 
 
