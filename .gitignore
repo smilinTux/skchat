@@ -12,3 +12,6 @@ build/
 .ruff_cache/
 .coverage
 htmlcov/
+
+# setuptools-scm: version is derived from git tags at build time
+src/skchat/_version.py
