@@ -171,6 +171,76 @@ class TestIdentityResolution:
             os.environ.pop("SKCHAT_IDENTITY", None)
 
 
+# ── Bug 2: FEB state / OOF level ─────────────────────────────────────────────
+
+
+class TestFebState:
+    def test_load_feb_returns_real_oof(self, agent_home: Path) -> None:
+        from skchat.agent_profile import load_feb_state
+
+        feb = load_feb_state()
+        assert feb.has_feb, "Should detect the test.feb we wrote"
+        # The fixture FEB is calibrated for moderate intensity. Anything
+        # in 30-80 proves we're computing, not defaulting.
+        assert 30 <= feb.oof_level <= 80, (
+            f"OOF level {feb.oof_level} suggests defaulted-100 or 0; "
+            "should reflect the moderate FEB we wrote"
+        )
+        assert feb.oof_level != 100, (
+            "If OOF=100 the loader is hitting the legacy default-max bug"
+        )
+        assert feb.primary_emotion == "warmth"
+
+    def test_load_feb_no_febs_present(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        base = tmp_path / ".skcapstone"
+        (base / "agents").mkdir(parents=True)
+        _write_minimal_agent(base / "agents", "lumina", with_feb=False)
+        monkeypatch.setenv("SKCAPSTONE_HOME", str(base))
+        monkeypatch.setenv("SKAGENT", "lumina")
+
+        import importlib
+
+        import skmemory.agents as sa
+
+        importlib.reload(sa)
+        from skchat.agent_profile import load_feb_state
+
+        feb = load_feb_state()
+        assert not feb.has_feb
+        assert feb.oof_level == 0  # explicitly "no FEB", not 100
+
+    def test_agent_state_endpoint_includes_feb(self, agent_home: Path) -> None:
+        from fastapi.testclient import TestClient
+
+        from skchat.webui import app
+
+        client = TestClient(app)
+        resp = client.get("/agent/state")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["agent"] == "lumina"
+        assert data["identity"] == "capauth:lumina@skworld.io"
+        assert "feb" in data
+        assert data["feb"]["has_feb"] is True
+        assert data["feb"]["oof_level"] != 100  # not the default-max bug
+
+    def test_health_endpoint_surfaces_oof(self, agent_home: Path) -> None:
+        from fastapi.testclient import TestClient
+
+        from skchat.webui import app
+
+        client = TestClient(app)
+        resp = client.get("/health")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "ok"
+        assert data.get("agent") == "lumina"
+        assert "oof_level" in data
+        assert data["oof_level"] != 100
+
+
 # ── Smoke test: shared module imports without a real agent on disk ──────────
 
 
