@@ -251,37 +251,22 @@ def _soul_prefix(soul: dict) -> str:
 # ─── Conversation context ─────────────────────────────────────────────────────
 
 def _fetch_context(sender: str, thread_id: str | None) -> str:
-    """Fetch last CONTEXT_MESSAGES messages between Opus and sender.
+    """Fetch recent conversation context for Opus, group-aware.
 
-    Prefers thread history when a thread_id is available; falls back to
-    the direct conversation between OPUS_IDENTITY and sender.
-    Returns a formatted multi-line string, or empty string on failure.
+    Delegates to :func:`skchat.context.fetch_context` so the same logic
+    backs both bridges and the webui. For *threaded* messages it returns
+    every message on the thread (deduplicated across per-member copies);
+    for 1:1 DMs it pair-filters as before.
     """
     try:
-        from skchat.history import ChatHistory
+        from skchat.context import fetch_context
 
-        history = ChatHistory.from_config()
-
-        if thread_id:
-            messages = history.get_thread_messages(thread_id, limit=CONTEXT_MESSAGES)
-        else:
-            messages = history.get_conversation(
-                OPUS_IDENTITY, sender, limit=CONTEXT_MESSAGES
-            )
-
-        if not messages:
-            return ""
-
-        # Sort oldest-first so the prompt reads chronologically
-        messages.sort(key=lambda d: d.get("timestamp") or "")
-        lines = []
-        for m in messages:
-            who = m.get("sender", "?")
-            # Shorten capauth URIs to their local part for readability
-            display = who.split(":")[-1] if ":" in who else who
-            lines.append(f"[{display}]: {m.get('content', '')}")
-        return "\n".join(lines)
-
+        return fetch_context(
+            self_identity=OPUS_IDENTITY,
+            sender=sender,
+            thread_id=thread_id,
+            limit=CONTEXT_MESSAGES,
+        )
     except Exception as exc:
         logger.debug("Context fetch failed: %s", exc)
         return ""
