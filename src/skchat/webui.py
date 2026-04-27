@@ -16,6 +16,8 @@ from typing import Optional
 from fastapi import FastAPI, Form, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
+from . import __version__
+
 app = FastAPI(title="SKChat Web UI")
 _SKCHAT_HOME = Path("~/.skchat").expanduser()
 
@@ -62,7 +64,7 @@ async def health() -> JSONResponse:
             {
                 "status": "ok",
                 "service": "skchat-webui",
-                "version": "0.3.1",
+                "version": __version__,
                 "agent": agent,
                 "oof_level": feb.oof_level,
                 "has_feb": feb.has_feb,
@@ -70,7 +72,7 @@ async def health() -> JSONResponse:
         )
     except Exception:
         return JSONResponse(
-            {"status": "ok", "service": "skchat-webui", "version": "0.3.1"}
+            {"status": "ok", "service": "skchat-webui", "version": __version__}
         )
 
 
