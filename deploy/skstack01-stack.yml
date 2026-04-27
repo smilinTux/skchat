@@ -1,0 +1,75 @@
+# skchat-prod — docker swarm stack spec
+#
+# Reconstructed from running service `skchat-prod_skchat` on norap1001
+# (swarm manager) via `docker service inspect` on 2026-04-27.
+#
+# Previously deployed via Portainer; this YAML supersedes that orphan
+# state so the stack is reproducible from git.
+#
+# Image note: `skchat:0.3.1` is a locally-built image present on
+# norap1001 only (image id sha256:c0d77390394b9fc81ca089e3281e98c9881b637eb32286b67a1fececaa7d7959).
+# No registry push — image must already exist on the placement-target
+# node, or be pre-loaded via `docker save | ssh norap1001 docker load`.
+#
+# Redeploy:
+#   docker stack deploy -c skstack01-stack.yml skchat-prod
+#
+# Public URL: https://skchat.skstack01.douno.it (Cloudflare → Authentik → Traefik)
+
+version: "3.8"
+
+services:
+  skchat:
+    image: skchat:0.3.1
+    environment:
+      SKCHAT_HOST: "0.0.0.0"
+      SKCHAT_USE_OPENCLAW: "true"
+      SKCHAT_TTS_URL: "http://127.0.0.1:18793/audio/speech"
+      SKCHAT_STT_URL: "http://127.0.0.1:18794/v1/audio/transcriptions"
+      SKCHAT_LLM_URL: "http://127.0.0.1:11434/v1/chat/completions"
+      SKCHAT_LLM_MODEL: "qwen3.5:9b"
+      SKCHAT_VOICE_LLM_URL: "http://gateway:18795/voice-llm"
+      SKCHAT_SKVOICE_URL: "ws://192.168.0.158:18800/ws/voice"
+    extra_hosts:
+      - "gpu100:127.0.0.1"
+      - "gateway:192.168.0.158"
+    networks:
+      - cloud-public-prod
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.hostname==norap1001
+      restart_policy:
+        condition: any
+        delay: 5s
+      update_config:
+        parallelism: 1
+        delay: 0s
+        failure_action: pause
+        monitor: 5s
+        max_failure_ratio: 0
+        order: start-first
+      rollback_config:
+        parallelism: 1
+        delay: 0s
+        failure_action: pause
+        monitor: 5s
+        max_failure_ratio: 0
+        order: stop-first
+      endpoint_mode: vip
+      labels:
+        traefik.enable: "true"
+        traefik.swarm.network: "cloud-public-prod"
+        traefik.http.routers.skchat.rule: "Host(`skchat.skstack01.douno.it`)"
+        traefik.http.routers.skchat.entrypoints: "websecure"
+        traefik.http.routers.skchat.tls: "true"
+        traefik.http.routers.skchat.tls.certresolver: "main"
+        traefik.http.routers.skchat.service: "skchat"
+        traefik.http.services.skchat.loadbalancer.server.port: "8765"
+        traefik.http.services.skchat.loadbalancer.server.scheme: "http"
+
+networks:
+  cloud-public-prod:
+    external: true
