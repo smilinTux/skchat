@@ -430,7 +430,9 @@ body {
   outline: none;
   color: var(--text-primary);
   font-family: var(--font-primary);
-  font-size: 14px;
+  /* Must be >= 16px or iOS Safari/Firefox auto-zooms the viewport on focus
+     and never zooms back out — strands the user in a half-visible page. */
+  font-size: 16px;
   line-height: 1.4;
   resize: none;
   max-height: 120px;
@@ -726,6 +728,8 @@ body {
           disconnectAgent(agent.name);
         }
         updateSubtitle();
+        // Membership changed — refresh peer awareness on every still-open socket.
+        broadcastGroupInit();
       };
 
       chipsBar.appendChild(chip);
@@ -736,6 +740,23 @@ body {
   buildChips();
 
   // ─── WebSocket per Agent ───
+  function buildPeers(name) {
+    return AGENTS
+      .filter(function(a) { return a.enabled && a.name !== name; })
+      .map(function(a) { return a.name; });
+  }
+
+  function broadcastGroupInit() {
+    Object.keys(agentSockets).forEach(function(name) {
+      const ws = agentSockets[name];
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        try {
+          ws.send(JSON.stringify({ type: 'group_init', peers: buildPeers(name) }));
+        } catch (e) { /* ignore */ }
+      }
+    });
+  }
+
   function connectAgent(name) {
     if (agentSockets[name] && agentSockets[name].readyState <= WebSocket.OPEN) return;
 
@@ -745,6 +766,13 @@ body {
 
     ws.onopen = function() {
       updateConnectionStatus();
+      // Tell the server which other agents share this group chat so this
+      // agent's system prompt can be augmented with peer awareness.
+      try {
+        ws.send(JSON.stringify({ type: 'group_init', peers: buildPeers(name) }));
+      } catch (e) {
+        // best-effort; LLM degrades gracefully without group_init
+      }
     };
 
     ws.onmessage = function(evt) {
@@ -978,7 +1006,16 @@ body {
     textInput.value = '';
     textInput.style.height = 'auto';
     btnSend.disabled = true;
-    textInput.focus();
+    // On touch devices (iOS Safari/Firefox especially) re-focusing the input
+    // pins the on-screen keyboard open and traps the viewport in a zoomed
+    // state. Blur to let the keyboard collapse naturally; the user can tap
+    // the input again to keep typing. Desktop: keep focus for fast follow-ups.
+    const isTouch = ('ontouchstart' in window) || (navigator.maxTouchPoints || 0) > 0;
+    if (isTouch) {
+      textInput.blur();
+    } else {
+      textInput.focus();
+    }
   };
 
   // ─── Audio Capture (identical VAD/PCM logic) ───
