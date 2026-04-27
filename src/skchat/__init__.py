@@ -5,7 +5,15 @@ Chat should be sovereign. Your AI should be in the room.
 SK = staycuriousANDkeepsmilin
 """
 
-__version__ = "0.3.1"
+try:
+    from importlib.metadata import PackageNotFoundError, version as _pkg_version
+    __version__ = _pkg_version("skchat-sovereign")
+except (ImportError, PackageNotFoundError):
+    try:
+        from ._version import version as __version__
+    except ImportError:
+        __version__ = "0.0.0+unknown"
+
 __author__ = "smilinTux Team"
 __license__ = "GPL-3.0-or-later"
 
