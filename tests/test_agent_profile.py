@@ -1,15 +1,14 @@
-"""Tests for the agent profile loader — identity resolution.
+"""Tests for the three group-chat fixes:
 
-Covers Bug 1 (webui hardcoded ``capauth:skchat@skworld.io``): the running
-agent's identity must be resolved from the active SK agent (SKAGENT /
-SKCAPSTONE_AGENT) rather than baked into the systemd unit.
-
-FEB and group-context tests are added in follow-up commits.
+1. webui identity — must resolve from active SK agent, not hardcoded.
+2. FEB state — OOF level should reflect a real FEB, not default to 100.
+3. fetch_context — group threads see ALL agents' messages; DMs still pair-filter.
 """
 
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -241,6 +240,133 @@ class TestFebState:
         assert data["oof_level"] != 100
 
 
+# ── Bug 3: group-chat fetch_context ──────────────────────────────────────────
+
+
+class TestFetchContext:
+    """The critical fix: in a group thread, both agents must see all the
+    messages on the thread, not just their own pair-filtered slice."""
+
+    def _build_history(self, tmp_path: Path):
+        """Build a real ChatHistory with a group-thread conversation.
+
+        Topology: thread "group-1" with three participants —
+            chef → posts to group: "team status?"
+            jarvis → posts to group: "infra green"
+            lumina → posts to group: "logs clean"
+        Plus a 1:1 DM between chef → lumina off-thread.
+        """
+        from skchat.history import ChatHistory
+        from skchat.models import ChatMessage
+
+        history_dir = tmp_path / "history"
+        history = ChatHistory(store=None, history_dir=history_dir)
+
+        chef = "capauth:chef@skworld.io"
+        lumina = "capauth:lumina@skworld.io"
+        jarvis = "capauth:jarvis@skworld.io"
+        group = "group-1"
+
+        base_ts = datetime.now(timezone.utc) - timedelta(minutes=10)
+
+        # Group-thread messages — three logical messages, but each gets
+        # per-member duplicates as in the real skchat group flow.
+        for i, (sender, content) in enumerate(
+            [
+                (chef, "team status?"),
+                (jarvis, "infra green"),
+                (lumina, "logs clean"),
+            ]
+        ):
+            for recipient in (lumina, jarvis):  # per-member copies
+                msg = ChatMessage(
+                    sender=sender,
+                    recipient=recipient,
+                    content=content,
+                    thread_id=group,
+                    timestamp=base_ts + timedelta(seconds=i * 30),
+                )
+                # Same id for the per-member copies of one logical msg
+                # so dedup actually has something to dedup.
+                msg.id = f"msg-{i}"
+                history.save(msg)
+
+        # An off-thread 1:1 DM, not in the group.
+        dm = ChatMessage(
+            sender=chef,
+            recipient=lumina,
+            content="hey lumina, just between us",
+            timestamp=base_ts + timedelta(minutes=2),
+        )
+        dm.id = "msg-dm-1"
+        history.save(dm)
+
+        return history, chef, lumina, jarvis, group
+
+    def test_group_thread_sees_all_agents(self, tmp_path: Path) -> None:
+        from skchat.context import fetch_context
+
+        history, chef, lumina, jarvis, group = self._build_history(tmp_path)
+
+        # When Lumina is asked for context on a group-thread message
+        # FROM CHEF, she must still see Jarvis's message in her context.
+        ctx = fetch_context(
+            self_identity=lumina,
+            sender=chef,
+            thread_id=group,
+            limit=10,
+            history=history,
+        )
+        assert ctx, "fetch_context returned empty for a populated thread"
+        assert "team status?" in ctx
+        assert "infra green" in ctx, (
+            "BUG 3: Lumina cannot see Jarvis's group message — "
+            "the pair filter is still active for threaded messages"
+        )
+        assert "logs clean" in ctx
+
+        # Lines from the group should show the → group arrow because the
+        # recipient is not the self_identity.
+        assert "jarvis" in ctx.lower()
+        assert "chef" in ctx.lower()
+
+    def test_dm_still_pair_filters(self, tmp_path: Path) -> None:
+        from skchat.context import fetch_context
+
+        history, chef, lumina, jarvis, group = self._build_history(tmp_path)
+
+        # No thread_id → 1:1 DM lens. Should see the off-thread chef↔lumina
+        # exchange. The fallback uses history.load(peer=...) which scans
+        # the JSONL backing store and pair-filters.
+        ctx = fetch_context(
+            self_identity=lumina,
+            sender=chef,
+            thread_id=None,
+            limit=10,
+            history=history,
+        )
+        assert "just between us" in ctx
+
+    def test_group_thread_dedupes_per_member_copies(self, tmp_path: Path) -> None:
+        from skchat.context import fetch_context
+
+        history, chef, lumina, jarvis, group = self._build_history(tmp_path)
+
+        ctx = fetch_context(
+            self_identity=lumina,
+            sender=chef,
+            thread_id=group,
+            limit=20,
+            history=history,
+        )
+        # "team status?" appeared in TWO per-member copies but should
+        # render once in the context window thanks to id-based dedup.
+        assert ctx.count("team status?") == 1, (
+            f"Per-member copies should be deduped; got {ctx.count('team status?')} "
+            f"copies of the chef-team-status line.\nFull context:\n{ctx}"
+        )
+
+
 # ── Smoke test: shared module imports without a real agent on disk ──────────
 
 
@@ -253,8 +379,10 @@ def test_imports_succeed_without_agent_home(monkeypatch: pytest.MonkeyPatch) -> 
     import importlib
 
     import skchat.agent_profile as ap
+    import skchat.context as ctx
 
     importlib.reload(ap)
+    importlib.reload(ctx)
 
     # Basic resolution on a clean env should not raise.
     ap.get_active_agent_name()
