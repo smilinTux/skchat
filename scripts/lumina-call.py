@@ -607,7 +607,12 @@ class Speaker:
     def __init__(self, room: rtc.Room, sample_rate: int = 48000) -> None:
         self.room = room
         self.sample_rate = sample_rate
-        self.source = rtc.AudioSource(sample_rate=sample_rate, num_channels=1)
+        # Tight queue (300ms) so capture_frame back-pressure kicks in early.
+        # Default 1000ms allowed our publish loop to push ~10 frames ahead, then
+        # tiny per-frame drift accumulated over long utterances → late-in-
+        # speech dropouts. 300ms still rides through small async hiccups but
+        # forces our loop to track LiveKit's drain rate closely.
+        self.source = rtc.AudioSource(sample_rate=sample_rate, num_channels=1, queue_size_ms=300)
         self.track = rtc.LocalAudioTrack.create_audio_track("lumina-voice", self.source)
         self._lock = asyncio.Lock()
         self.is_speaking = False
