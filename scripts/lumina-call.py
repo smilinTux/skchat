@@ -71,7 +71,7 @@ TTS_VOICE = os.getenv("SKCHAT_TTS_VOICE", "lumina")
 STT_URL = os.getenv("SKCHAT_STT_URL", "http://skworld-100:18794/v1/audio/transcriptions")
 LLM_URL = os.getenv("SKCHAT_LLM_URL", "http://skworld-100:11434/api/chat")
 LLM_MODEL = os.getenv("SKCHAT_LLM_MODEL", "gemma4:e2b")
-LLM_KEEP_ALIVE = os.getenv("LUMINA_LLM_KEEP_ALIVE", "30m")
+LLM_KEEP_ALIVE = os.getenv("LUMINA_LLM_KEEP_ALIVE", "-1")
 # Disable model-internal "thinking" for thinking-capable models (gemma4, qwen3,
 # deepseek-r1). With think:false a 14B Gemma 4 e2b drops from ~20s to ~2s. The
 # OpenAI-compatible /v1/chat/completions endpoint ignores this; /api/chat honors it.
