@@ -936,18 +936,23 @@ class Conversation:
             await self._speak_one(text)
             return
 
-        log.info("speaking %d sentences (streaming)", len(sentences))
-        # Kick off all sentence streams in parallel. Each returns an asyncio.Queue
-        # populated by a background task. We play them in order: stream 1 starts
-        # publishing audio in ~900 ms; streams 2-N are filling their queues
-        # concurrently so when stream 1's audio ends we play stream 2 with no
-        # synthesis wait.
-        queues = [
-            await stream_synthesize(self.client, s) for s in sentences
-        ]
-        for i, q in enumerate(queues):
+        log.info("speaking %d sentences (streamed pipeline-depth-2)", len(sentences))
+        # Pipeline depth 2: never more than 2 concurrent VoxCPM streams.
+        # Sentence N+1 is kicked off when sentence N STARTS playing — by the
+        # time sentence N finishes (a few seconds later), sentence N+1's queue
+        # has had ample time to fill without GPU contention.
+        # Firing all N at once caused sentence 1 to glitch because the GPU was
+        # serving 4 streaming inferences simultaneously and sentence 1's TTFB
+        # chunks got mangled.
+        queues: list = [None] * len(sentences)
+        queues[0] = await stream_synthesize(self.client, sentences[0])
+        for i in range(len(sentences)):
+            # Pre-fire sentence i+1 just before consuming sentence i (so it has
+            # the duration of sentence i's playback to fill).
+            if i + 1 < len(sentences) and queues[i + 1] is None:
+                queues[i + 1] = await stream_synthesize(self.client, sentences[i + 1])
             try:
-                await self.speaker.say_stream(q, TTS_STREAM_SAMPLE_RATE)
+                await self.speaker.say_stream(queues[i], TTS_STREAM_SAMPLE_RATE)
             except Exception as exc:
                 log.warning("TTS playback %d/%d failed (%s): %r",
                             i + 1, len(sentences), type(exc).__name__, exc)
