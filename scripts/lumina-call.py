@@ -575,6 +575,11 @@ class Conversation:
         # stay gated until they say her name themselves.
         self._engaged_with: dict[str, float] = {}  # speaker_id -> last reply mtime
         self._busy = False  # True while a turn is in flight (LLM or TTS)
+        # Broadcast-style follow-up: when she speaks (any reason — STT loop OR
+        # data-channel /speak announcement), open a window for ANY speaker to
+        # respond without saying her name. Refreshed on every utterance she
+        # produces.
+        self._broadcast_speak_t = 0.0
 
     async def aclose(self) -> None:
         await self.client.aclose()
@@ -588,6 +593,12 @@ class Conversation:
         # follow-up turns from them roll forward without re-saying her name.
         last = self._engaged_with.get(speaker_id)
         if last is not None and time.monotonic() - last < FOLLOW_UP_WINDOW_S:
+            return True
+        # Broadcast follow-up window: when she just spoke (announcement or
+        # reply), the next utterance from ANYONE counts as a reply to her.
+        # Refreshes per-speaker on engagement.
+        if time.monotonic() - self._broadcast_speak_t < FOLLOW_UP_WINDOW_S:
+            self._engaged_with[speaker_id] = time.monotonic()
             return True
         return False
 
@@ -645,6 +656,8 @@ class Conversation:
             self._busy = False
 
     async def say(self, text: str) -> None:
+        # Whenever she speaks — for any reason — open the broadcast window.
+        self._broadcast_speak_t = time.monotonic()
         try:
             pcm, sr, _, wav_bytes = await synthesize(self.client, text)
         except Exception as exc:
