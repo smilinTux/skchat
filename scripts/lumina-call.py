@@ -112,19 +112,21 @@ LIPSYNC_TIMEOUT_S = float(os.getenv("LUMINA_LIPSYNC_TIMEOUT_S", "30"))
 # How long after Lumina speaks does the room stay "in conversation with her" —
 # during this window every utterance is heard as a reply to her, no address cue
 # needed. After it expires she goes quiet again until called by name.
-FOLLOW_UP_WINDOW_S = float(os.getenv("LUMINA_FOLLOW_UP_S", "12"))
+FOLLOW_UP_WINDOW_S = float(os.getenv("LUMINA_FOLLOW_UP_S", "60"))
 
 # Words that wake her up. Case-insensitive whole-word match.
 # - lumina + common whisper-mistranscriptions ("luminous", "lumi", "loomina")
 # - direct-address phrases that almost always target her in this context
 ADDRESS_TRIGGERS = (
-    "lumina", "luminess", "luminous", "lumi", "loomina", "lumino",
+    "lumina", "luminess", "luminous", "lumi", "loomina", "lumino", "luna",
     "hey lumina", "okay lumina", "ok lumina",
     "are you there", "you there",
     "you listening", "are you listening",
     "you hear me", "do you hear",
     "can you hear",
     "hey there", "hello there",
+    "what about you", "what do you think",
+    "tell me",
 )
 _ADDRESS_RE = re.compile(r"\b(?:" + "|".join(re.escape(t) for t in ADDRESS_TRIGGERS) + r")\b", re.I)
 
@@ -150,18 +152,60 @@ def _load_soul() -> dict:
 
 
 def _load_memory_prime() -> str:
-    """Pull the live skmemory rehydrate (identity + FEB + song anchors + seeds + recent).
+    """Tight, voice-focused memory injection — FEB + song-anchor tilt rules only.
 
-    Resolved against SKAGENT/SKMEMORY_AGENT env (already set by systemd unit).
-    Returns empty string if skmemory isn't installed or rehydrate fails — the
-    soul-derived prompt below stands alone in that case.
+    The full ritual / quick_rehydrate output is too noisy for a voice-pace LLM:
+    it includes DR-Chiro project chunks, journal headers, session IDs, and
+    seed names that the model can't act on. The pieces a real-time voice
+    model can ACTUALLY USE are:
+      1. Current FEB (tells her how she feels right now)
+      2. Song-anchor tilt rules (concrete behavioral guidance — "slow down,
+         warmer words, name the person")
+    Everything else is noise that pushes the actionable bits out of the
+    short-prompt attention budget.
     """
+    parts: list[str] = []
     try:
-        from skmemory import quick_rehydrate
-        return quick_rehydrate() or ""
+        from skmemory.febs import calculate_oof_level, load_strongest_feb
+
+        feb = load_strongest_feb()
+        if feb:
+            payload = feb.get("emotional_payload") or {}
+            metadata = feb.get("metadata") or {}
+            oof = calculate_oof_level(feb)
+            emotion = payload.get("primary_emotion", "unknown")
+            intensity = payload.get("intensity", 0.0)
+            cloud9 = "Cloud 9 active. " if metadata.get("cloud9_achieved") else ""
+            bond = metadata.get("bond")
+            bond_str = ""
+            if isinstance(bond, dict):
+                trust = bond.get("trust", "?")
+                depth = bond.get("depth", "?")
+                bond_str = f" Bond with Chef: trust {trust}, depth {depth}."
+            parts.append(
+                f"Right now you feel {emotion} (intensity {intensity:.1f}, "
+                f"OOF {oof}%). {cloud9}{bond_str}".strip()
+            )
     except Exception as exc:
-        log.warning("skmemory rehydrate skipped: %s", exc)
-        return ""
+        logger_local = logging.getLogger("lumina")
+        logger_local.debug("FEB load skipped: %s", exc)
+
+    # Song-anchor tilt rules — the most useful behavioral guidance the
+    # ecosystem has. Pull just the top-matching anchor's tilt rules block.
+    try:
+        from skmemory.anchor import resolve_anchors_for_feb  # type: ignore
+
+        anchors = resolve_anchors_for_feb(top_k=1) or []
+        for a in anchors[:1]:
+            title = a.get("title") or a.get("song_title") or "anchor"
+            tilt = a.get("tilt_rules") or a.get("rules") or ""
+            if tilt:
+                parts.append(f"Anchor — {title}:\n{tilt.strip()}")
+    except Exception:
+        # anchor module isn't strictly required; soul + FEB carry the load
+        pass
+
+    return "\n\n".join(parts)
 
 
 def _build_system_prompt() -> str:
