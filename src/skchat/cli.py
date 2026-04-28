@@ -2942,9 +2942,9 @@ def group_send(group_id: str, message: str, ttl: Optional[int]) -> None:
 @click.option(
     "--type",
     "ptype",
-    type=click.Choice(["human", "agent", "service"], case_sensitive=False),
-    default="human",
-    help="Participant type (default: human).",
+    type=click.Choice(["human", "agent", "service", "auto"], case_sensitive=False),
+    default="auto",
+    help="Participant type (default: auto — derived from peer entity_type).",
 )
 @click.option("--display-name", "-n", default="", help="Display name for the member.")
 def group_add_member(
@@ -2956,17 +2956,21 @@ def group_add_member(
 ) -> None:
     """Add a member to an existing group.
 
-    The identity can be a full capauth URI or a friendly peer name.
+    The identity can be a full capauth URI or a friendly peer name. With
+    ``--type auto`` (default) the participant type is derived from the peer
+    registry: ``ai-agent`` peers become AGENT, everyone else HUMAN. Use an
+    explicit ``--type`` to override.
 
     Examples:
 
         skchat group add-member abc123 capauth:bob@skworld.io
 
-        skchat group add-member abc123 lumina --type agent
+        skchat group add-member abc123 lumina            # auto -> agent
 
         skchat group add-member abc123 alice --role admin
     """
     from .group import MemberRole, ParticipantType
+    from .peer_discovery import PeerDiscovery
 
     try:
         resolved = resolve_peer_name(identity)
@@ -2988,6 +2992,15 @@ def group_add_member(
         "agent": ParticipantType.AGENT,
         "service": ParticipantType.SERVICE,
     }
+
+    peer = PeerDiscovery().get_peer(resolved) or PeerDiscovery().get_peer(identity) or {}
+    if ptype == "auto":
+        if peer.get("entity_type") == "ai-agent":
+            ptype = "agent"
+        else:
+            ptype = "human"
+    if not display_name:
+        display_name = peer.get("name") or ""
 
     member = grp.add_member(
         identity_uri=resolved,
@@ -3126,12 +3139,20 @@ def group_info(group_id: str) -> None:
         _print(f"\n  [red]Error:[/] Group '{group_id[:12]}' not found.\n")
         sys.exit(1)
 
+    from .peer_discovery import PeerDiscovery
+
+    discovery = PeerDiscovery()
+
+    def _row(m: Any) -> str:
+        peer = discovery.get_peer(m.identity_uri) or {}
+        etype = peer.get("entity_type") or m.participant_type.value
+        name = m.display_name or peer.get("name") or m.identity_uri.split(":")[-1]
+        marker = "🤖" if etype == "ai-agent" else "👤"
+        return f"  {marker} {name} [{m.role.value}] ({etype})"
+
     _print("")
     if HAS_RICH and console:
-        members_list = "\n".join(
-            f"  {m.display_name} [{m.role.value}] ({m.participant_type.value})"
-            for m in grp.members
-        )
+        members_list = "\n".join(_row(m) for m in grp.members)
         console.print(
             Panel(
                 f"[bold]Name:[/] [cyan]{grp.name}[/]\n"
