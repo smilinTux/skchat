@@ -20,13 +20,14 @@ Environment=SKAGENT=lumina
 Environment=SKCAPSTONE_AGENT=lumina
 Environment=SKMEMORY_AGENT=lumina
 Environment=SKCHAT_WEBUI_URL=https://noroc2027.tail204f0c.ts.net
-Environment=SKCHAT_TTS_URL=http://skworld-100:18793/audio/speech
+Environment=SKCHAT_TTS_URL=http://skworld-100:18796/audio/speech
 Environment=SKCHAT_TTS_VOICE=lumina
 Environment=SKCHAT_STT_URL=http://skworld-100:18794/v1/audio/transcriptions
-Environment=SKCHAT_LLM_URL=http://chiap08:11434/api/chat
-Environment=SKCHAT_LLM_MODEL=huihui_ai/gemma-4-abliterated:e4b
+Environment=SKCHAT_LLM_URL=https://integrate.api.nvidia.com/v1/chat/completions
+Environment=SKCHAT_LLM_MODEL=moonshotai/kimi-k2-instruct-0905
 Environment=LUMINA_LLM_KEEP_ALIVE=30m
 Environment=LUMINA_LLM_THINK=false
+Environment=NVIDIA_API_KEY=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
 Environment=SKCHAT_LIVEKIT_DEFAULT_ROOM=lumina-and-chef
 Environment=LUMINA_IDENTITY=lumina
 Environment=LUMINA_NAME=Lumina
