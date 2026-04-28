@@ -1036,13 +1036,16 @@ class Conversation:
             await self._speak_one(text)
             return
 
-        log.info("speaking %d sentences (pipelined)", len(sentences))
-        # Pipeline depth 2: while sentence N plays, sentence N+1 synthesizes.
-        # F5-TTS sustained throughput is ~0.3x realtime so a 4s sentence
-        # synthesizes in ~1.2s — well under the time it takes to play the
-        # current one. Cuts inter-sentence gap from ~5s to ~0s.
+        log.info("speaking %d sentences (pipelined, concat-stream)", len(sentences))
+        # Pipeline depth 2 + concat-stream: synth all sentences in parallel
+        # (F5 handles overlapping requests), CONCATENATE PCM into one
+        # continuous stream, push as a single say() call. This eliminates
+        # the inter-sentence is_speaking toggle and lock-reacquire cycle
+        # that may have been causing the late-stage audio drops Chef heard.
         synth_tasks: list = [None] * len(sentences)
         synth_tasks[0] = asyncio.create_task(synthesize(self.client, sentences[0]))
+        all_pcm = bytearray()
+        all_sr = 0
         for i, s in enumerate(sentences):
             if i + 1 < len(sentences) and synth_tasks[i + 1] is None:
                 synth_tasks[i + 1] = asyncio.create_task(
@@ -1054,19 +1057,18 @@ class Conversation:
                 log.warning("TTS sentence %d/%d failed (%s): %r",
                             i + 1, len(sentences), type(exc).__name__, exc)
                 continue
-            self._current_speak = asyncio.create_task(self.speaker.say(pcm, sr))
-            try:
-                await self._current_speak
-            except asyncio.CancelledError:
-                log.info("speak cancelled — stopping playback at sentence %d/%d",
-                         i + 1, len(sentences))
-                # Cancel any not-yet-played synth tasks too.
-                for t in synth_tasks[i + 1:]:
-                    if t is not None and not t.done():
-                        t.cancel()
-                return
-            finally:
-                self._current_speak = None
+            all_pcm.extend(pcm)
+            all_sr = sr
+        if not all_pcm:
+            return
+        self._current_speak = asyncio.create_task(self.speaker.say(bytes(all_pcm), all_sr))
+        try:
+            await self._current_speak
+        except asyncio.CancelledError:
+            log.info("speak cancelled mid-stream")
+            return
+        finally:
+            self._current_speak = None
 
     async def _speak_one(self, text: str) -> None:
         """Single-sentence path — kept separate so the lipsync code path stays
