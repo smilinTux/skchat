@@ -53,6 +53,11 @@ except ImportError:  # pragma: no cover — optional avatar dep
     Image = None
     np = None
 
+try:
+    import av  # PyAV — for decoding MuseTalk MP4 output
+except ImportError:  # pragma: no cover
+    av = None
+
 logging.basicConfig(
     level=os.getenv("LUMINA_LOG_LEVEL", "INFO"),
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
@@ -90,9 +95,19 @@ MAX_CONCURRENT_STT = 2           # cap so a backed-up whisper doesn't get worse
 SOUL_PATH = Path.home() / ".skcapstone" / "agents" / "lumina" / "soul"
 AVATAR_PATH = Path(os.getenv("LUMINA_AVATAR_PATH",
     str(Path.home() / ".skcapstone" / "agents" / "lumina" / "avatar" / "portrait.png")))
-AVATAR_FPS = int(os.getenv("LUMINA_AVATAR_FPS", "2"))      # static frame, don't burn CPU
+AVATAR_FPS = int(os.getenv("LUMINA_AVATAR_FPS", "2"))      # static idle, don't burn CPU
 AVATAR_WIDTH = int(os.getenv("LUMINA_AVATAR_WIDTH", "640"))
 AVATAR_HEIGHT = int(os.getenv("LUMINA_AVATAR_HEIGHT", "480"))
+
+# MuseTalk lip-sync (optional). When MUSETALK_URL is reachable, audio gets
+# routed through it after TTS — the returned MP4 has the same audio plus
+# lip-synced frames keyed to the same fps. Frames replace the idle portrait
+# during playback.
+MUSETALK_URL = os.getenv("LUMINA_MUSETALK_URL", "http://skworld-100:18803")
+MUSETALK_REFERENCE = os.getenv("LUMINA_MUSETALK_REFERENCE",
+    "/home/cbrd21/sovereign-facetime/assets/lumina.png")
+MUSETALK_FPS = int(os.getenv("LUMINA_MUSETALK_FPS", "25"))
+LIPSYNC_TIMEOUT_S = float(os.getenv("LUMINA_LIPSYNC_TIMEOUT_S", "30"))
 
 # How long after Lumina speaks does the room stay "in conversation with her" —
 # during this window every utterance is heard as a reply to her, no address cue
@@ -225,7 +240,12 @@ async def llm_reply(client: httpx.AsyncClient, history: list[dict], user_text: s
     return text
 
 
-async def synthesize(client: httpx.AsyncClient, text: str) -> tuple[bytes, int, int]:
+async def synthesize(client: httpx.AsyncClient, text: str) -> tuple[bytes, int, int, bytes]:
+    """Returns (pcm, sample_rate, num_channels, raw_wav_bytes).
+
+    raw_wav_bytes is the original WAV stream — kept so we can also POST it to
+    MuseTalk for lip-sync without re-encoding.
+    """
     r = await client.post(
         TTS_URL,
         json={
@@ -237,8 +257,55 @@ async def synthesize(client: httpx.AsyncClient, text: str) -> tuple[bytes, int, 
         timeout=TTS_TIMEOUT_S,
     )
     r.raise_for_status()
-    with wave.open(io.BytesIO(r.content), "rb") as wf:
-        return wf.readframes(wf.getnframes()), wf.getframerate(), wf.getnchannels()
+    wav_bytes = r.content
+    with wave.open(io.BytesIO(wav_bytes), "rb") as wf:
+        return wf.readframes(wf.getnframes()), wf.getframerate(), wf.getnchannels(), wav_bytes
+
+
+async def lipsync_frames(client: httpx.AsyncClient, wav_bytes: bytes) -> list[bytes]:
+    """POST audio to MuseTalk, return list of RGBA frame bytes scaled to AVATAR_WIDTH/HEIGHT.
+
+    Empty list on any failure or when MuseTalk is intentionally disabled —
+    caller falls back to idle portrait without paying a network roundtrip.
+    """
+    if not MUSETALK_URL:
+        return []
+    if av is None or Image is None or np is None:
+        return []
+    try:
+        files = {"audio": ("speech.wav", wav_bytes, "audio/wav")}
+        data = {"reference_image": MUSETALK_REFERENCE, "fps": str(MUSETALK_FPS)}
+        r = await client.post(
+            f"{MUSETALK_URL}/generate",
+            files=files,
+            data=data,
+            timeout=LIPSYNC_TIMEOUT_S,
+        )
+        r.raise_for_status()
+        mp4 = r.content
+    except Exception as exc:
+        log.warning("MuseTalk POST failed (%s): %r", type(exc).__name__, exc)
+        return []
+
+    # Decode MP4 → RGBA frames at our target size.
+    try:
+        frames: list[bytes] = []
+        with av.open(io.BytesIO(mp4)) as container:
+            video_streams = [s for s in container.streams if s.type == "video"]
+            if not video_streams:
+                return []
+            for frame in container.decode(video=0):
+                # PyAV gives us a VideoFrame; convert to numpy RGB then to RGBA at avatar size.
+                arr = frame.to_ndarray(format="rgb24")  # H, W, 3
+                pil = Image.fromarray(arr).convert("RGBA")
+                pil.thumbnail((AVATAR_WIDTH, AVATAR_HEIGHT), Image.LANCZOS)
+                canvas = Image.new("RGBA", (AVATAR_WIDTH, AVATAR_HEIGHT), (11, 13, 18, 255))
+                canvas.paste(pil, ((AVATAR_WIDTH - pil.width) // 2, (AVATAR_HEIGHT - pil.height) // 2))
+                frames.append(np.array(canvas, dtype=np.uint8).tobytes())
+        return frames
+    except Exception as exc:
+        log.warning("MuseTalk frame decode failed (%s): %r", type(exc).__name__, exc)
+        return []
 
 
 # ─── Speech output ────────────────────────────────────────────────────────────
@@ -256,6 +323,8 @@ class Speaker:
         self.video_source: Optional[rtc.VideoSource] = None
         self.video_track: Optional[rtc.LocalVideoTrack] = None
         self._avatar_task: Optional[asyncio.Task] = None
+        self._idle_frame_bytes: Optional[bytes] = None  # cached idle RGBA bytes
+        self._lipsync_active = False  # True while MuseTalk frames are being pushed
 
     async def publish(self) -> None:
         opts = rtc.TrackPublishOptions(source=rtc.TrackSource.SOURCE_MICROPHONE)
@@ -278,29 +347,40 @@ class Speaker:
         canvas = Image.new("RGBA", (AVATAR_WIDTH, AVATAR_HEIGHT), (11, 13, 18, 255))
         canvas.paste(img, ((AVATAR_WIDTH - img.width) // 2, (AVATAR_HEIGHT - img.height) // 2))
         rgba = np.array(canvas, dtype=np.uint8)  # H, W, 4
-        frame_bytes = rgba.tobytes()
+        self._idle_frame_bytes = rgba.tobytes()
 
         self.video_source = rtc.VideoSource(AVATAR_WIDTH, AVATAR_HEIGHT)
         self.video_track = rtc.LocalVideoTrack.create_video_track("lumina-avatar", self.video_source)
 
         opts = rtc.TrackPublishOptions(source=rtc.TrackSource.SOURCE_CAMERA)
         await self.room.local_participant.publish_track(self.video_track, opts)
-        log.info("avatar track published from %s (%dx%d @ %dfps)",
+        log.info("avatar track published from %s (%dx%d @ %dfps idle)",
                  AVATAR_PATH, AVATAR_WIDTH, AVATAR_HEIGHT, AVATAR_FPS)
 
         async def _push_loop() -> None:
             interval = 1.0 / max(1, AVATAR_FPS)
             while True:
-                frame = rtc.VideoFrame(
-                    width=AVATAR_WIDTH,
-                    height=AVATAR_HEIGHT,
-                    type=rtc.VideoBufferType.RGBA,
-                    data=frame_bytes,
-                )
-                self.video_source.capture_frame(frame)
+                if not self._lipsync_active and self._idle_frame_bytes is not None:
+                    self.video_source.capture_frame(rtc.VideoFrame(
+                        width=AVATAR_WIDTH,
+                        height=AVATAR_HEIGHT,
+                        type=rtc.VideoBufferType.RGBA,
+                        data=self._idle_frame_bytes,
+                    ))
                 await asyncio.sleep(interval)
 
         self._avatar_task = asyncio.create_task(_push_loop())
+
+    def push_video_frame_rgba(self, rgba_bytes: bytes) -> None:
+        """Push a single frame to the video track (used by lip-sync)."""
+        if self.video_source is None:
+            return
+        self.video_source.capture_frame(rtc.VideoFrame(
+            width=AVATAR_WIDTH,
+            height=AVATAR_HEIGHT,
+            type=rtc.VideoBufferType.RGBA,
+            data=rgba_bytes,
+        ))
 
     async def say(self, pcm: bytes, sample_rate: int) -> None:
         if sample_rate != self.sample_rate:
@@ -461,11 +541,41 @@ class Conversation:
 
     async def say(self, text: str) -> None:
         try:
-            pcm, sr, _ = await synthesize(self.client, text)
+            pcm, sr, _, wav_bytes = await synthesize(self.client, text)
         except Exception as exc:
             log.warning("TTS failed (%s): %r", type(exc).__name__, exc)
             return
-        await self.speaker.say(pcm, sr)
+
+        # Render lip-sync frames first (blocks ~realtime-to-3x-realtime), then play
+        # audio + video locked together. Tradeoff: a few extra seconds before she
+        # starts speaking, but the mouth actually matches the words. Bypassed cleanly
+        # if MuseTalk is unreachable or returns no frames — just plays audio.
+        frames: list[bytes] = []
+        if av is not None and self.speaker.video_source is not None:
+            t0 = time.monotonic()
+            frames = await lipsync_frames(self.client, wav_bytes)
+            if frames:
+                log.info("lipsync %d frames in %.1fs", len(frames), time.monotonic() - t0)
+
+        async def _play_audio() -> None:
+            await self.speaker.say(pcm, sr)
+
+        async def _play_video() -> None:
+            if not frames:
+                return
+            self.speaker._lipsync_active = True
+            try:
+                interval = 1.0 / MUSETALK_FPS
+                next_t = time.monotonic()
+                for f in frames:
+                    self.speaker.push_video_frame_rgba(f)
+                    next_t += interval
+                    delay = max(0.0, next_t - time.monotonic())
+                    await asyncio.sleep(delay)
+            finally:
+                self.speaker._lipsync_active = False
+
+        await asyncio.gather(_play_audio(), _play_video())
 
 
 # ─── Token mint ───────────────────────────────────────────────────────────────
