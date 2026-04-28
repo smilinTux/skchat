@@ -914,9 +914,9 @@ class Conversation:
         try:
             payload = json.dumps({"state": state, "detail": detail})
             await self.speaker.room.local_participant.set_metadata(payload)
-            log.debug("state → %s (%s)", state, detail)
+            log.info("state → %s (%s)", state, detail[:60])
         except Exception as exc:
-            log.debug("set_metadata failed: %s", exc)
+            log.warning("set_metadata failed: %s", exc)
 
     async def aclose(self) -> None:
         await self.client.aclose()
@@ -1068,6 +1068,9 @@ class Conversation:
         if not text:
             log.info("[lumina] (only stage-direction emitted, nothing to speak)")
             return
+        # Surface speaking state for the webui (handle_utterance also sets this,
+        # but the data-channel /speak announcement path lands here directly).
+        await self.set_state("speaking", text[:80])
 
         # Split into sentences and synthesize in parallel. Playback waits for each
         # in order so the listener hears them sequentially, but the LLM-to-first-
@@ -1112,6 +1115,7 @@ class Conversation:
             return
         finally:
             self._current_speak = None
+            await self.set_state("idle", "")
 
     async def _speak_one(self, text: str) -> None:
         """Single-sentence path — kept separate so the lipsync code path stays
