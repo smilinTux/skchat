@@ -604,13 +604,8 @@ async def lipsync_frames(client: httpx.AsyncClient, wav_bytes: bytes) -> list[by
 class Speaker:
     """Owns a LocalAudioTrack (and optional LocalVideoTrack avatar)."""
 
-    def __init__(self, room: rtc.Room, sample_rate: int = 24000) -> None:
+    def __init__(self, room: rtc.Room, sample_rate: int = 48000) -> None:
         self.room = room
-        # Match F5-TTS's native rate (24kHz) so we never resample. Resampling
-        # via audioop.ratecv was the most likely source of the late-in-speech
-        # drops Chef was hearing — any clock drift between source/target rates
-        # accumulates over long utterances. WebRTC Opus codec targets 24kHz
-        # natively, so this is the right rate for voice anyway.
         self.sample_rate = sample_rate
         self.source = rtc.AudioSource(sample_rate=sample_rate, num_channels=1, queue_size_ms=300)
         self.track = rtc.LocalAudioTrack.create_audio_track("lumina-voice", self.source)
@@ -690,15 +685,11 @@ class Speaker:
         async with self._lock:
             self.is_speaking = True
             try:
-                # Use 100ms frames instead of 20ms — fewer capture_frame calls,
-                # bigger chunks ride out async-loop hiccups better. AudioSource
-                # has a default ~1000ms internal queue and applies back-pressure
-                # via capture_frame's await, so we don't need application-side
-                # pacing — capture_frame returns when there's room. My earlier
-                # explicit pacing kept the queue near-empty which made any
-                # hiccup an underrun → audible dropout.
-                samples_per_frame = self.sample_rate * 100 // 1000
-                bytes_per_frame = samples_per_frame * 2  # mono int16
+                # 10ms frames = WebRTC/Opus native frame size. AudioSource
+                # back-pressures via capture_frame's await when its 300ms
+                # queue is full, so no application-side pacing needed.
+                samples_per_frame = self.sample_rate * 10 // 1000
+                bytes_per_frame = samples_per_frame * 2
                 for i in range(0, len(pcm), bytes_per_frame):
                     chunk = pcm[i : i + bytes_per_frame]
                     if len(chunk) < bytes_per_frame:
@@ -710,6 +701,13 @@ class Speaker:
                         samples_per_channel=samples_per_frame,
                     )
                     await self.source.capture_frame(frame)
+                # Block until everything queued is fully played out before
+                # releasing the lock — prevents the next sentence/turn from
+                # double-pushing into a still-draining queue.
+                try:
+                    await self.source.wait_for_playout()
+                except Exception:
+                    pass
             finally:
                 self.is_speaking = False
                 self._speak_ended_t = time.monotonic()
