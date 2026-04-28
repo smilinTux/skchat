@@ -944,20 +944,22 @@ class Conversation:
             await self._speak_one(text)
             return
 
-        log.info("speaking %d sentences (streamed, serialized)", len(sentences))
-        # Serialize sentences. Pipeline depth 2 caused first-sentence audio
-        # glitches (likely VoxCPM's streaming inference path doesn't multiplex
-        # cleanly when two streams overlap on the same GPU). One at a time:
-        # synthesize fully, play, next. We still get the streaming TTFB benefit
-        # within each sentence (~900ms first byte vs ~3s batch).
-        for i, s in enumerate(sentences):
+        log.info("speaking %d sentences (batch, parallel synth)", len(sentences))
+        # Reverted from streaming after observing choppy audio + phantom
+        # utterances (Lumina hearing things Chef didn't say — likely her own
+        # audio leaking back due to gaps between streamed sentences).
+        # Batch path: synthesize all sentences in parallel, play in order.
+        # Trade-off: ~2s wait for first audio (vs 0.9s streaming) but clean
+        # output and no listener confusion.
+        tasks = [asyncio.create_task(synthesize(self.client, s)) for s in sentences]
+        for i, task in enumerate(tasks):
             try:
-                q = await stream_synthesize(self.client, s)
-                await self.speaker.say_stream(q, TTS_STREAM_SAMPLE_RATE)
+                pcm, sr, _, _ = await task
             except Exception as exc:
                 log.warning("TTS sentence %d/%d failed (%s): %r",
                             i + 1, len(sentences), type(exc).__name__, exc)
                 continue
+            await self.speaker.say(pcm, sr)
 
     async def _speak_one(self, text: str) -> None:
         """Single-sentence path — kept separate so the lipsync code path stays
