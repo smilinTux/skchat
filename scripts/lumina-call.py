@@ -1160,10 +1160,6 @@ async def main() -> int:
             if pub.subscribed and pub.track:
                 _start_listening(pub.track, p)
 
-
-async def _noop():
-    pass
-
     if args.greet:
         await asyncio.sleep(0.6)  # let subscriptions settle
         await convo.say(args.greet)
