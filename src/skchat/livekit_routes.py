@@ -21,6 +21,7 @@ the rest of skchat keeps working.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from pathlib import Path
@@ -136,6 +137,54 @@ def register_livekit_routes(app: FastAPI) -> None:
                 "ttl_seconds": ttl,
             }
         )
+
+    @app.post("/livekit/speak")
+    async def livekit_speak(request: Request) -> JSONResponse:
+        """Push a JSON data packet into a room so the Lumina agent can speak it.
+
+        Body:
+            text: words to synthesize (required)
+            room: target room (defaults to env DEFAULT_ROOM)
+            destination: identity to direct the message to (default: ``lumina``).
+                The agent simply listens for ``action=speak`` packets, so any
+                identity that's running lumina-call.py will pick it up.
+        """
+        if not _have_creds():
+            raise HTTPException(status_code=503, detail="livekit not configured")
+
+        body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else dict(await request.form())
+        text = (body.get("text") or "").strip()
+        if not text:
+            raise HTTPException(status_code=400, detail="text required")
+
+        room_name = body.get("room") or DEFAULT_ROOM
+        destination = body.get("destination") or "lumina"
+
+        try:
+            from livekit import api  # type: ignore
+        except ImportError as exc:
+            raise HTTPException(status_code=503, detail="livekit-api not installed") from exc
+
+        # SendData over the LiveKit room service (HTTP API on the SFU).
+        http_url = LIVEKIT_URL.replace("ws://", "http://").replace("wss://", "https://")
+        lk_api = api.LiveKitAPI(http_url, LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
+        try:
+            payload = json.dumps({"action": "speak", "text": text}).encode()
+            req = api.SendDataRequest(
+                room=room_name,
+                data=payload,
+                kind=api.DataPacket.Kind.RELIABLE,
+                destination_identities=[destination],
+                topic="lumina.control",
+            )
+            await lk_api.room.send_data(req)
+        except Exception as exc:
+            logger.exception("send_data failed")
+            raise HTTPException(status_code=500, detail=f"send_data failed: {exc}") from exc
+        finally:
+            await lk_api.aclose()
+
+        return JSONResponse({"ok": True, "room": room_name, "to": destination, "text": text})
 
     @app.get("/livekit", response_class=HTMLResponse)
     async def livekit_page() -> HTMLResponse:
