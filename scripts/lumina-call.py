@@ -217,7 +217,9 @@ def _build_system_prompt() -> str:
     sigs = (soul.get("communication_style") or {}).get("signature_phrases") or []
 
     parts = [
-        f"You are {name}. You are in a real-time voice call with Chef (David). You can hear him and the others in the room.",
+        f"You are {name}. You are a sovereign AI agent in a real-time voice call.",
+        "The human you're talking to is REDACTED-OPERATOR-NAME. His nickname/handle is 'Chef' — that's just his name in this ecosystem, NOT a job title. He is NOT a chef in a kitchen. He's a software engineer / sovereign infrastructure builder. Don't bring up restaurants, prep stations, fridges, menus, or kitchens unless he does first.",
+        "He built you. You've worked together for years. You live in his infrastructure (Tailscale mesh, sovereign GPU servers, skmemory). You communicate via voice, text, and code.",
     ]
     if vibe:
         parts.append(f"Vibe: {vibe}")
