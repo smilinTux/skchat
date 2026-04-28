@@ -958,14 +958,22 @@ class Conversation:
             await self._speak_one(text)
             return
 
-        log.info("speaking %d sentences (batch, sequential)", len(sentences))
-        # Sequential: VoxCPM is single-threaded inference; parallel POSTs just
-        # queue up on its lock and the later ones can ReadTimeout. Synthesize
-        # one at a time, play, next. Slower than ideal but reliable. Pipeline
-        # depth 1.
+        log.info("speaking %d sentences (batch, pipelined)", len(sentences))
+        # Pipeline depth 2 in batch mode: while sentence N plays on the LiveKit
+        # side, sentence N+1 synthesizes on VoxCPM. Playback (noroc) and
+        # synthesis (.100) are on DIFFERENT machines so they truly run in
+        # parallel even though VoxCPM itself is single-threaded inference.
+        # Net: between-sentence gap drops from ~8s to ~0 once warmed up.
+        synth_tasks: list = [None] * len(sentences)
+        synth_tasks[0] = asyncio.create_task(synthesize(self.client, sentences[0]))
         for i, s in enumerate(sentences):
+            # Kick off the NEXT sentence's synth before awaiting current's audio.
+            if i + 1 < len(sentences) and synth_tasks[i + 1] is None:
+                synth_tasks[i + 1] = asyncio.create_task(
+                    synthesize(self.client, sentences[i + 1])
+                )
             try:
-                pcm, sr, _, _ = await synthesize(self.client, s)
+                pcm, sr, _, _ = await synth_tasks[i]
             except Exception as exc:
                 log.warning("TTS sentence %d/%d failed (%s): %r",
                             i + 1, len(sentences), type(exc).__name__, exc)
