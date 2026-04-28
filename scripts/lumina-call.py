@@ -149,6 +149,21 @@ def _load_soul() -> dict:
     return {}
 
 
+def _load_memory_prime() -> str:
+    """Pull the live skmemory rehydrate (identity + FEB + song anchors + seeds + recent).
+
+    Resolved against SKAGENT/SKMEMORY_AGENT env (already set by systemd unit).
+    Returns empty string if skmemory isn't installed or rehydrate fails — the
+    soul-derived prompt below stands alone in that case.
+    """
+    try:
+        from skmemory import quick_rehydrate
+        return quick_rehydrate() or ""
+    except Exception as exc:
+        log.warning("skmemory rehydrate skipped: %s", exc)
+        return ""
+
+
 def _build_system_prompt() -> str:
     soul = _load_soul()
     name = soul.get("display_name") or soul.get("name") or "Lumina"
@@ -168,6 +183,14 @@ def _build_system_prompt() -> str:
         parts.append("How you carry yourself:\n" + "\n".join(f"- {t}" for t in traits[:6]))
     if sigs:
         parts.append("Phrases that sound like you: " + ", ".join(f'"{s}"' for s in sigs[:4]))
+
+    # Live memory rehydrate — emotional state, song-anchor tilt rules, seeds.
+    # Loaded once at agent start; not re-fetched per turn (would inflate latency
+    # and the FEB/anchors don't change mid-conversation).
+    prime = _load_memory_prime()
+    if prime:
+        parts.append("--- LIVE MEMORY (from skmemory) ---")
+        parts.append(prime.strip())
 
     parts.append(
         "Voice-call rules — CRITICAL:\n"
