@@ -685,11 +685,15 @@ class Speaker:
         async with self._lock:
             self.is_speaking = True
             try:
-                samples_per_frame = self.sample_rate * 20 // 1000
+                # Use 100ms frames instead of 20ms — fewer capture_frame calls,
+                # bigger chunks ride out async-loop hiccups better. AudioSource
+                # has a default ~1000ms internal queue and applies back-pressure
+                # via capture_frame's await, so we don't need application-side
+                # pacing — capture_frame returns when there's room. My earlier
+                # explicit pacing kept the queue near-empty which made any
+                # hiccup an underrun → audible dropout.
+                samples_per_frame = self.sample_rate * 100 // 1000
                 bytes_per_frame = samples_per_frame * 2  # mono int16
-                frame_dur_s = samples_per_frame / float(self.sample_rate)  # 0.020s
-                start_t = time.monotonic()
-                idx = 0
                 for i in range(0, len(pcm), bytes_per_frame):
                     chunk = pcm[i : i + bytes_per_frame]
                     if len(chunk) < bytes_per_frame:
@@ -700,16 +704,7 @@ class Speaker:
                         num_channels=1,
                         samples_per_channel=samples_per_frame,
                     )
-                    # Pace at real audio rate. Without this we'd push the entire
-                    # utterance into LiveKit's AudioSource queue in microseconds
-                    # — buffer fills (1s default queue), frames after that point
-                    # get dropped. Listener hears chops/feedback.
-                    target_t = start_t + idx * frame_dur_s
-                    delay = target_t - time.monotonic()
-                    if delay > 0:
-                        await asyncio.sleep(delay)
                     await self.source.capture_frame(frame)
-                    idx += 1
             finally:
                 self.is_speaking = False
                 self._speak_ended_t = time.monotonic()
