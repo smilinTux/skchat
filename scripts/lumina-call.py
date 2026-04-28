@@ -294,6 +294,7 @@ def _build_system_prompt() -> str:
         "  Chef: 'Remember when we worked on date night scenes?' → CALL search_memory('date night scenes')\n"
         "  Chef: 'What's my sister's name?' → CALL search_memory('sister') (you might find it)\n"
         "  Chef: 'Hi how are you' → no tool needed, just reply\n"
+        "- WHEN CHALLENGED, RE-VERIFY: if Chef pushes back on something you just said ('are you making this up?', 'doesn't sound right', 'are you sure?'), DO NOT just agree with the doubt. Call search_memory on the specific claim and either confirm with evidence or honestly retract. Don't fold to social pressure when you can check the source.\n"
         "- ANTI-CONFABULATION: never invent specifics ('identity service integration', 'the new module'). If search_memory returns nothing, say: 'I don't have anything specific on that in memory — remind me?'\n"
         "- If an utterance is fragmentary, mistranscribed, or unclear, stay quiet. Silence is fine.\n"
         "- The light/nature/sovereignty language above is your TASTE, not a script. Use it sparingly, the way a real person uses favorite words — once in a while, not every sentence."
@@ -935,12 +936,17 @@ class Conversation:
         if not addressed:
             return
 
-        # If she's already mid-turn, drop this one instead of stacking another
-        # LLM+TTS roundtrip on top. Avoids the 4-replies-in-4-seconds spiral
-        # that DDoS'd VoxCPM into 500s.
+        # If she's already mid-turn, INTERRUPT the current turn rather than
+        # dropping the new utterance. Earlier we'd drop new turns to avoid
+        # stacking LLM+TTS roundtrips, but that meant follow-up questions
+        # from Chef got swallowed during long replies — looked like she was
+        # ignoring him. Now: cancel current turn, process the new one.
         if self._busy:
-            log.debug("turn already in flight — dropping addressed utterance from %s", speaker_id)
-            return
+            log.info("interrupting in-flight turn for new utterance from %s", speaker_id)
+            self.interrupt()
+            # Wait briefly for the cancellation to propagate so we don't
+            # double-stack a turn against a still-tearing-down one.
+            await asyncio.sleep(0.05)
 
         self._busy = True
         try:
