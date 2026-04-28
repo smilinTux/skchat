@@ -88,6 +88,19 @@ SILENCE_HANGOVER_MS = 800        # how much silence ends an utterance
 MIN_UTTERANCE_MS = 600           # ignore short blips and "uh"s
 MAX_UTTERANCE_MS = 12000         # force-flush after 12s so a monologue doesn't starve
 ECHO_TAIL_S = float(os.getenv("LUMINA_ECHO_TAIL_S", "2.5"))  # ignore mic for this long after she stops speaking
+
+# Barge-in: when user starts speaking during Lumina's reply, cut her off and
+# process the interruption as a new turn. Default ON — assumes user is on
+# headphones (no acoustic echo from speakers). On speaker setups, the echo of
+# her own voice could trigger false interrupts; disable via env var.
+BARGE_IN_ENABLED = os.getenv("LUMINA_BARGE_IN", "1") not in ("0", "false", "no", "")
+# Sustained-voice threshold: ms of voiced frames during her speech before we
+# call it a real interrupt. Higher = fewer false positives from echo, but
+# slower to react.
+BARGE_IN_DWELL_MS = int(os.getenv("LUMINA_BARGE_IN_DWELL_MS", "300"))
+# Higher RMS threshold during her speech — she's louder in the room than usual,
+# so user voice has to clear a higher bar to register as a real interrupt.
+BARGE_IN_RMS = int(os.getenv("LUMINA_BARGE_IN_RMS", "2000"))
 STT_TIMEOUT_S = 10.0             # fail fast — never let a hung server starve us
 LLM_TIMEOUT_S = 90.0              # generous — covers cold-load (~12s) + long replies
 TTS_TIMEOUT_S = 45.0
@@ -762,6 +775,7 @@ async def listen_to_participant(
     track: rtc.RemoteAudioTrack,
     on_utterance,
     speaker: Speaker,
+    on_barge_in=None,
 ) -> None:
     """Consume an audio track, run energy VAD, hand utterance bytes upstream."""
     log.info("listening to %s on track %s", participant.identity, track.sid)
@@ -773,18 +787,33 @@ async def listen_to_participant(
     last_voice_t = 0.0
     utterance_start_t = 0.0
 
+    # Barge-in detection state — only meaningful while Lumina is speaking.
+    barge_voiced_ms = 0.0
+
     try:
         async for ev in stream:
             f = ev.frame
             data = bytes(f.data)
-            # If we're playing audio OR within the echo-tail window after just
-            # finishing, swallow input. Speaker audio takes ~1s to play through
-            # remote speakers, ~another second to bounce back via the room mic
-            # and STT — without this the mic picks up Lumina's own voice and
-            # transcribes it as 'new utterances she should reply to'.
-            in_echo_tail = (
-                time.monotonic() - speaker._speak_ended_t < ECHO_TAIL_S
-            )
+            now = time.monotonic()
+            in_echo_tail = now - speaker._speak_ended_t < ECHO_TAIL_S
+
+            # Barge-in: while she's speaking, watch for sustained user voice
+            # above an elevated threshold. After enough voiced frames, cancel
+            # her speak task and let the rest of this loop process the
+            # interrupting utterance normally.
+            if BARGE_IN_ENABLED and speaker.is_speaking and on_barge_in is not None:
+                rms = audioop.rms(data, 2)
+                if rms >= BARGE_IN_RMS:
+                    barge_voiced_ms += VAD_FRAME_MS
+                    if barge_voiced_ms >= BARGE_IN_DWELL_MS:
+                        if on_barge_in():
+                            log.info("[%s] barge-in (%.0fms voice ≥%d RMS)",
+                                     participant.identity, barge_voiced_ms, BARGE_IN_RMS)
+                        barge_voiced_ms = 0
+                        # fall through — process the interrupting voice as normal
+                else:
+                    barge_voiced_ms = max(0.0, barge_voiced_ms - VAD_FRAME_MS)
+
             if speaker.is_speaking or in_echo_tail:
                 if in_utterance:
                     in_utterance = False
@@ -843,6 +872,17 @@ class Conversation:
         # respond without saying her name. Refreshed on every utterance she
         # produces.
         self._broadcast_speak_t = 0.0
+        # Barge-in: track the current speak task so the listener can cancel it
+        # when the user starts talking mid-reply.
+        self._current_speak: Optional[asyncio.Task] = None
+
+    def interrupt(self) -> bool:
+        """Cancel any in-flight speak task. Returns True if something was canceled."""
+        if self._current_speak is not None and not self._current_speak.done():
+            log.info("[lumina] interrupted")
+            self._current_speak.cancel()
+            return True
+        return False
 
     async def aclose(self) -> None:
         await self.client.aclose()
@@ -975,11 +1015,9 @@ class Conversation:
         log.info("speaking %d sentences (fully serial)", len(sentences))
         # Fully serial — one synth, await, play, next. VoxCPM's batch endpoint
         # produces TRUNCATED audio (1s output for 150-char input) when two
-        # synthesis requests overlap, even when running on different machines
-        # from the player. Suspect badcase-detection retry logic gets confused
-        # by concurrent generation contexts. Strict serialization eliminates
-        # that and gives clean audio at the cost of inter-sentence gaps
-        # equal to next sentence's synth time (~3-4s typical).
+        # synthesis requests overlap. Strict serialization eliminates that.
+        # Each sentence's playback is wrapped in a cancellable task so the
+        # listener can interrupt mid-reply (barge-in).
         for i, s in enumerate(sentences):
             try:
                 pcm, sr, _, _ = await synthesize(self.client, s)
@@ -987,7 +1025,15 @@ class Conversation:
                 log.warning("TTS sentence %d/%d failed (%s): %r",
                             i + 1, len(sentences), type(exc).__name__, exc)
                 continue
-            await self.speaker.say(pcm, sr)
+            self._current_speak = asyncio.create_task(self.speaker.say(pcm, sr))
+            try:
+                await self._current_speak
+            except asyncio.CancelledError:
+                log.info("speak cancelled — stopping playback at sentence %d/%d",
+                         i + 1, len(sentences))
+                return
+            finally:
+                self._current_speak = None
 
     async def _speak_one(self, text: str) -> None:
         """Single-sentence path — kept separate so the lipsync code path stays
@@ -1072,7 +1118,7 @@ async def main() -> int:
         listening_to.add(track.sid)
         log.info("→ subscribing to audio from %s (track %s)", p.identity, track.sid)
         listen_tasks.append(
-            asyncio.create_task(listen_to_participant(p, track, convo.handle_utterance, speaker))
+            asyncio.create_task(listen_to_participant(p, track, convo.handle_utterance, speaker, convo.interrupt))
         )
 
     @room.on("track_subscribed")
@@ -1113,6 +1159,10 @@ async def main() -> int:
         for pub in p.track_publications.values():
             if pub.subscribed and pub.track:
                 _start_listening(pub.track, p)
+
+
+async def _noop():
+    pass
 
     if args.greet:
         await asyncio.sleep(0.6)  # let subscriptions settle
