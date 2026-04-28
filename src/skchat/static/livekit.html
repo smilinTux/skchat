@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>SKChat · LiveKit</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<style>
+  :root { color-scheme: dark; }
+  body { font-family: ui-sans-serif, system-ui, sans-serif; background:#0b0d12; color:#e4e7ee; margin:0; padding:0; }
+  header { padding: 14px 20px; border-bottom: 1px solid #222; display:flex; gap:14px; align-items:center; }
+  header h1 { font-size:16px; margin:0; font-weight:600; }
+  header input, header button { background:#181b22; color:#e4e7ee; border:1px solid #2a2f3a; padding:6px 10px; border-radius:6px; font:inherit; }
+  header button { cursor:pointer; }
+  header button:hover { border-color:#5a8dee; }
+  #status { font-size:12px; color:#8b94a7; margin-left:auto; }
+  main { padding: 16px; }
+  #grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap:12px; }
+  .tile { background:#11141b; border:1px solid #1f2330; border-radius:10px; overflow:hidden; position:relative; aspect-ratio:16/9; }
+  .tile video { width:100%; height:100%; object-fit:cover; background:#000; }
+  .tile .label { position:absolute; bottom:6px; left:8px; font-size:12px; background:rgba(0,0,0,.55); padding:2px 8px; border-radius:4px; }
+  .tile .badge { position:absolute; top:6px; right:8px; font-size:10px; background:#1c4a3b; color:#7ee0b9; padding:2px 6px; border-radius:4px; }
+  .tile.audio-only { background: linear-gradient(135deg,#1a1d28,#11141b); display:flex; align-items:center; justify-content:center; }
+  .tile.audio-only .glyph { font-size:48px; opacity:.5; }
+  pre#log { font-size:11px; color:#7a8294; max-height:160px; overflow:auto; background:#0e1118; border:1px solid #1f2330; border-radius:8px; padding:8px; margin-top:14px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🎥 SKChat · LiveKit</h1>
+  <input id="room" placeholder="room" size="22" />
+  <input id="identity" placeholder="your handle" size="14" />
+  <button id="connect">Connect</button>
+  <button id="leave" disabled>Leave</button>
+  <span id="status">disconnected</span>
+</header>
+<main>
+  <div id="grid"></div>
+  <pre id="log"></pre>
+</main>
+<script type="module">
+import { Room, RoomEvent, Track } from 'https://cdn.jsdelivr.net/npm/livekit-client@2.6.0/+esm';
+
+const $ = sel => document.querySelector(sel);
+const log = (...args) => {
+  const s = args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' ');
+  $('#log').textContent += s + '\n';
+  $('#log').scrollTop = $('#log').scrollHeight;
+  console.log(...args);
+};
+
+let room = null;
+const tiles = new Map(); // sid -> tile element
+
+async function loadConfig() {
+  const r = await fetch('/livekit/config');
+  return r.json();
+}
+
+async function mintToken(identity, name, roomName) {
+  const r = await fetch('/livekit/token', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ identity, name, room: roomName }),
+  });
+  if (!r.ok) throw new Error(`token mint failed (${r.status}): ${await r.text()}`);
+  return r.json();
+}
+
+function makeTile(participant) {
+  const div = document.createElement('div');
+  div.className = 'tile';
+  div.dataset.sid = participant.sid;
+  div.innerHTML = `
+    <video autoplay playsinline ${participant.isLocal ? 'muted' : ''}></video>
+    <span class="label">${participant.name || participant.identity}</span>
+    ${participant.identity?.startsWith('lumina') || participant.identity?.startsWith('agent:')
+      ? '<span class="badge">🤖 agent</span>' : ''}
+  `;
+  $('#grid').appendChild(div);
+  tiles.set(participant.sid, div);
+  return div;
+}
+
+function removeTile(sid) {
+  const t = tiles.get(sid);
+  if (t) { t.remove(); tiles.delete(sid); }
+}
+
+function attachTrack(track, participant) {
+  const tile = tiles.get(participant.sid) || makeTile(participant);
+  if (track.kind === Track.Kind.Video) {
+    const video = tile.querySelector('video');
+    track.attach(video);
+  } else if (track.kind === Track.Kind.Audio && !participant.isLocal) {
+    const el = track.attach();
+    el.style.display = 'none';
+    document.body.appendChild(el);
+  }
+}
+
+async function connect() {
+  const cfg = await loadConfig();
+  if (!cfg.available) {
+    log('livekit not configured server-side — set SKCHAT_LIVEKIT_API_KEY/SECRET');
+    return;
+  }
+  const roomName = $('#room').value || cfg.default_room;
+  const identity = $('#identity').value || `chef-${Math.random().toString(36).slice(2, 7)}`;
+  log('minting token for', identity, '@', roomName);
+  const t = await mintToken(identity, identity, roomName);
+
+  room = new Room({ adaptiveStream: true, dynacast: true });
+  room
+    .on(RoomEvent.ParticipantConnected, p => { log('+', p.identity); makeTile(p); })
+    .on(RoomEvent.ParticipantDisconnected, p => { log('-', p.identity); removeTile(p.sid); })
+    .on(RoomEvent.TrackSubscribed, (track, _pub, p) => attachTrack(track, p))
+    .on(RoomEvent.LocalTrackPublished, (pub, p) => attachTrack(pub.track, p))
+    .on(RoomEvent.Disconnected, () => { log('disconnected'); $('#status').textContent = 'disconnected'; });
+
+  await room.connect(t.url, t.token);
+  log('connected to', t.url, 'room:', t.room);
+  $('#status').textContent = `room: ${t.room} as ${t.identity}`;
+
+  // existing participants (we just joined)
+  for (const p of room.remoteParticipants.values()) makeTile(p);
+  // self tile + media
+  makeTile(room.localParticipant);
+  await room.localParticipant.setCameraEnabled(true);
+  await room.localParticipant.setMicrophoneEnabled(true);
+
+  $('#connect').disabled = true;
+  $('#leave').disabled = false;
+}
+
+async function leave() {
+  if (room) { await room.disconnect(); room = null; }
+  for (const sid of [...tiles.keys()]) removeTile(sid);
+  $('#connect').disabled = false;
+  $('#leave').disabled = true;
+}
+
+$('#connect').addEventListener('click', connect);
+$('#leave').addEventListener('click', leave);
+
+// Pre-fill from URL (last path segment) and config
+(async () => {
+  const cfg = await loadConfig();
+  const path = location.pathname.replace(/^\/livekit\/?/, '');
+  $('#room').value = path || cfg.default_room;
+  $('#status').textContent = cfg.available ? 'ready' : 'server: livekit not configured';
+})();
+</script>
+</body>
+</html>

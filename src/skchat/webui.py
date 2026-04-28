@@ -46,6 +46,22 @@ if not _voice_routes_loaded:
     except ImportError:
         _voice_routes_loaded = False
 
+# FaceTime routes — aiortc/MuseTalk path (existing, fallback for non-LiveKit clients).
+try:
+    from .facetime import register_facetime_routes as _register_facetime_routes
+
+    _register_facetime_routes(app)
+except ImportError:
+    pass
+
+# LiveKit routes — primary video stack (token endpoint + room signalling helper).
+try:
+    from .livekit_routes import register_livekit_routes as _register_livekit_routes
+
+    _register_livekit_routes(app)
+except ImportError:
+    pass
+
 
 @app.get("/health")
 async def health() -> JSONResponse:
@@ -413,36 +429,60 @@ async def inbox(limit: int = 100, since_minutes: int = 1440) -> JSONResponse:
 
 @app.get("/groups")
 async def groups() -> JSONResponse:
-    """Return known groups loaded from ~/.skchat/groups/*.json."""
+    """Return known groups loaded from ~/.skchat/groups/*.json.
+
+    Each member is enriched with peer-registry data (entity_type, fingerprint,
+    soul-derived display name) so the UI can distinguish humans from agents
+    without bare-URI rendering.
+    """
+    from .group import GroupChat
+    from .peer_discovery import PeerDiscovery
+
+    discovery = PeerDiscovery()
     groups_dir = _SKCHAT_HOME / "groups"
     result: list[dict] = []
-    if groups_dir.exists():
-        for f in sorted(groups_dir.glob("*.json")):
-            try:
-                from .group import GroupChat
+    if not groups_dir.exists():
+        return JSONResponse(result)
 
-                grp = GroupChat.model_validate_json(f.read_text(encoding="utf-8"))
-                result.append(
-                    {
-                        "id": grp.id,
-                        "name": grp.name,
-                        "description": grp.description,
-                        "member_count": grp.member_count,
-                        "members": [
-                            {
-                                "uri": m.identity_uri,
-                                "role": m.role.value,
-                                "display_name": m.display_name,
-                            }
-                            for m in grp.members
-                        ],
-                        "message_count": grp.message_count,
-                        "created_at": grp.created_at.isoformat(),
-                        "updated_at": grp.updated_at.isoformat(),
-                    }
-                )
-            except Exception:
-                pass
+    for f in sorted(groups_dir.glob("*.json")):
+        try:
+            grp = GroupChat.model_validate_json(f.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+
+        members_out = []
+        for m in grp.members:
+            peer = discovery.get_peer(m.identity_uri) or {}
+            entity_type = peer.get("entity_type") or m.participant_type.value
+            display_name = (
+                m.display_name
+                or peer.get("name")
+                or m.identity_uri.split(":")[-1].split("@")[0]
+            )
+            members_out.append(
+                {
+                    "uri": m.identity_uri,
+                    "role": m.role.value,
+                    "participant_type": m.participant_type.value,
+                    "display_name": display_name,
+                    "entity_type": entity_type,
+                    "fingerprint": peer.get("fingerprint", ""),
+                    "trust_level": peer.get("trust_level", "unknown"),
+                }
+            )
+
+        result.append(
+            {
+                "id": grp.id,
+                "name": grp.name,
+                "description": grp.description,
+                "member_count": grp.member_count,
+                "members": members_out,
+                "message_count": grp.message_count,
+                "created_at": grp.created_at.isoformat(),
+                "updated_at": grp.updated_at.isoformat(),
+            }
+        )
     return JSONResponse(result)
 
 
