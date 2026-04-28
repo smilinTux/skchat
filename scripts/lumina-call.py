@@ -958,17 +958,14 @@ class Conversation:
             await self._speak_one(text)
             return
 
-        log.info("speaking %d sentences (batch, parallel synth)", len(sentences))
-        # Reverted from streaming after observing choppy audio + phantom
-        # utterances (Lumina hearing things Chef didn't say — likely her own
-        # audio leaking back due to gaps between streamed sentences).
-        # Batch path: synthesize all sentences in parallel, play in order.
-        # Trade-off: ~2s wait for first audio (vs 0.9s streaming) but clean
-        # output and no listener confusion.
-        tasks = [asyncio.create_task(synthesize(self.client, s)) for s in sentences]
-        for i, task in enumerate(tasks):
+        log.info("speaking %d sentences (batch, sequential)", len(sentences))
+        # Sequential: VoxCPM is single-threaded inference; parallel POSTs just
+        # queue up on its lock and the later ones can ReadTimeout. Synthesize
+        # one at a time, play, next. Slower than ideal but reliable. Pipeline
+        # depth 1.
+        for i, s in enumerate(sentences):
             try:
-                pcm, sr, _, _ = await task
+                pcm, sr, _, _ = await synthesize(self.client, s)
             except Exception as exc:
                 log.warning("TTS sentence %d/%d failed (%s): %r",
                             i + 1, len(sentences), type(exc).__name__, exc)
