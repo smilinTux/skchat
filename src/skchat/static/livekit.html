@@ -77,6 +77,11 @@
     <span class="pill" id="peers-pill">0 peers</span>
   </div>
 
+  <div id="speak-row" class="controls hidden">
+    <input id="speak-text" placeholder="Make Lumina say…" style="flex:1;min-width:200px" />
+    <button id="speak-send">🤖 Speak</button>
+  </div>
+
   <div id="grid"></div>
 
   <details id="log-wrap"><summary>Diagnostics</summary><pre id="log"></pre></details>
@@ -266,6 +271,7 @@ async function connect() {
     $('#connect').disabled = true;
     $('#leave').disabled = false;
     $('#controls').classList.remove('hidden');
+    $('#speak-row').classList.remove('hidden');
 
     // Auto-enable mic + cam — user explicitly clicked Connect, this is the consent moment.
     await toggleMic(true);
@@ -283,8 +289,27 @@ function cleanup() {
   $('#connect').disabled = false;
   $('#leave').disabled = true;
   $('#controls').classList.add('hidden');
+  $('#speak-row').classList.add('hidden');
   setMicUI(false); setCamUI(false);
   setStatus('', 'disconnected');
+}
+
+async function speakAsLumina() {
+  const text = $('#speak-text').value.trim();
+  if (!text || !room) return;
+  try {
+    const r = await fetch('/livekit/speak', {
+      method: 'POST',
+      headers: {'content-type': 'application/json'},
+      body: JSON.stringify({text, room: room.name, destination: 'lumina'}),
+    });
+    if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
+    log('→ lumina says:', text);
+    $('#speak-text').value = '';
+  } catch (e) {
+    log('speak failed:', e.message);
+    showError(`Speak failed: ${e.message}`);
+  }
 }
 
 async function leave() {
@@ -342,6 +367,8 @@ $('#mic-toggle').addEventListener('click', () => toggleMic());
 $('#cam-toggle').addEventListener('click', () => toggleCam());
 $('#mic-select').addEventListener('change', () => { if (room?.localParticipant.isMicrophoneEnabled) toggleMic(true); });
 $('#cam-select').addEventListener('change', () => { if (room?.localParticipant.isCameraEnabled) toggleCam(true); });
+$('#speak-send').addEventListener('click', speakAsLumina);
+$('#speak-text').addEventListener('keydown', e => { if (e.key === 'Enter') speakAsLumina(); });
 
 // ── Init ─────────────────────────────────────────────────────────────────────
 (async () => {
