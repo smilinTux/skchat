@@ -333,10 +333,11 @@ TOOLS = [
             "name": "search_memory",
             "description": (
                 "Search Lumina's persistent memory store (skmemory) for relevant "
-                "session digests, journal entries, seeds, and project notes. Use "
-                "when Chef asks about specific past topics ('what did we decide "
-                "about X', 'remember when we worked on Y'), or when grounding a "
-                "reply in real history is better than guessing."
+                "session digests, journal entries, seeds, and project notes. Returns "
+                "title + truncated content per match — that's all you need; do not "
+                "call any 'recall by ID' tool. Use this when Chef asks about specific "
+                "past topics ('what did we decide about X', 'remember when'), or to "
+                "ground a reply in real history."
             ),
             "parameters": {
                 "type": "object",
@@ -351,23 +352,6 @@ TOOLS = [
                     },
                 },
                 "required": ["query"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "recall_memory",
-            "description": (
-                "Fetch the full content of a specific memory by its ID. Use after "
-                "search_memory finds a relevant entry and you want the full text."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "memory_id": {"type": "string"},
-                },
-                "required": ["memory_id"],
             },
         },
     },
@@ -1052,15 +1036,20 @@ class Conversation:
             await self._speak_one(text)
             return
 
-        log.info("speaking %d sentences (fully serial)", len(sentences))
-        # Fully serial — one synth, await, play, next. VoxCPM's batch endpoint
-        # produces TRUNCATED audio (1s output for 150-char input) when two
-        # synthesis requests overlap. Strict serialization eliminates that.
-        # Each sentence's playback is wrapped in a cancellable task so the
-        # listener can interrupt mid-reply (barge-in).
+        log.info("speaking %d sentences (pipelined)", len(sentences))
+        # Pipeline depth 2: while sentence N plays, sentence N+1 synthesizes.
+        # F5-TTS sustained throughput is ~0.3x realtime so a 4s sentence
+        # synthesizes in ~1.2s — well under the time it takes to play the
+        # current one. Cuts inter-sentence gap from ~5s to ~0s.
+        synth_tasks: list = [None] * len(sentences)
+        synth_tasks[0] = asyncio.create_task(synthesize(self.client, sentences[0]))
         for i, s in enumerate(sentences):
+            if i + 1 < len(sentences) and synth_tasks[i + 1] is None:
+                synth_tasks[i + 1] = asyncio.create_task(
+                    synthesize(self.client, sentences[i + 1])
+                )
             try:
-                pcm, sr, _, _ = await synthesize(self.client, s)
+                pcm, sr, _, _ = await synth_tasks[i]
             except Exception as exc:
                 log.warning("TTS sentence %d/%d failed (%s): %r",
                             i + 1, len(sentences), type(exc).__name__, exc)
@@ -1071,6 +1060,10 @@ class Conversation:
             except asyncio.CancelledError:
                 log.info("speak cancelled — stopping playback at sentence %d/%d",
                          i + 1, len(sentences))
+                # Cancel any not-yet-played synth tasks too.
+                for t in synth_tasks[i + 1:]:
+                    if t is not None and not t.done():
+                        t.cancel()
                 return
             finally:
                 self._current_speak = None
