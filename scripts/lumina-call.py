@@ -85,10 +85,20 @@ SOUL_PATH = Path.home() / ".skcapstone" / "agents" / "lumina" / "soul"
 # How long after Lumina speaks does the room stay "in conversation with her" —
 # during this window every utterance is heard as a reply to her, no address cue
 # needed. After it expires she goes quiet again until called by name.
-FOLLOW_UP_WINDOW_S = float(os.getenv("LUMINA_FOLLOW_UP_S", "10"))
+FOLLOW_UP_WINDOW_S = float(os.getenv("LUMINA_FOLLOW_UP_S", "20"))
 
 # Words that wake her up. Case-insensitive whole-word match.
-ADDRESS_TRIGGERS = ("lumina", "hey lumina", "okay lumina", "ok lumina")
+# - lumina + common whisper-mistranscriptions ("luminous", "lumi", "loomina")
+# - direct-address phrases that almost always target her in this context
+ADDRESS_TRIGGERS = (
+    "lumina", "luminess", "luminous", "lumi", "loomina", "lumino",
+    "hey lumina", "okay lumina", "ok lumina",
+    "are you there", "you there",
+    "you listening", "are you listening",
+    "you hear me", "do you hear",
+    "can you hear",
+    "hey there", "hello there",
+)
 _ADDRESS_RE = re.compile(r"\b(?:" + "|".join(re.escape(t) for t in ADDRESS_TRIGGERS) + r")\b", re.I)
 
 
