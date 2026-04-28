@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Lumina Recordings</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<style>
+  :root { color-scheme: dark; }
+  body { font-family: ui-sans-serif, system-ui, sans-serif; background:#0b0d12; color:#e4e7ee; margin:0; padding:20px; }
+  h1 { font-size:18px; margin:0 0 16px; }
+  .empty { color:#5a627a; padding:40px; text-align:center; }
+  .rec { background:#11141b; border:1px solid #1f2330; border-radius:10px; padding:12px 16px; margin-bottom:10px; display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+  .rec .name { font-size:14px; flex:1; word-break:break-all; }
+  .rec .meta { font-size:12px; color:#8b94a7; }
+  .rec audio { width:100%; max-width:480px; }
+  .rec a { color:#7ec3ee; font-size:12px; }
+  .active { background:#1c4a3b; border-color:#7ee0b9; padding:10px; margin-bottom:14px; border-radius:8px; font-size:13px; }
+</style>
+</head>
+<body>
+<h1>🎙️ Lumina Recordings</h1>
+<div id="active-host"></div>
+<div id="list">Loading…</div>
+<script>
+async function load() {
+  const r = await fetch('/recordings');
+  const d = await r.json();
+  const list = document.getElementById('list');
+  const active = document.getElementById('active-host');
+
+  if (d.active) {
+    active.innerHTML = `<div class="active">🔴 Recording in progress — ${d.active.label || 'unlabeled'} (started ${d.active.started_at}). Use the Record/Stop button on the LiveKit page.</div>`;
+  } else {
+    active.innerHTML = '';
+  }
+
+  if (!d.recordings.length) {
+    list.innerHTML = '<div class="empty">No recordings yet. Hit "Record" on the LiveKit page to capture Lumina\'s audio.</div>';
+    return;
+  }
+
+  list.innerHTML = '';
+  for (const r of d.recordings) {
+    const div = document.createElement('div');
+    div.className = 'rec';
+    const sizeMb = (r.size_bytes / 1024 / 1024).toFixed(2);
+    div.innerHTML = `
+      <div class="name"><strong>${r.name}</strong>
+        <div class="meta">${r.modified.replace('T', ' ').slice(0,19)} · ${sizeMb} MB</div>
+      </div>
+      <audio controls preload="none" src="${r.url}"></audio>
+      <a href="${r.url}" download>⬇ download</a>
+    `;
+    list.appendChild(div);
+  }
+}
+load();
+setInterval(load, 5000);
+</script>
+</body>
+</html>
