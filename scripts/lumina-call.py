@@ -408,7 +408,8 @@ def _strip_think(text: str) -> str:
     return text
 
 
-async def llm_reply(client: httpx.AsyncClient, history: list[dict], user_text: str) -> str:
+async def llm_reply(client: httpx.AsyncClient, history: list[dict], user_text: str,
+                    on_tool=None) -> str:
     history.append({"role": "user", "content": user_text})
     is_native_chat = LLM_URL.endswith("/api/chat")
 
@@ -473,6 +474,11 @@ async def llm_reply(client: httpx.AsyncClient, history: list[dict], user_text: s
                 except Exception:
                     args = {}
                 log.info("tool %s(%s)", name, json.dumps(args)[:120])
+                if on_tool is not None:
+                    try:
+                        await on_tool(name, args)
+                    except Exception:
+                        pass
                 result = _run_tool(name, args)
                 log.info("tool %s → %s", name, result[:120].replace("\n", " "))
                 messages.append({
@@ -685,11 +691,11 @@ class Speaker:
         async with self._lock:
             self.is_speaking = True
             try:
-                # 10ms frames = WebRTC/Opus native frame size. AudioSource
-                # back-pressures via capture_frame's await when its 300ms
-                # queue is full, so no application-side pacing needed.
                 samples_per_frame = self.sample_rate * 10 // 1000
                 bytes_per_frame = samples_per_frame * 2
+                total_frames = (len(pcm) + bytes_per_frame - 1) // bytes_per_frame
+                start_t = time.monotonic()
+                pushed = 0
                 for i in range(0, len(pcm), bytes_per_frame):
                     chunk = pcm[i : i + bytes_per_frame]
                     if len(chunk) < bytes_per_frame:
@@ -701,9 +707,16 @@ class Speaker:
                         samples_per_channel=samples_per_frame,
                     )
                     await self.source.capture_frame(frame)
-                # Block until everything queued is fully played out before
-                # releasing the lock — prevents the next sentence/turn from
-                # double-pushing into a still-draining queue.
+                    pushed += 1
+                    # Diagnostic: log queue depth every ~2s to spot drift/pile-up
+                    if pushed % 200 == 0:
+                        try:
+                            qd = self.source.queued_duration
+                        except Exception:
+                            qd = -1
+                        elapsed = time.monotonic() - start_t
+                        log.info("audio: pushed %d/%d frames, %.2fs elapsed, queue=%.3fs",
+                                 pushed, total_frames, elapsed, qd)
                 try:
                     await self.source.wait_for_playout()
                 except Exception:
@@ -886,6 +899,20 @@ class Conversation:
             return True
         return False
 
+    async def set_state(self, state: str, detail: str = "") -> None:
+        """Publish a state change via LiveKit participant metadata.
+
+        Webui subscribes to participant.metadataChanged and surfaces a status
+        pill (idle / listening / thinking / searching / speaking + detail).
+        Browser sees it via the standard LiveKit JS event.
+        """
+        try:
+            payload = json.dumps({"state": state, "detail": detail})
+            await self.speaker.room.local_participant.set_metadata(payload)
+            log.debug("state → %s (%s)", state, detail)
+        except Exception as exc:
+            log.debug("set_metadata failed: %s", exc)
+
     async def aclose(self) -> None:
         await self.client.aclose()
 
@@ -951,6 +978,8 @@ class Conversation:
         if not addressed:
             return
 
+        await self.set_state("thinking", text[:60])
+
         # If she's already mid-turn, INTERRUPT the current turn rather than
         # dropping the new utterance. Earlier we'd drop new turns to avoid
         # stacking LLM+TTS roundtrips, but that meant follow-up questions
@@ -967,18 +996,29 @@ class Conversation:
         try:
             async with self._llm_lock:
                 try:
-                    reply = await llm_reply(self.client, self.history, f"{speaker_id}: {text}")
+                    reply = await llm_reply(self.client, self.history, f"{speaker_id}: {text}",
+                                            on_tool=self._on_tool_event)
                 except Exception as exc:
                     log.warning("LLM failed (%s): %r", type(exc).__name__, exc)
                     return
             if not reply:
                 return
             log.info("[lumina] %s", reply)
+            await self.set_state("speaking", reply[:80])
             await self.say(reply)
             # Refresh the speaker's follow-up window as of the end of her reply.
             self._engaged_with[speaker_id] = time.monotonic()
         finally:
             self._busy = False
+            await self.set_state("idle", "")
+
+    async def _on_tool_event(self, name: str, args: dict) -> None:
+        """Surface tool-call activity to the webui via metadata."""
+        if name == "search_memory":
+            q = (args.get("query") or "")[:60]
+            await self.set_state("searching", f"memory: {q}")
+        else:
+            await self.set_state("thinking", f"tool: {name}")
 
     @staticmethod
     def _split_sentences(text: str) -> list[str]:
