@@ -24,7 +24,8 @@ Environment=SKCHAT_TTS_URL=http://skworld-100:18793/audio/speech
 Environment=SKCHAT_TTS_VOICE=lumina
 Environment=SKCHAT_STT_URL=http://skworld-100:18794/v1/audio/transcriptions
 Environment=SKCHAT_LLM_URL=http://skworld-100:11434/v1/chat/completions
-Environment=SKCHAT_LLM_MODEL=huihui_ai/qwen3-abliterated:14b
+Environment=SKCHAT_LLM_MODEL=llama3.2:3b
+Environment=LUMINA_LLM_KEEP_ALIVE=30m
 Environment=SKCHAT_LIVEKIT_DEFAULT_ROOM=lumina-and-chef
 Environment=LUMINA_IDENTITY=lumina
 Environment=LUMINA_NAME=Lumina

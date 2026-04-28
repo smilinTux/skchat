@@ -57,7 +57,8 @@ TTS_URL = os.getenv("SKCHAT_TTS_URL", "http://skworld-100:18793/audio/speech")
 TTS_VOICE = os.getenv("SKCHAT_TTS_VOICE", "lumina")
 STT_URL = os.getenv("SKCHAT_STT_URL", "http://skworld-100:18794/v1/audio/transcriptions")
 LLM_URL = os.getenv("SKCHAT_LLM_URL", "http://skworld-100:11434/v1/chat/completions")
-LLM_MODEL = os.getenv("SKCHAT_LLM_MODEL", "huihui_ai/qwen3-abliterated:14b")
+LLM_MODEL = os.getenv("SKCHAT_LLM_MODEL", "llama3.2:3b")
+LLM_KEEP_ALIVE = os.getenv("LUMINA_LLM_KEEP_ALIVE", "30m")
 DEFAULT_ROOM = os.getenv("SKCHAT_LIVEKIT_DEFAULT_ROOM", "lumina-and-chef")
 IDENTITY = os.getenv("LUMINA_IDENTITY", "lumina")
 DISPLAY_NAME = os.getenv("LUMINA_NAME", "Lumina")
@@ -70,7 +71,7 @@ SILENCE_HANGOVER_MS = 800        # how much silence ends an utterance
 MIN_UTTERANCE_MS = 600           # ignore short blips and "uh"s
 MAX_UTTERANCE_MS = 12000         # force-flush after 12s so a monologue doesn't starve
 STT_TIMEOUT_S = 10.0             # fail fast — never let a hung server starve us
-LLM_TIMEOUT_S = 30.0
+LLM_TIMEOUT_S = 90.0              # generous — covers cold-load (~12s) + long replies
 TTS_TIMEOUT_S = 45.0
 MAX_CONCURRENT_STT = 2           # cap so a backed-up whisper doesn't get worse
 
@@ -103,6 +104,8 @@ async def llm_reply(client: httpx.AsyncClient, history: list[dict], user_text: s
         "messages": [{"role": "system", "content": SYSTEM_PROMPT}, *history[-12:]],
         "temperature": 0.7,
         "stream": False,
+        # Ollama-specific: keep the model warm in VRAM between turns.
+        "keep_alive": LLM_KEEP_ALIVE,
     }
     r = await client.post(LLM_URL, json=payload, timeout=LLM_TIMEOUT_S)
     r.raise_for_status()
