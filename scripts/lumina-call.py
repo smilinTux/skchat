@@ -87,6 +87,7 @@ RMS_VOICE_THRESHOLD = int(os.getenv("LUMINA_VAD_RMS", "1200"))  # int16 RMS — 
 SILENCE_HANGOVER_MS = 800        # how much silence ends an utterance
 MIN_UTTERANCE_MS = 600           # ignore short blips and "uh"s
 MAX_UTTERANCE_MS = 12000         # force-flush after 12s so a monologue doesn't starve
+ECHO_TAIL_S = float(os.getenv("LUMINA_ECHO_TAIL_S", "2.5"))  # ignore mic for this long after she stops speaking
 STT_TIMEOUT_S = 10.0             # fail fast — never let a hung server starve us
 LLM_TIMEOUT_S = 90.0              # generous — covers cold-load (~12s) + long replies
 TTS_TIMEOUT_S = 45.0
@@ -612,6 +613,11 @@ class Speaker:
         self._avatar_task: Optional[asyncio.Task] = None
         self._idle_frame_bytes: Optional[bytes] = None  # cached idle RGBA bytes
         self._lipsync_active = False  # True while MuseTalk frames are being pushed
+        # Echo guard: even after is_speaking flips False, the audio is still
+        # propagating through LiveKit's playback buffer (~1s) and bouncing off
+        # the listener's speakers into their mic. This timestamp extends the
+        # self-listening window past the actual end of capture by ECHO_TAIL_S.
+        self._speak_ended_t = 0.0
 
     async def publish(self) -> None:
         opts = rtc.TrackPublishOptions(source=rtc.TrackSource.SOURCE_MICROPHONE)
@@ -690,6 +696,7 @@ class Speaker:
                     await self.source.capture_frame(frame)
             finally:
                 self.is_speaking = False
+                self._speak_ended_t = time.monotonic()
 
     async def say_stream(self, queue: "asyncio.Queue[Optional[bytes]]", source_sample_rate: int) -> None:
         """Stream PCM bytes from a queue into the AudioSource as 20ms frames.
@@ -766,8 +773,15 @@ async def listen_to_participant(
         async for ev in stream:
             f = ev.frame
             data = bytes(f.data)
-            # If we're playing audio, swallow input to avoid self-listening loops.
-            if speaker.is_speaking:
+            # If we're playing audio OR within the echo-tail window after just
+            # finishing, swallow input. Speaker audio takes ~1s to play through
+            # remote speakers, ~another second to bounce back via the room mic
+            # and STT — without this the mic picks up Lumina's own voice and
+            # transcribes it as 'new utterances she should reply to'.
+            in_echo_tail = (
+                time.monotonic() - speaker._speak_ended_t < ECHO_TAIL_S
+            )
+            if speaker.is_speaking or in_echo_tail:
                 if in_utterance:
                     in_utterance = False
                     voiced_frames.clear()
