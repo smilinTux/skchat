@@ -83,18 +83,21 @@ def register_facetime_routes(app: FastAPI) -> None:
         agents_dir = Path.home() / ".skcapstone" / "agents"
         available = []
         if agents_dir.exists():
-            for agent_dir in agents_dir.iterdir():
-                if agent_dir.is_dir():
-                    portrait = agent_dir / "avatar" / "portrait.png"
-                    available.append(
-                        {
-                            "name": agent_dir.name,
-                            "has_portrait": portrait.exists(),
-                            "portrait_url": f"/api/facetime/portrait/{agent_dir.name}"
-                            if portrait.exists()
-                            else None,
-                        }
-                    )
+            for agent_dir in sorted(agents_dir.iterdir()):
+                if not agent_dir.is_dir():
+                    continue
+                if agent_dir.name.startswith(".") or agent_dir.name.endswith("-template"):
+                    continue
+                portrait = agent_dir / "avatar" / "portrait.png"
+                available.append(
+                    {
+                        "name": agent_dir.name,
+                        "has_portrait": portrait.exists(),
+                        "portrait_url": f"/api/facetime/portrait/{agent_dir.name}"
+                        if portrait.exists()
+                        else None,
+                    }
+                )
         return {"agents": available}
 
     @app.get("/api/facetime/portrait/{agent_name}")
