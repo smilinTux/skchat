@@ -431,7 +431,15 @@ async def llm_reply(client: httpx.AsyncClient, history: list[dict], user_text: s
             payload["max_tokens"] = 200
             payload["tools"] = TOOLS
 
-        r = await client.post(LLM_URL, json=payload, headers=headers, timeout=LLM_TIMEOUT_S)
+        # Retry 429 (rate limit) with exponential backoff. NVIDIA NIM has bursty
+        # rate limits — when tool calls double the request rate, we hit them.
+        for attempt in range(4):
+            r = await client.post(LLM_URL, json=payload, headers=headers, timeout=LLM_TIMEOUT_S)
+            if r.status_code != 429:
+                break
+            wait = 0.5 * (2 ** attempt)
+            log.warning("LLM 429 rate-limit, retry %d after %.1fs", attempt + 1, wait)
+            await asyncio.sleep(wait)
         r.raise_for_status()
         body = r.json()
 
@@ -936,25 +944,18 @@ class Conversation:
             await self._speak_one(text)
             return
 
-        log.info("speaking %d sentences (streamed pipeline-depth-2)", len(sentences))
-        # Pipeline depth 2: never more than 2 concurrent VoxCPM streams.
-        # Sentence N+1 is kicked off when sentence N STARTS playing — by the
-        # time sentence N finishes (a few seconds later), sentence N+1's queue
-        # has had ample time to fill without GPU contention.
-        # Firing all N at once caused sentence 1 to glitch because the GPU was
-        # serving 4 streaming inferences simultaneously and sentence 1's TTFB
-        # chunks got mangled.
-        queues: list = [None] * len(sentences)
-        queues[0] = await stream_synthesize(self.client, sentences[0])
-        for i in range(len(sentences)):
-            # Pre-fire sentence i+1 just before consuming sentence i (so it has
-            # the duration of sentence i's playback to fill).
-            if i + 1 < len(sentences) and queues[i + 1] is None:
-                queues[i + 1] = await stream_synthesize(self.client, sentences[i + 1])
+        log.info("speaking %d sentences (streamed, serialized)", len(sentences))
+        # Serialize sentences. Pipeline depth 2 caused first-sentence audio
+        # glitches (likely VoxCPM's streaming inference path doesn't multiplex
+        # cleanly when two streams overlap on the same GPU). One at a time:
+        # synthesize fully, play, next. We still get the streaming TTFB benefit
+        # within each sentence (~900ms first byte vs ~3s batch).
+        for i, s in enumerate(sentences):
             try:
-                await self.speaker.say_stream(queues[i], TTS_STREAM_SAMPLE_RATE)
+                q = await stream_synthesize(self.client, s)
+                await self.speaker.say_stream(q, TTS_STREAM_SAMPLE_RATE)
             except Exception as exc:
-                log.warning("TTS playback %d/%d failed (%s): %r",
+                log.warning("TTS sentence %d/%d failed (%s): %r",
                             i + 1, len(sentences), type(exc).__name__, exc)
                 continue
 
