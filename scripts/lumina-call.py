@@ -604,14 +604,14 @@ async def lipsync_frames(client: httpx.AsyncClient, wav_bytes: bytes) -> list[by
 class Speaker:
     """Owns a LocalAudioTrack (and optional LocalVideoTrack avatar)."""
 
-    def __init__(self, room: rtc.Room, sample_rate: int = 48000) -> None:
+    def __init__(self, room: rtc.Room, sample_rate: int = 24000) -> None:
         self.room = room
+        # Match F5-TTS's native rate (24kHz) so we never resample. Resampling
+        # via audioop.ratecv was the most likely source of the late-in-speech
+        # drops Chef was hearing — any clock drift between source/target rates
+        # accumulates over long utterances. WebRTC Opus codec targets 24kHz
+        # natively, so this is the right rate for voice anyway.
         self.sample_rate = sample_rate
-        # Tight queue (300ms) so capture_frame back-pressure kicks in early.
-        # Default 1000ms allowed our publish loop to push ~10 frames ahead, then
-        # tiny per-frame drift accumulated over long utterances → late-in-
-        # speech dropouts. 300ms still rides through small async hiccups but
-        # forces our loop to track LiveKit's drain rate closely.
         self.source = rtc.AudioSource(sample_rate=sample_rate, num_channels=1, queue_size_ms=300)
         self.track = rtc.LocalAudioTrack.create_audio_track("lumina-voice", self.source)
         self._lock = asyncio.Lock()
