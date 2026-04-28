@@ -57,9 +57,13 @@ WEBUI_URL = os.getenv("SKCHAT_WEBUI_URL", "https://noroc2027.tail204f0c.ts.net")
 TTS_URL = os.getenv("SKCHAT_TTS_URL", "http://skworld-100:18793/audio/speech")
 TTS_VOICE = os.getenv("SKCHAT_TTS_VOICE", "lumina")
 STT_URL = os.getenv("SKCHAT_STT_URL", "http://skworld-100:18794/v1/audio/transcriptions")
-LLM_URL = os.getenv("SKCHAT_LLM_URL", "http://skworld-100:11434/v1/chat/completions")
-LLM_MODEL = os.getenv("SKCHAT_LLM_MODEL", "llama3.2:3b")
+LLM_URL = os.getenv("SKCHAT_LLM_URL", "http://skworld-100:11434/api/chat")
+LLM_MODEL = os.getenv("SKCHAT_LLM_MODEL", "gemma4:e2b")
 LLM_KEEP_ALIVE = os.getenv("LUMINA_LLM_KEEP_ALIVE", "30m")
+# Disable model-internal "thinking" for thinking-capable models (gemma4, qwen3,
+# deepseek-r1). With think:false a 14B Gemma 4 e2b drops from ~20s to ~2s. The
+# OpenAI-compatible /v1/chat/completions endpoint ignores this; /api/chat honors it.
+LLM_THINK = os.getenv("LUMINA_LLM_THINK", "false").lower() == "true"
 DEFAULT_ROOM = os.getenv("SKCHAT_LIVEKIT_DEFAULT_ROOM", "lumina-and-chef")
 IDENTITY = os.getenv("LUMINA_IDENTITY", "lumina")
 DISPLAY_NAME = os.getenv("LUMINA_NAME", "Lumina")
@@ -160,22 +164,36 @@ async def transcribe(client: httpx.AsyncClient, pcm16k_mono: bytes) -> str:
 
 async def llm_reply(client: httpx.AsyncClient, history: list[dict], user_text: str) -> str:
     history.append({"role": "user", "content": user_text})
-    payload = {
+    is_native_chat = LLM_URL.endswith("/api/chat")
+    payload: dict = {
         "model": LLM_MODEL,
         "messages": [{"role": "system", "content": SYSTEM_PROMPT}, *history[-12:]],
-        "temperature": 0.7,
         "stream": False,
-        # Ollama-specific: keep the model warm in VRAM between turns.
         "keep_alive": LLM_KEEP_ALIVE,
+        "options": {"temperature": 0.7},
     }
+    if is_native_chat:
+        # Ollama native: think flag avoids costly internal reasoning for voice-pace replies.
+        payload["think"] = LLM_THINK
+    else:
+        # OpenAI-compatible: temperature lives at top level, no think support.
+        payload["temperature"] = 0.7
+        payload.pop("options", None)
+
     r = await client.post(LLM_URL, json=payload, timeout=LLM_TIMEOUT_S)
     r.raise_for_status()
-    text = r.json()["choices"][0]["message"]["content"].strip()
-    # Strip <think>...</think> blocks (qwen3-style)
+    body = r.json()
+    if is_native_chat:
+        text = (body.get("message") or {}).get("content", "").strip()
+    else:
+        text = body["choices"][0]["message"]["content"].strip()
+
+    # Strip any leaked <think>...</think> blocks (qwen3 / r1 style) just in case.
     while "<think>" in text and "</think>" in text:
         a = text.index("<think>")
         b = text.index("</think>") + len("</think>")
         text = (text[:a] + text[b:]).strip()
+
     history.append({"role": "assistant", "content": text})
     return text
 
