@@ -372,12 +372,16 @@ def _run_tool(name: str, args: dict) -> str:
             results = store.search(query, limit=limit)
             if not results:
                 return f"No memories matched query={query!r}"
+            # NB: don't return memory IDs in the search result — the LLM tends
+            # to read them aloud, and VoxCPM mangles UUID strings into
+            # unintelligible noise. The model can still ask follow-up questions
+            # via the title/content; it doesn't actually need the IDs since
+            # recall_memory is rarely the next step in a voice conversation.
             lines = [f"Found {len(results)} memories for {query!r}:"]
             for r in results:
                 title = (getattr(r, "title", "") or "").strip()
-                mid = getattr(r, "id", None) or getattr(r, "memory_id", "?")
                 content = (getattr(r, "content", "") or "")[:200].strip().replace("\n", " ")
-                lines.append(f"- [{mid}] {title}: {content}")
+                lines.append(f"- {title}: {content}")
             return "\n".join(lines)
         elif name == "recall_memory":
             mid = (args.get("memory_id") or "").strip()
@@ -943,6 +947,10 @@ class Conversation:
         text = re.sub(r"\([^)]{1,80}\)", "", text)
         text = re.sub(r"\*[^*]{1,80}\*", "", text)
         text = re.sub(r"\[[^\]]{1,80}\]", "", text)
+        # Strip UUIDs and long hex/numeric IDs — VoxCPM mangles them into
+        # gibberish/stutters, sounds like she's "repeating herself".
+        text = re.sub(r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b", "(ID)", text, flags=re.I)
+        text = re.sub(r"\b[0-9a-f]{16,}\b", "(ID)", text, flags=re.I)
         text = re.sub(r"\s+", " ", text).strip()
         if not text:
             log.info("[lumina] (only stage-direction emitted, nothing to speak)")
