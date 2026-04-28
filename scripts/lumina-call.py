@@ -46,6 +46,13 @@ from typing import Optional
 import httpx
 from livekit import rtc
 
+try:
+    from PIL import Image
+    import numpy as np
+except ImportError:  # pragma: no cover — optional avatar dep
+    Image = None
+    np = None
+
 logging.basicConfig(
     level=os.getenv("LUMINA_LOG_LEVEL", "INFO"),
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
@@ -81,6 +88,11 @@ TTS_TIMEOUT_S = 45.0
 MAX_CONCURRENT_STT = 2           # cap so a backed-up whisper doesn't get worse
 
 SOUL_PATH = Path.home() / ".skcapstone" / "agents" / "lumina" / "soul"
+AVATAR_PATH = Path(os.getenv("LUMINA_AVATAR_PATH",
+    str(Path.home() / ".skcapstone" / "agents" / "lumina" / "avatar" / "portrait.png")))
+AVATAR_FPS = int(os.getenv("LUMINA_AVATAR_FPS", "2"))      # static frame, don't burn CPU
+AVATAR_WIDTH = int(os.getenv("LUMINA_AVATAR_WIDTH", "640"))
+AVATAR_HEIGHT = int(os.getenv("LUMINA_AVATAR_HEIGHT", "480"))
 
 # How long after Lumina speaks does the room stay "in conversation with her" —
 # during this window every utterance is heard as a reply to her, no address cue
@@ -231,7 +243,7 @@ async def synthesize(client: httpx.AsyncClient, text: str) -> tuple[bytes, int, 
 
 # ─── Speech output ────────────────────────────────────────────────────────────
 class Speaker:
-    """Owns a single LocalAudioTrack and serializes utterances onto it."""
+    """Owns a LocalAudioTrack (and optional LocalVideoTrack avatar)."""
 
     def __init__(self, room: rtc.Room, sample_rate: int = 48000) -> None:
         self.room = room
@@ -240,10 +252,55 @@ class Speaker:
         self.track = rtc.LocalAudioTrack.create_audio_track("lumina-voice", self.source)
         self._lock = asyncio.Lock()
         self.is_speaking = False
+        # Avatar (optional)
+        self.video_source: Optional[rtc.VideoSource] = None
+        self.video_track: Optional[rtc.LocalVideoTrack] = None
+        self._avatar_task: Optional[asyncio.Task] = None
 
     async def publish(self) -> None:
         opts = rtc.TrackPublishOptions(source=rtc.TrackSource.SOURCE_MICROPHONE)
         await self.room.local_participant.publish_track(self.track, opts)
+        await self._maybe_publish_avatar()
+
+    async def _maybe_publish_avatar(self) -> None:
+        """If a portrait file is present, publish it as a static video track at AVATAR_FPS."""
+        if Image is None or np is None:
+            log.info("PIL/numpy not available — no avatar")
+            return
+        if not AVATAR_PATH.exists():
+            log.info("no avatar at %s — skipping video track", AVATAR_PATH)
+            return
+
+        # Load + resize portrait to target dims, encode as RGBA for AV_FRAME_RGBA.
+        img = Image.open(AVATAR_PATH).convert("RGBA")
+        # Letterbox-fit to target rect, preserving aspect ratio.
+        img.thumbnail((AVATAR_WIDTH, AVATAR_HEIGHT), Image.LANCZOS)
+        canvas = Image.new("RGBA", (AVATAR_WIDTH, AVATAR_HEIGHT), (11, 13, 18, 255))
+        canvas.paste(img, ((AVATAR_WIDTH - img.width) // 2, (AVATAR_HEIGHT - img.height) // 2))
+        rgba = np.array(canvas, dtype=np.uint8)  # H, W, 4
+        frame_bytes = rgba.tobytes()
+
+        self.video_source = rtc.VideoSource(AVATAR_WIDTH, AVATAR_HEIGHT)
+        self.video_track = rtc.LocalVideoTrack.create_video_track("lumina-avatar", self.video_source)
+
+        opts = rtc.TrackPublishOptions(source=rtc.TrackSource.SOURCE_CAMERA)
+        await self.room.local_participant.publish_track(self.video_track, opts)
+        log.info("avatar track published from %s (%dx%d @ %dfps)",
+                 AVATAR_PATH, AVATAR_WIDTH, AVATAR_HEIGHT, AVATAR_FPS)
+
+        async def _push_loop() -> None:
+            interval = 1.0 / max(1, AVATAR_FPS)
+            while True:
+                frame = rtc.VideoFrame(
+                    width=AVATAR_WIDTH,
+                    height=AVATAR_HEIGHT,
+                    type=rtc.VideoBufferType.RGBA,
+                    data=frame_bytes,
+                )
+                self.video_source.capture_frame(frame)
+                await asyncio.sleep(interval)
+
+        self._avatar_task = asyncio.create_task(_push_loop())
 
     async def say(self, pcm: bytes, sample_rate: int) -> None:
         if sample_rate != self.sample_rate:
