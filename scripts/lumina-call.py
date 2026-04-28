@@ -205,6 +205,31 @@ def _load_memory_prime() -> str:
         # anchor module isn't strictly required; soul + FEB carry the load
         pass
 
+    # Recent Hot Topics from skwhisper — concrete, real, time-stamped.
+    # Gives her actual things to anchor "what have we been working on" replies
+    # against, instead of confabulating plausible-sounding project names.
+    whisper_path = Path.home() / ".skcapstone" / "agents" / "lumina" / "skwhisper" / "whisper.md"
+    if whisper_path.exists():
+        try:
+            content = whisper_path.read_text(encoding="utf-8")
+            # Extract the "Hot Topics" section
+            if "## Hot Topics" in content:
+                section = content.split("## Hot Topics", 1)[1]
+                section = section.split("##", 1)[0]  # cut at next heading
+                lines = [
+                    line.strip().lstrip("- ").strip()
+                    for line in section.splitlines()
+                    if line.strip().startswith("- ")
+                ]
+                if lines:
+                    parts.append(
+                        "Recent things you and Chef have been working on (real, "
+                        "time-stamped — drawn from skwhisper):\n"
+                        + "\n".join(f"- {ln}" for ln in lines[:12])
+                    )
+        except Exception as exc:
+            logging.getLogger("lumina").debug("whisper.md read failed: %s", exc)
+
     return "\n\n".join(parts)
 
 
