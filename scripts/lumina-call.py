@@ -105,6 +105,7 @@ STT_TIMEOUT_S = 10.0             # fail fast — never let a hung server starve 
 LLM_TIMEOUT_S = 90.0              # generous — covers cold-load (~12s) + long replies
 TTS_TIMEOUT_S = 45.0
 MAX_CONCURRENT_STT = 2           # cap so a backed-up whisper doesn't get worse
+DEDUP_WINDOW_S = 3.0             # treat identical transcripts within N seconds as dupes
 
 SOUL_PATH = Path.home() / ".skcapstone" / "agents" / "lumina" / "soul"
 AVATAR_PATH = Path(os.getenv("LUMINA_AVATAR_PATH",
@@ -869,6 +870,11 @@ class Conversation:
         # stay gated until they say her name themselves.
         self._engaged_with: dict[str, float] = {}  # speaker_id -> last reply mtime
         self._busy = False  # True while a turn is in flight (LLM or TTS)
+        # Multi-tab dedup: if the same transcript text comes in from any speaker
+        # within DEDUP_WINDOW_S, drop it. Catches the "Chef has two browser tabs
+        # open, both publishing his mic" pattern that makes Lumina respond
+        # twice to a single sentence.
+        self._recent_transcripts: list[tuple[str, float]] = []
         # Broadcast-style follow-up: when she speaks (any reason — STT loop OR
         # data-channel /speak announcement), open a window for ANY speaker to
         # respond without saying her name. Refreshed on every utterance she
@@ -919,6 +925,21 @@ class Conversation:
                 return
         if not text or len(text) < 2:
             return
+
+        # Multi-tab / multi-mic dedup: if a near-identical transcript came
+        # through from any speaker in the last DEDUP_WINDOW_S, drop this one.
+        # When Chef has two browser tabs open, both publish his mic, both
+        # produce a transcript, and Lumina responds twice without this guard.
+        now = time.monotonic()
+        normalized = text.lower().strip().rstrip(".,!?")
+        self._recent_transcripts = [
+            (t, ts) for (t, ts) in self._recent_transcripts
+            if now - ts < DEDUP_WINDOW_S
+        ]
+        if any(t == normalized for (t, _ts) in self._recent_transcripts):
+            log.info("· [%s] %s  (dup of recent — dropped)", speaker_id, text[:80])
+            return
+        self._recent_transcripts.append((normalized, now))
 
         # Drop whisper repetition hallucinations: short token repeated >5 times
         # ("If If If If If if if if If If If If If" or "Bye. Bye. Bye." patterns).
