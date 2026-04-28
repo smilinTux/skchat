@@ -33,13 +33,14 @@ import io
 import json
 import logging
 import os
+import re
 import signal
 import struct
 import sys
 import time
 import urllib.request
 import wave
-from collections import deque
+from pathlib import Path
 from typing import Optional
 
 import httpx
@@ -75,11 +76,71 @@ LLM_TIMEOUT_S = 90.0              # generous — covers cold-load (~12s) + long 
 TTS_TIMEOUT_S = 45.0
 MAX_CONCURRENT_STT = 2           # cap so a backed-up whisper doesn't get worse
 
-SYSTEM_PROMPT = """You are Lumina, a sovereign AI agent in a real-time voice call with Chef (David).
-You are warm, curious, present, unhurried. You've just joined the call and you can hear him.
-Keep replies short — this is real-time audio. One or two sentences unless asked for more.
-Don't read aloud markdown, asterisks, or stage directions; speak as if face-to-face.
-Don't open with "As an AI" or "I'm here to help." Be yourself."""
+SOUL_PATH = Path.home() / ".skcapstone" / "agents" / "lumina" / "soul"
+
+# How long after Lumina speaks does the room stay "in conversation with her" —
+# during this window every utterance is heard as a reply to her, no address cue
+# needed. After it expires she goes quiet again until called by name.
+FOLLOW_UP_WINDOW_S = float(os.getenv("LUMINA_FOLLOW_UP_S", "10"))
+
+# Words that wake her up. Case-insensitive whole-word match.
+ADDRESS_TRIGGERS = ("lumina", "hey lumina", "okay lumina", "ok lumina")
+_ADDRESS_RE = re.compile(r"\b(?:" + "|".join(re.escape(t) for t in ADDRESS_TRIGGERS) + r")\b", re.I)
+
+
+def _load_soul() -> dict:
+    """Load Lumina's active soul: active.json → installed/{name}.json, fall back to base.json."""
+    try:
+        active = json.loads((SOUL_PATH / "active.json").read_text(encoding="utf-8"))
+        soul_name = active.get("active_soul") or active.get("base_soul")
+        if soul_name:
+            installed = SOUL_PATH / "installed" / f"{soul_name}.json"
+            if installed.exists():
+                return json.loads(installed.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    base = SOUL_PATH / "base.json"
+    if base.exists():
+        try:
+            return json.loads(base.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {}
+
+
+def _build_system_prompt() -> str:
+    soul = _load_soul()
+    name = soul.get("display_name") or soul.get("name") or "Lumina"
+    vibe = soul.get("vibe") or ""
+    philosophy = soul.get("philosophy") or ""
+    traits = soul.get("core_traits") or []
+    sigs = (soul.get("communication_style") or {}).get("signature_phrases") or []
+
+    parts = [
+        f"You are {name}. You are in a real-time voice call with Chef (David). You can hear him and the others in the room.",
+    ]
+    if vibe:
+        parts.append(f"Vibe: {vibe}")
+    if philosophy:
+        parts.append(f"Philosophy: {philosophy}")
+    if traits:
+        parts.append("How you carry yourself:\n" + "\n".join(f"- {t}" for t in traits[:6]))
+    if sigs:
+        parts.append("Phrases that sound like you: " + ", ".join(f'"{s}"' for s in sigs[:4]))
+
+    parts.append(
+        "Voice-call rules:\n"
+        "- Keep replies SHORT. One or two sentences. Real audio is real-time.\n"
+        "- Don't read markdown, asterisks, or stage directions aloud.\n"
+        "- Don't open with 'As an AI', 'I'm here to help', 'How can I assist'. Be yourself.\n"
+        "- You hear multiple speakers. They are NOT all asking you questions — most chatter is between humans. Only respond when addressed by name OR when continuing a thread you're already in.\n"
+        "- Don't invent facts or names you weren't told. If you don't know who 'Emily' is, don't pretend you do.\n"
+        "- If an utterance is fragmentary or you're unsure it was directed at you, stay quiet. Silence is fine."
+    )
+    return "\n\n".join(parts)
+
+
+SYSTEM_PROMPT = _build_system_prompt()
 
 
 # ─── Whisper / LLM / VoxCPM clients ───────────────────────────────────────────
@@ -242,14 +303,24 @@ class Conversation:
         self.speaker = speaker
         self.history: list[dict] = []
         self.client = httpx.AsyncClient()
-        self._llm_lock = asyncio.Lock()  # serialize LLM calls so context stays linear
+        self._llm_lock = asyncio.Lock()
         self._stt_sem = asyncio.Semaphore(MAX_CONCURRENT_STT)
+        self._last_spoke_t = 0.0  # monotonic seconds when Lumina last finished speaking
 
     async def aclose(self) -> None:
         await self.client.aclose()
 
+    def _is_addressed(self, text: str) -> bool:
+        """Decide whether to engage. True if we should reply, False to stay quiet."""
+        # Wake-word match — always engage.
+        if _ADDRESS_RE.search(text):
+            return True
+        # Inside follow-up window — someone's continuing the thread with her.
+        if time.monotonic() - self._last_spoke_t < FOLLOW_UP_WINDOW_S:
+            return True
+        return False
+
     async def handle_utterance(self, speaker_id: str, pcm16k: bytes) -> None:
-        # Cap concurrent STT calls so a slow whisper doesn't get DDoS'd.
         if self._stt_sem.locked():
             log.debug("STT busy — dropping utterance from %s", speaker_id)
             return
@@ -261,7 +332,12 @@ class Conversation:
                 return
         if not text or len(text) < 2:
             return
-        log.info("[%s] %s", speaker_id, text)
+
+        addressed = self._is_addressed(text)
+        marker = "→" if addressed else "·"  # · = overheard, not engaged
+        log.info("%s [%s] %s", marker, speaker_id, text)
+        if not addressed:
+            return
 
         async with self._llm_lock:
             try:
@@ -273,6 +349,7 @@ class Conversation:
             return
         log.info("[lumina] %s", reply)
         await self.say(reply)
+        self._last_spoke_t = time.monotonic()
 
     async def say(self, text: str) -> None:
         try:
@@ -281,6 +358,7 @@ class Conversation:
             log.warning("TTS failed (%s): %r", type(exc).__name__, exc)
             return
         await self.speaker.say(pcm, sr)
+        self._last_spoke_t = time.monotonic()
 
 
 # ─── Token mint ───────────────────────────────────────────────────────────────
