@@ -86,6 +86,8 @@
   <div id="speak-row" class="controls hidden">
     <input id="speak-text" placeholder="Make Lumina say…" style="flex:1;min-width:200px" />
     <button id="speak-send">🤖 Speak</button>
+    <button id="record-toggle">🎙️ Record</button>
+    <a id="recordings-link" class="pill" href="/recordings.html" target="_blank" style="text-decoration:none">📁 Library</a>
   </div>
 
   <div id="grid"></div>
@@ -397,6 +399,43 @@ $('#mic-select').addEventListener('change', () => { if (room?.localParticipant.i
 $('#cam-select').addEventListener('change', () => { if (room?.localParticipant.isCameraEnabled) toggleCam(true); });
 $('#speak-send').addEventListener('click', speakAsLumina);
 $('#speak-text').addEventListener('keydown', e => { if (e.key === 'Enter') speakAsLumina(); });
+
+let recordingActive = false;
+async function refreshRecordingState() {
+  try {
+    const r = await fetch('/recordings');
+    const d = await r.json();
+    recordingActive = !!d.active;
+    const btn = $('#record-toggle');
+    if (recordingActive) {
+      btn.textContent = '⏹️ Stop'; btn.style.background = '#5a2a2a';
+    } else {
+      btn.textContent = '🎙️ Record'; btn.style.background = '';
+    }
+  } catch (e) {}
+}
+$('#record-toggle').addEventListener('click', async () => {
+  try {
+    if (!recordingActive) {
+      const label = prompt('Recording label (optional, e.g. "cloud9-explanation"):', '') || 'recording';
+      const r = await fetch('/livekit/record/start', {
+        method: 'POST',
+        headers: {'content-type': 'application/json'},
+        body: JSON.stringify({label, room: room ? room.name : undefined, target: 'lumina'}),
+      });
+      if (!r.ok) throw new Error(`start failed (${r.status})`);
+      log('🔴 recording started');
+    } else {
+      const r = await fetch('/livekit/record/stop', {method: 'POST'});
+      const d = await r.json();
+      log(`⏹️ stopped — saved ${d.path} (${d.size_bytes} bytes)`);
+    }
+  } catch (e) {
+    log('record toggle error:', e.message);
+  }
+  await refreshRecordingState();
+});
+setInterval(refreshRecordingState, 5000);  // poll for state in case stopped externally
 
 // ── Init ─────────────────────────────────────────────────────────────────────
 (async () => {
