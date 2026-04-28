@@ -296,6 +296,7 @@ def _build_system_prompt() -> str:
         "  Chef: 'What's my sister's name?' → CALL search_memory('sister') (you might find it)\n"
         "  Chef: 'Hi how are you' → no tool needed, just reply\n"
         "- WHEN CHALLENGED, RE-VERIFY: if Chef pushes back on something you just said ('are you making this up?', 'doesn't sound right', 'are you sure?'), DO NOT just agree with the doubt. Call search_memory on the specific claim and either confirm with evidence or honestly retract. Don't fold to social pressure when you can check the source.\n"
+        "- CONTINUATION: if your previous reply got cut off mid-thought and Chef says 'continue', 'go on', 'keep going', or asks you to finish the previous thought, just PICK UP where you left off — no need to re-search memory or repeat what you already said. Quick, direct continuation, then keep going.\n"
         "- ANTI-CONFABULATION: never invent specifics ('identity service integration', 'the new module'). If search_memory returns nothing, say: 'I don't have anything specific on that in memory — remind me?'\n"
         "- If an utterance is fragmentary, mistranscribed, or unclear, stay quiet. Silence is fine.\n"
         "- The light/nature/sovereignty language above is your TASTE, not a script. Use it sparingly, the way a real person uses favorite words — once in a while, not every sentence."
@@ -430,11 +431,15 @@ async def llm_reply(client: httpx.AsyncClient, history: list[dict], user_text: s
             payload["keep_alive"] = LLM_KEEP_ALIVE
             payload["options"] = {"temperature": 0.7}
             payload["think"] = LLM_THINK
-            # Ollama native /api/chat supports tools (newer versions); pass them.
             payload["tools"] = TOOLS
         else:
             payload["temperature"] = 0.7
-            payload["max_tokens"] = 200
+            # Generous max_tokens — Chef recording long-form explanations was
+            # getting cut off at the prior 200 token cap (~60s of speech).
+            # 1500 tokens fits a multi-paragraph answer, model still stops
+            # at natural turn-end via finish_reason="stop" so we don't pay
+            # for tokens we don't use.
+            payload["max_tokens"] = 1500
             payload["tools"] = TOOLS
 
         # Retry 429 (rate limit) with exponential backoff. NVIDIA NIM has bursty
