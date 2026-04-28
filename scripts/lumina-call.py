@@ -578,6 +578,16 @@ class Conversation:
         if not text or len(text) < 2:
             return
 
+        # Drop whisper repetition hallucinations: short token repeated >5 times
+        # ("If If If If If if if if If If If If If" or "Bye. Bye. Bye." patterns).
+        words = text.split()
+        if len(words) >= 6:
+            lowers = [w.lower().strip(".,!?\"'") for w in words]
+            top_word = max(set(lowers), key=lowers.count)
+            if lowers.count(top_word) >= len(words) * 0.6 and len(top_word) <= 4:
+                log.info("· [%s] %s  (whisper repetition — dropped)", speaker_id, text[:80])
+                return
+
         addressed = self._is_addressed(speaker_id, text)
         marker = "→" if addressed else "·"  # · = overheard, not engaged
         log.info("%s [%s] %s", marker, speaker_id, text)
