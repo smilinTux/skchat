@@ -85,7 +85,7 @@ SOUL_PATH = Path.home() / ".skcapstone" / "agents" / "lumina" / "soul"
 # How long after Lumina speaks does the room stay "in conversation with her" —
 # during this window every utterance is heard as a reply to her, no address cue
 # needed. After it expires she goes quiet again until called by name.
-FOLLOW_UP_WINDOW_S = float(os.getenv("LUMINA_FOLLOW_UP_S", "20"))
+FOLLOW_UP_WINDOW_S = float(os.getenv("LUMINA_FOLLOW_UP_S", "12"))
 
 # Words that wake her up. Case-insensitive whole-word match.
 # - lumina + common whisper-mistranscriptions ("luminous", "lumi", "loomina")
@@ -333,18 +333,24 @@ class Conversation:
         self.client = httpx.AsyncClient()
         self._llm_lock = asyncio.Lock()
         self._stt_sem = asyncio.Semaphore(MAX_CONCURRENT_STT)
-        self._last_spoke_t = 0.0  # monotonic seconds when Lumina last finished speaking
+        # Per-speaker follow-up tracking: only the speaker who addressed her
+        # by name keeps the follow-up window open. Other speakers in the room
+        # stay gated until they say her name themselves.
+        self._engaged_with: dict[str, float] = {}  # speaker_id -> last reply mtime
+        self._busy = False  # True while a turn is in flight (LLM or TTS)
 
     async def aclose(self) -> None:
         await self.client.aclose()
 
-    def _is_addressed(self, text: str) -> bool:
-        """Decide whether to engage. True if we should reply, False to stay quiet."""
-        # Wake-word match — always engage.
+    def _is_addressed(self, speaker_id: str, text: str) -> bool:
+        # Wake-word match: this speaker is now engaged with her.
         if _ADDRESS_RE.search(text):
+            self._engaged_with[speaker_id] = time.monotonic()
             return True
-        # Inside follow-up window — someone's continuing the thread with her.
-        if time.monotonic() - self._last_spoke_t < FOLLOW_UP_WINDOW_S:
+        # Continuing a thread the SAME speaker recently opened — natural
+        # follow-up turns from them roll forward without re-saying her name.
+        last = self._engaged_with.get(speaker_id)
+        if last is not None and time.monotonic() - last < FOLLOW_UP_WINDOW_S:
             return True
         return False
 
@@ -361,23 +367,35 @@ class Conversation:
         if not text or len(text) < 2:
             return
 
-        addressed = self._is_addressed(text)
+        addressed = self._is_addressed(speaker_id, text)
         marker = "→" if addressed else "·"  # · = overheard, not engaged
         log.info("%s [%s] %s", marker, speaker_id, text)
         if not addressed:
             return
 
-        async with self._llm_lock:
-            try:
-                reply = await llm_reply(self.client, self.history, f"{speaker_id}: {text}")
-            except Exception as exc:
-                log.warning("LLM failed (%s): %r", type(exc).__name__, exc)
-                return
-        if not reply:
+        # If she's already mid-turn, drop this one instead of stacking another
+        # LLM+TTS roundtrip on top. Avoids the 4-replies-in-4-seconds spiral
+        # that DDoS'd VoxCPM into 500s.
+        if self._busy:
+            log.debug("turn already in flight — dropping addressed utterance from %s", speaker_id)
             return
-        log.info("[lumina] %s", reply)
-        await self.say(reply)
-        self._last_spoke_t = time.monotonic()
+
+        self._busy = True
+        try:
+            async with self._llm_lock:
+                try:
+                    reply = await llm_reply(self.client, self.history, f"{speaker_id}: {text}")
+                except Exception as exc:
+                    log.warning("LLM failed (%s): %r", type(exc).__name__, exc)
+                    return
+            if not reply:
+                return
+            log.info("[lumina] %s", reply)
+            await self.say(reply)
+            # Refresh the speaker's follow-up window as of the end of her reply.
+            self._engaged_with[speaker_id] = time.monotonic()
+        finally:
+            self._busy = False
 
     async def say(self, text: str) -> None:
         try:
@@ -386,7 +404,6 @@ class Conversation:
             log.warning("TTS failed (%s): %r", type(exc).__name__, exc)
             return
         await self.speaker.say(pcm, sr)
-        self._last_spoke_t = time.monotonic()
 
 
 # ─── Token mint ───────────────────────────────────────────────────────────────
