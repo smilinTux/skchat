@@ -478,10 +478,9 @@ async def llm_reply(client: httpx.AsyncClient, history: list[dict], user_text: s
 
 
 async def synthesize(client: httpx.AsyncClient, text: str) -> tuple[bytes, int, int, bytes]:
-    """Returns (pcm, sample_rate, num_channels, raw_wav_bytes).
+    """Batch synth — kept for the MuseTalk single-shot path that needs full WAV.
 
-    raw_wav_bytes is the original WAV stream — kept so we can also POST it to
-    MuseTalk for lip-sync without re-encoding.
+    Returns (pcm, sample_rate, num_channels, raw_wav_bytes).
     """
     r = await client.post(
         TTS_URL,
@@ -497,6 +496,49 @@ async def synthesize(client: httpx.AsyncClient, text: str) -> tuple[bytes, int, 
     wav_bytes = r.content
     with wave.open(io.BytesIO(wav_bytes), "rb") as wf:
         return wf.readframes(wf.getnframes()), wf.getframerate(), wf.getnchannels(), wav_bytes
+
+
+# Streaming TTS — VoxCPM's /audio/speech/stream endpoint yields raw int16 PCM
+# at the model's native rate (~48 kHz mono) starting in ~900 ms. We consume
+# the byte stream and emit fixed-size chunks aligned to AudioSource frames.
+TTS_STREAM_URL = TTS_URL.rsplit("/audio/speech", 1)[0] + "/audio/speech/stream"
+TTS_STREAM_SAMPLE_RATE = int(os.getenv("LUMINA_TTS_STREAM_SR", "48000"))
+
+
+async def stream_synthesize(
+    client: httpx.AsyncClient, text: str
+) -> "asyncio.Queue[Optional[bytes]]":
+    """Kick off streaming synthesis. Returns an asyncio.Queue[bytes].
+
+    The queue is populated as PCM chunks arrive from VoxCPM. None signals
+    end-of-stream. Caller awaits queue.get() in a tight loop and pushes
+    bytes to LiveKit AudioSource. First byte typically lands in ~900 ms.
+
+    The producer task runs in the background; on error it puts None then
+    exits (errors logged, caller treats as clean EOS — graceful degrade).
+    """
+    queue: asyncio.Queue[Optional[bytes]] = asyncio.Queue(maxsize=64)
+
+    async def _producer() -> None:
+        body = {
+            "voice": TTS_VOICE,
+            "input": text,
+            "response_format": "pcm",  # raw int16 PCM, no WAV header
+        }
+        try:
+            async with client.stream(
+                "POST", TTS_STREAM_URL, json=body, timeout=TTS_TIMEOUT_S
+            ) as r:
+                r.raise_for_status()
+                async for chunk in r.aiter_bytes(chunk_size=4096):
+                    await queue.put(chunk)
+        except Exception as exc:
+            log.warning("TTS stream failed (%s): %r", type(exc).__name__, exc)
+        finally:
+            await queue.put(None)
+
+    asyncio.create_task(_producer())
+    return queue
 
 
 async def lipsync_frames(client: httpx.AsyncClient, wav_bytes: bytes) -> list[bytes]:
@@ -633,6 +675,59 @@ class Speaker:
                         chunk += b"\x00" * (bytes_per_frame - len(chunk))
                     frame = rtc.AudioFrame(
                         data=chunk,
+                        sample_rate=self.sample_rate,
+                        num_channels=1,
+                        samples_per_channel=samples_per_frame,
+                    )
+                    await self.source.capture_frame(frame)
+            finally:
+                self.is_speaking = False
+
+    async def say_stream(self, queue: "asyncio.Queue[Optional[bytes]]", source_sample_rate: int) -> None:
+        """Stream PCM bytes from a queue into the AudioSource as 20ms frames.
+
+        Buffers the source-rate stream into 20ms aligned frames, resamples to
+        self.sample_rate if needed, then captures. Tolerates ragged chunk sizes
+        (the upstream VoxCPM stream emits ~80ms blocks but the byte boundaries
+        don't align with our 20ms frames).
+        """
+        samples_per_frame = self.sample_rate * 20 // 1000
+        bytes_per_frame = samples_per_frame * 2
+        # If source rate differs from track rate, resample chunks as we go.
+        same_rate = source_sample_rate == self.sample_rate
+        ratecv_state = None
+        buf = bytearray()
+
+        async with self._lock:
+            self.is_speaking = True
+            try:
+                while True:
+                    chunk = await queue.get()
+                    if chunk is None:
+                        break
+                    if same_rate:
+                        buf.extend(chunk)
+                    else:
+                        resampled, ratecv_state = audioop.ratecv(
+                            chunk, 2, 1, source_sample_rate, self.sample_rate, ratecv_state
+                        )
+                        buf.extend(resampled)
+                    while len(buf) >= bytes_per_frame:
+                        frame_bytes = bytes(buf[:bytes_per_frame])
+                        del buf[:bytes_per_frame]
+                        frame = rtc.AudioFrame(
+                            data=frame_bytes,
+                            sample_rate=self.sample_rate,
+                            num_channels=1,
+                            samples_per_channel=samples_per_frame,
+                        )
+                        await self.source.capture_frame(frame)
+                # Flush any tail bytes by zero-padding to frame boundary.
+                if buf:
+                    pad = bytes_per_frame - len(buf)
+                    frame_bytes = bytes(buf) + (b"\x00" * pad)
+                    frame = rtc.AudioFrame(
+                        data=frame_bytes,
                         sample_rate=self.sample_rate,
                         num_channels=1,
                         samples_per_channel=samples_per_frame,
@@ -841,16 +936,22 @@ class Conversation:
             await self._speak_one(text)
             return
 
-        log.info("speaking %d sentences in parallel", len(sentences))
-        tasks = [asyncio.create_task(synthesize(self.client, s)) for s in sentences]
-        for i, task in enumerate(tasks):
+        log.info("speaking %d sentences (streaming)", len(sentences))
+        # Kick off all sentence streams in parallel. Each returns an asyncio.Queue
+        # populated by a background task. We play them in order: stream 1 starts
+        # publishing audio in ~900 ms; streams 2-N are filling their queues
+        # concurrently so when stream 1's audio ends we play stream 2 with no
+        # synthesis wait.
+        queues = [
+            await stream_synthesize(self.client, s) for s in sentences
+        ]
+        for i, q in enumerate(queues):
             try:
-                pcm, sr, _, _ = await task
+                await self.speaker.say_stream(q, TTS_STREAM_SAMPLE_RATE)
             except Exception as exc:
-                log.warning("TTS sentence %d/%d failed (%s): %r",
+                log.warning("TTS playback %d/%d failed (%s): %r",
                             i + 1, len(sentences), type(exc).__name__, exc)
                 continue
-            await self.speaker.say(pcm, sr)
 
     async def _speak_one(self, text: str) -> None:
         """Single-sentence path — kept separate so the lipsync code path stays
