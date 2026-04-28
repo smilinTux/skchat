@@ -658,6 +658,15 @@ class Conversation:
     async def say(self, text: str) -> None:
         # Whenever she speaks — for any reason — open the broadcast window.
         self._broadcast_speak_t = time.monotonic()
+        # Strip stage directions / markdown that TTS would read literally
+        # ("(A warm laugh)", "*sighs*", "[laughs]", "**word**").
+        text = re.sub(r"\([^)]{1,80}\)", "", text)        # parenthetical stage directions
+        text = re.sub(r"\*[^*]{1,80}\*", "", text)         # *italic stage*
+        text = re.sub(r"\[[^\]]{1,80}\]", "", text)         # [bracketed] stage
+        text = re.sub(r"\s+", " ", text).strip()
+        if not text:
+            log.info("[lumina] (only stage-direction emitted, nothing to speak)")
+            return
         try:
             pcm, sr, _, wav_bytes = await synthesize(self.client, text)
         except Exception as exc:
