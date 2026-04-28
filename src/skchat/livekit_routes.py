@@ -24,6 +24,11 @@ from __future__ import annotations
 import json
 import logging
 import os
+import signal
+import subprocess
+import sys
+import time
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -186,6 +191,105 @@ def register_livekit_routes(app: FastAPI) -> None:
 
         return JSONResponse({"ok": True, "room": room_name, "to": destination, "text": text})
 
+    # ── Recording endpoints ──────────────────────────────────────────────
+    # Webui-driven capture of Lumina's audio track to a WAV file in
+    # ~/.skchat/lumina-recordings/. Spawns lumina_recorder.py as a subprocess
+    # — it joins the room, subscribes to the target's audio track, writes
+    # frames to disk. Stop endpoint sends SIGTERM for clean WAV close.
+
+    @app.post("/livekit/record/start")
+    async def livekit_record_start(request: Request) -> JSONResponse:
+        body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else dict(await request.form())
+        target = (body.get("target") or "lumina").strip()
+        room_name = body.get("room") or DEFAULT_ROOM
+        label = (body.get("label") or "recording").strip().replace(" ", "_")[:60] or "recording"
+
+        rec_dir = Path.home() / ".skchat" / "lumina-recordings"
+        rec_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+        out_path = rec_dir / f"{stamp}_{target}_{label}.wav"
+
+        # Spawn the recorder as a child process under the same user. It auto-
+        # exits cleanly on SIGTERM. We track PID + path in a ledger file.
+        ledger = rec_dir / ".active.json"
+        cmd = [
+            sys.executable,
+            "-m", "skchat.lumina_recorder",
+            "--out", str(out_path),
+            "--room", room_name,
+            "--target", target,
+            "--webui", "https://REDACTED-TAILSCALE-HOST",
+        ]
+        log_path = rec_dir / f"{stamp}_{target}_{label}.log"
+        log_fh = log_path.open("w")
+        proc = subprocess.Popen(cmd, stdout=log_fh, stderr=subprocess.STDOUT)
+        ledger.write_text(json.dumps({
+            "pid": proc.pid,
+            "path": str(out_path),
+            "log": str(log_path),
+            "target": target,
+            "room": room_name,
+            "label": label,
+            "started_at": datetime.now().isoformat(),
+        }), encoding="utf-8")
+        return JSONResponse({"ok": True, "pid": proc.pid, "path": str(out_path), "log": str(log_path)})
+
+    @app.post("/livekit/record/stop")
+    async def livekit_record_stop() -> JSONResponse:
+        rec_dir = Path.home() / ".skchat" / "lumina-recordings"
+        ledger = rec_dir / ".active.json"
+        if not ledger.exists():
+            return JSONResponse({"ok": False, "reason": "no active recording"}, status_code=404)
+        info = json.loads(ledger.read_text(encoding="utf-8"))
+        pid = int(info["pid"])
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        # Wait briefly for clean WAV close.
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.1)
+        ledger.unlink(missing_ok=True)
+        path = Path(info.get("path", ""))
+        size = path.stat().st_size if path.exists() else 0
+        return JSONResponse({"ok": True, "path": str(path), "size_bytes": size})
+
+    @app.get("/recordings")
+    async def list_recordings() -> JSONResponse:
+        rec_dir = Path.home() / ".skchat" / "lumina-recordings"
+        rec_dir.mkdir(parents=True, exist_ok=True)
+        ledger = rec_dir / ".active.json"
+        active = None
+        if ledger.exists():
+            try:
+                active = json.loads(ledger.read_text(encoding="utf-8"))
+            except Exception:
+                active = None
+        out = []
+        for p in sorted(rec_dir.glob("*.wav"), reverse=True):
+            stat = p.stat()
+            out.append({
+                "name": p.name,
+                "size_bytes": stat.st_size,
+                "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+                "url": f"/recordings/{p.name}",
+            })
+        return JSONResponse({"recordings": out, "active": active})
+
+    @app.get("/recordings/{name}")
+    async def fetch_recording(name: str) -> FileResponse:
+        rec_dir = Path.home() / ".skchat" / "lumina-recordings"
+        # basic path-traversal guard
+        path = (rec_dir / name).resolve()
+        if not str(path).startswith(str(rec_dir.resolve())) or not path.exists():
+            raise HTTPException(status_code=404, detail="recording not found")
+        return FileResponse(path, media_type="audio/wav", filename=name)
+
     @app.get("/livekit", response_class=HTMLResponse)
     async def livekit_page() -> HTMLResponse:
         return _serve_livekit_html()
@@ -193,6 +297,13 @@ def register_livekit_routes(app: FastAPI) -> None:
     @app.get("/livekit/{room}", response_class=HTMLResponse)
     async def livekit_room_page(room: str) -> HTMLResponse:  # noqa: ARG001
         return _serve_livekit_html()
+
+    @app.get("/recordings.html", response_class=HTMLResponse)
+    async def recordings_page() -> HTMLResponse:
+        static = Path(__file__).parent / "static" / "recordings.html"
+        if static.exists():
+            return FileResponse(static, media_type="text/html")
+        return HTMLResponse("recordings.html missing", status_code=500)
 
 
 def _serve_livekit_html() -> HTMLResponse:
