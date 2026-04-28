@@ -920,24 +920,30 @@ class Conversation:
 
     @staticmethod
     def _split_sentences(text: str) -> list[str]:
-        """Break a reply into sentences for parallel TTS synthesis.
+        """Break a reply into sentences for sequential TTS synthesis.
 
-        Splits on `.`, `!`, `?` followed by whitespace OR end-of-string.
-        Keeps the punctuation with the sentence so VoxCPM gets the prosody hint.
-        Joins fragments shorter than 8 chars with the previous sentence to
-        avoid fragmenting "Yeah." / "Right." into their own synthesis trip.
+        Short fragments (<16 chars) get merged with neighbors — VoxCPM's
+        synthesis quality degrades on tiny inputs (often produces 1-second
+        truncated audio for ~150-char sentences when batched alongside a
+        7-char fragment, even sequentially). Very long single sentences
+        keep their own slot for synthesis pacing.
         """
-        # Re.split keeps the delimiter when the pattern uses a capture group.
         parts = re.split(r"(?<=[.!?])\s+(?=[A-Z\"'])", text.strip())
         cleaned: list[str] = []
         for p in parts:
             p = p.strip()
             if not p:
                 continue
-            if cleaned and len(p) < 8:
+            if cleaned and len(p) < 16:
                 cleaned[-1] = (cleaned[-1].rstrip() + " " + p).strip()
+            elif not cleaned and len(p) < 16:
+                # Short first fragment — hold it, prepend to the next sentence.
+                cleaned.append(p)  # placeholder
             else:
-                cleaned.append(p)
+                if cleaned and len(cleaned[-1]) < 16:
+                    cleaned[-1] = (cleaned[-1].rstrip() + " " + p).strip()
+                else:
+                    cleaned.append(p)
         return cleaned
 
     async def say(self, text: str) -> None:
@@ -966,22 +972,17 @@ class Conversation:
             await self._speak_one(text)
             return
 
-        log.info("speaking %d sentences (batch, pipelined)", len(sentences))
-        # Pipeline depth 2 in batch mode: while sentence N plays on the LiveKit
-        # side, sentence N+1 synthesizes on VoxCPM. Playback (noroc) and
-        # synthesis (.100) are on DIFFERENT machines so they truly run in
-        # parallel even though VoxCPM itself is single-threaded inference.
-        # Net: between-sentence gap drops from ~8s to ~0 once warmed up.
-        synth_tasks: list = [None] * len(sentences)
-        synth_tasks[0] = asyncio.create_task(synthesize(self.client, sentences[0]))
+        log.info("speaking %d sentences (fully serial)", len(sentences))
+        # Fully serial — one synth, await, play, next. VoxCPM's batch endpoint
+        # produces TRUNCATED audio (1s output for 150-char input) when two
+        # synthesis requests overlap, even when running on different machines
+        # from the player. Suspect badcase-detection retry logic gets confused
+        # by concurrent generation contexts. Strict serialization eliminates
+        # that and gives clean audio at the cost of inter-sentence gaps
+        # equal to next sentence's synth time (~3-4s typical).
         for i, s in enumerate(sentences):
-            # Kick off the NEXT sentence's synth before awaiting current's audio.
-            if i + 1 < len(sentences) and synth_tasks[i + 1] is None:
-                synth_tasks[i + 1] = asyncio.create_task(
-                    synthesize(self.client, sentences[i + 1])
-                )
             try:
-                pcm, sr, _, _ = await synth_tasks[i]
+                pcm, sr, _, _ = await synthesize(self.client, s)
             except Exception as exc:
                 log.warning("TTS sentence %d/%d failed (%s): %r",
                             i + 1, len(sentences), type(exc).__name__, exc)
