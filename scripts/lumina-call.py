@@ -65,10 +65,14 @@ DISPLAY_NAME = os.getenv("LUMINA_NAME", "Lumina")
 # VAD + buffering tuning
 STT_SAMPLE_RATE = 16000          # whisper-friendly
 VAD_FRAME_MS = 20
-RMS_VOICE_THRESHOLD = 600        # int16 RMS — bump up if a noisy mic spams transcripts
+RMS_VOICE_THRESHOLD = int(os.getenv("LUMINA_VAD_RMS", "1200"))  # int16 RMS — speech-only
 SILENCE_HANGOVER_MS = 800        # how much silence ends an utterance
-MIN_UTTERANCE_MS = 300           # ignore micro-blips
+MIN_UTTERANCE_MS = 600           # ignore short blips and "uh"s
 MAX_UTTERANCE_MS = 12000         # force-flush after 12s so a monologue doesn't starve
+STT_TIMEOUT_S = 10.0             # fail fast — never let a hung server starve us
+LLM_TIMEOUT_S = 30.0
+TTS_TIMEOUT_S = 45.0
+MAX_CONCURRENT_STT = 2           # cap so a backed-up whisper doesn't get worse
 
 SYSTEM_PROMPT = """You are Lumina, a sovereign AI agent in a real-time voice call with Chef (David).
 You are warm, curious, present, unhurried. You've just joined the call and you can hear him.
@@ -87,7 +91,7 @@ async def transcribe(client: httpx.AsyncClient, pcm16k_mono: bytes) -> str:
         wf.setframerate(STT_SAMPLE_RATE)
         wf.writeframes(pcm16k_mono)
     files = {"file": ("speech.wav", buf.getvalue(), "audio/wav")}
-    r = await client.post(STT_URL, files=files, data={"model": "whisper-1"}, timeout=20.0)
+    r = await client.post(STT_URL, files=files, data={"model": "whisper-1"}, timeout=STT_TIMEOUT_S)
     r.raise_for_status()
     return (r.json().get("text") or "").strip()
 
@@ -100,7 +104,7 @@ async def llm_reply(client: httpx.AsyncClient, history: list[dict], user_text: s
         "temperature": 0.7,
         "stream": False,
     }
-    r = await client.post(LLM_URL, json=payload, timeout=60.0)
+    r = await client.post(LLM_URL, json=payload, timeout=LLM_TIMEOUT_S)
     r.raise_for_status()
     text = r.json()["choices"][0]["message"]["content"].strip()
     # Strip <think>...</think> blocks (qwen3-style)
@@ -121,7 +125,7 @@ async def synthesize(client: httpx.AsyncClient, text: str) -> tuple[bytes, int, 
             "input": text,
             "response_format": "wav",
         },
-        timeout=60.0,
+        timeout=TTS_TIMEOUT_S,
     )
     r.raise_for_status()
     with wave.open(io.BytesIO(r.content), "rb") as wf:
@@ -236,16 +240,22 @@ class Conversation:
         self.history: list[dict] = []
         self.client = httpx.AsyncClient()
         self._llm_lock = asyncio.Lock()  # serialize LLM calls so context stays linear
+        self._stt_sem = asyncio.Semaphore(MAX_CONCURRENT_STT)
 
     async def aclose(self) -> None:
         await self.client.aclose()
 
     async def handle_utterance(self, speaker_id: str, pcm16k: bytes) -> None:
-        try:
-            text = await transcribe(self.client, pcm16k)
-        except Exception as exc:
-            log.warning("STT failed: %s", exc)
+        # Cap concurrent STT calls so a slow whisper doesn't get DDoS'd.
+        if self._stt_sem.locked():
+            log.debug("STT busy — dropping utterance from %s", speaker_id)
             return
+        async with self._stt_sem:
+            try:
+                text = await transcribe(self.client, pcm16k)
+            except Exception as exc:
+                log.warning("STT failed (%s): %r", type(exc).__name__, exc)
+                return
         if not text or len(text) < 2:
             return
         log.info("[%s] %s", speaker_id, text)
@@ -254,7 +264,7 @@ class Conversation:
             try:
                 reply = await llm_reply(self.client, self.history, f"{speaker_id}: {text}")
             except Exception as exc:
-                log.warning("LLM failed: %s", exc)
+                log.warning("LLM failed (%s): %r", type(exc).__name__, exc)
                 return
         if not reply:
             return
@@ -265,7 +275,7 @@ class Conversation:
         try:
             pcm, sr, _ = await synthesize(self.client, text)
         except Exception as exc:
-            log.warning("TTS failed: %s", exc)
+            log.warning("TTS failed (%s): %r", type(exc).__name__, exc)
             return
         await self.speaker.say(pcm, sr)
 
@@ -304,17 +314,22 @@ async def main() -> int:
     convo = Conversation(speaker)
 
     listen_tasks: list[asyncio.Task] = []
+    listening_to: set[str] = set()  # track sids we're already consuming
 
-    @room.on("track_subscribed")
-    def _on_track(track: rtc.Track, _pub: rtc.RemoteTrackPublication, p: rtc.RemoteParticipant) -> None:
-        if track.kind != rtc.TrackKind.KIND_AUDIO:
+    def _start_listening(track: rtc.Track, p: rtc.RemoteParticipant) -> None:
+        if track.kind != rtc.TrackKind.KIND_AUDIO or args.no_listen:
             return
-        if args.no_listen:
-            return
-        log.info("→ subscribing to audio from %s", p.identity)
+        if track.sid in listening_to:
+            return  # already have a listener — track_subscribed event re-fires on reconnect
+        listening_to.add(track.sid)
+        log.info("→ subscribing to audio from %s (track %s)", p.identity, track.sid)
         listen_tasks.append(
             asyncio.create_task(listen_to_participant(p, track, convo.handle_utterance, speaker))
         )
+
+    @room.on("track_subscribed")
+    def _on_track(track: rtc.Track, _pub: rtc.RemoteTrackPublication, p: rtc.RemoteParticipant) -> None:
+        _start_listening(track, p)
 
     @room.on("data_received")
     def _on_data(packet: rtc.DataPacket) -> None:
@@ -344,13 +359,12 @@ async def main() -> int:
     await speaker.publish()
     log.info("audio track published")
 
-    # Subscribe to existing participants' tracks
+    # Subscribe to existing participants' tracks (track_subscribed will fire
+    # for already-subscribed tracks too, but the dedup set above guards us).
     for p in room.remote_participants.values():
         for pub in p.track_publications.values():
-            if pub.subscribed and pub.track and pub.track.kind == rtc.TrackKind.KIND_AUDIO and not args.no_listen:
-                listen_tasks.append(
-                    asyncio.create_task(listen_to_participant(p, pub.track, convo.handle_utterance, speaker))
-                )
+            if pub.subscribed and pub.track:
+                _start_listening(pub.track, p)
 
     if args.greet:
         await asyncio.sleep(0.6)  # let subscriptions settle
