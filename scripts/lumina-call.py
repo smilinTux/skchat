@@ -299,40 +299,177 @@ async def transcribe(client: httpx.AsyncClient, pcm16k_mono: bytes) -> str:
     return (r.json().get("text") or "").strip()
 
 
-async def llm_reply(client: httpx.AsyncClient, history: list[dict], user_text: str) -> str:
-    history.append({"role": "user", "content": user_text})
-    is_native_chat = LLM_URL.endswith("/api/chat")
-    payload: dict = {
-        "model": LLM_MODEL,
-        "messages": [{"role": "system", "content": SYSTEM_PROMPT}, *history[-12:]],
-        "stream": False,
-        "keep_alive": LLM_KEEP_ALIVE,
-        "options": {"temperature": 0.7},
-    }
-    if is_native_chat:
-        # Ollama native: think flag avoids costly internal reasoning for voice-pace replies.
-        payload["think"] = LLM_THINK
-    else:
-        # OpenAI-compatible: temperature lives at top level, no think support.
-        payload["temperature"] = 0.7
-        payload.pop("options", None)
+LLM_API_KEY = os.getenv("LUMINA_LLM_API_KEY", "") or os.getenv("NVIDIA_API_KEY", "")
 
-    r = await client.post(LLM_URL, json=payload, timeout=LLM_TIMEOUT_S)
-    r.raise_for_status()
-    body = r.json()
-    if is_native_chat:
-        text = (body.get("message") or {}).get("content", "").strip()
-    else:
-        text = body["choices"][0]["message"]["content"].strip()
+# Tool definitions — OpenAI-compat function-calling shape. Models that ignore
+# `tools` (Ollama Gemma, others) just won't emit tool_calls and we get a normal
+# text reply. Tool execution is implemented in `_run_tool()` below.
+TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "search_memory",
+            "description": (
+                "Search Lumina's persistent memory store (skmemory) for relevant "
+                "session digests, journal entries, seeds, and project notes. Use "
+                "when Chef asks about specific past topics ('what did we decide "
+                "about X', 'remember when we worked on Y'), or when grounding a "
+                "reply in real history is better than guessing."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Search query — keywords, topic, or partial phrase",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max results to return (default 5, max 10)",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "recall_memory",
+            "description": (
+                "Fetch the full content of a specific memory by its ID. Use after "
+                "search_memory finds a relevant entry and you want the full text."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "memory_id": {"type": "string"},
+                },
+                "required": ["memory_id"],
+            },
+        },
+    },
+]
 
-    # Strip any leaked <think>...</think> blocks (qwen3 / r1 style) just in case.
+
+def _run_tool(name: str, args: dict) -> str:
+    """Execute a tool call, return a string result the model can read."""
+    try:
+        from skmemory import MemoryStore
+
+        store = MemoryStore()
+        if name == "search_memory":
+            query = (args.get("query") or "").strip()
+            if not query:
+                return "search_memory: empty query"
+            limit = max(1, min(10, int(args.get("limit") or 5)))
+            results = store.search(query, limit=limit)
+            if not results:
+                return f"No memories matched query={query!r}"
+            lines = [f"Found {len(results)} memories for {query!r}:"]
+            for r in results:
+                title = (getattr(r, "title", "") or "").strip()
+                mid = getattr(r, "id", None) or getattr(r, "memory_id", "?")
+                content = (getattr(r, "content", "") or "")[:200].strip().replace("\n", " ")
+                lines.append(f"- [{mid}] {title}: {content}")
+            return "\n".join(lines)
+        elif name == "recall_memory":
+            mid = (args.get("memory_id") or "").strip()
+            if not mid:
+                return "recall_memory: empty memory_id"
+            mem = store.recall(mid)
+            if mem is None:
+                return f"No memory found with id={mid!r}"
+            title = (getattr(mem, "title", "") or "").strip()
+            content = (getattr(mem, "content", "") or "")[:1500].strip()
+            return f"{title}\n\n{content}"
+        else:
+            return f"Unknown tool: {name}"
+    except Exception as exc:
+        log.warning("tool %s failed: %s", name, exc)
+        return f"Tool {name} error: {exc}"
+
+
+def _strip_think(text: str) -> str:
     while "<think>" in text and "</think>" in text:
         a = text.index("<think>")
         b = text.index("</think>") + len("</think>")
         text = (text[:a] + text[b:]).strip()
-
-    history.append({"role": "assistant", "content": text})
     return text
+
+
+async def llm_reply(client: httpx.AsyncClient, history: list[dict], user_text: str) -> str:
+    history.append({"role": "user", "content": user_text})
+    is_native_chat = LLM_URL.endswith("/api/chat")
+
+    headers: dict = {}
+    if LLM_API_KEY and not is_native_chat:
+        headers["authorization"] = f"Bearer {LLM_API_KEY}"
+
+    # Build message list once; we may extend it during tool-loop turns.
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}, *history[-12:]]
+
+    for tool_round in range(4):  # cap tool-call recursion to avoid runaway
+        payload: dict = {
+            "model": LLM_MODEL,
+            "messages": messages,
+            "stream": False,
+        }
+        if is_native_chat:
+            payload["keep_alive"] = LLM_KEEP_ALIVE
+            payload["options"] = {"temperature": 0.7}
+            payload["think"] = LLM_THINK
+            # Ollama native /api/chat supports tools (newer versions); pass them.
+            payload["tools"] = TOOLS
+        else:
+            payload["temperature"] = 0.7
+            payload["max_tokens"] = 200
+            payload["tools"] = TOOLS
+
+        r = await client.post(LLM_URL, json=payload, headers=headers, timeout=LLM_TIMEOUT_S)
+        r.raise_for_status()
+        body = r.json()
+
+        if is_native_chat:
+            msg = body.get("message") or {}
+        else:
+            msg = body["choices"][0]["message"]
+        text = (msg.get("content") or "").strip()
+        tool_calls = msg.get("tool_calls") or []
+
+        if tool_calls:
+            # Append the assistant's tool-call message verbatim, run each tool,
+            # append a 'tool' role message per call, then loop for the model's
+            # final natural-language reply.
+            messages.append({
+                "role": "assistant",
+                "content": text or None,
+                "tool_calls": tool_calls,
+            })
+            for tc in tool_calls:
+                fn = (tc.get("function") or {})
+                name = fn.get("name") or ""
+                raw_args = fn.get("arguments") or "{}"
+                try:
+                    args = json.loads(raw_args) if isinstance(raw_args, str) else (raw_args or {})
+                except Exception:
+                    args = {}
+                log.info("tool %s(%s)", name, json.dumps(args)[:120])
+                result = _run_tool(name, args)
+                log.info("tool %s → %s", name, result[:120].replace("\n", " "))
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc.get("id") or "",
+                    "content": result,
+                })
+            continue  # ask the model again with the tool results in context
+
+        text = _strip_think(text)
+        history.append({"role": "assistant", "content": text})
+        return text
+
+    # If we hit the recursion cap, return whatever the last reply was.
+    return _strip_think(text) if text else "I tried to look something up but lost my thread — say it again?"
 
 
 async def synthesize(client: httpx.AsyncClient, text: str) -> tuple[bytes, int, int, bytes]:
