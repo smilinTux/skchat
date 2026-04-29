@@ -226,7 +226,8 @@ class PresenceCache:
             try:
                 raw = json.loads(self._path.read_text())
                 self._data = raw if isinstance(raw, dict) else {}
-            except Exception:
+            except Exception as e:
+                logger.warning("presence.py: %s", e)
                 self._data = {}
 
     def _save(self) -> None:
@@ -296,7 +297,8 @@ class PresenceCache:
                 state = entry.get("state", "")
                 if age <= max_age and state != PresenceState.OFFLINE.value:
                     result.append(uri)
-            except Exception:
+            except Exception as e:
+                logger.warning("presence.py: %s", e)
                 pass
         return result
 
@@ -326,7 +328,8 @@ class PresenceCache:
             if age <= 600:
                 return "away"
             return "offline"
-        except Exception:
+        except Exception as e:
+            logger.warning("presence.py: %s", e)
             return "offline"
 
     # ── Typing indicator methods ───────────────────────────────────────────

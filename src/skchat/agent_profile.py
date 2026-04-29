@@ -68,7 +68,8 @@ def _agent_base(agent: str) -> Path:
         from skmemory.agents import get_agent_dir
 
         return get_agent_dir(agent)
-    except Exception:
+    except Exception as e:
+        logger.warning("agent_profile.py: %s", e)
         return Path.home() / ".skcapstone" / "agents" / agent
 
 

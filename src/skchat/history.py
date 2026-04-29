@@ -141,7 +141,8 @@ class ChatHistory:
                     continue
                 try:
                     msg = ChatMessage.model_validate_json(raw)
-                except Exception:
+                except Exception as e:
+                    logger.warning("history.py: %s", e)
                     continue
 
                 # Filter by timestamp.
@@ -442,7 +443,8 @@ class ChatHistory:
                     continue
                 try:
                     msg = ChatMessage.model_validate_json(raw)
-                except Exception:
+                except Exception as e:
+                    logger.warning("history.py: %s", e)
                     continue
                 if msg.thread_id == thread_id:
                     results.append(msg)

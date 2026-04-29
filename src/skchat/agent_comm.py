@@ -118,7 +118,8 @@ class AgentMessenger:
                 history=history,
                 identity=identity,
             )
-        except Exception:
+        except Exception as e:
+            logger.warning("agent_comm.py: %s", e)
             return None
 
     @property
@@ -481,5 +482,6 @@ class AgentMessenger:
 
             peers = _list_peers()
             return [p["identity_uri"] for p in peers if p.get("identity_uri")]
-        except Exception:
+        except Exception as e:
+            logger.warning("agent_comm.py: %s", e)
             return []

@@ -95,7 +95,8 @@ class OutboxQueue:
                 "UPDATE outbox SET retry_count = attempts WHERE retry_count = 0 AND attempts > 0"
             )
             self._conn.commit()
-        except Exception:
+        except Exception as e:
+            logger.warning("outbox.py: %s", e)
             pass  # Column already exists — no-op.
 
     # ------------------------------------------------------------------
