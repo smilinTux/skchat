@@ -2,19 +2,9 @@
 
 from __future__ import annotations
 
-# ---------------------------------------------------------------------------
-# skmemory path fix — must happen before any test imports skmemory.
-# When pytest runs from smilintux-org/ the CWD directory 'skmemory/' shadows
-# the editable install as a namespace package (PathFinder runs before the
-# editable _EditableFinder in sys.meta_path).  Inserting the skmemory project
-# root at position 0 lets PathFinder resolve skmemory/skmemory/__init__.py
-# first, giving us the real package with MemoryStore, SQLiteBackend, etc.
-# ---------------------------------------------------------------------------
-import sys as _sys
-
-_SKMEMORY_ROOT = "/home/REDACTED-USER/dkloud.douno.it/p/smilintux-org/skmemory"
-if _SKMEMORY_ROOT not in _sys.path:
-    _sys.path.insert(0, _SKMEMORY_ROOT)
+# skmemory is resolved via the editable install in the project venv.
+# No sys.path manipulation needed — see [tool.pytest.ini_options] pythonpath
+# in pyproject.toml and `pip install -e` in the dev environment.
 
 import asyncio
 import json
