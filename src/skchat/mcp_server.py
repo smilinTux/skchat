@@ -105,7 +105,8 @@ def _get_identity() -> str:
             if _identity is None:
                 try:
                     _identity = get_sovereign_identity()
-                except Exception:
+                except Exception as e:
+                    logger.warning("mcp_server.py: %s", e)
                     _identity = "capauth:agent@skchat.local"
     return _identity
 
@@ -164,7 +165,8 @@ def _load_groups_from_disk() -> None:
     global _groups
     try:
         _GROUPS_DIR.mkdir(parents=True, exist_ok=True)
-    except Exception:
+    except Exception as e:
+        logger.warning("mcp_server.py: %s", e)
         return
     for path in _GROUPS_DIR.glob("*.json"):
         try:
@@ -1501,7 +1503,8 @@ async def _handle_send_message(args: dict) -> list[TextContent]:
             from .identity_bridge import resolve_peer_name
 
             recipient = resolve_peer_name(recipient)
-        except Exception:
+        except Exception as e:
+            logger.warning("mcp_server.py: %s", e)
             # Use as-is if resolution fails
             pass
 
@@ -1752,6 +1755,7 @@ async def _handle_group_send(args: dict) -> list[TextContent]:
                 if err:
                     delivery_errors.append(f"{member.identity_uri[:24]}: {err}")
         except Exception as exc:
+            logger.warning("mcp_server.py: %s", exc)
             failed += 1
             delivery_errors.append(f"{member.identity_uri[:24]}: {exc}")
 
@@ -2123,7 +2127,8 @@ async def _handle_accept_call(args: dict) -> list[TextContent]:
     try:
         with transport._peers_lock:
             peer_conn = transport._peers.get(peer)
-    except Exception:
+    except Exception as e:
+        logger.warning("mcp_server.py: %s", e)
         peer_conn = None
 
     if peer_conn and peer_conn.connected:
@@ -2278,6 +2283,7 @@ async def _handle_send_file_p2p(args: dict) -> list[TextContent]:
             }
         )
     except Exception as exc:
+        logger.warning("mcp_server.py: %s", exc)
         return _error(f"File send failed: {exc}")
 
 
@@ -2322,6 +2328,7 @@ async def _handle_send_file(args: dict) -> list[TextContent]:
     try:
         transfer_id = service.send_file(recipient, path)
     except Exception as exc:
+        logger.warning("mcp_server.py: %s", exc)
         return _error(f"Send failed: {exc}")
 
     return [
@@ -2688,7 +2695,8 @@ async def _handle_daemon_status(args: dict) -> list[TextContent]:
         from skcomm.outbox import PersistentOutbox
 
         status["outbox_pending"] = PersistentOutbox().pending_count
-    except Exception:
+    except Exception as e:
+        logger.warning("mcp_server.py: %s", e)
         status.setdefault("outbox_pending", 0)
 
     return _json(status)
@@ -2802,7 +2810,8 @@ async def _handle_send_to_group(args: dict) -> list[TextContent]:
                 delivered += 1
             else:
                 failed += 1
-        except Exception:
+        except Exception as e:
+            logger.warning("mcp_server.py: %s", e)
             failed += 1
 
     _save_group(group)
@@ -2933,7 +2942,8 @@ async def _handle_skchat_group_send(args: dict) -> list[TextContent]:
                 delivered_to.append(member.identity_uri)
             else:
                 failed.append(member.identity_uri)
-        except Exception:
+        except Exception as e:
+            logger.warning("mcp_server.py: %s", e)
             failed.append(member.identity_uri)
 
     _save_group(group)
@@ -3639,7 +3649,8 @@ async def _handle_who_is_online(args: dict) -> list[TextContent]:
                 else:
                     status = "offline"
                 last_seen = ts.isoformat()
-            except Exception:
+            except Exception as e:
+                logger.warning("mcp_server.py: %s", e)
                 status = "offline"
         else:
             status = "offline"
@@ -3704,7 +3715,8 @@ async def _handle_skchat_inbox(args: dict) -> list[TextContent]:
             from .identity_bridge import resolve_peer_name
 
             resolved_sender = resolve_peer_name(sender)
-        except Exception:
+        except Exception as e:
+            logger.warning("mcp_server.py: %s", e)
             pass  # keep as-is; tag filter will simply miss
 
     # --- Primary: read from ChatHistory ----------------------------------

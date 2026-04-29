@@ -168,6 +168,7 @@ class SKSealPlugin(ChatPlugin):
         try:
             document = store.load_document(document_id)
         except Exception as exc:
+            logger.warning("plugins_skseal.py: %s", exc)
             return f"Error: Could not load document '{document_id[:12]}': {exc}"
 
         sender = context.get("sender", "unknown")
@@ -227,6 +228,7 @@ class SKSealPlugin(ChatPlugin):
             return result
 
         except Exception as exc:
+            logger.warning("plugins_skseal.py: %s", exc)
             return f"Error signing document: {exc}"
 
     def _handle_decline(self, args: str, context: dict) -> str:
@@ -245,6 +247,7 @@ class SKSealPlugin(ChatPlugin):
         try:
             document = store.load_document(document_id)
         except Exception as exc:
+            logger.warning("plugins_skseal.py: %s", exc)
             return f"Error: Could not load document '{document_id[:12]}': {exc}"
 
         sender = context.get("sender", "unknown")
@@ -287,6 +290,7 @@ class SKSealPlugin(ChatPlugin):
         try:
             document = store.load_document(document_id)
         except Exception as exc:
+            logger.warning("plugins_skseal.py: %s", exc)
             return f"Error: Could not load document '{document_id[:12]}': {exc}"
 
         signers_info = []
@@ -365,6 +369,7 @@ class SKSealPlugin(ChatPlugin):
             )
 
         except Exception as exc:
+            logger.warning("plugins_skseal.py: %s", exc)
             return f"Error creating document: {exc}"
 
     def _handle_doc_list(self, args: str, context: dict) -> str:
@@ -408,6 +413,7 @@ class SKSealPlugin(ChatPlugin):
             return "\n".join(lines)
 
         except Exception as exc:
+            logger.warning("plugins_skseal.py: %s", exc)
             return f"Error listing documents: {exc}"
 
     def _handle_doc_send(self, args: str, context: dict) -> str:
@@ -431,6 +437,7 @@ class SKSealPlugin(ChatPlugin):
         try:
             document = store.load_document(document_id)
         except Exception as exc:
+            logger.warning("plugins_skseal.py: %s", exc)
             return f"Error: Could not load document '{document_id[:12]}': {exc}"
 
         # Resolve recipient peer name
@@ -438,7 +445,8 @@ class SKSealPlugin(ChatPlugin):
             from .identity_bridge import resolve_peer_name
 
             resolved_recipient = resolve_peer_name(recipient)
-        except Exception:
+        except Exception as e:
+            logger.warning("plugins_skseal.py: %s", e)
             resolved_recipient = recipient
 
         sender = context.get("sender", "unknown")

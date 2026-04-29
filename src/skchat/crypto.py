@@ -124,6 +124,7 @@ class ChatCrypto:
             self._passphrase = passphrase
             self._fingerprint = str(self._private_key.fingerprint).replace(" ", "")
         except Exception as exc:
+            logger.warning("crypto.py: %s", exc)
             raise CryptoError(f"Failed to load private key: {exc}") from exc
 
     @property
@@ -183,6 +184,7 @@ class ChatCrypto:
             return encrypted_copy
 
         except Exception as exc:
+            logger.warning("crypto.py: %s", exc)
             raise EncryptionError(f"Failed to encrypt message: {exc}") from exc
 
     def decrypt_message(self, message: ChatMessage) -> ChatMessage:
@@ -218,6 +220,7 @@ class ChatCrypto:
             )
 
         except Exception as exc:
+            logger.warning("crypto.py: %s", exc)
             raise DecryptionError(f"Failed to decrypt message: {exc}") from exc
 
     def encrypt_for_peer(
@@ -310,6 +313,7 @@ class ChatCrypto:
             return message.model_copy(update={"signature": str(sig)})
 
         except Exception as exc:
+            logger.warning("crypto.py: %s", exc)
             raise SigningError(f"Failed to sign message: {exc}") from exc
 
     @staticmethod
@@ -342,7 +346,8 @@ class ChatCrypto:
             verification = pub_key.verify(pgp_message)
             return bool(verification)
 
-        except Exception:
+        except Exception as e:
+            logger.warning("crypto.py: %s", e)
             return False
 
     @staticmethod
@@ -358,7 +363,8 @@ class ChatCrypto:
         try:
             key, _ = pgpy.PGPKey.from_blob(key_armor)
             return str(key.fingerprint).replace(" ", "")
-        except Exception:
+        except Exception as e:
+            logger.warning("crypto.py: %s", e)
             return None
 
 
@@ -411,7 +417,8 @@ def verify_message_signature(message: ChatMessage) -> bool:
     try:
         pgpy.PGPSignature.from_blob(message.signature)
         return True
-    except Exception:
+    except Exception as e:
+        logger.warning("crypto.py: %s", e)
         return False
 
 
@@ -442,6 +449,7 @@ def encrypt_message_body(content: str, recipient_fingerprint: str) -> str:
         )
         return str(encrypted)
     except Exception as exc:
+        logger.warning("crypto.py: %s", exc)
         raise EncryptionError(f"Failed to encrypt content: {exc}") from exc
 
 
@@ -477,4 +485,5 @@ def decrypt_message_body(encrypted: str, private_key_path: str) -> str:
     except (EncryptionError, DecryptionError):
         raise
     except Exception as exc:
+        logger.warning("crypto.py: %s", exc)
         raise DecryptionError(f"Failed to decrypt content: {exc}") from exc

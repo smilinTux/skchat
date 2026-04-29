@@ -86,7 +86,8 @@ async def health() -> JSONResponse:
                 "has_feb": feb.has_feb,
             }
         )
-    except Exception:
+    except Exception as e:
+        logger.warning("webui.py: %s", e)
         return JSONResponse(
             {"status": "ok", "service": "skchat-webui", "version": __version__}
         )
@@ -109,6 +110,7 @@ async def agent_state() -> JSONResponse:
         profile = load_agent_profile()
         return JSONResponse(profile.to_dict())
     except Exception as exc:
+        logger.warning("webui.py: %s", exc)
         return JSONResponse(
             {"error": "agent_profile_load_failed", "detail": str(exc)},
             status_code=500,
@@ -143,7 +145,8 @@ async def _ws_broadcast(msg_dict: dict) -> None:
     for ws in list(_ws_connections):
         try:
             await ws.send_text(payload)
-        except Exception:
+        except Exception as e:
+            logger.warning("webui.py: %s", e)
             dead.append(ws)
     for ws in dead:
         _ws_connections.discard(ws)
@@ -172,14 +175,16 @@ def _get_identity() -> str:
 
         if get_active_agent_name() is not None:
             return get_agent_identity()
-    except Exception:
+    except Exception as e:
+        logger.warning("webui.py: %s", e)
         pass
 
     try:
         from .identity_bridge import get_sovereign_identity
 
         return get_sovereign_identity()
-    except Exception:
+    except Exception as e:
+        logger.warning("webui.py: %s", e)
         pass
     identity = os.environ.get("SKCHAT_IDENTITY")
     if identity:
@@ -192,7 +197,8 @@ def _get_identity() -> str:
             with open(config) as f:
                 cfg = yaml.safe_load(f)
             return cfg.get("skchat", {}).get("identity", {}).get("uri", "capauth:local@skchat")
-        except Exception:
+        except Exception as e:
+            logger.warning("webui.py: %s", e)
             pass
     return "capauth:local@skchat"
 
@@ -211,7 +217,8 @@ def _get_transport(identity: str):
 
         comm = SKComm.from_config()
         return ChatTransport(skcomm=comm, history=_get_history(), identity=identity)
-    except Exception:
+    except Exception as e:
+        logger.warning("webui.py: %s", e)
         return None
 
 
@@ -222,12 +229,14 @@ def _display_name(uri: str) -> str:
         from .identity_bridge import resolve_display_name
 
         return resolve_display_name(uri)
-    except Exception:
+    except Exception as e:
+        logger.warning("webui.py: %s", e)
         pass
     try:
         local = uri.split(":", 1)[1] if ":" in uri else uri
         return (local.split("@", 1)[0] if "@" in local else local).capitalize()
-    except Exception:
+    except Exception as e:
+        logger.warning("webui.py: %s", e)
         return uri
 
 
@@ -319,7 +328,8 @@ button:hover{background:#2563eb}
 def _render_messages(history, identity: str) -> str:
     try:
         msgs = history.load(limit=100)
-    except Exception:
+    except Exception as e:
+        logger.warning("webui.py: %s", e)
         msgs = []
 
     parts: list[str] = []
@@ -341,7 +351,8 @@ def _render_messages(history, identity: str) -> str:
                 if isinstance(ts_raw, str):
                     ts_raw = datetime.fromisoformat(ts_raw)
                 ts_str = ts_raw.strftime("%H:%M")
-            except Exception:
+            except Exception as e:
+                logger.warning("webui.py: %s", e)
                 pass
 
         css = _msg_css(sender, identity)
@@ -447,7 +458,8 @@ async def groups() -> JSONResponse:
     for f in sorted(groups_dir.glob("*.json")):
         try:
             grp = GroupChat.model_validate_json(f.read_text(encoding="utf-8"))
-        except Exception:
+        except Exception as e:
+            logger.warning("webui.py: %s", e)
             continue
 
         members_out = []
@@ -505,7 +517,8 @@ async def ws_chat(websocket: WebSocket) -> None:
                 await websocket.send_text(json.dumps({"type": "heartbeat"}))
             except WebSocketDisconnect:
                 break
-    except Exception:
+    except Exception as e:
+        logger.warning("webui.py: %s", e)
         pass
     finally:
         _ws_connections.discard(websocket)
@@ -535,7 +548,8 @@ async def _background_message_poller() -> None:
                         newest = newest.replace(tzinfo=timezone.utc)
                     _last_push_dt = newest + timedelta(microseconds=1)
                 await _ws_broadcast({"type": "new", "count": len(new_msgs)})
-        except Exception:
+        except Exception as e:
+            logger.warning("webui.py: %s", e)
             pass
 
 

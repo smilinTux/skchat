@@ -171,6 +171,7 @@ async def _proxy_facetime_ws(client_ws: WebSocket, agent_name: str) -> None:
                 task.cancel()
 
     except Exception as e:
+        logger.warning("facetime.py: %s", e)
         try:
             await client_ws.send_json(
                 {
@@ -178,10 +179,12 @@ async def _proxy_facetime_ws(client_ws: WebSocket, agent_name: str) -> None:
                     "message": f"FaceTime service unavailable: {e}",
                 }
             )
-        except Exception:
+        except Exception as e:
+            logger.warning("facetime.py: %s", e)
             pass
     finally:
         try:
             await client_ws.close()
-        except Exception:
+        except Exception as e:
+            logger.warning("facetime.py: %s", e)
             pass

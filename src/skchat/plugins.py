@@ -485,7 +485,8 @@ class PluginRegistry:
                         count += 1
                 except Exception as exc:
                     logger.warning("Failed to load entry point '%s': %s", ep.name, exc)
-        except Exception:
+        except Exception as e:
+            logger.warning("plugins.py: %s", e)
             pass
         return count
 
