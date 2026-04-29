@@ -59,7 +59,8 @@ def register_voice_routes_lite(app: FastAPI) -> None:
             async with httpx.AsyncClient(timeout=5.0) as client:
                 resp = await client.get(f"{skvoice_http}/voice/agents")
                 return resp.json()
-        except Exception:
+        except Exception as e:
+            logger.warning("voice_ws_lite.py: %s", e)
             return {"agents": ["lumina", "jarvis", "opus"]}
 
     @app.websocket("/ws/voice")
@@ -141,6 +142,7 @@ async def _proxy_voice(client_ws: WebSocket, agent_name: str) -> None:
                 task.cancel()
 
     except Exception as e:
+        logger.warning("voice_ws_lite.py: %s", e)
         try:
             await client_ws.send_json(
                 {
@@ -148,12 +150,14 @@ async def _proxy_voice(client_ws: WebSocket, agent_name: str) -> None:
                     "message": f"Voice service unavailable: {e}",
                 }
             )
-        except Exception:
+        except Exception as e:
+            logger.warning("voice_ws_lite.py: %s", e)
             pass
     finally:
         try:
             await client_ws.close()
-        except Exception:
+        except Exception as e:
+            logger.warning("voice_ws_lite.py: %s", e)
             pass
 
 
@@ -215,6 +219,7 @@ async def _proxy_video(client_ws: WebSocket, agent_name: str) -> None:
                 task.cancel()
 
     except Exception as e:
+        logger.warning("voice_ws_lite.py: %s", e)
         try:
             await client_ws.send_json(
                 {
@@ -222,10 +227,12 @@ async def _proxy_video(client_ws: WebSocket, agent_name: str) -> None:
                     "message": f"Video service unavailable: {e}",
                 }
             )
-        except Exception:
+        except Exception as e:
+            logger.warning("voice_ws_lite.py: %s", e)
             pass
     finally:
         try:
             await client_ws.close()
-        except Exception:
+        except Exception as e:
+            logger.warning("voice_ws_lite.py: %s", e)
             pass
