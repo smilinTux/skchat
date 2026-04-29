@@ -1082,39 +1082,37 @@ class Conversation:
             await self._speak_one(text)
             return
 
-        log.info("speaking %d sentences (pipelined, concat-stream)", len(sentences))
-        # Pipeline depth 2 + concat-stream: synth all sentences in parallel
-        # (F5 handles overlapping requests), CONCATENATE PCM into one
-        # continuous stream, push as a single say() call. This eliminates
-        # the inter-sentence is_speaking toggle and lock-reacquire cycle
-        # that may have been causing the late-stage audio drops Chef heard.
+        log.info("speaking %d sentences (pipelined, per-sentence)", len(sentences))
+        # Pipeline depth 2: while sentence N plays, N+1 synthesizes. Audio
+        # starts ~1s after LLM finishes (synth time of sentence 1) instead of
+        # waiting for ALL sentences to render. The earlier concat-stream
+        # variant felt slow because nothing played until full reply was ready.
         synth_tasks: list = [None] * len(sentences)
         synth_tasks[0] = asyncio.create_task(synthesize(self.client, sentences[0]))
-        all_pcm = bytearray()
-        all_sr = 0
-        for i, s in enumerate(sentences):
-            if i + 1 < len(sentences) and synth_tasks[i + 1] is None:
-                synth_tasks[i + 1] = asyncio.create_task(
-                    synthesize(self.client, sentences[i + 1])
-                )
-            try:
-                pcm, sr, _, _ = await synth_tasks[i]
-            except Exception as exc:
-                log.warning("TTS sentence %d/%d failed (%s): %r",
-                            i + 1, len(sentences), type(exc).__name__, exc)
-                continue
-            all_pcm.extend(pcm)
-            all_sr = sr
-        if not all_pcm:
-            return
-        self._current_speak = asyncio.create_task(self.speaker.say(bytes(all_pcm), all_sr))
         try:
-            await self._current_speak
-        except asyncio.CancelledError:
-            log.info("speak cancelled mid-stream")
-            return
+            for i, s in enumerate(sentences):
+                if i + 1 < len(sentences) and synth_tasks[i + 1] is None:
+                    synth_tasks[i + 1] = asyncio.create_task(
+                        synthesize(self.client, sentences[i + 1])
+                    )
+                try:
+                    pcm, sr, _, _ = await synth_tasks[i]
+                except Exception as exc:
+                    log.warning("TTS sentence %d/%d failed (%s): %r",
+                                i + 1, len(sentences), type(exc).__name__, exc)
+                    continue
+                self._current_speak = asyncio.create_task(self.speaker.say(pcm, sr))
+                try:
+                    await self._current_speak
+                except asyncio.CancelledError:
+                    log.info("speak cancelled at sentence %d/%d", i + 1, len(sentences))
+                    for t in synth_tasks[i + 1:]:
+                        if t is not None and not t.done():
+                            t.cancel()
+                    return
+                finally:
+                    self._current_speak = None
         finally:
-            self._current_speak = None
             await self.set_state("idle", "")
 
     async def _speak_one(self, text: str) -> None:
