@@ -272,7 +272,8 @@ class AdvocacyEngine:
             if lines:
                 return "Relevant context:\n" + "\n".join(lines)
             return ""
-        except Exception:
+        except Exception as e:
+            logger.warning("advocacy.py: %s", e)
             return ""
 
     @staticmethod

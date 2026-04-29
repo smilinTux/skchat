@@ -93,7 +93,8 @@ def _fetch_recent_messages() -> list[dict]:
                 }
             )
         return messages
-    except Exception:
+    except Exception as e:
+        logger.warning("tui.py: %s", e)
         pass
 
     # Fallback: subprocess (avoids skmemory namespace collision in dev envs)
@@ -117,7 +118,8 @@ def _fetch_recent_messages() -> list[dict]:
                 out.append(m)
             out.sort(key=lambda d: str(d.get("timestamp", "")))
             return out[-100:]
-    except Exception:
+    except Exception as e:
+        logger.warning("tui.py: %s", e)
         pass
 
     return []
@@ -195,7 +197,8 @@ class SKChatTUI(App):
                 else:
                     ts = ts_raw
                 ts_str = ts.strftime("%H:%M")
-            except Exception:
+            except Exception as e:
+                logger.warning("tui.py: %s", e)
                 ts_str = "--:--"
 
             short = _short_sender(sender)
@@ -252,7 +255,8 @@ class SKChatTUI(App):
             )
             await asyncio.wait_for(proc.wait(), timeout=10)
             ok = proc.returncode == 0
-        except Exception:
+        except Exception as e:
+            logger.warning("tui.py: %s", e)
             ok = False
         ts_str = datetime.now().strftime("%H:%M")
         suffix = "" if ok else " [!]"
@@ -277,7 +281,8 @@ class SKChatTUI(App):
             )
             await asyncio.wait_for(proc.wait(), timeout=10)
             ok = proc.returncode == 0
-        except Exception:
+        except Exception as e:
+            logger.warning("tui.py: %s", e)
             ok = False
         ts_str = datetime.now().strftime("%H:%M")
         suffix = "" if ok else " [!]"

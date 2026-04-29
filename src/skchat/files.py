@@ -795,7 +795,8 @@ class FileTransferService:
                     else (1.0 if meta.get("status") == "complete" else 0.0)
                 )
                 result.append(meta)
-            except Exception:
+            except Exception as e:
+                logger.warning("files.py: %s", e)
                 pass
         return result
 

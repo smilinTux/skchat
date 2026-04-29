@@ -260,6 +260,7 @@ class DaemonStatusPlugin(SKChatPlugin):
 
             s = daemon_status()
         except Exception as exc:
+            logger.warning("plugins_builtin.py: %s", exc)
             return f"Status unavailable: {exc}"
 
         running = s.get("running", False)
@@ -330,6 +331,7 @@ class TranslatePlugin(SKChatPlugin):
         except subprocess.TimeoutExpired:
             return "Translation timed out."
         except Exception as exc:
+            logger.warning("plugins_builtin.py: %s", exc)
             return f"Translate error: {exc}"
 
 
@@ -370,6 +372,7 @@ class WeatherPlugin(SKChatPlugin):
         except subprocess.TimeoutExpired:
             return "Weather request timed out."
         except Exception as exc:
+            logger.warning("plugins_builtin.py: %s", exc)
             return f"Weather error: {exc}"
 
 
@@ -396,7 +399,8 @@ class TimePlugin(SKChatPlugin):
             local_tz_name = _time.tzname[0]
             local_now = datetime.now()
             local_str = local_now.strftime(f"%Y-%m-%d %H:%M:%S {local_tz_name}")
-        except Exception:
+        except Exception as e:
+            logger.warning("plugins_builtin.py: %s", e)
             local_str = "n/a"
 
         return f"Current time:\n  UTC:   {utc_str}\n  Local: {local_str}"

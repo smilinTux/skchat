@@ -104,7 +104,8 @@ def register_livekit_routes(app: FastAPI) -> None:
 
         try:
             body = await request.json()
-        except Exception:
+        except Exception as e:
+            logger.warning("livekit_routes.py: %s", e)
             body = {}
         if not body:
             form = await request.form()
@@ -268,7 +269,8 @@ def register_livekit_routes(app: FastAPI) -> None:
         if ledger.exists():
             try:
                 active = json.loads(ledger.read_text(encoding="utf-8"))
-            except Exception:
+            except Exception as e:
+                logger.warning("livekit_routes.py: %s", e)
                 active = None
         out = []
         for p in sorted(rec_dir.glob("*.wav"), reverse=True):

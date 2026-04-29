@@ -111,7 +111,8 @@ def _get_chat_transport():
         )
     except ImportError:
         return None
-    except Exception:
+    except Exception as e:
+        logger.warning("cli.py: %s", e)
         return None
 
 
@@ -139,7 +140,8 @@ def _get_identity() -> str:
     """
     try:
         return get_sovereign_identity()
-    except Exception:
+    except Exception as e:
+        logger.warning("cli.py: %s", e)
         import os
 
         identity = os.environ.get("SKCHAT_IDENTITY")
@@ -208,7 +210,8 @@ def _get_transport() -> "Optional[ChatTransport]":
             history=history,
             identity=identity,
         )
-    except Exception:
+    except Exception as e:
+        logger.warning("cli.py: %s", e)
         return None
 
 
@@ -257,6 +260,7 @@ def _try_deliver(msg: "ChatMessage") -> dict:
     try:
         return transport.send_message(msg)
     except Exception as exc:
+        logger.warning("cli.py: %s", exc)
         return {"delivered": False, "error": str(exc), "transport": None}
 
 
@@ -449,7 +453,8 @@ def _find_message_by_id(history: "ChatHistory", message_id: str) -> Optional[dic
     """
     try:
         all_mems = history._store.list_memories(tags=["skchat:message"], limit=5000)
-    except Exception:
+    except Exception as e:
+        logger.warning("cli.py: %s", e)
         return None
     for m in all_mems:
         if m.id == message_id or m.id.startswith(message_id):
@@ -572,7 +577,8 @@ def _display_name(identity: str) -> str:
         if "@" in local:
             local = local.split("@", 1)[0]
         return local.capitalize() if local else identity
-    except Exception:
+    except Exception as e:
+        logger.warning("cli.py: %s", e)
         return identity
 
 
@@ -647,7 +653,8 @@ def _ts_ago(ts: object) -> str:
         if secs < 86400:
             return f"{secs // 3600}h ago"
         return f"{secs // 86400}d ago"
-    except Exception:
+    except Exception as e:
+        logger.warning("cli.py: %s", e)
         return str(ts)[:16]
 
 
@@ -659,7 +666,8 @@ def _ts_hhmm(ts: object) -> str:
         if hasattr(ts, "strftime"):
             return ts.strftime("%H:%M")
         return str(ts)[:5]
-    except Exception:
+    except Exception as e:
+        logger.warning("cli.py: %s", e)
         return ""
 
 
@@ -1112,6 +1120,7 @@ def _watch_inbox(interval: float = 5.0, limit: int = 50) -> None:
                             sys.stdout.flush()
                             _print(f"\n  *** New message from {m.sender}: {m.content[:80]} ***\n")
                     except Exception as exc:
+                        logger.warning("cli.py: %s", exc)
                         _print(f"  [poll error: {exc}]")
                 time.sleep(interval)
         except KeyboardInterrupt:
@@ -1161,6 +1170,7 @@ def _watch_inbox(interval: float = 5.0, limit: int = 50) -> None:
                                     all_messages[:] = all_messages[-limit:]
                                 last_error = None
                         except Exception as exc:
+                            logger.warning("cli.py: %s", exc)
                             last_error = str(exc)
 
                     live.update(_build_live_table())
@@ -1447,7 +1457,8 @@ def search(
             if dt.year == now.year:
                 return dt.strftime("%m-%d %H:%M")
             return dt.strftime("%y-%m-%d %H:%M")
-        except Exception:
+        except Exception as e:
+            logger.warning("cli.py: %s", e)
             return str(ts)[:16]
 
     def _short_uri(uri: str) -> str:
@@ -2092,6 +2103,7 @@ def watch(
                             if time.monotonic() - last_heartbeat >= 10:
                                 last_heartbeat = time.monotonic()
                     except Exception as exc:
+                        logger.warning("cli.py: %s", exc)
                         live.update(Panel(f"[red]Poll error: {exc}[/]", border_style="red"))
                     time.sleep(interval)
         except KeyboardInterrupt:
@@ -2181,6 +2193,7 @@ def send_file_cmd(recipient: str, file_path: Path) -> None:
         _print(f"\n  [red]Error:[/] {exc}\n")
         sys.exit(1)
     except Exception as exc:
+        logger.warning("cli.py: %s", exc)
         _print(f"\n  [red]Send failed:[/] {exc}\n")
         sys.exit(1)
 
@@ -2301,6 +2314,7 @@ def receive_file_cmd(transfer_id: str, output: Optional[str]) -> None:
     try:
         out_path = service.receive_file(transfer_id, output_dir=output_dir)
     except Exception as exc:
+        logger.warning("cli.py: %s", exc)
         _print(f"\n  [red]Error:[/] {exc}\n")
         sys.exit(1)
 
@@ -2570,6 +2584,7 @@ def daemon_start(interval: float, log_file: Optional[str], quiet: bool, foregrou
         _print(f"\n  [red]Error:[/] {exc}\n")
         sys.exit(1)
     except Exception as exc:
+        logger.warning("cli.py: %s", exc)
         _print(f"\n  [red]Error:[/] {exc}\n")
         sys.exit(1)
 
@@ -2598,6 +2613,7 @@ def daemon_stop() -> None:
             _print("\n  [dim]Daemon was not running.[/]\n")
 
     except Exception as exc:
+        logger.warning("cli.py: %s", exc)
         _print(f"\n  [red]Error:[/] {exc}\n")
         sys.exit(1)
 
@@ -2689,7 +2705,8 @@ def _store_group(grp: "GroupChat") -> str:
         groups_dir = Path(SKCHAT_HOME).expanduser() / "groups"
         groups_dir.mkdir(parents=True, exist_ok=True)
         (groups_dir / f"{grp.id}.json").write_text(grp.model_dump_json(indent=2), encoding="utf-8")
-    except Exception:
+    except Exception as e:
+        logger.warning("cli.py: %s", e)
         pass  # Non-fatal — primary store succeeded
 
     return mem_id
@@ -3601,7 +3618,8 @@ def status() -> None:
                 age_s = (now - ts).total_seconds()
                 age_str = _fmt_age(age_s)
                 st = pc.get_status(uri)
-            except Exception:
+            except Exception as e:
+                logger.warning("cli.py: %s", e)
                 age_str = ""
                 st = "offline"
             peers_info.append((uri, st, age_str))
@@ -3727,7 +3745,8 @@ def status() -> None:
                 if ts and ts.tzinfo is None:
                     ts = ts.replace(tzinfo=timezone.utc)
                 time_str = ts.strftime("%H:%M") if ts else "??:??"
-            except Exception:
+            except Exception as e:
+                logger.warning("cli.py: %s", e)
                 time_str = "??:??"
 
             sender = msg.get("sender") or "?"
@@ -3907,7 +3926,8 @@ def config_show() -> None:
             try:
                 with open(config_path) as fh:
                     raw_cfg = "\n\n" + fh.read()[:800]
-            except Exception:
+            except Exception as e:
+                logger.warning("cli.py: %s", e)
                 raw_cfg = "\n\n[red](could not read)[/]"
 
         console.print(
@@ -4051,7 +4071,8 @@ def who() -> None:
                 else:
                     status = "offline"
                 last_seen = ts.strftime("%H:%M:%S")
-            except Exception:
+            except Exception as e:
+                logger.warning("cli.py: %s", e)
                 status = "offline"
                 last_seen = "-"
         else:
@@ -4138,7 +4159,8 @@ def presence() -> None:
                     else:
                         status = "offline"
                     last_seen = ts.strftime("%H:%M:%S")
-                except Exception:
+                except Exception as e:
+                    logger.warning("cli.py: %s", e)
                     status = "offline"
                     last_seen = "-"
             else:
@@ -4179,7 +4201,8 @@ def presence() -> None:
                     else:
                         status = "offline"
                     last_seen = ts.strftime("%H:%M:%S")
-                except Exception:
+                except Exception as e:
+                    logger.warning("cli.py: %s", e)
                     status = "offline"
                     last_seen = "-"
             else:
@@ -4390,7 +4413,8 @@ def rooms(limit: int) -> None:
             if ts.tzinfo is None:
                 ts = ts.replace(tzinfo=timezone.utc)
             return ts > last_read_dt
-        except Exception:
+        except Exception as e:
+            logger.warning("cli.py: %s", e)
             return False
 
     def _short_name(uri: str) -> str:
@@ -4460,7 +4484,8 @@ def rooms(limit: int) -> None:
         for p in sorted(groups_dir.glob("*.json")):
             try:
                 grp = GroupChat.model_validate_json(p.read_text(encoding="utf-8"))
-            except Exception:
+            except Exception as e:
+                logger.warning("cli.py: %s", e)
                 continue
             existing = unique_groups.get(grp.name)
             if existing is None or grp.updated_at > existing.updated_at:  # type: ignore[union-attr]
