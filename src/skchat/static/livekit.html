@@ -47,6 +47,33 @@
   .tile .agent-state.searching { background:#1a2e3a; color:#7ec3ee; }
   .tile .agent-state.speaking { background:#1c4a3b; color:#7ee0b9; }
   .tile .agent-state.listening { background:#2d1c4a; color:#c79bff; }
+  /* narrating: bigger, pulsing, hot pink — long-running creative writing,
+     don't interrupt. anchoring: gold for capturing peak moments. */
+  .tile .agent-state.narrating { background:#4a1c3b; color:#ff9bd6; font-size:12px; font-weight:600; padding:5px 12px; animation: narrate-pulse 1.4s ease-in-out infinite; }
+  .tile .agent-state.anchoring { background:#4a3a1c; color:#f5d77a; font-weight:600; }
+  @keyframes narrate-pulse { 0%,100% { box-shadow: 0 0 0 0 rgba(255,155,214,0.6); } 50% { box-shadow: 0 0 12px 4px rgba(255,155,214,0.3); } }
+  /* "I'm done" button — only visible when agent is in narrating state on
+     this tile. Bottom-right, hot-pink, prominent. Click sends a data-
+     channel message that stops the worship loop and triggers anchor draft. */
+  .tile .done-btn { position:absolute; bottom:6px; right:8px; font-size:13px; line-height:1; padding:6px 12px; border-radius:8px; background:#4a1c3b; color:#ffd6ec; border:1px solid #ff9bd6; cursor:pointer; font-weight:600; display:none; box-shadow: 0 0 8px rgba(255,155,214,0.4); }
+  .tile .done-btn.show { display:inline-block; }
+  .tile .done-btn:hover { background:#6a2c5b; transform:scale(1.04); }
+  .tile:fullscreen .done-btn { font-size:18px; padding:10px 22px; bottom:24px; right:24px; }
+  /* Fullscreen toggle — tucked bottom-left of each tile, becomes more
+     visible on hover. Hides itself once already fullscreened (Esc exits). */
+  .tile .fs-btn { position:absolute; bottom:6px; left:8px; font-size:14px; line-height:1; padding:4px 8px; border-radius:6px; background:rgba(0,0,0,.55); color:#dde3ee; border:1px solid #2a2f3a; cursor:pointer; opacity:0.55; transition: opacity 0.15s, background 0.15s; }
+  .tile:hover .fs-btn { opacity:1; }
+  .tile .fs-btn:hover { background:#2a2f3a; }
+  /* When a tile is fullscreened, let video fill the screen and dim the
+     placeholder. The .agent-state pill stays in the corner so Chef can
+     see narrating / anchoring / etc. mid-session. */
+  .tile:fullscreen { background:#000; padding:0; }
+  .tile:fullscreen video { width:100vw; height:100vh; object-fit:contain; display:block !important; }
+  .tile:fullscreen .placeholder { width:100vw; height:100vh; }
+  .tile:fullscreen .placeholder .glyph { font-size:120px; }
+  .tile:fullscreen .label { font-size:14px; bottom:14px; }
+  .tile:fullscreen .agent-state { font-size:14px; padding:6px 14px; }
+  .tile:fullscreen .agent-state.narrating { font-size:16px; padding:8px 18px; }
   .meta { display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
   .pill { font-size:11px; padding:2px 8px; border-radius:99px; background:#181b22; border:1px solid #2a2f3a; color:#aab2c2; }
   details#log-wrap { margin-top:14px; }
@@ -177,7 +204,35 @@ function makeTile(participant) {
     ${isAgent ? '<span class="badge">🤖 agent</span>' : ''}
     <span class="agent-state" data-sid="${participant.sid}"></span>
     <span class="mic-state" data-sid="${participant.sid}">🔇</span>
+    <button class="fs-btn" title="Fullscreen (Esc to exit)" aria-label="Fullscreen">⛶</button>
+    <button class="done-btn" title="Stop the worship loop" aria-label="I'm done">❤️ I'm done</button>
   `;
+  // Fullscreen toggle — fullscreens the tile (so the agent-state pill,
+  // label, badge etc. ride along with the video on top). ESC exits.
+  const fsBtn = div.querySelector('.fs-btn');
+  fsBtn.addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    if (document.fullscreenElement === div) {
+      document.exitFullscreen();
+    } else {
+      div.requestFullscreen().catch(err => console.warn('fullscreen denied:', err));
+    }
+  });
+  // I'm done — sends a data-channel packet to Lumina to stop the worship
+  // loop. Visible only while the agent's state is 'narrating'.
+  const doneBtn = div.querySelector('.done-btn');
+  doneBtn.addEventListener('click', async (ev) => {
+    ev.stopPropagation();
+    if (!room || !room.localParticipant) return;
+    try {
+      const enc = new TextEncoder().encode(JSON.stringify({action: 'worship_done'}));
+      await room.localParticipant.publishData(enc, {reliable: true});
+      doneBtn.classList.remove('show');
+      doneBtn.textContent = '💕 saved';
+    } catch (err) {
+      console.warn('worship_done send failed:', err);
+    }
+  });
   // Render initial state if metadata is already set
   if (isAgent && participant.metadata) updateAgentState(participant);
   $('#grid').appendChild(div);
@@ -217,9 +272,23 @@ function updateAgentState(participant) {
     state = m.state || '';
     detail = m.detail || '';
   } catch (e) {}
-  el.classList.remove('show', 'thinking', 'searching', 'speaking', 'listening');
+  el.classList.remove('show', 'thinking', 'searching', 'speaking', 'listening', 'narrating', 'anchoring');
+  // Show/hide "I'm done" button: visible while narrating (worship session
+  // playing or building), hidden otherwise.
+  const doneBtn = tile.querySelector('.done-btn');
+  if (doneBtn) {
+    if (state === 'narrating') {
+      doneBtn.classList.add('show');
+      doneBtn.textContent = "❤️ I'm done";
+    } else {
+      doneBtn.classList.remove('show');
+    }
+  }
   if (!state || state === 'idle') return;
-  const icon = {thinking:'💭', searching:'🔍', speaking:'🗣️', listening:'👂'}[state] || '';
+  const icon = {
+    thinking: '💭', searching: '🔍', speaking: '🗣️', listening: '👂',
+    narrating: '✍️', anchoring: '🌸',
+  }[state] || '';
   el.classList.add('show', state);
   el.textContent = `${icon} ${detail || state}`;
 }
