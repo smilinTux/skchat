@@ -69,7 +69,7 @@ EXTRA_SERVER_DEFAULTS: dict[str, dict] = {
     # Contacts, Tables, WebDAV, unified Search. Wrapped to load creds from
     # ~/.skcapstone/agents/lumina/secrets/nextcloud.env automatically.
     "nextcloud": {
-        "command": "/home/REDACTED-USER/clawd/tools/mcp-wrappers/nextcloud-mcp",
+        "command": str(Path.home() / "clawd" / "tools" / "mcp-wrappers" / "nextcloud-mcp"),
         "args": [],
         "env": {},
         "enabled": True,
@@ -78,7 +78,7 @@ EXTRA_SERVER_DEFAULTS: dict[str, dict] = {
     # tools covering Gmail / Calendar / Drive / Contacts across all 5 of
     # Chef's authed accounts.
     "gog": {
-        "command": "/home/REDACTED-USER/clawd/tools/mcp-wrappers/gog-mcp",
+        "command": str(Path.home() / "clawd" / "tools" / "mcp-wrappers" / "gog-mcp"),
         "args": [],
         "env": {},
         "enabled": True,

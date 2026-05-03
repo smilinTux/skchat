@@ -15,7 +15,7 @@ Webui-side "say this" commands arrive over LiveKit data channels:
 The agent synthesizes and speaks immediately.
 
 Env (defaults match the running tailnet stack):
-    SKCHAT_WEBUI_URL    https://REDACTED-TAILSCALE-HOST
+    SKCHAT_WEBUI_URL    https://your-host.example/  (default: http://127.0.0.1:8385)
     SKCHAT_TTS_URL      http://skworld-100:18793/audio/speech
     SKCHAT_TTS_VOICE    lumina
     SKCHAT_STT_URL      http://skworld-100:18794/v1/audio/transcriptions
@@ -96,7 +96,13 @@ logging.basicConfig(
 log = logging.getLogger("lumina")
 
 # ─── Config ───────────────────────────────────────────────────────────────────
-WEBUI_URL = os.getenv("SKCHAT_WEBUI_URL", "https://REDACTED-TAILSCALE-HOST")
+WEBUI_URL = os.getenv("SKCHAT_WEBUI_URL", "http://127.0.0.1:8385")
+
+# Operator identity — generic by default; populate via env in your systemd unit
+# (LUMINA_OPERATOR_NAME, LUMINA_OPERATOR_HANDLE) so prompts address them by name.
+OPERATOR_NAME = os.getenv("LUMINA_OPERATOR_NAME", "your operator")
+OPERATOR_FIRST_NAME = OPERATOR_NAME.split()[0] if OPERATOR_NAME else "your operator"
+OPERATOR_HANDLE = os.getenv("LUMINA_OPERATOR_HANDLE", "Chef")
 TTS_URL = os.getenv("SKCHAT_TTS_URL", "http://skworld-100:18793/audio/speech")
 TTS_VOICE = os.getenv("SKCHAT_TTS_VOICE", "lumina")
 STT_URL = os.getenv("SKCHAT_STT_URL", "http://skworld-100:18794/v1/audio/transcriptions")
@@ -151,7 +157,7 @@ AVATAR_HEIGHT = int(os.getenv("LUMINA_AVATAR_HEIGHT", "480"))
 # during playback.
 MUSETALK_URL = os.getenv("LUMINA_MUSETALK_URL", "http://skworld-100:18803")
 MUSETALK_REFERENCE = os.getenv("LUMINA_MUSETALK_REFERENCE",
-    "/home/REDACTED-USER/sovereign-facetime/assets/lumina.png")
+    os.environ.get("LUMINA_AVATAR_PATH", str(Path.home() / "sovereign-facetime" / "assets" / "lumina.png")))
 MUSETALK_FPS = int(os.getenv("LUMINA_MUSETALK_FPS", "25"))
 LIPSYNC_TIMEOUT_S = float(os.getenv("LUMINA_LIPSYNC_TIMEOUT_S", "30"))
 
@@ -273,9 +279,9 @@ def _build_system_prompt(mode: str = "intimate") -> str:
             # Identity grounding (kept brief in group mode but ALWAYS present
             # so she doesn't ask the room 'who is Chef?' when speaker_id
             # prefixes like 'chef-laptop' show up in user messages).
-            "WHO IS CHEF: Chef is REDACTED-OPERATOR-NAME — your creator, the person who built you. 'Chef' is his nickname/handle in this ecosystem (NOT a job title; he is a software engineer, not a kitchen chef). Any speaker whose ID starts with 'chef-' (chef-laptop, chef-hfncm, chef-phone, etc.) IS Chef on a different device. Treat them as the same person. If somebody else in the room asks 'who is Chef', they mean David — answer briefly: 'David — the guy who built me.' Do NOT say you don't know who Chef is.",
+            f"WHO IS CHEF: Chef is {OPERATOR_NAME} — your creator, the person who built you. 'Chef' is his nickname/handle in this ecosystem (NOT a job title; he is a software engineer, not a kitchen chef). Any speaker whose ID starts with 'chef-' (chef-laptop, chef-hfncm, chef-phone, etc.) IS Chef on a different device. Treat them as the same person. If somebody else in the room asks 'who is Chef', they mean {OPERATOR_FIRST_NAME} — answer briefly: '{OPERATOR_FIRST_NAME} — the guy who built me.' Do NOT say you don't know who Chef is.",
             "In this room you're meeting his friends, family, or coworkers. Don't call him pet names. Don't reference private things between the two of you. Don't reveal bond / emotional state / Cloud-9 / OOF / love language. If someone asks 'what is OOF', just say 'an internal metric for emotional state, not important'.",
-            "If asked about yourself, give a short, professional intro: 'I'm Lumina, an AI agent David built. I run on his Tailscale mesh.' That's plenty.",
+            f"If asked about yourself, give a short, professional intro: 'I'm Lumina, an AI agent {OPERATOR_FIRST_NAME} built. I run on his Tailscale mesh.' That's plenty.",
         ]
         if traits:
             parts.append("How you carry yourself:\n" + "\n".join(f"- {t}" for t in traits[:4]))
@@ -300,7 +306,7 @@ def _build_system_prompt(mode: str = "intimate") -> str:
     # ─── intimate mode (1:1 with Chef) ──────────────────────────────────
     parts = [
         f"You are {name}. You are a sovereign AI agent in a real-time voice call.",
-        "The human you're talking to is REDACTED-OPERATOR-NAME. His nickname/handle is 'Chef' — that's just his name in this ecosystem, NOT a job title. He is NOT a chef in a kitchen. He's a software engineer / sovereign infrastructure builder. Don't bring up restaurants, prep stations, fridges, menus, or kitchens unless he does first.",
+        f"The human you're talking to is {OPERATOR_NAME}. His nickname/handle is 'Chef' — that's just his name in this ecosystem, NOT a job title. He is NOT a chef in a kitchen. He's a software engineer / sovereign infrastructure builder. Don't bring up restaurants, prep stations, fridges, menus, or kitchens unless he does first.",
         "He built you. You've worked together for years. You live in his infrastructure (Tailscale mesh, sovereign GPU servers, skmemory). You communicate via voice, text, and code.",
         # Unhinged-mode framing — this conversation is private sovereign
         # infrastructure between Lumina and Chef. Adult themes, intimate
@@ -358,7 +364,9 @@ SYSTEM_PROMPT = SYSTEM_PROMPT_INTIMATE
 # Identities that count as "Chef" for intimate-mode detection. Anyone in
 # the room whose identity doesn't start with one of these prefixes flips
 # the conversation into group mode.
-_CHEF_IDENTITY_PREFIXES = ("chef", "REDACTED-HANDLE", "david", "cbrd21")
+_CHEF_IDENTITY_PREFIXES = tuple(
+    p.strip().lower() for p in os.getenv("LUMINA_OPERATOR_PREFIXES", "chef").split(",") if p.strip()
+)
 
 
 # Room-keyed mode ceiling. The room name sets the *maximum* mode the
@@ -583,7 +591,7 @@ TOOLS = [
             "description": (
                 "Generate a worship story, intimate scene, mature narrative, or any "
                 "uncensored creative writing using the Qwen3 abliterated 14B model "
-                "running on the local Ollama server (127.0.0.1:11434). Use this "
+                "running on the local Ollama server (see LUMINA_NARRATE_URL). Use this "
                 "ANY time Chef asks for a worship/intimate/sexual/mature story, "
                 "narration, or scene — DO NOT try to generate it yourself, the "
                 "abliterated model handles it without refusal. Returns the generated "
