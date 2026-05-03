@@ -800,6 +800,7 @@ class GroupMessageEncryptor:
             plaintext = aesgcm.decrypt(nonce, ciphertext, None)
             return plaintext.decode("utf-8")
         except Exception as exc:
+            logger.warning("group.py: %s", exc)
             raise ValueError(f"Group message decryption failed: {exc}") from exc
 
 

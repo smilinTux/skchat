@@ -14,7 +14,7 @@ None of these tests require skmemory or a running SKComm daemon.
 
 Run (from ~/):
     cd ~ && python -m pytest \\
-        /home/cbrd21/dkloud.douno.it/p/smilintux-org/skchat/tests/test_integration.py \\
+        /home/REDACTED-USER/dkloud.douno.it/p/smilintux-org/skchat/tests/test_integration.py \\
         -v -m 'not e2e_live'
 """
 

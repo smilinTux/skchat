@@ -1,0 +1,36 @@
+[Unit]
+Description=Lumina LiveKit conversational agent
+After=network-online.target livekit-server.service skchat-webui.service
+Wants=network-online.target
+PartOf=skchat-webui.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h
+ExecStart=%h/.skenv/bin/python %h/clawd/skcapstone-repos/skchat/scripts/lumina-call.py --greet ""
+Restart=on-failure
+RestartSec=8
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=lumina-call
+
+Environment=PYTHONUNBUFFERED=1
+Environment=PATH=%h/.skenv/bin:/usr/local/bin:/usr/bin:/bin
+Environment=SKAGENT=lumina
+Environment=SKCAPSTONE_AGENT=lumina
+Environment=SKMEMORY_AGENT=lumina
+Environment=SKCHAT_WEBUI_URL=https://REDACTED-TAILSCALE-HOST
+Environment=SKCHAT_TTS_URL=http://skworld-100:18796/audio/speech
+Environment=SKCHAT_TTS_VOICE=lumina
+Environment=SKCHAT_STT_URL=http://skworld-100:18794/v1/audio/transcriptions
+Environment=SKCHAT_LLM_URL=http://localhost:18783/v1/chat/completions
+Environment=SKCHAT_LLM_MODEL=claude-haiku-4-5
+Environment=LUMINA_LLM_KEEP_ALIVE=30m
+Environment=LUMINA_LLM_THINK=false
+Environment=NVIDIA_API_KEY=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
+Environment=SKCHAT_LIVEKIT_DEFAULT_ROOM=lumina-and-chef
+Environment=LUMINA_IDENTITY=lumina
+Environment=LUMINA_NAME=Lumina
+
+[Install]
+WantedBy=default.target

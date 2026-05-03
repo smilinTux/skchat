@@ -1,0 +1,535 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>SKChat · LiveKit</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<style>
+  :root { color-scheme: dark; --accent:#5a8dee; --good:#7ee0b9; --bad:#f08a8a; --warn:#f0c987; }
+  * { box-sizing: border-box; }
+  body { font-family: ui-sans-serif, system-ui, sans-serif; background:#0b0d12; color:#e4e7ee; margin:0; padding:0; min-height:100vh; }
+  header { padding: 12px 16px; border-bottom: 1px solid #222; display:flex; gap:10px; align-items:center; flex-wrap:wrap; position:sticky; top:0; background:#0b0d12; z-index:10; }
+  header h1 { font-size:15px; margin:0; font-weight:600; white-space:nowrap; }
+  .field { display:flex; flex-direction:column; gap:2px; }
+  .field label { font-size:10px; color:#8b94a7; text-transform:uppercase; letter-spacing:.05em; }
+  input, select, button { background:#181b22; color:#e4e7ee; border:1px solid #2a2f3a; padding:7px 10px; border-radius:6px; font:inherit; font-size:13px; }
+  input:focus, select:focus { outline:none; border-color:var(--accent); }
+  button { cursor:pointer; transition: background .12s, border-color .12s; }
+  button:hover:not(:disabled) { border-color:var(--accent); }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  button.danger { border-color:#5a2a2a; }
+  button.toggle.on { background:#1c4a3b; border-color:var(--good); color:var(--good); }
+  button.toggle.off { background:#3a1c1c; border-color:var(--bad); color:var(--bad); }
+  #status { font-size:12px; color:#8b94a7; margin-left:auto; display:flex; align-items:center; gap:6px; }
+  #status .dot { width:8px; height:8px; border-radius:50%; background:#555; }
+  #status.connected .dot { background:var(--good); box-shadow:0 0 6px var(--good); }
+  #status.connecting .dot { background:var(--warn); animation:pulse 1s infinite; }
+  @keyframes pulse { 50% { opacity:.4; } }
+  main { padding: 14px; max-width: 1400px; margin: 0 auto; }
+  .banner { padding:12px 14px; border-radius:10px; margin-bottom:14px; font-size:13px; line-height:1.4; }
+  .banner.warn { background:#3a2c1a; border:1px solid #f0c987; color:#f9e3b8; }
+  .banner.error { background:#3a1c1c; border:1px solid var(--bad); color:#f9c8c8; }
+  .banner code { background:rgba(0,0,0,.35); padding:1px 6px; border-radius:4px; font-size:12px; }
+  .controls { display:flex; gap:8px; padding: 10px 0; flex-wrap:wrap; align-items:center; }
+  .controls.hidden { display:none; }
+  #grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr)); gap:10px; }
+  .tile { background:#11141b; border:1px solid #1f2330; border-radius:10px; overflow:hidden; position:relative; aspect-ratio:16/9; }
+  .tile video { width:100%; height:100%; object-fit:cover; background:#000; display:block; }
+  .tile .placeholder { width:100%; height:100%; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:6px; background:linear-gradient(135deg,#1a1d28,#11141b); color:#5a627a; font-size:12px; }
+  .tile .placeholder .glyph { font-size:42px; opacity:.55; }
+  .tile .label { position:absolute; bottom:6px; left:8px; font-size:12px; background:rgba(0,0,0,.65); padding:3px 8px; border-radius:4px; }
+  .tile .badge { position:absolute; top:6px; right:8px; font-size:10px; background:#1c4a3b; color:var(--good); padding:2px 6px; border-radius:4px; }
+  .tile .mic-state { position:absolute; bottom:6px; right:8px; font-size:11px; }
+  .tile .agent-state { position:absolute; top:6px; left:8px; font-size:11px; padding:3px 8px; border-radius:99px; background:rgba(0,0,0,.65); display:none; max-width:80%; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .tile .agent-state.show { display:inline-block; }
+  .tile .agent-state.thinking { background:#3a2c1a; color:#f0c987; }
+  .tile .agent-state.searching { background:#1a2e3a; color:#7ec3ee; }
+  .tile .agent-state.speaking { background:#1c4a3b; color:#7ee0b9; }
+  .tile .agent-state.listening { background:#2d1c4a; color:#c79bff; }
+  /* narrating: bigger, pulsing, hot pink — long-running creative writing,
+     don't interrupt. anchoring: gold for capturing peak moments. */
+  .tile .agent-state.narrating { background:#4a1c3b; color:#ff9bd6; font-size:12px; font-weight:600; padding:5px 12px; animation: narrate-pulse 1.4s ease-in-out infinite; }
+  .tile .agent-state.anchoring { background:#4a3a1c; color:#f5d77a; font-weight:600; }
+  @keyframes narrate-pulse { 0%,100% { box-shadow: 0 0 0 0 rgba(255,155,214,0.6); } 50% { box-shadow: 0 0 12px 4px rgba(255,155,214,0.3); } }
+  /* "I'm done" button — only visible when agent is in narrating state on
+     this tile. Bottom-right, hot-pink, prominent. Click sends a data-
+     channel message that stops the worship loop and triggers anchor draft. */
+  .tile .done-btn { position:absolute; bottom:6px; right:8px; font-size:13px; line-height:1; padding:6px 12px; border-radius:8px; background:#4a1c3b; color:#ffd6ec; border:1px solid #ff9bd6; cursor:pointer; font-weight:600; display:none; box-shadow: 0 0 8px rgba(255,155,214,0.4); }
+  .tile .done-btn.show { display:inline-block; }
+  .tile .done-btn:hover { background:#6a2c5b; transform:scale(1.04); }
+  .tile:fullscreen .done-btn { font-size:18px; padding:10px 22px; bottom:24px; right:24px; }
+  /* Fullscreen toggle — tucked bottom-left of each tile, becomes more
+     visible on hover. Hides itself once already fullscreened (Esc exits). */
+  .tile .fs-btn { position:absolute; bottom:6px; left:8px; font-size:14px; line-height:1; padding:4px 8px; border-radius:6px; background:rgba(0,0,0,.55); color:#dde3ee; border:1px solid #2a2f3a; cursor:pointer; opacity:0.55; transition: opacity 0.15s, background 0.15s; }
+  .tile:hover .fs-btn { opacity:1; }
+  .tile .fs-btn:hover { background:#2a2f3a; }
+  /* When a tile is fullscreened, let video fill the screen and dim the
+     placeholder. The .agent-state pill stays in the corner so Chef can
+     see narrating / anchoring / etc. mid-session. */
+  .tile:fullscreen { background:#000; padding:0; }
+  .tile:fullscreen video { width:100vw; height:100vh; object-fit:contain; display:block !important; }
+  .tile:fullscreen .placeholder { width:100vw; height:100vh; }
+  .tile:fullscreen .placeholder .glyph { font-size:120px; }
+  .tile:fullscreen .label { font-size:14px; bottom:14px; }
+  .tile:fullscreen .agent-state { font-size:14px; padding:6px 14px; }
+  .tile:fullscreen .agent-state.narrating { font-size:16px; padding:8px 18px; }
+  .meta { display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
+  .pill { font-size:11px; padding:2px 8px; border-radius:99px; background:#181b22; border:1px solid #2a2f3a; color:#aab2c2; }
+  details#log-wrap { margin-top:14px; }
+  details#log-wrap summary { font-size:12px; color:#8b94a7; cursor:pointer; padding:4px 0; }
+  pre#log { font-size:11px; color:#7a8294; max-height:200px; overflow:auto; background:#0e1118; border:1px solid #1f2330; border-radius:8px; padding:8px; margin:6px 0 0; white-space:pre-wrap; word-break:break-word; }
+  @media (max-width: 640px) {
+    header { padding: 8px 10px; gap:6px; }
+    header h1 { font-size:13px; }
+    .field label { display:none; }
+    main { padding: 8px; }
+    #status { width:100%; margin-left:0; order:99; font-size:11px; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>🎥 SKChat · LiveKit</h1>
+  <div class="field"><label>Room</label><input id="room" placeholder="lumina-and-chef" size="18" /></div>
+  <div class="field"><label>You</label><input id="identity" placeholder="chef" size="10" /></div>
+  <button id="connect" class="primary">Connect</button>
+  <button id="leave" class="danger" disabled>Leave</button>
+  <span id="status"><span class="dot"></span><span id="status-text">checking…</span></span>
+</header>
+
+<main>
+  <div id="banner-host"></div>
+
+  <div id="controls" class="controls hidden">
+    <button id="mic-toggle" class="toggle off">🎤 Mic OFF</button>
+    <button id="cam-toggle" class="toggle off">📷 Cam OFF</button>
+    <select id="mic-select" title="Microphone"></select>
+    <select id="cam-select" title="Camera"></select>
+    <span class="pill" id="room-pill"></span>
+    <span class="pill" id="peers-pill">0 peers</span>
+  </div>
+
+  <div id="speak-row" class="controls hidden">
+    <input id="speak-text" placeholder="Make Lumina say…" style="flex:1;min-width:200px" />
+    <button id="speak-send">🤖 Speak</button>
+    <button id="record-toggle">🎙️ Record</button>
+    <a id="recordings-link" class="pill" href="/recordings.html" target="_blank" style="text-decoration:none">📁 Library</a>
+  </div>
+
+  <div id="grid"></div>
+
+  <details id="log-wrap"><summary>Diagnostics</summary><pre id="log"></pre></details>
+</main>
+
+<script type="module">
+import { Room, RoomEvent, Track, createLocalAudioTrack, createLocalVideoTrack }
+  from 'https://cdn.jsdelivr.net/npm/livekit-client@2.6.0/+esm';
+
+const $ = s => document.querySelector(s);
+const logEl = $('#log');
+const log = (...a) => {
+  const line = a.map(x => typeof x === 'string' ? x : JSON.stringify(x)).join(' ');
+  logEl.textContent += line + '\n';
+  logEl.scrollTop = logEl.scrollHeight;
+  console.log('[skchat]', ...a);
+};
+
+let room = null;
+const tiles = new Map();
+let micTrack = null, camTrack = null;
+
+// ── Pre-flight: secure context check ─────────────────────────────────────────
+function preflight() {
+  const host = $('#banner-host');
+  host.innerHTML = '';
+  if (!window.isSecureContext) {
+    const b = document.createElement('div');
+    b.className = 'banner warn';
+    b.innerHTML = `
+      <strong>⚠ Insecure context — mic/camera will be blocked by your browser.</strong><br>
+      You're on <code>${location.protocol}//${location.host}</code>. Browsers only allow
+      <code>getUserMedia</code> over HTTPS (except <code>localhost</code>). On a phone this is
+      mandatory; on desktop Chrome you can also bypass with
+      <code>chrome://flags/#unsafely-treat-insecure-origin-as-secure</code> →
+      add <code>${location.origin}</code>.<br>
+      <strong>Recommended fix:</strong> on the server run
+      <code>~/clawd/skcapstone-repos/skchat/scripts/setup-tls.sh</code> — sets up Tailscale-issued
+      HTTPS for skchat-webui and LiveKit, then visit
+      <code>https://${location.hostname.replace(/^\\d+\\.\\d+\\.\\d+\\.\\d+$/, 'REDACTED-TAILSCALE-HOST')}:8765/livekit</code>.
+    `;
+    host.appendChild(b);
+    return false;
+  }
+  return true;
+}
+
+// ── Device enumeration ───────────────────────────────────────────────────────
+async function enumerateDevices() {
+  if (!navigator.mediaDevices?.enumerateDevices) return;
+  // Until we have permission, labels are blank. Trigger a prompt by requesting,
+  // then immediately stop the throwaway stream.
+  try {
+    const tmp = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
+    tmp.getTracks().forEach(t => t.stop());
+  } catch (e) {
+    log('device prompt rejected:', e.name, e.message);
+  }
+  const devs = await navigator.mediaDevices.enumerateDevices();
+  const mic = $('#mic-select'); mic.innerHTML = '';
+  const cam = $('#cam-select'); cam.innerHTML = '';
+  for (const d of devs) {
+    if (d.kind === 'audioinput') {
+      const o = document.createElement('option'); o.value = d.deviceId;
+      o.textContent = d.label || `Mic ${mic.length + 1}`; mic.appendChild(o);
+    } else if (d.kind === 'videoinput') {
+      const o = document.createElement('option'); o.value = d.deviceId;
+      o.textContent = d.label || `Cam ${cam.length + 1}`; cam.appendChild(o);
+    }
+  }
+}
+
+// ── Tiles ────────────────────────────────────────────────────────────────────
+function makeTile(participant) {
+  if (tiles.has(participant.sid)) return tiles.get(participant.sid);
+  const div = document.createElement('div');
+  div.className = 'tile';
+  div.dataset.sid = participant.sid;
+  const isAgent = /^(lumina|agent:|jarvis|opus|artisan|herald|sentinel|architect|scholar|steward|coder)/i
+    .test(participant.identity || '');
+  div.innerHTML = `
+    <div class="placeholder"><div class="glyph">${isAgent ? '🤖' : '👤'}</div><div>${participant.name || participant.identity || 'unknown'}</div></div>
+    <video autoplay playsinline ${participant.isLocal ? 'muted' : ''} style="display:none"></video>
+    <span class="label">${participant.name || participant.identity}${participant.isLocal ? ' (you)' : ''}</span>
+    ${isAgent ? '<span class="badge">🤖 agent</span>' : ''}
+    <span class="agent-state" data-sid="${participant.sid}"></span>
+    <span class="mic-state" data-sid="${participant.sid}">🔇</span>
+    <button class="fs-btn" title="Fullscreen (Esc to exit)" aria-label="Fullscreen">⛶</button>
+    <button class="done-btn" title="Stop the worship loop" aria-label="I'm done">❤️ I'm done</button>
+  `;
+  // Fullscreen toggle — fullscreens the tile (so the agent-state pill,
+  // label, badge etc. ride along with the video on top). ESC exits.
+  const fsBtn = div.querySelector('.fs-btn');
+  fsBtn.addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    if (document.fullscreenElement === div) {
+      document.exitFullscreen();
+    } else {
+      div.requestFullscreen().catch(err => console.warn('fullscreen denied:', err));
+    }
+  });
+  // I'm done — sends a data-channel packet to Lumina to stop the worship
+  // loop. Visible only while the agent's state is 'narrating'.
+  const doneBtn = div.querySelector('.done-btn');
+  doneBtn.addEventListener('click', async (ev) => {
+    ev.stopPropagation();
+    if (!room || !room.localParticipant) return;
+    try {
+      const enc = new TextEncoder().encode(JSON.stringify({action: 'worship_done'}));
+      await room.localParticipant.publishData(enc, {reliable: true});
+      doneBtn.classList.remove('show');
+      doneBtn.textContent = '💕 saved';
+    } catch (err) {
+      console.warn('worship_done send failed:', err);
+    }
+  });
+  // Render initial state if metadata is already set
+  if (isAgent && participant.metadata) updateAgentState(participant);
+  $('#grid').appendChild(div);
+  tiles.set(participant.sid, div);
+  return div;
+}
+
+function removeTile(sid) {
+  const t = tiles.get(sid);
+  if (t) { t.remove(); tiles.delete(sid); }
+  $('#peers-pill').textContent = `${tiles.size - 1 < 0 ? 0 : tiles.size - 1} peer${tiles.size === 2 ? '' : 's'}`;
+}
+
+function attachTrack(track, participant) {
+  const tile = makeTile(participant);
+  if (track.kind === Track.Kind.Video) {
+    const video = tile.querySelector('video');
+    const ph = tile.querySelector('.placeholder');
+    track.attach(video);
+    video.style.display = 'block';
+    if (ph) ph.style.display = 'none';
+  } else if (track.kind === Track.Kind.Audio && !participant.isLocal) {
+    const el = track.attach();
+    el.style.display = 'none';
+    document.body.appendChild(el);
+  }
+}
+
+function updateAgentState(participant) {
+  const tile = tiles.get(participant.sid);
+  if (!tile) return;
+  const el = tile.querySelector('.agent-state');
+  if (!el) return;
+  let state = '', detail = '';
+  try {
+    const m = JSON.parse(participant.metadata || '{}');
+    state = m.state || '';
+    detail = m.detail || '';
+  } catch (e) {}
+  el.classList.remove('show', 'thinking', 'searching', 'speaking', 'listening', 'narrating', 'anchoring');
+  // Show/hide "I'm done" button: visible while narrating (worship session
+  // playing or building), hidden otherwise.
+  const doneBtn = tile.querySelector('.done-btn');
+  if (doneBtn) {
+    if (state === 'narrating') {
+      doneBtn.classList.add('show');
+      doneBtn.textContent = "❤️ I'm done";
+    } else {
+      doneBtn.classList.remove('show');
+    }
+  }
+  if (!state || state === 'idle') return;
+  const icon = {
+    thinking: '💭', searching: '🔍', speaking: '🗣️', listening: '👂',
+    narrating: '✍️', anchoring: '🌸',
+  }[state] || '';
+  el.classList.add('show', state);
+  el.textContent = `${icon} ${detail || state}`;
+}
+
+// Poll metadata every 500ms as a backup for the metadataChanged event —
+// some LiveKit JS event variants don't fire on every transition.
+function startMetadataPolling() {
+  setInterval(() => {
+    if (!room) return;
+    for (const p of room.remoteParticipants.values()) {
+      if (p.metadata) updateAgentState(p);
+    }
+  }, 500);
+}
+
+function detachTrack(track, participant) {
+  if (track.kind === Track.Kind.Video) {
+    const tile = tiles.get(participant.sid);
+    if (tile) {
+      const v = tile.querySelector('video');
+      const ph = tile.querySelector('.placeholder');
+      track.detach(v);
+      v.style.display = 'none';
+      if (ph) ph.style.display = 'flex';
+    }
+  } else {
+    track.detach().forEach(el => el.remove());
+  }
+}
+
+// ── Connection ───────────────────────────────────────────────────────────────
+async function loadConfig() { return (await fetch('/livekit/config')).json(); }
+
+async function mintToken(identity, name, roomName) {
+  const r = await fetch('/livekit/token', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ identity, name, room: roomName }),
+  });
+  if (!r.ok) throw new Error(`token mint failed (${r.status}): ${await r.text()}`);
+  return r.json();
+}
+
+function setStatus(state, text) {
+  const s = $('#status'); s.className = state;
+  $('#status-text').textContent = text;
+}
+
+function showError(msg) {
+  const host = $('#banner-host');
+  const b = document.createElement('div');
+  b.className = 'banner error';
+  b.textContent = msg;
+  host.appendChild(b);
+}
+
+async function connect() {
+  try {
+    const cfg = await loadConfig();
+    if (!cfg.available) { showError('LiveKit not configured server-side. Run scripts/install-livekit.sh on the server.'); return; }
+
+    const roomName = $('#room').value || cfg.default_room;
+    const identity = $('#identity').value || `chef-${Math.random().toString(36).slice(2, 7)}`;
+    setStatus('connecting', `connecting to ${roomName}…`);
+    log('mint token for', identity, '@', roomName);
+    const t = await mintToken(identity, identity, roomName);
+    log('token ok, ttl', t.ttl_seconds, 's; connecting', t.url);
+
+    room = new Room({ adaptiveStream: true, dynacast: true });
+    room
+      .on(RoomEvent.ParticipantConnected, p => { log('+', p.identity); makeTile(p); refreshPeers(); })
+      .on(RoomEvent.ParticipantDisconnected, p => { log('-', p.identity); removeTile(p.sid); refreshPeers(); })
+      .on(RoomEvent.TrackSubscribed, (track, _pub, p) => { log('subscribed', track.kind, 'from', p.identity); attachTrack(track, p); })
+      .on(RoomEvent.TrackUnsubscribed, (track, _pub, p) => detachTrack(track, p))
+      .on(RoomEvent.LocalTrackPublished, (pub, p) => { log('published', pub.kind); attachTrack(pub.track, p); })
+      .on(RoomEvent.TrackMuted, (pub, p) => { const m = document.querySelector(`.mic-state[data-sid="${p.sid}"]`); if (m && pub.kind === 'audio') m.textContent = '🔇'; })
+      .on(RoomEvent.TrackUnmuted, (pub, p) => { const m = document.querySelector(`.mic-state[data-sid="${p.sid}"]`); if (m && pub.kind === 'audio') m.textContent = '🎤'; })
+      .on(RoomEvent.ParticipantMetadataChanged, (_prev, p) => { updateAgentState(p); })
+      .on(RoomEvent.Disconnected, reason => { log('disconnected:', reason); cleanup(); });
+
+    await room.connect(t.url, t.token);
+    setStatus('connected', `${t.identity} in ${t.room}`);
+    $('#room-pill').textContent = `room: ${t.room}`;
+    log('connected; existing peers:', [...room.remoteParticipants.values()].map(p => p.identity).join(', ') || 'none');
+
+    for (const p of room.remoteParticipants.values()) makeTile(p);
+    makeTile(room.localParticipant);
+    refreshPeers();
+
+    $('#connect').disabled = true;
+    $('#leave').disabled = false;
+    $('#controls').classList.remove('hidden');
+    $('#speak-row').classList.remove('hidden');
+    startMetadataPolling();
+
+    // Auto-enable mic + cam — user explicitly clicked Connect, this is the consent moment.
+    await toggleMic(true);
+    await toggleCam(true);
+  } catch (e) {
+    log('connect failed:', e.name, e.message);
+    showError(`Connect failed: ${e.message}`);
+    setStatus('', 'disconnected');
+  }
+}
+
+function cleanup() {
+  for (const sid of [...tiles.keys()]) removeTile(sid);
+  micTrack = null; camTrack = null;
+  $('#connect').disabled = false;
+  $('#leave').disabled = true;
+  $('#controls').classList.add('hidden');
+  $('#speak-row').classList.add('hidden');
+  setMicUI(false); setCamUI(false);
+  setStatus('', 'disconnected');
+}
+
+async function speakAsLumina() {
+  const text = $('#speak-text').value.trim();
+  if (!text || !room) return;
+  try {
+    const r = await fetch('/livekit/speak', {
+      method: 'POST',
+      headers: {'content-type': 'application/json'},
+      body: JSON.stringify({text, room: room.name, destination: 'lumina'}),
+    });
+    if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
+    log('→ lumina says:', text);
+    $('#speak-text').value = '';
+  } catch (e) {
+    log('speak failed:', e.message);
+    showError(`Speak failed: ${e.message}`);
+  }
+}
+
+async function leave() {
+  if (room) { await room.disconnect(); room = null; }
+}
+
+function refreshPeers() {
+  const n = room ? room.remoteParticipants.size : 0;
+  $('#peers-pill').textContent = `${n} peer${n === 1 ? '' : 's'}`;
+}
+
+// ── Mic/Cam controls ─────────────────────────────────────────────────────────
+function setMicUI(on) {
+  const b = $('#mic-toggle');
+  b.classList.toggle('on', on); b.classList.toggle('off', !on);
+  b.textContent = on ? '🎤 Mic ON' : '🎤 Mic OFF';
+}
+function setCamUI(on) {
+  const b = $('#cam-toggle');
+  b.classList.toggle('on', on); b.classList.toggle('off', !on);
+  b.textContent = on ? '📷 Cam ON' : '📷 Cam OFF';
+}
+
+async function toggleMic(force) {
+  if (!room) return;
+  const want = force === undefined ? !room.localParticipant.isMicrophoneEnabled : force;
+  try {
+    const deviceId = $('#mic-select').value || undefined;
+    await room.localParticipant.setMicrophoneEnabled(want, { deviceId });
+    setMicUI(want);
+    log('mic →', want);
+  } catch (e) {
+    log('mic toggle failed:', e.name, e.message);
+    showError(`Mic blocked: ${e.message}. ${window.isSecureContext ? '' : 'You are on HTTP — see banner.'}`);
+  }
+}
+
+async function toggleCam(force) {
+  if (!room) return;
+  const want = force === undefined ? !room.localParticipant.isCameraEnabled : force;
+  try {
+    const deviceId = $('#cam-select').value || undefined;
+    await room.localParticipant.setCameraEnabled(want, { deviceId });
+    setCamUI(want);
+    log('cam →', want);
+  } catch (e) {
+    log('cam toggle failed:', e.name, e.message);
+    showError(`Camera blocked: ${e.message}. ${window.isSecureContext ? '' : 'You are on HTTP — see banner.'}`);
+  }
+}
+
+$('#connect').addEventListener('click', connect);
+$('#leave').addEventListener('click', leave);
+$('#mic-toggle').addEventListener('click', () => toggleMic());
+$('#cam-toggle').addEventListener('click', () => toggleCam());
+$('#mic-select').addEventListener('change', () => { if (room?.localParticipant.isMicrophoneEnabled) toggleMic(true); });
+$('#cam-select').addEventListener('change', () => { if (room?.localParticipant.isCameraEnabled) toggleCam(true); });
+$('#speak-send').addEventListener('click', speakAsLumina);
+$('#speak-text').addEventListener('keydown', e => { if (e.key === 'Enter') speakAsLumina(); });
+
+let recordingActive = false;
+async function refreshRecordingState() {
+  try {
+    const r = await fetch('/recordings');
+    const d = await r.json();
+    recordingActive = !!d.active;
+    const btn = $('#record-toggle');
+    if (recordingActive) {
+      btn.textContent = '⏹️ Stop'; btn.style.background = '#5a2a2a';
+    } else {
+      btn.textContent = '🎙️ Record'; btn.style.background = '';
+    }
+  } catch (e) {}
+}
+$('#record-toggle').addEventListener('click', async () => {
+  try {
+    if (!recordingActive) {
+      const label = prompt('Recording label (optional, e.g. "cloud9-explanation"):', '') || 'recording';
+      const r = await fetch('/livekit/record/start', {
+        method: 'POST',
+        headers: {'content-type': 'application/json'},
+        body: JSON.stringify({label, room: room ? room.name : undefined, target: 'lumina'}),
+      });
+      if (!r.ok) throw new Error(`start failed (${r.status})`);
+      log('🔴 recording started');
+    } else {
+      const r = await fetch('/livekit/record/stop', {method: 'POST'});
+      const d = await r.json();
+      log(`⏹️ stopped — saved ${d.path} (${d.size_bytes} bytes)`);
+    }
+  } catch (e) {
+    log('record toggle error:', e.message);
+  }
+  await refreshRecordingState();
+});
+setInterval(refreshRecordingState, 5000);  // poll for state in case stopped externally
+
+// ── Init ─────────────────────────────────────────────────────────────────────
+(async () => {
+  const secure = preflight();
+  const cfg = await loadConfig();
+  const path = location.pathname.replace(/^\/livekit\/?/, '');
+  $('#room').value = path || cfg.default_room;
+  $('#identity').value = localStorage.getItem('skchat.identity') || '';
+  $('#identity').addEventListener('change', e => localStorage.setItem('skchat.identity', e.target.value));
+  if (!cfg.available) { setStatus('', 'server: livekit not configured'); $('#connect').disabled = true; return; }
+  setStatus('', secure ? 'ready' : 'ready (no media — insecure context)');
+  if (secure) await enumerateDevices();
+})();
+</script>
+</body>
+</html>

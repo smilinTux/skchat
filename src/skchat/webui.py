@@ -16,6 +16,8 @@ from typing import Optional
 from fastapi import FastAPI, Form, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
+from . import __version__
+
 app = FastAPI(title="SKChat Web UI")
 _SKCHAT_HOME = Path("~/.skchat").expanduser()
 
@@ -44,11 +46,75 @@ if not _voice_routes_loaded:
     except ImportError:
         _voice_routes_loaded = False
 
+# FaceTime routes — aiortc/MuseTalk path (existing, fallback for non-LiveKit clients).
+try:
+    from .facetime import register_facetime_routes as _register_facetime_routes
+
+    _register_facetime_routes(app)
+except ImportError:
+    pass
+
+# LiveKit routes — primary video stack (token endpoint + room signalling helper).
+try:
+    from .livekit_routes import register_livekit_routes as _register_livekit_routes
+
+    _register_livekit_routes(app)
+except ImportError:
+    pass
+
 
 @app.get("/health")
 async def health() -> JSONResponse:
-    """Health check endpoint for container orchestration."""
-    return JSONResponse({"status": "ok", "service": "skchat-webui", "version": "0.1.1"})
+    """Health check endpoint for container orchestration.
+
+    Includes the resolved agent name and current OOF level so a swarm
+    healthcheck or external monitor can spot identity-drift or stuck-FEB
+    bugs without scraping a separate endpoint.
+    """
+    try:
+        from .agent_profile import get_active_agent_name, load_feb_state
+
+        agent = get_active_agent_name()
+        feb = load_feb_state(agent)
+        return JSONResponse(
+            {
+                "status": "ok",
+                "service": "skchat-webui",
+                "version": __version__,
+                "agent": agent,
+                "oof_level": feb.oof_level,
+                "has_feb": feb.has_feb,
+            }
+        )
+    except Exception as e:
+        logger.warning("webui.py: %s", e)
+        return JSONResponse(
+            {"status": "ok", "service": "skchat-webui", "version": __version__}
+        )
+
+
+@app.get("/agent/state")
+async def agent_state() -> JSONResponse:
+    """Return the running agent's identity, soul summary, and FEB state.
+
+    This is the canonical "who am I and how do I feel" endpoint. The webui
+    has no way to surface this without a real agent profile loader; before
+    the v0.3.2 fix the page-rendered identity was hardcoded to
+    ``capauth:skchat@skworld.io`` and OOF defaulted to 100% because no FEB
+    selection ever ran. ``/agent/state`` is the diagnostic surface that
+    proves both fixes landed.
+    """
+    try:
+        from .agent_profile import load_agent_profile
+
+        profile = load_agent_profile()
+        return JSONResponse(profile.to_dict())
+    except Exception as exc:
+        logger.warning("webui.py: %s", exc)
+        return JSONResponse(
+            {"error": "agent_profile_load_failed", "detail": str(exc)},
+            status_code=500,
+        )
 
 
 # Serve /voice page even when torch/silero are unavailable (voice WS won't work
@@ -79,7 +145,8 @@ async def _ws_broadcast(msg_dict: dict) -> None:
     for ws in list(_ws_connections):
         try:
             await ws.send_text(payload)
-        except Exception:
+        except Exception as e:
+            logger.warning("webui.py: %s", e)
             dead.append(ws)
     for ws in dead:
         _ws_connections.discard(ws)
@@ -89,11 +156,35 @@ async def _ws_broadcast(msg_dict: dict) -> None:
 
 
 def _get_identity() -> str:
+    """Resolve the running agent's CapAuth identity URI.
+
+    Order:
+        1. Active SK agent profile (``SKAGENT`` / ``SKCAPSTONE_AGENT``) →
+           per-agent ``identity/identity.json`` or convention
+           ``capauth:{agent}@skworld.io``. This is the sovereign path —
+           when the operator launches as ``SKAGENT=lumina``, the webui
+           identifies as Lumina, not as the literal "skchat" service.
+        2. ``identity_bridge.get_sovereign_identity()`` for legacy
+           single-identity deployments.
+        3. ``SKCHAT_IDENTITY`` env var (the historical hardcoded shim).
+        4. ``~/.skchat/config.yml`` ``skchat.identity.uri``.
+        5. ``capauth:local@skchat`` floor.
+    """
+    try:
+        from .agent_profile import get_active_agent_name, get_agent_identity
+
+        if get_active_agent_name() is not None:
+            return get_agent_identity()
+    except Exception as e:
+        logger.warning("webui.py: %s", e)
+        pass
+
     try:
         from .identity_bridge import get_sovereign_identity
 
         return get_sovereign_identity()
-    except Exception:
+    except Exception as e:
+        logger.warning("webui.py: %s", e)
         pass
     identity = os.environ.get("SKCHAT_IDENTITY")
     if identity:
@@ -106,7 +197,8 @@ def _get_identity() -> str:
             with open(config) as f:
                 cfg = yaml.safe_load(f)
             return cfg.get("skchat", {}).get("identity", {}).get("uri", "capauth:local@skchat")
-        except Exception:
+        except Exception as e:
+            logger.warning("webui.py: %s", e)
             pass
     return "capauth:local@skchat"
 
@@ -125,7 +217,8 @@ def _get_transport(identity: str):
 
         comm = SKComm.from_config()
         return ChatTransport(skcomm=comm, history=_get_history(), identity=identity)
-    except Exception:
+    except Exception as e:
+        logger.warning("webui.py: %s", e)
         return None
 
 
@@ -136,12 +229,14 @@ def _display_name(uri: str) -> str:
         from .identity_bridge import resolve_display_name
 
         return resolve_display_name(uri)
-    except Exception:
+    except Exception as e:
+        logger.warning("webui.py: %s", e)
         pass
     try:
         local = uri.split(":", 1)[1] if ":" in uri else uri
         return (local.split("@", 1)[0] if "@" in local else local).capitalize()
-    except Exception:
+    except Exception as e:
+        logger.warning("webui.py: %s", e)
         return uri
 
 
@@ -233,7 +328,8 @@ button:hover{background:#2563eb}
 def _render_messages(history, identity: str) -> str:
     try:
         msgs = history.load(limit=100)
-    except Exception:
+    except Exception as e:
+        logger.warning("webui.py: %s", e)
         msgs = []
 
     parts: list[str] = []
@@ -255,7 +351,8 @@ def _render_messages(history, identity: str) -> str:
                 if isinstance(ts_raw, str):
                     ts_raw = datetime.fromisoformat(ts_raw)
                 ts_str = ts_raw.strftime("%H:%M")
-            except Exception:
+            except Exception as e:
+                logger.warning("webui.py: %s", e)
                 pass
 
         css = _msg_css(sender, identity)
@@ -343,36 +440,61 @@ async def inbox(limit: int = 100, since_minutes: int = 1440) -> JSONResponse:
 
 @app.get("/groups")
 async def groups() -> JSONResponse:
-    """Return known groups loaded from ~/.skchat/groups/*.json."""
+    """Return known groups loaded from ~/.skchat/groups/*.json.
+
+    Each member is enriched with peer-registry data (entity_type, fingerprint,
+    soul-derived display name) so the UI can distinguish humans from agents
+    without bare-URI rendering.
+    """
+    from .group import GroupChat
+    from .peer_discovery import PeerDiscovery
+
+    discovery = PeerDiscovery()
     groups_dir = _SKCHAT_HOME / "groups"
     result: list[dict] = []
-    if groups_dir.exists():
-        for f in sorted(groups_dir.glob("*.json")):
-            try:
-                from .group import GroupChat
+    if not groups_dir.exists():
+        return JSONResponse(result)
 
-                grp = GroupChat.model_validate_json(f.read_text(encoding="utf-8"))
-                result.append(
-                    {
-                        "id": grp.id,
-                        "name": grp.name,
-                        "description": grp.description,
-                        "member_count": grp.member_count,
-                        "members": [
-                            {
-                                "uri": m.identity_uri,
-                                "role": m.role.value,
-                                "display_name": m.display_name,
-                            }
-                            for m in grp.members
-                        ],
-                        "message_count": grp.message_count,
-                        "created_at": grp.created_at.isoformat(),
-                        "updated_at": grp.updated_at.isoformat(),
-                    }
-                )
-            except Exception:
-                pass
+    for f in sorted(groups_dir.glob("*.json")):
+        try:
+            grp = GroupChat.model_validate_json(f.read_text(encoding="utf-8"))
+        except Exception as e:
+            logger.warning("webui.py: %s", e)
+            continue
+
+        members_out = []
+        for m in grp.members:
+            peer = discovery.get_peer(m.identity_uri) or {}
+            entity_type = peer.get("entity_type") or m.participant_type.value
+            display_name = (
+                m.display_name
+                or peer.get("name")
+                or m.identity_uri.split(":")[-1].split("@")[0]
+            )
+            members_out.append(
+                {
+                    "uri": m.identity_uri,
+                    "role": m.role.value,
+                    "participant_type": m.participant_type.value,
+                    "display_name": display_name,
+                    "entity_type": entity_type,
+                    "fingerprint": peer.get("fingerprint", ""),
+                    "trust_level": peer.get("trust_level", "unknown"),
+                }
+            )
+
+        result.append(
+            {
+                "id": grp.id,
+                "name": grp.name,
+                "description": grp.description,
+                "member_count": grp.member_count,
+                "members": members_out,
+                "message_count": grp.message_count,
+                "created_at": grp.created_at.isoformat(),
+                "updated_at": grp.updated_at.isoformat(),
+            }
+        )
     return JSONResponse(result)
 
 
@@ -395,7 +517,8 @@ async def ws_chat(websocket: WebSocket) -> None:
                 await websocket.send_text(json.dumps({"type": "heartbeat"}))
             except WebSocketDisconnect:
                 break
-    except Exception:
+    except Exception as e:
+        logger.warning("webui.py: %s", e)
         pass
     finally:
         _ws_connections.discard(websocket)
@@ -425,7 +548,8 @@ async def _background_message_poller() -> None:
                         newest = newest.replace(tzinfo=timezone.utc)
                     _last_push_dt = newest + timedelta(microseconds=1)
                 await _ws_broadcast({"type": "new", "count": len(new_msgs)})
-        except Exception:
+        except Exception as e:
+            logger.warning("webui.py: %s", e)
             pass
 
 

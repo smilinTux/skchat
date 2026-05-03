@@ -24,14 +24,14 @@ services:
     environment:
       SKCHAT_HOST: "0.0.0.0"
       SKCHAT_USE_OPENCLAW: "true"
-      SKCHAT_TTS_URL: "http://192.168.0.100:18793/audio/speech"
-      SKCHAT_STT_URL: "http://192.168.0.100:18794/v1/audio/transcriptions"
-      SKCHAT_LLM_URL: "http://192.168.0.100:11434/v1/chat/completions"
+      SKCHAT_TTS_URL: "http://127.0.0.1:18793/audio/speech"
+      SKCHAT_STT_URL: "http://127.0.0.1:18794/v1/audio/transcriptions"
+      SKCHAT_LLM_URL: "http://127.0.0.1:11434/v1/chat/completions"
       SKCHAT_LLM_MODEL: "qwen3.5:9b"
       SKCHAT_VOICE_LLM_URL: "http://gateway:18795/voice-llm"
       SKCHAT_SKVOICE_URL: "ws://192.168.0.158:18800/ws/voice"
     extra_hosts:
-      - "gpu100:192.168.0.100"
+      - "gpu100:127.0.0.1"
       - "gateway:192.168.0.158"
     networks:
       - cloud-public-prod

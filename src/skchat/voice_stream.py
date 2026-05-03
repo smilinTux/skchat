@@ -34,9 +34,9 @@ logger = logging.getLogger("skchat.voice_stream")
 # Configuration (env vars with sensible defaults)
 # ---------------------------------------------------------------------------
 
-WHISPER_URL = os.getenv("SKCHAT_STT_URL", "http://192.168.0.100:18794/v1/audio/transcriptions")
-CHATTERBOX_URL = os.getenv("SKCHAT_TTS_URL", "http://192.168.0.100:18793/audio/speech")
-OLLAMA_URL = os.getenv("SKCHAT_LLM_URL", "http://192.168.0.100:11434/v1/chat/completions")
+WHISPER_URL = os.getenv("SKCHAT_STT_URL", "http://127.0.0.1:18794/v1/audio/transcriptions")
+CHATTERBOX_URL = os.getenv("SKCHAT_TTS_URL", "http://127.0.0.1:18793/audio/speech")
+OLLAMA_URL = os.getenv("SKCHAT_LLM_URL", "http://127.0.0.1:11434/v1/chat/completions")
 OLLAMA_MODEL = os.getenv("SKCHAT_LLM_MODEL", "kimi-k2-instruct")
 PIPER_BIN = os.getenv("SKCHAT_PIPER_BIN", "/usr/local/piper/piper")
 PIPER_MODEL = os.getenv(

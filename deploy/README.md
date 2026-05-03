@@ -56,14 +56,14 @@ to upstream services via their LAN endpoints:
 
 | Env var | Endpoint | What it is |
 |---|---|---|
-| `SKCHAT_TTS_URL` | `http://192.168.0.100:18793/audio/speech` | VoxCPM TTS |
-| `SKCHAT_STT_URL` | `http://192.168.0.100:18794/v1/audio/transcriptions` | faster-whisper STT |
-| `SKCHAT_LLM_URL` | `http://192.168.0.100:11434/v1/chat/completions` | Ollama (qwen3.5:9b) |
+| `SKCHAT_TTS_URL` | `http://127.0.0.1:18793/audio/speech` | VoxCPM TTS |
+| `SKCHAT_STT_URL` | `http://127.0.0.1:18794/v1/audio/transcriptions` | faster-whisper STT |
+| `SKCHAT_LLM_URL` | `http://127.0.0.1:11434/v1/chat/completions` | Ollama (qwen3.5:9b) |
 | `SKCHAT_VOICE_LLM_URL` | `http://gateway:18795/voice-llm` | gateway @ 192.168.0.158 |
 | `SKCHAT_SKVOICE_URL` | `ws://192.168.0.158:18800/ws/voice` | skvoice WS |
 
 `gpu100` and `gateway` are resolved via swarm `extra_hosts` entries to
-192.168.0.100 and 192.168.0.158 respectively.
+127.0.0.1 and 192.168.0.158 respectively.
 
 ## Network
 

@@ -70,7 +70,7 @@ How to reproduce
 
 Run unit+e2e with:
     cd ~ && python -m pytest \\
-        /home/cbrd21/dkloud.douno.it/p/smilintux-org/skchat/tests/test_3way_chat.py -v
+        /home/REDACTED-USER/dkloud.douno.it/p/smilintux-org/skchat/tests/test_3way_chat.py -v
 """
 
 from __future__ import annotations

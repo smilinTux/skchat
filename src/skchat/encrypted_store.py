@@ -149,6 +149,7 @@ class ContentEncryptor:
             plaintext = aesgcm.decrypt(nonce, ciphertext, None)
             return plaintext.decode("utf-8")
         except Exception as exc:
+            logger.warning("encrypted_store.py: %s", exc)
             raise ValueError(f"Decryption failed: {exc}") from exc
 
 

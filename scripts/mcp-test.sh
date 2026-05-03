@@ -11,7 +11,7 @@
 set -uo pipefail
 
 IDENTITY="${SKCHAT_IDENTITY:-capauth:opus@skworld.io}"
-SKCHAT_SRC="${SKCHAT_SRC:-/home/cbrd21/dkloud.douno.it/p/smilintux-org/skchat/src}"
+SKCHAT_SRC="${SKCHAT_SRC:-/home/REDACTED-USER/dkloud.douno.it/p/smilintux-org/skchat/src}"
 TIMEOUT=30  # skchat-mcp startup takes ~16s on this machine (pyenv + heavy imports)
 
 GREEN="\033[0;32m"

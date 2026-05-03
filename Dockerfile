@@ -21,9 +21,9 @@ RUN pip install --no-cache-dir \
 ENV SKCHAT_HOST=0.0.0.0
 
 # Voice streaming env vars (GPU services on .100, LLM proxy on gateway host)
-ENV SKCHAT_STT_URL=http://192.168.0.100:18794/v1/audio/transcriptions
-ENV SKCHAT_TTS_URL=http://192.168.0.100:18793/audio/speech
-ENV SKCHAT_LLM_URL=http://192.168.0.100:11434/v1/chat/completions
+ENV SKCHAT_STT_URL=http://127.0.0.1:18794/v1/audio/transcriptions
+ENV SKCHAT_TTS_URL=http://127.0.0.1:18793/audio/speech
+ENV SKCHAT_LLM_URL=http://127.0.0.1:11434/v1/chat/completions
 ENV SKCHAT_LLM_MODEL=qwen3.5:9b
 ENV SKCHAT_VOICE_LLM_URL=http://192.168.0.158:18795/voice-llm
 ENV SKCHAT_USE_OPENCLAW=true

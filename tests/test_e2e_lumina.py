@@ -19,7 +19,7 @@ daemon.  Lumina's reply is written to ``~/.skchat/history/<today>.jsonl`` via
 ``deliver_reply_to_inbox() → history.save()``, which is where we poll for it.
 
 Run with:
-    cd ~ && python -m pytest /home/cbrd21/dkloud.douno.it/p/smilintux-org/skchat/tests/test_e2e_lumina.py -v
+    cd ~ && python -m pytest /home/REDACTED-USER/dkloud.douno.it/p/smilintux-org/skchat/tests/test_e2e_lumina.py -v
 """
 
 from __future__ import annotations
