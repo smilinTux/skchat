@@ -752,7 +752,7 @@ Send a file directly to a peer via WebRTC data channels. Uses parallel channels 
 ```json
 {
   "peer": "lumina",
-  "file_path": "/home/cbrd21/report.pdf",
+  "file_path": "/home/REDACTED-USER/report.pdf",
   "description": "Architecture review report"
 }
 ```

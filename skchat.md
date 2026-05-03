@@ -90,7 +90,7 @@ typing_stop(recipient="lumina")
 **P2P file transfer:**
 ```python
 initiate_call(peer="lumina")          # establish channel
-send_file_p2p(peer="lumina", file_path="/home/cbrd21/report.pdf")
+send_file_p2p(peer="lumina", file_path="/home/REDACTED-USER/report.pdf")
 ```
 
 ## @mention Triggers

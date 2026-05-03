@@ -345,12 +345,14 @@ class ChatTransport:
                                 if _uri.startswith("capauth:") and "@" in _uri:
                                     envelope_sender = _uri
                                     break
-                    except Exception:
+                    except Exception as e:
+                        logger.warning("transport.py: %s", e)
                         pass
 
                 try:
                     msg = ChatMessage.model_validate_json(payload_content)
-                except Exception:
+                except Exception as e:
+                    logger.warning("transport.py: %s", e)
                     # Payload is not a ChatMessage JSON — wrap plain text using
                     # the envelope sender so the message is not silently dropped.
                     if not envelope_sender:
@@ -385,7 +387,8 @@ class ChatTransport:
                                 if _u.startswith("capauth:") and "@" in _u:
                                     msg = msg.model_copy(update={"sender": _u})
                                     break
-                    except Exception:
+                    except Exception as e:
+                        logger.warning("transport.py: %s", e)
                         pass
 
                 if self._crypto and msg.encrypted:
@@ -475,7 +478,8 @@ class ChatTransport:
                 fp = cfg.get("skcomm", {}).get("identity", {}).get("fingerprint", "")
                 if fp:
                     return str(fp).replace(" ", "")
-        except Exception:
+        except Exception as e:
+            logger.warning("transport.py: %s", e)
             pass
         # Sanitize identity URI → filesystem-safe slug
         slug = (
@@ -588,7 +592,8 @@ class ChatTransport:
                 envelope = MessageEnvelope.from_bytes(data)
                 payload_content = self._extract_payload(envelope)
                 envelope_sender_file = getattr(envelope, "sender", "") or ""
-            except Exception:
+            except Exception as e:
+                logger.warning("transport.py: %s", e)
                 pass
 
             # Fall back: parse raw JSON and unwrap payload.content or use as-is
@@ -627,7 +632,8 @@ class ChatTransport:
                                 if _u3.startswith("capauth:") and "@" in _u3:
                                     msg = msg.model_copy(update={"sender": _u3})
                                     break
-                    except Exception:
+                    except Exception as e:
+                        logger.warning("transport.py: %s", e)
                         pass
                 msg = msg.model_copy(update={"delivery_status": DeliveryStatus.DELIVERED})
                 self._history.store_message(msg)

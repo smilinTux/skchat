@@ -200,7 +200,8 @@ def resolve_display_name(uri: str) -> str:
                 local = handle.split("@")[0]
                 if local:
                     return local.capitalize()
-    except Exception:
+    except Exception as e:
+        logger.warning("identity_bridge.py: %s", e)
         pass
 
     # Step 4: string-based fallback — never return "unknown"
@@ -217,7 +218,8 @@ def resolve_display_name(uri: str) -> str:
         if local.lower() in ("unknown", "none"):
             return "?"
         return local.capitalize() if local else uri
-    except Exception:
+    except Exception as e:
+        logger.warning("identity_bridge.py: %s", e)
         return uri
 
 

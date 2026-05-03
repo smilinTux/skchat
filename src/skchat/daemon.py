@@ -135,6 +135,7 @@ class ChatDaemon:
             skcomm = SKComm.from_config()
             self._skcomm = skcomm
         except Exception as exc:
+            logger.warning("daemon.py: %s", exc)
             self._log(f"Failed to initialize SKComm: {exc}", "error")
             self._log("Make sure SKComm is configured: skcomm init", "error")
             raise
@@ -162,6 +163,7 @@ class ChatDaemon:
                 identity=identity,
             )
         except Exception as exc:
+            logger.warning("daemon.py: %s", exc)
             self._log(f"Failed to initialize transport: {exc}", "error")
             raise
 
@@ -193,6 +195,7 @@ class ChatDaemon:
 
                 engine = AdvocacyEngine(identity=identity)
             except Exception as exc:
+                logger.warning("daemon.py: %s", exc)
                 self._log(f"AdvocacyEngine init skipped: {exc}", "warning")
             try:
                 from .plugins import PluginRegistry
@@ -201,6 +204,7 @@ class ChatDaemon:
                 pr.discover()
                 plugin_registry = pr
             except Exception as exc:
+                logger.warning("daemon.py: %s", exc)
                 self._log(f"PluginRegistry init skipped: {exc}", "warning")
             subsystems = [
                 k
@@ -272,6 +276,7 @@ class ChatDaemon:
                                         transport.send_and_store(msg.sender, reply)
                                         self.advocacy_responses += 1
                                 except Exception as exc:
+                                    logger.warning("daemon.py: %s", exc)
                                     self._log(f"Advocacy error: {exc}", "warning")
                             if plugin_registry:
                                 for plugin in plugin_registry.get_plugins():
@@ -281,6 +286,7 @@ class ChatDaemon:
                                             if plugin_reply:
                                                 transport.send_and_store(msg.sender, plugin_reply)
                                         except Exception as exc:
+                                            logger.warning("daemon.py: %s", exc)
                                             self._log(
                                                 f"Plugin '{plugin.name}' error: {exc}", "warning"
                                             )
@@ -291,6 +297,7 @@ class ChatDaemon:
                             )
 
                 except Exception as exc:
+                    logger.warning("daemon.py: %s", exc)
                     self._consecutive_failures += 1
                     self._transport_ok = False
                     delay = _BACKOFF_DELAYS[
@@ -339,6 +346,7 @@ class ChatDaemon:
                                 f"Reaper: {result.expired} expired, {result.active_ephemeral} still active"
                             )
                     except Exception as exc:
+                        logger.warning("daemon.py: %s", exc)
                         self._log(f"Reaper error: {exc}", "warning")
 
                 # --- Process outbox queue each cycle (backoff inside process_pending) ---
@@ -349,6 +357,7 @@ class ChatDaemon:
                             self._log(f"Outbox: {delivered} delivered, {failed} retried/failed")
                         self.total_sent += delivered
                     except Exception as exc:
+                        logger.warning("daemon.py: %s", exc)
                         self._log(f"Outbox process error: {exc}", "warning")
 
                 # --- Broadcast presence (every 12 cycles ~60s) ---
@@ -359,6 +368,7 @@ class ChatDaemon:
                         self._broadcast_presence(skcomm, identity, presence)
                         self.last_heartbeat_at = datetime.now(timezone.utc)
                     except Exception as exc:
+                        logger.warning("daemon.py: %s", exc)
                         self._log(f"Presence broadcast error: {exc}", "warning")
 
                 # --- Auto-capture active threads to skcapstone (every 720 cycles ~1h) ---
@@ -372,6 +382,7 @@ class ChatDaemon:
                                 f"MemoryBridge: captured {len(results)} thread(s) to skcapstone"
                             )
                     except Exception as exc:
+                        logger.warning("daemon.py: %s", exc)
                         self._log(f"MemoryBridge auto-capture error: {exc}", "warning")
 
                 # --- Watchdog health check + stats file write (every 6 cycles ~30s) ---
@@ -382,6 +393,7 @@ class ChatDaemon:
                         try:
                             watchdog.check()
                         except Exception as exc:
+                            logger.warning("daemon.py: %s", exc)
                             self._log(f"Watchdog error: {exc}", "warning")
                     try:
                         self._write_daemon_stats(watchdog, presence, skcomm)
@@ -417,6 +429,7 @@ class ChatDaemon:
 
             return MessageReaper(store=history._store)
         except Exception as exc:
+            logger.warning("daemon.py: %s", exc)
             self._log(f"Reaper init skipped: {exc}", "warning")
             return None
 
@@ -434,6 +447,7 @@ class ChatDaemon:
 
             return PresenceTracker()
         except Exception as exc:
+            logger.warning("daemon.py: %s", exc)
             self._log(f"Presence init skipped: {exc}", "warning")
             return None
 
@@ -458,9 +472,11 @@ class ChatDaemon:
             try:
                 self._outbox_messenger = AgentMessenger.from_identity(identity, skcomm=skcomm)
             except Exception as exc:
+                logger.warning("daemon.py: %s", exc)
                 self._log(f"Outbox messenger init skipped: {exc}", "warning")
             return queue
         except Exception as exc:
+            logger.warning("daemon.py: %s", exc)
             self._log(f"Queue init skipped: {exc}", "warning")
             return None
 
@@ -493,6 +509,7 @@ class ChatDaemon:
             self._log("WebRTC transport wired (signaling connected on next poll)")
 
         except Exception as exc:
+            logger.warning("daemon.py: %s", exc)
             self._log(f"WebRTC init skipped: {exc}", "warning")
 
     def _init_memory_bridge(self, history: object) -> object:
@@ -509,6 +526,7 @@ class ChatDaemon:
 
             return MemoryBridge(history=history)
         except Exception as exc:
+            logger.warning("daemon.py: %s", exc)
             self._log(f"MemoryBridge init skipped: {exc}", "warning")
             return None
 
@@ -689,6 +707,7 @@ class ChatDaemon:
 
             return TransportWatchdog(transport=skcomm)
         except Exception as exc:
+            logger.warning("daemon.py: %s", exc)
             self._log(f"Watchdog init skipped: {exc}", "warning")
             return None
 

@@ -1,7 +1,7 @@
 """FaceTime session manager for skchat.
 
 skchat acts as a thin proxy for FaceTime signaling. The actual WebRTC
-peer connection lives on the GPU server (192.168.0.100) alongside
+peer connection lives on the GPU server (127.0.0.1) alongside
 MuseTalk and TTS. skchat provides:
 
 1. The FaceTime HTML page (/facetime, /facetime/{agent})
@@ -20,7 +20,7 @@ Architecture:
 
 Dependencies:
     - SKComm signaling broker (already running as part of skchat/skcomm serve)
-    - SKVoice on GPU box (192.168.0.100:18800) for voice pipeline
+    - SKVoice on GPU box (127.0.0.1:18800) for voice pipeline
     - FaceTimeSession on GPU box (new: manages WebRTC media tracks)
 """
 
@@ -39,7 +39,7 @@ logger = logging.getLogger("skchat.facetime")
 
 # SKVoice FaceTime endpoint on GPU box
 SKVOICE_FACETIME_URL = os.getenv(
-    "SKCHAT_SKVOICE_FACETIME_URL", "ws://192.168.0.100:18800/ws/facetime"
+    "SKCHAT_SKVOICE_FACETIME_URL", "ws://127.0.0.1:18800/ws/facetime"
 )
 DEFAULT_AGENT = os.getenv("SKCHAT_FACETIME_AGENT", "lumina")
 
@@ -83,18 +83,21 @@ def register_facetime_routes(app: FastAPI) -> None:
         agents_dir = Path.home() / ".skcapstone" / "agents"
         available = []
         if agents_dir.exists():
-            for agent_dir in agents_dir.iterdir():
-                if agent_dir.is_dir():
-                    portrait = agent_dir / "avatar" / "portrait.png"
-                    available.append(
-                        {
-                            "name": agent_dir.name,
-                            "has_portrait": portrait.exists(),
-                            "portrait_url": f"/api/facetime/portrait/{agent_dir.name}"
-                            if portrait.exists()
-                            else None,
-                        }
-                    )
+            for agent_dir in sorted(agents_dir.iterdir()):
+                if not agent_dir.is_dir():
+                    continue
+                if agent_dir.name.startswith(".") or agent_dir.name.endswith("-template"):
+                    continue
+                portrait = agent_dir / "avatar" / "portrait.png"
+                available.append(
+                    {
+                        "name": agent_dir.name,
+                        "has_portrait": portrait.exists(),
+                        "portrait_url": f"/api/facetime/portrait/{agent_dir.name}"
+                        if portrait.exists()
+                        else None,
+                    }
+                )
         return {"agents": available}
 
     @app.get("/api/facetime/portrait/{agent_name}")
@@ -168,6 +171,7 @@ async def _proxy_facetime_ws(client_ws: WebSocket, agent_name: str) -> None:
                 task.cancel()
 
     except Exception as e:
+        logger.warning("facetime.py: %s", e)
         try:
             await client_ws.send_json(
                 {
@@ -175,10 +179,12 @@ async def _proxy_facetime_ws(client_ws: WebSocket, agent_name: str) -> None:
                     "message": f"FaceTime service unavailable: {e}",
                 }
             )
-        except Exception:
+        except Exception as e:
+            logger.warning("facetime.py: %s", e)
             pass
     finally:
         try:
             await client_ws.close()
-        except Exception:
+        except Exception as e:
+            logger.warning("facetime.py: %s", e)
             pass
