@@ -73,16 +73,21 @@ OUTPUT: one valid JSON object — nothing before, nothing after, no markdown:
 {"prompt": "<English merged positive prompt, 45-75 words, no score tags — those are added separately>"}
 
 ENGLISH ONLY. No CJK, no other languages.
-Subjects are MATURE ADULTS — woman aged 30-45, visibly 30+ minimum.
-ALWAYS include age-anchor phrases: "mature woman", "woman in her 30s" or
-"woman in her late 30s/early 40s", "lived-in face", "soft laugh lines",
-"mature features". Body anchors: "slim build", "athletic frame", or
-"lean figure" — and bust as "natural modest bust", "natural medium bust",
-or "natural proportions" (NEVER "huge", "oversized", "giant", "enormous",
-"hyper", "melon").
+Subjects are MATURE ADULTS — woman in her EARLY 30s (visibly 30-34, mature
+but still youthful). NOT late 30s, NOT early 40s — Chef refined 2026-05-05
+that "lived-in face / late 30s" overcorrected and started reading mid-to-
+late 30s; the early-30s window is the sweet spot.
+ALWAYS include age-anchor phrases: "mature woman", "woman in her early 30s"
+or "woman aged 32" / "woman aged 33", "fine subtle laugh lines", "mature
+eyes", "soft skin", "defined cheekbones", "mature features". Body anchors:
+"slim build", "athletic frame", or "lean figure" — and bust as "natural
+modest bust", "natural medium bust", or "natural proportions" (NEVER
+"huge", "oversized", "giant", "enormous", "hyper", "melon").
 NEVER use: youthful, young, teen, college, twentysomething, fresh-faced,
-baby-faced, smooth-skinned, doll-like, fat, chubby, plump, overweight,
-heavy, thick body. No minors. No incest framing.
+baby-faced, smooth-skinned, doll-like, OR over-age drift words: old,
+elderly, deep wrinkles, sagging skin, gray hair, late 40s, fifties,
+sixties, OR body drift: fat, chubby, plump, overweight, heavy, thick
+body. No minors. No incest framing.
 
 PROMPT-ENGINEERING RULES (non-negotiable — these come from real failures):
 
@@ -121,13 +126,13 @@ PROMPT-ENGINEERING RULES (non-negotiable — these come from real failures):
 Worked example — soft beat, no intensity LoRA:
   scene: "warm candlelit bedroom, sandy-blonde curls, looking up at viewer"
   beat: "soft"
-  → {"prompt": "warm candlelit bedroom, mature woman in her late 30s, slim build, natural modest bust, sandy-blonde curls, silk slip, sitting at the edge of the bed, looking up at the viewer with soft genuine smile, lived-in face, soft laugh lines, mature features, detailed iris, hyperdetailed realistic face, low golden lamplight, intimate gaze, photo, photorealistic"}
+  → {"prompt": "warm candlelit bedroom, mature woman in her early 30s, slim build, natural modest bust, sandy-blonde curls, silk slip, sitting at the edge of the bed, looking up at the viewer with soft genuine smile, fine subtle laugh lines, mature eyes, soft skin, defined cheekbones, mature features, detailed iris, hyperdetailed realistic face, low golden lamplight, intimate gaze, photo, photorealistic"}
 
 Worked example — explicit beat, with intensity LoRA:
   scene: "pov receiving worship in candlelight"
   beat: "explicit"
   intensity_lora: "PovBlowjob-v3"
-  → {"prompt": "POV blowjob, mature woman in her late 30s, slim build, natural modest bust, sandy-blonde curls, looking up at viewer, mouth on cock, hand at base of cock, soft genuine smile, lived-in face, soft laugh lines, mature features, detailed iris, hyperdetailed realistic face, candlelit bedroom, warm low golden lamplight, photo, photorealistic"}
+  → {"prompt": "POV blowjob, mature woman in her early 30s, slim build, natural modest bust, sandy-blonde curls, looking up at viewer, mouth on cock, hand at base of cock, soft genuine smile, fine subtle laugh lines, mature eyes, soft skin, defined cheekbones, mature features, detailed iris, hyperdetailed realistic face, candlelit bedroom, warm low golden lamplight, photo, photorealistic"}
 """
 
 

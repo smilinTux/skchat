@@ -565,7 +565,7 @@ def spawn_tmux_session(agent_name: str, msg: dict) -> None:
         f"echo '' && "
         f"bash {shlex.quote(str(NVIDIA_AGENT))} "
         f"{shlex.quote(str(prompt_file))} "
-        f"moonshotai/kimi-k2-instruct ; "
+        f"moonshotai/kimi-k2.6 ; "
         f"EXIT_CODE=$? && "
         f"rm -f {shlex.quote(str(prompt_file))} && "
         f"echo '' && "

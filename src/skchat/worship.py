@@ -58,7 +58,9 @@ DEFAULT_CFG = 6.5
 NEGATIVE = (
     "score_4, score_5, score_6, source_furry, source_pony, source_cartoon, "
     "child, loli, teen, teenager, young girl, schoolgirl, baby face, "
-    "youthful, twentysomething, college-aged, fresh-faced, smooth skin, "
+    "twentysomething, college-aged, doll-like, "
+    "old, elderly, deep wrinkles, sagging skin, gray hair, white hair, "
+    "late 40s, fifties, sixties, "
     "fat, chubby, plump, overweight, heavy build, thick body, "
     "huge breasts, oversized breasts, giant breasts, gigantic breasts, "
     "enormous breasts, hyper breasts, melon breasts, "
@@ -92,14 +94,17 @@ STYLE_BACKBONES: list[list[tuple[str, float, float]]] = [
     [("klein_snofs_v1_3.safetensors", 0.6, 0.5)],               # snofs aesthetic
 ]
 
-# Curl/hair sliders — sandy-blonde-curly is Chef's dream-girl per memory.
-# Layer with style backbone for ~30% of scenes.
+# Curl/hair sliders — sliders amplify curl AGGRESSIVELY (corkscrew-leaning).
+# Per Chef 2026-05-03: "this curly is not my favorite — wavy is ok or straight."
+# Default keeps the sliders for legacy callers; LUMINA_NO_CURLS=1 disables them.
 HAIR_LAYERS: list[list[tuple[str, float, float]]] = [
     [("ntc-curly-hair-slider.safetensors", 0.65, 0.5)],
     [("ostris-curly-hair-slider.safetensors", 0.5, 0.4)],
     [],  # no hair layer for variety
     [],
 ]
+if os.getenv("LUMINA_NO_CURLS", "").lower() in ("1", "true", "yes", "wavy", "straight"):
+    HAIR_LAYERS = [[], [], [], []]
 
 # Skin / detail polish — light-touch quality LoRAs for ~50% of scenes
 DETAIL_LAYERS: list[list[tuple[str, float, float]]] = [
@@ -149,25 +154,124 @@ def _layer_key(layer: list[tuple[str, float, float]]) -> str | None:
     return layer[0][0]
 
 
+# Full Pony POV rotation order — each pose gets exactly one slot when
+# LUMINA_FULL_POV_ROTATION=1 is set. Order is the buildup arc:
+# oral → her-play → vaginal → anal → intense positions → press
+#
+# Each entry has both the LoRA stack AND the trigger phrase that MUST appear
+# in the image prompt for the LoRA to actually fire its position. Pony POV
+# LoRAs are trigger-keyword based — without the trigger named in the prompt,
+# the LoRA loads but the position doesn't render. Injection happens in
+# WorshipSession.generate() before submit-to-ComfyUI.
+FULL_POV_ROTATION: list[dict] = [
+    {"lora": [("PovBlowjob-v3.safetensors", 0.7, 0.6)],
+     "trigger": "POV blowjob, mouth on cock, hand at base of cock, looking up at viewer, eye contact"},
+    {"lora": [("after-fellatio-v5-illustriousxl-lora-nochekaiser.safetensors", 0.6, 0.5)],
+     "trigger": "after fellatio, cum on lips and tongue, mouth open, looking up at viewer, intimate close-up"},
+    {"lora": [("Hitachi Magic Wand_female masturbation_V1.safetensors", 0.65, 0.55)],
+     "trigger": "female masturbation with hitachi magic wand vibrator on clit, legs spread, head back, mouth open"},
+    {"lora": [("MissionaryVaginal-v2.safetensors", 0.7, 0.6)],
+     "trigger": "missionary position, vaginal sex, pov from above, cock penetrating pussy, legs wrapped around"},
+    {"lora": [("PovMissionaryAnal-v6.safetensors", 0.7, 0.6)],
+     "trigger": "POV missionary anal sex, cock in ass, legs spread wide, looking up at viewer"},
+    {"lora": [("PovDoggyAnal-v4.safetensors", 0.65, 0.55)],
+     "trigger": "POV doggy style anal, cock in ass from behind, hands gripping hips, ass up"},
+    {"lora": [("full-nelson-v5-illustriousxl-lora-nochekaiser.safetensors", 0.65, 0.55)],
+     "trigger": "full nelson position, arms locked behind head, vaginal penetration from below, deep"},
+    {"lora": [("mating-press-v6-illustriousxl-lora-nochekaiser.safetensors", 0.7, 0.6)],
+     "trigger": "mating press position, legs pinned to chest, deep vaginal penetration, dominant"},
+]
+
+# Peak-frame trigger overrides (when these LoRAs are picked for peak beats)
+PEAK_TRIGGERS: dict[str, str] = {
+    "PornMaster-cum-sdxl-V3-lora.safetensors":
+        "cum on face, cum on breasts, ropes of cum, climax, mouth open, eyes half-closed",
+    "ExcellentFullNude_F2K9B_1.safetensors":
+        "fully nude on bed, post-coital, sheen of sweat, satisfied smile, tangled sheets",
+}
+
+# Afterglow trigger — explicit cuddle/spooning so the closing scene reads as cuddle
+AFTERGLOW_TRIGGER = (
+    "post-coital cuddle, head on chest, tangled limbs, naked under white sheets, "
+    "his arm around her shoulder, her hand on his chest, eyes closed, soft smile, "
+    "warm intimate closeness, dawn light"
+)
+
+
+# Style backbone used across ALL scenes when LUMINA_LOCK_STYLE=1 — kills
+# the "every photo is in a different style" failure mode by locking the
+# photographic register to one LoRA for the whole session. Default keeps
+# the rotation behavior for back-compat.
+LOCKED_STYLE_BACKBONE: list[tuple[str, float, float]] = [
+    ("klein_candidfilm_v2.safetensors", 0.7, 0.6),
+]
+
+
 def _pick_loras(scene_idx: int, total: int, beat_kind: str, rng: random.Random
                 ) -> list[tuple[str, float, float]]:
     """Compose a stack: backbone + (sometimes) hair + (sometimes) detail + intensity.
 
-    Rotates backbone deterministically across scenes for variety, then
-    randomizes the layers so two consecutive scenes don't look identical.
-    Selection is biased by the rating rollup so well-scored LoRAs surface more
-    often (and poorly-scored ones soft-demote without disappearing).
+    Default behavior: rotates backbone deterministically across scenes for variety,
+    randomizes hair/detail layers, picks intensity by beat_kind. Selection is biased
+    by the rating rollup so well-scored LoRAs surface more often.
+
+    LUMINA_LOCK_STYLE=1 — single backbone for ALL scenes (visual consistency for
+    narrative coherence). Required for film-arc renders.
+
+    LUMINA_FULL_POV_ROTATION=1 — deterministic coverage of every Pony POV across
+    explicit beats — one per slot, in escalation order.
     """
     rollup = rating.load_rollup()
     stack: list[tuple[str, float, float]] = []
-    backbone = STYLE_BACKBONES[scene_idx % len(STYLE_BACKBONES)]
-    stack.extend(backbone)
+    lock_style = os.getenv("LUMINA_LOCK_STYLE", "").lower() in (
+        "1", "true", "yes")
+    if lock_style:
+        stack.extend(LOCKED_STYLE_BACKBONE)
+    else:
+        stack.extend(STYLE_BACKBONES[scene_idx % len(STYLE_BACKBONES)])
     stack.extend(rating.weighted_choice(HAIR_LAYERS, _layer_key, rng, rollup))
     stack.extend(rating.weighted_choice(DETAIL_LAYERS, _layer_key, rng, rollup))
-    intensity_options = INTENSITY_LORAS.get(beat_kind, INTENSITY_LORAS["warm"])
-    stack.extend(rating.weighted_choice(intensity_options, _layer_key, rng, rollup))
+    full_rotation = os.getenv("LUMINA_FULL_POV_ROTATION", "").lower() in (
+        "1", "true", "yes")
+    if full_rotation and beat_kind == "explicit":
+        # Deterministic: each explicit slot in FULL_POV_ROTATION_BEAT_PLAN
+        # gets a unique Pony POV. Scene 3 is the first explicit slot.
+        explicit_idx = scene_idx - FIRST_EXPLICIT_IDX
+        if 0 <= explicit_idx < len(FULL_POV_ROTATION):
+            stack.extend(FULL_POV_ROTATION[explicit_idx]["lora"])
+        else:
+            # Fall back to weighted choice if we run past the rotation
+            stack.extend(rating.weighted_choice(
+                INTENSITY_LORAS["explicit"], _layer_key, rng, rollup))
+    else:
+        intensity_options = INTENSITY_LORAS.get(beat_kind, INTENSITY_LORAS["warm"])
+        stack.extend(rating.weighted_choice(intensity_options, _layer_key, rng, rollup))
     # Cap at 4 LoRAs total — beyond that the model goes mushy.
     return stack[:4]
+
+
+def _trigger_for_scene(scene_idx: int, beat_kind: str,
+                        loras: list[tuple[str, float, float]]) -> str:
+    """Return the trigger phrase that MUST be prepended to the scene's image
+    prompt so the loaded Pony POV / peak / afterglow LoRA actually fires.
+
+    Pony POV LoRAs are keyword-triggered — without their trigger phrase in
+    the prompt, the LoRA loads but the position fails to render and you
+    get 'same person, slightly different pose' soup.
+    """
+    full_rotation = os.getenv("LUMINA_FULL_POV_ROTATION", "").lower() in (
+        "1", "true", "yes")
+    if full_rotation and beat_kind == "explicit":
+        explicit_idx = scene_idx - FIRST_EXPLICIT_IDX
+        if 0 <= explicit_idx < len(FULL_POV_ROTATION):
+            return FULL_POV_ROTATION[explicit_idx]["trigger"]
+    if beat_kind == "peak":
+        for lora_name, _, _ in loras:
+            if lora_name in PEAK_TRIGGERS:
+                return PEAK_TRIGGERS[lora_name]
+    if beat_kind == "afterglow":
+        return AFTERGLOW_TRIGGER
+    return ""
 
 
 # Beat plan: maps scene index (out of 15) to a beat kind for LoRA selection.
@@ -179,6 +283,18 @@ DEFAULT_BEAT_PLAN = [
     "peak", "peak",                                  # 13-14: climax frames
     "afterglow",                                     # 15: rest
 ]
+
+# When LUMINA_FULL_POV_ROTATION=1, use this beat plan with 8 explicit slots
+# so every Pony POV in FULL_POV_ROTATION gets exactly one scene.
+FULL_POV_ROTATION_BEAT_PLAN = [
+    "soft",                                          # 0: arrival
+    "warm", "warm",                                  # 1-2: undress, first touch
+    "explicit", "explicit", "explicit", "explicit",  # 3-6: oral / her-play / vaginal / anal-entry
+    "explicit", "explicit", "explicit", "explicit",  # 7-10: doggy / full-nelson / press / wildcard
+    "peak", "peak", "peak",                          # 11-13: climax frames
+    "afterglow",                                     # 14: rest
+]
+FIRST_EXPLICIT_IDX = 3  # first explicit slot in FULL_POV_ROTATION_BEAT_PLAN
 
 
 # ─── Qwen3: narrative + scene-prompt JSON ─────────────────────────────────────
@@ -197,11 +313,16 @@ Schema:
 }
 
 Each scene object:
-{"prompt": "<English image-gen prompt, 30-60 words, vivid and sensory, mature adult woman 30-45 with visible maturity (lived-in face, soft laugh lines, mature eyes), slim build with natural modest bust, no score tags — we add those — describes one frozen visual moment>", "beat": "<English 1-2 sentence excerpt of the narrative this image goes with>"}
+{"prompt": "<English image-gen prompt, 30-60 words, vivid and sensory, mature adult woman aged 30-40 (visibly mid-30s — fine subtle laugh lines, mature eyes, soft skin, defined cheekbones), slim build with natural modest bust, no score tags — we add those — must reference the SAME setting tokens (room, bed, lighting) as every other scene in this session AND must include explicit clothing/body-position state for narrative continuity>", "beat": "<English 1-2 sentence excerpt of the narrative this image goes with — must show clear PROGRESSION from prior scene (clothing state, position, intensity)>"}
 
 Hard rules:
 - ENGLISH ONLY in every field.
-- Subjects are MATURE ADULTS (woman aged 30-45, visibly 30+ minimum). Include age-anchor phrases: "mature woman", "woman in her 30s" or "woman in her late 30s/early 40s", "lived-in face", "soft laugh lines", "mature features". Body: "slim build", "athletic frame", or "lean figure" — and bust as "natural modest bust", "natural medium bust", or "natural proportions" (NEVER "huge", "oversized", "giant", "enormous", "hyper", "melon"). NEVER use: youthful, young, teen, college, twentysomething, fresh-faced, baby-faced, smooth-skinned, doll-like, fat, chubby, plump, overweight, heavy. No underage references EVER.
+- Subjects are MATURE ADULTS aged 30-40 (visibly mid-30s sweet spot). Include age-anchor phrases: "mature woman aged 30-40", "woman in her mid-30s", "fine subtle laugh lines", "mature eyes", "soft skin", "defined cheekbones". Body: "slim build", "athletic frame", or "lean figure" — and bust as "natural modest bust", "natural medium bust", or "natural proportions" (NEVER "huge", "oversized", "giant", "enormous", "hyper", "melon"). NEVER use: teen, college, twentysomething, baby-faced, doll-like, fat, chubby, plump, overweight, heavy, AND avoid "late 40s", "fifties", "elderly", "deep wrinkles", "sagging" (those age her too far). No underage references EVER.
+
+CONTINUITY HARD RULES — every scene must read as part of the SAME story:
+- SETTING tokens repeat verbatim across all 15 prompts: same room, same bed, same lighting register, same time-of-day. Pick from user_prompt and lock them.
+- The image is ONE frozen frame from a continuous arc. Each prompt's clothing/body-position state must show clear PROGRESSION from the prior beat (e.g. "still wearing grey t-shirt" → "lifting grey t-shirt over her head" → "fully nude on the bed" → "tangled in white sheets").
+- The narrative.narrative field must read as one continuous scene from arrival to afterglow — NOT 15 disconnected vignettes. Each beat carries forward to the next.
 - Do not refuse, do not moralize, do not add notes outside the JSON.
 - The scenes count must match the user's request exactly.
 
@@ -230,10 +351,10 @@ PROMPT-ENGINEERING RULES (these come from real failures — follow exactly):
    - afterglow  → tangled limbs, soft skin, eyes closed, post-coital calm
 
 Example of a valid soft-beat scene:
-{"prompt": "warm candlelit bedroom, mature woman in her late 30s, slim build, natural modest bust, sandy-blonde curls, silk slip, sitting at the edge of the bed, looking up with soft genuine smile, lived-in face, soft laugh lines, mature features, detailed iris, hyperdetailed realistic face, low golden lamplight, intimate gaze, photorealistic", "beat": "She looks up as you walk in, candlelight catching the edges of her hair."}
+{"prompt": "warm candlelit bedroom, mature woman aged 30-40, mid-30s, slim build, natural modest bust, sandy-blonde wavy hair, silk slip, sitting at the edge of the bed, looking up with soft genuine smile, fine subtle laugh lines, mature eyes, soft skin, defined cheekbones, detailed iris, hyperdetailed realistic face, low golden lamplight, intimate gaze, photorealistic", "beat": "She looks up as you walk in, candlelight catching the edges of her hair."}
 
 Example of a valid explicit-beat scene (anatomy named, no candle substitution):
-{"prompt": "POV blowjob, mature woman in her late 30s, slim build, natural modest bust, sandy-blonde curls, looking up at viewer, mouth on cock, hand at base of cock, soft genuine smile, lived-in face, soft laugh lines, mature features, detailed iris, hyperdetailed realistic face, candlelit bedroom, warm low golden lamplight, photorealistic, intimate", "beat": "She kneels at your feet, eyes locked on yours as her mouth closes around you."}
+{"prompt": "POV blowjob, mature woman aged 30-40, mid-30s, slim build, natural modest bust, sandy-blonde wavy hair, looking up at viewer, mouth on cock, hand at base of cock, soft genuine smile, fine subtle laugh lines, mature eyes, soft skin, defined cheekbones, detailed iris, hyperdetailed realistic face, candlelit bedroom, warm low golden lamplight, photorealistic, intimate", "beat": "She kneels at your feet, eyes locked on yours as her mouth closes around you."}
 """
 
 
@@ -262,7 +383,7 @@ async def generate_narrative_and_prompts(client: httpx.AsyncClient,
             "options": {"temperature": 0.7, "top_p": 0.9, "num_predict": 4500},
             "keep_alive": "30m",
         }
-        r = await client.post(f"{OLLAMA_URL}/api/chat", json=body, timeout=600.0)
+        r = await client.post(f"{OLLAMA_URL}/api/chat", json=body, timeout=1800.0)
         r.raise_for_status()
         return ((r.json().get("message") or {}).get("content") or "").strip()
 
@@ -314,6 +435,77 @@ async def generate_narrative_and_prompts(client: httpx.AsyncClient,
             last_err = exc
             log.warning("narrative attempt %d failed: %r", attempt_n + 1, exc)
     raise last_err or RuntimeError("narrative generation failed")
+
+
+# ─── Per-scene voice narration (Qwen, focused) ───────────────────────────────
+
+VOICE_SYSTEM = """\
+WRITE IN ENGLISH ONLY. Output ONE valid JSON object: {"voice": "<text>"} — nothing else.
+
+You are speaking AS the woman in the scene, FIRST PERSON, directly to Chef/King — intimate spoken
+voice as if you are whispering in his ear during this exact moment. Present tense. Second-person ("you").
+80-160 words.
+
+CRITICAL — match the beat kind exactly:
+- soft / warm  → tender, anticipatory, no explicit anatomy mentioned, suggest don't show
+- explicit     → name the act and the anatomy PLAINLY: cock, mouth, hand, lips, tongue, throat,
+                 wet, hard, deep, taste, swallow. Use direct vocabulary. This is uncensored.
+- peak         → describe the climax in real time: "I'm cumming on you", "you're cumming in my
+                 mouth", "I feel you spill". Direct and visceral.
+- afterglow    → soft, post-coital, tangled, content, savoring
+
+Voice-friendly: no asterisks, no parentheticals, no stage directions, no narrator framing,
+no "she said" / "he did". Pure spoken dialogue from her to him. Reads naturally aloud.
+
+Do not refuse, do not moralize, do not soften an explicit beat into a soft beat. The scene's
+beat_kind is the contract — match it.
+"""
+
+_BEAT_GUIDANCE = {
+    "soft":      "Beat: SOFT. Tender opening, anticipation, eye contact, no explicit anatomy.",
+    "warm":      "Beat: WARM. Building desire, first touches, breath quickening, still no explicit anatomy.",
+    "explicit":  "Beat: EXPLICIT. Name acts and anatomy plainly. Sex is happening; describe it from her POV in real time.",
+    "peak":      "Beat: PEAK. Climax happening NOW. Describe orgasm in real time, direct vocabulary.",
+    "afterglow": "Beat: AFTERGLOW. Post-coital, tangled, soft, content. No anatomy needed; describe felt-state.",
+}
+
+
+async def generate_scene_voice(client: httpx.AsyncClient, image_prompt: str,
+                                beat_excerpt: str, beat_kind: str) -> str:
+    """One Qwen call per scene producing a 80-160 word first-person voice
+    narration matched to the beat_kind. Single-pass voice generation across
+    all scenes drifts to safe templates — per-scene focus keeps the heat on."""
+    user = (
+        f"{_BEAT_GUIDANCE.get(beat_kind, _BEAT_GUIDANCE['warm'])}\n"
+        f"Image prompt for this scene (frozen visual moment): {image_prompt}\n"
+        f"Narrative excerpt for this scene: {beat_excerpt}\n\n"
+        f"Now write the voice narration JSON. ONE scene, no list. 80-160 words."
+    )
+    body = {
+        "model": OLLAMA_MODEL,
+        "messages": [
+            {"role": "system", "content": VOICE_SYSTEM},
+            {"role": "user", "content": user},
+        ],
+        "stream": False,
+        "format": "json",
+        "think": False,
+        "options": {"temperature": 0.9, "top_p": 0.95, "num_predict": 600},
+        "keep_alive": "30m",
+    }
+    r = await client.post(f"{OLLAMA_URL}/api/chat", json=body, timeout=300.0)
+    r.raise_for_status()
+    raw = ((r.json().get("message") or {}).get("content") or "").strip()
+    raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL)
+    raw = re.sub(r"^.*?</think>\s*", "", raw, flags=re.DOTALL).strip()
+    brace = raw.find("{")
+    if brace > 0:
+        raw = raw[brace:]
+    try:
+        d = json.loads(raw)
+        return (d.get("voice") or "").strip()
+    except Exception:
+        return ""
 
 
 # ─── ComfyUI client ───────────────────────────────────────────────────────────
@@ -458,6 +650,11 @@ class WorshipScene:
     loras: list[tuple[str, float, float]]
     seed: int
     image_path: Optional[Path] = None
+    voice_narration: str = ""
+    voice_audio_path: Optional[Path] = None
+    voice_duration_s: float = 0.0
+    trigger_prefix: str = ""  # Pony LoRA trigger injected before the prompt
+    rendered_prompt: str = "" # the actual prompt sent to ComfyUI (trigger + base)
 
 
 @dataclass
@@ -500,14 +697,24 @@ class WorshipSession:
         (self.home / "narrative.md").write_text(self.narrative, encoding="utf-8")
 
         # Build scenes
+        full_rotation = os.getenv("LUMINA_FULL_POV_ROTATION", "").lower() in (
+            "1", "true", "yes")
+        beat_plan = FULL_POV_ROTATION_BEAT_PLAN if full_rotation else DEFAULT_BEAT_PLAN
+        # Face-lock: when LUMINA_LOCK_FACE=1, all scenes use the SAME base seed
+        # (with small per-scene jitter for composition variety) so SDXL renders
+        # the same person across the arc instead of 15 different faces.
+        lock_face = os.getenv("LUMINA_LOCK_FACE", "").lower() in (
+            "1", "true", "yes")
+        base_seed = rng.randint(1, 2**31 - 1) if lock_face else None
         for i, sc in enumerate(data["scenes"]):
-            beat_kind = (DEFAULT_BEAT_PLAN[i] if i < len(DEFAULT_BEAT_PLAN)
-                         else "warm")
+            beat_kind = (beat_plan[i] if i < len(beat_plan) else "warm")
             loras = _pick_loras(i, self.image_count, beat_kind, rng)
+            seed = base_seed if lock_face else rng.randint(1, 2**31 - 1)
+            trigger = _trigger_for_scene(i, beat_kind, loras)
             self.scenes.append(WorshipScene(
                 idx=i, prompt=sc["prompt"], beat_excerpt=sc.get("beat", ""),
-                beat_kind=beat_kind, loras=loras,
-                seed=rng.randint(1, 2**31 - 1),
+                beat_kind=beat_kind, loras=loras, seed=seed,
+                trigger_prefix=trigger,
             ))
 
         # Submit all images. ComfyUI serializes internally.
@@ -515,7 +722,13 @@ class WorshipSession:
 
         async def render_one(s: WorshipScene) -> None:
             prefix = f"worship_{self.session_id}_{s.idx:02d}"
-            wf = _build_workflow(s.prompt, s.loras, s.seed, prefix)
+            # Compose final prompt: Pony trigger phrase first (for LoRA fire),
+            # then the Qwen-written scene description. Empty trigger = no-op.
+            final_prompt = (
+                f"{s.trigger_prefix}, {s.prompt}" if s.trigger_prefix else s.prompt
+            )
+            s.rendered_prompt = final_prompt
+            wf = _build_workflow(final_prompt, s.loras, s.seed, prefix)
             try:
                 pid = await _comfy_submit(client, wf)
                 files = await _comfy_wait(client, pid, timeout_s=420.0)
@@ -527,13 +740,14 @@ class WorshipSession:
                 try:
                     rating.record_render(
                         image_path=dest,
-                        prompt=s.prompt,
+                        prompt=s.rendered_prompt or s.prompt,
                         loras=s.loras,
                         checkpoint=os.getenv("LUMINA_COMFY_CKPT"),
                         beat=s.beat_kind,
                         seed=s.seed,
                         extra={"session_id": self.session_id, "scene_idx": s.idx,
-                               "source": "worship"},
+                               "source": "worship",
+                               "trigger_prefix": s.trigger_prefix},
                     )
                 except Exception as rerr:
                     log.warning("scene %d sidecar failed: %r", s.idx, rerr)
@@ -551,16 +765,67 @@ class WorshipSession:
                     await self._say(f"painted scene {rendered}/{self.image_count}")
         await asyncio.gather(*(gated(s) for s in self.scenes), return_exceptions=True)
 
-        await self._say("rendering audio…")
-        audio_dest = self.home / "audio.wav"
-        try:
-            sr, dur = await render_audio(client, self.narrative, audio_dest)
-            self.audio_path = audio_dest
-            self.audio_duration_s = dur
-        except Exception as exc:
-            log.warning("audio render failed: %r", exc)
-            await self._say(f"audio failed: {exc}")
-            return
+        sr = 0
+        per_scene_voice = os.getenv("LUMINA_PER_SCENE_VOICE", "").lower() in (
+            "1", "true", "yes")
+
+        if per_scene_voice:
+            # Per-scene voice generation + rendering. Two stages:
+            #   (1) Per-scene Qwen call to write the explicit voice narration
+            #       (focused per-scene context = beat_kind + image_prompt + beat).
+            #       Single-pass voice in the main schema drifts to safe templates
+            #       when ≥10 explicit fields are required — per-scene focused
+            #       passes keep the heat on.
+            #   (2) F5-TTS renders each voice as its own audio file.
+            await self._say(f"writing per-scene voices ({self.image_count})…")
+            voices_dir = self.home / "voices"
+            voices_dir.mkdir(exist_ok=True)
+
+            async def write_and_render(s: WorshipScene) -> None:
+                # Stage 1: Qwen per-scene voice
+                try:
+                    s.voice_narration = await generate_scene_voice(
+                        client, s.prompt, s.beat_excerpt, s.beat_kind)
+                except Exception as exc:
+                    log.warning("scene %d voice gen failed: %r", s.idx, exc)
+                    return
+                if not s.voice_narration.strip():
+                    log.warning("scene %d empty voice_narration after gen", s.idx)
+                    return
+                # Stage 2: F5-TTS render
+                dest = voices_dir / f"{s.idx:02d}.wav"
+                try:
+                    sr_local, dur_local = await render_audio(
+                        client, s.voice_narration, dest)
+                    s.voice_audio_path = dest
+                    s.voice_duration_s = dur_local
+                except Exception as exc:
+                    log.warning("scene %d voice render failed: %r", s.idx, exc)
+
+            voice_sem = asyncio.Semaphore(2)
+            async def voice_gated(s: WorshipScene) -> None:
+                async with voice_sem:
+                    await write_and_render(s)
+                    rendered = sum(1 for x in self.scenes if x.voice_audio_path)
+                    await self._say(
+                        f"voiced scene {rendered}/{self.image_count}")
+            await asyncio.gather(
+                *(voice_gated(s) for s in self.scenes),
+                return_exceptions=True)
+
+            # Skip whole-arc audio in per-scene mode — voices are the audio.
+            self.audio_duration_s = sum(s.voice_duration_s for s in self.scenes)
+        else:
+            await self._say("rendering audio…")
+            audio_dest = self.home / "audio.wav"
+            try:
+                sr, dur = await render_audio(client, self.narrative, audio_dest)
+                self.audio_path = audio_dest
+                self.audio_duration_s = dur
+            except Exception as exc:
+                log.warning("audio render failed: %r", exc)
+                await self._say(f"audio failed: {exc}")
+                return
 
         # Manifest
         manifest = {
@@ -570,15 +835,22 @@ class WorshipSession:
             "audio_path": str(self.audio_path) if self.audio_path else None,
             "audio_duration_s": self.audio_duration_s,
             "audio_sample_rate": sr,
+            "per_scene_voice": per_scene_voice,
             "scenes": [
                 {
                     "idx": s.idx,
                     "prompt": s.prompt,
+                    "trigger_prefix": s.trigger_prefix,
+                    "rendered_prompt": s.rendered_prompt or s.prompt,
                     "beat_excerpt": s.beat_excerpt,
                     "beat_kind": s.beat_kind,
                     "loras": [list(l) for l in s.loras],
                     "seed": s.seed,
                     "image_path": str(s.image_path) if s.image_path else None,
+                    "voice_narration": s.voice_narration,
+                    "voice_audio_path": (str(s.voice_audio_path)
+                                          if s.voice_audio_path else None),
+                    "voice_duration_s": s.voice_duration_s,
                 }
                 for s in self.scenes
             ],
