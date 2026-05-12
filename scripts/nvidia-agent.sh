@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# nvidia-agent.sh — Lightweight replacement for `claude -p` that uses NVIDIA API proxy.
-# Reads prompt from file passed as argument, calls Kimi K2.5 via NVIDIA proxy.
+# nvidia-agent.sh — Lightweight replacement for `claude -p` that uses NVIDIA API direct.
+# Reads prompt from file passed as argument, calls Kimi K2.6 via NVIDIA NIM.
 # Usage: nvidia-agent.sh <prompt-file> [model]
 #
-# Default model: moonshotai/kimi-k2.5 (via NVIDIA proxy at localhost:18780)
+# Default model: moonshotai/kimi-k2.6 (direct NVIDIA NIM — OpenClaw proxy is evicted)
 
 set -euo pipefail
 
 PROMPT_FILE="${1:?Usage: nvidia-agent.sh <prompt-file> [model]}"
-MODEL="${2:-moonshotai/kimi-k2-instruct}"
+MODEL="${2:-moonshotai/kimi-k2.6}"
 NVIDIA_API="https://integrate.api.nvidia.com/v1/chat/completions"
 NVIDIA_API_KEY="${NVIDIA_API_KEY:-$(python3 -c "import json; print(json.load(open('$HOME/.openclaw/openclaw.json'))['env']['NVIDIA_API_KEY'])" 2>/dev/null || echo 'none')}"
 
