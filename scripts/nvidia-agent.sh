@@ -9,7 +9,7 @@ set -euo pipefail
 
 PROMPT_FILE="${1:?Usage: nvidia-agent.sh <prompt-file> [model]}"
 MODEL="${2:-moonshotai/kimi-k2.6}"
-NVIDIA_API="https://integrate.api.nvidia.com/v1/chat/completions"
+NVIDIA_API="http://127.0.0.1:18780/v1/chat/completions"
 NVIDIA_API_KEY="${NVIDIA_API_KEY:-$(python3 -c "import json; print(json.load(open('$HOME/.openclaw/openclaw.json'))['env']['NVIDIA_API_KEY'])" 2>/dev/null || echo 'none')}"
 
 if [[ ! -f "$PROMPT_FILE" ]]; then
