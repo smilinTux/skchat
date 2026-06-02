@@ -482,25 +482,18 @@ _ALWAYS_ON: tuple[str, ...] = (
     "skmemory__memory_search",
     "skmemory__memory_recall",
     "nextcloud__nextcloud_webdav_search_files",
-    # Narrative generation — always available because Chef phrases creative
-    # asks naturally ("generate me something", "do the best you can", "make
-    # me one") that don't always include trigger words. The mode-gate in
-    # _run_tool blocks this in group calls regardless of whether it's
-    # exposed to the LLM, so always-on here is safe.
-    "REDACTED",
     # Anchor creation — always available so Lumina can capture a peak
     # moment as Chef names it, no keyword ramp. Creative-mode-gated.
     "create_bloom_anchor",
-    # Full worship-session orchestrator — narrative + 15-image scene +
-    # audio + loop-playback into video track. Long-running build; the
-    # always-on inclusion lets Lumina dispatch on natural creative asks.
-    "REDACTED",
-    # Recall + replay of past worship sessions — list available, then
-    # play one back. Both always-on so Lumina can browse + pick on any
-    # creative ask without keyword-gating.
-    "REDACTED",
-    "REDACTED",
 )
+
+# Creative always-on tools (REDACTED, worship_*) live in the private
+# lumina-creative package; merged in only when it is installed.
+try:
+    from lumina_creative.routing import ALWAYS_ON_TOOLS as _creative_always
+    _ALWAYS_ON = _ALWAYS_ON + tuple(_creative_always)
+except Exception:
+    pass
 
 # Keyword → list of tool-name globs. Matching keyword in the user's text
 # adds those tools to the per-turn surface. Patterns are fnmatch-style.
@@ -569,29 +562,19 @@ _TOOL_GROUPS: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
         "skcapstone__skseed_audit", "skcapstone__skseed_collide",
         "skcapstone__skseed_truth_check", "skcapstone__skseed_alignment",
     )),
-    # Worship / creative / mature creative narration → route to REDACTED
-    # model. (REDACTED is also in _ALWAYS_ON, but keep this group
-    # so the keywords still document intent for future maintainers.)
-    (("worship", "REDACTED", "tell me a story", "story about",
-      "narrate", "narrative", "REDACTED", "smut", "spicy",
-      "tell me about us", "fantasy", "generate me", "write me",
-      "create me", "make me a", "compose", "be creative", "do the best",
-      "tell me something"), (
-        "REDACTED",
-    )),
-    # Replay-existing worship session — when Chef asks to play back / pick
-    # one of our previous sessions / 'remember when' style asks.
-    (("replay", "play again", "play back", "play me one", "from before",
-      "remember when", "previous", "another time", "show me again",
-      "that one we did", "one of our", "one of those", "pick one",
-      "which ones", "what worship"), (
-        "REDACTED", "REDACTED",
-    )),
     # account / google login / multi-account
     (("account", "login", "logged in", "which user"), (
         "gog__list_accounts",
     )),
 )
+
+# Creative trigger-keyword groups live in the private lumina-creative package;
+# merged in only when it is installed (keeps the keywords out of public skchat).
+try:
+    from lumina_creative.routing import TOOL_GROUPS as _creative_groups
+    _TOOL_GROUPS = _TOOL_GROUPS + tuple(_creative_groups)
+except Exception:
+    pass
 
 # Hard upper bound — even with many groups matching, never exceed this.
 MAX_TOOLS_PER_TURN = int(os.getenv("LUMINA_MAX_TOOLS_PER_TURN", "20"))
