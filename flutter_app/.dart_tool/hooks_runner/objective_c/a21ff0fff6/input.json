@@ -1,0 +1,26 @@
+{
+  "assets": {},
+  "config": {
+    "build_asset_types": [
+      "code_assets/code"
+    ],
+    "extensions": {
+      "code_assets": {
+        "c_compiler": {
+          "ar": "/usr/bin/llvm-ar",
+          "cc": "/usr/bin/clang",
+          "ld": "/usr/bin/ld.lld"
+        },
+        "link_mode_preference": "dynamic",
+        "target_architecture": "x64",
+        "target_os": "linux"
+      }
+    },
+    "linking_enabled": false
+  },
+  "out_dir_shared": "/home/cbrd21/dkloud.douno.it/p/smilintux-org/skchat/flutter_app/.dart_tool/hooks_runner/shared/objective_c/build/",
+  "out_file": "/home/cbrd21/dkloud.douno.it/p/smilintux-org/skchat/flutter_app/.dart_tool/hooks_runner/objective_c/a21ff0fff6/output.json",
+  "package_name": "objective_c",
+  "package_root": "/home/cbrd21/.pub-cache/hosted/pub.dev/objective_c-9.3.0/",
+  "user_defines": {}
+}
