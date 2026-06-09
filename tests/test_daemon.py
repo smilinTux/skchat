@@ -10,7 +10,10 @@ import pytest
 from skchat.daemon import (
     ChatDaemon,
     DaemonShutdown,
+    _acquire_singleton_lock,
+    _live_daemon_pids,
     _read_pid,
+    _singleton_lock_held,
     _remove_pid,
     _write_pid,
     daemon_status,
@@ -301,8 +304,9 @@ daemon:
     assert daemon.quiet is True
 
 
+@patch("skchat.daemon._acquire_singleton_lock", return_value=True)
 @patch("skchat.daemon.ChatDaemon")
-def test_run_daemon(mock_daemon_class):
+def test_run_daemon(mock_daemon_class, _mock_lock):
     """Test run_daemon wrapper function."""
     mock_daemon = MagicMock()
     mock_daemon_class.return_value = mock_daemon
@@ -313,8 +317,9 @@ def test_run_daemon(mock_daemon_class):
     mock_daemon.start.assert_called_once()
 
 
+@patch("skchat.daemon._acquire_singleton_lock", return_value=True)
 @patch("skchat.daemon.ChatDaemon")
-def test_run_daemon_with_exception(mock_daemon_class):
+def test_run_daemon_with_exception(mock_daemon_class, _mock_lock):
     """Test run_daemon handling exceptions."""
     mock_daemon = MagicMock()
     mock_daemon.start.side_effect = Exception("Daemon error")
@@ -322,6 +327,17 @@ def test_run_daemon_with_exception(mock_daemon_class):
 
     with pytest.raises(SystemExit):
         run_daemon()
+
+
+@patch("skchat.daemon.ChatDaemon")
+def test_run_daemon_refuses_duplicate(mock_daemon_class, monkeypatch):
+    """run_daemon exits 0 (not a failure) when another daemon holds the lock."""
+    monkeypatch.setattr("skchat.daemon._acquire_singleton_lock", lambda: False)
+    monkeypatch.setattr("skchat.daemon._live_daemon_pids", lambda: [4242])
+    with pytest.raises(SystemExit) as exc:
+        run_daemon()
+    assert exc.value.code == 0
+    mock_daemon_class.assert_not_called()  # never even constructed the daemon
 
 
 # ---------------------------------------------------------------------------
@@ -375,12 +391,16 @@ class TestIsRunning:
         assert is_running() is False
 
     def test_not_running_stale_pid(self, tmp_path, monkeypatch):
-        """Edge case: stale PID (process not found) returns False."""
+        """Edge case: stale PID (process not found) returns False.
+
+        Note: is_running() is intentionally PID-file-only (not process-scan
+        aware) so it never race-blocks a systemd restart; the flock is what
+        actually prevents a duplicate in this desync case.
+        """
         import skchat.daemon as daemon_mod
 
         monkeypatch.setattr(daemon_mod, "DAEMON_PID_FILE", tmp_path / "daemon.pid")
-        # Use a PID that is very unlikely to exist
-        _write_pid(999999999)
+        _write_pid(999999999)  # very unlikely to exist
         assert is_running() is False
 
     def test_running_own_process(self, tmp_path, monkeypatch):
@@ -399,7 +419,7 @@ class TestDaemonStatus:
     """Tests for daemon_status()."""
 
     def test_status_stopped(self, tmp_path, monkeypatch):
-        """Expected: status is stopped when no PID file."""
+        """Expected: status is stopped when no PID file and no daemon process."""
         import skchat.daemon as daemon_mod
 
         monkeypatch.setattr(daemon_mod, "DAEMON_PID_FILE", tmp_path / "daemon.pid")
@@ -527,3 +547,114 @@ class TestDaemonCLI:
         assert "start" in result.output
         assert "stop" in result.output
         assert "status" in result.output
+
+
+# ---------------------------------------------------------------------------
+# Single-instance enforcement (duplicate-daemon prevention)
+# ---------------------------------------------------------------------------
+
+
+class TestLiveDaemonPids:
+    """Tests for the process-table scan that backs single-instance enforcement."""
+
+    def test_excludes_self_and_returns_list(self):
+        """The scan never reports the calling process and returns a list."""
+        import os
+
+        pids = _live_daemon_pids()
+        assert isinstance(pids, list)
+        assert os.getpid() not in pids
+
+    def test_detects_marker_process(self):
+        """A real process whose cmdline carries the daemon marker is found."""
+        import subprocess
+        import sys
+        import time
+
+        # The -c source text contains the marker, so it appears in /proc cmdline.
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(5)  # skchat._daemon_entry"]
+        )
+        try:
+            found = None
+            for _ in range(20):  # poll up to ~2s for the process to appear
+                if proc.pid in _live_daemon_pids():
+                    found = True
+                    break
+                time.sleep(0.1)
+            assert found, "marker process not detected by _live_daemon_pids()"
+        finally:
+            proc.terminate()
+            proc.wait(timeout=5)
+
+
+class TestSingletonLock:
+    """Tests for the flock-based single-instance lock and start guard."""
+
+    def test_second_acquire_is_denied(self, tmp_path, monkeypatch):
+        """A second flock attempt on the same lock file is refused (race-free)."""
+        import skchat.daemon as daemon_mod
+
+        monkeypatch.setattr(daemon_mod, "DAEMON_LOCK_FILE", tmp_path / "daemon.lock")
+        monkeypatch.setattr(daemon_mod, "_daemon_lock_handle", None)
+        try:
+            # retries=0 → no retry delay; the second holder is denied immediately.
+            assert _acquire_singleton_lock(retries=0) is True   # first holder wins
+            assert _acquire_singleton_lock(retries=0) is False  # second is denied
+        finally:
+            # Release so the lock file handle doesn't leak into other tests.
+            if daemon_mod._daemon_lock_handle is not None:
+                daemon_mod._daemon_lock_handle.close()
+                daemon_mod._daemon_lock_handle = None
+
+    def test_foreground_start_refuses_when_lock_held(self, tmp_path, monkeypatch):
+        """start_daemon(foreground) refuses when the singleton lock is already held —
+        the desync-proof guard (no reliance on the PID file)."""
+        import skchat.daemon as daemon_mod
+
+        monkeypatch.setattr(daemon_mod, "DAEMON_PID_FILE", tmp_path / "daemon.pid")
+        monkeypatch.setattr(daemon_mod, "_acquire_singleton_lock", lambda *a, **k: False)
+        monkeypatch.setattr(daemon_mod, "_live_daemon_pids", lambda: [4242])
+        # No PID file → is_running() is False, so only the flock stands between us
+        # and a duplicate. It must still refuse.
+        with pytest.raises(RuntimeError, match="already running"):
+            start_daemon(background=False)
+
+    def test_start_daemon_blocked_by_pidfile(self, tmp_path, monkeypatch):
+        """Fast path: an in-sync live PID file short-circuits before forking."""
+        import os
+
+        import skchat.daemon as daemon_mod
+
+        monkeypatch.setattr(daemon_mod, "DAEMON_PID_FILE", tmp_path / "daemon.pid")
+        _write_pid(os.getpid())  # a live PID → is_running() True
+        with pytest.raises(RuntimeError, match="already running"):
+            start_daemon(background=True)
+        _remove_pid()
+
+    def test_lock_held_probe(self, tmp_path, monkeypatch):
+        """The non-destructive probe reports free vs held without keeping a lock."""
+        import skchat.daemon as daemon_mod
+
+        monkeypatch.setattr(daemon_mod, "DAEMON_LOCK_FILE", tmp_path / "daemon.lock")
+        monkeypatch.setattr(daemon_mod, "_daemon_lock_handle", None)
+        assert _singleton_lock_held() is False  # nobody holds it yet
+        try:
+            assert _acquire_singleton_lock(retries=0) is True  # now we hold it
+            assert _singleton_lock_held() is True              # probe sees the holder
+        finally:
+            if daemon_mod._daemon_lock_handle is not None:
+                daemon_mod._daemon_lock_handle.close()
+                daemon_mod._daemon_lock_handle = None
+
+    def test_background_start_refused_by_lock_probe_when_pidfile_stale(self, tmp_path, monkeypatch):
+        """The desync fix: a clobbered PID file does NOT let a duplicate fork —
+        the lock probe refuses in the parent before any child is spawned."""
+        import skchat.daemon as daemon_mod
+
+        monkeypatch.setattr(daemon_mod, "DAEMON_PID_FILE", tmp_path / "daemon.pid")
+        _write_pid(999999999)  # stale → is_running() False
+        monkeypatch.setattr(daemon_mod, "_singleton_lock_held", lambda: True)
+        monkeypatch.setattr(daemon_mod, "_live_daemon_pids", lambda: [4242])
+        with pytest.raises(RuntimeError, match="4242"):
+            start_daemon(background=True)
