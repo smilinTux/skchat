@@ -11,16 +11,40 @@ It enables agents (Opus/Claude, Lumina) and humans (Chef) to chat in real-time o
 
 ## Running
 
-```bash
-# Start daemon — CRITICAL: always run from ~/, NOT from smilintux-org/
-cd ~ && ~/.skenv/bin/skchat daemon start --interval 5
+The daemon is **systemd-managed** (`skchat-daemon.service`). Use systemctl —
+do NOT run `skchat daemon start` by hand, which spawns a SECOND, unmanaged
+daemon alongside the systemd one (they both poll the same inbox and the manual
+one overwrites the pidfile systemd tracks).
 
-# Required env
-export SKCHAT_IDENTITY=capauth:opus@skworld.io
+```bash
+# Start / restart / stop the managed daemon
+systemctl --user restart skchat-daemon.service
+systemctl --user status  skchat-daemon.service
+journalctl --user -u skchat-daemon -f
+
+# Identity + agent are set in the unit's Environment= lines, e.g.:
+#   Environment=SKAGENT=lumina
+#   Environment=SKCHAT_IDENTITY=capauth:lumina@skworld.io
+# (Identity also resolves agent-aware from SKAGENT now — see identity_bridge.py —
+#  so the explicit SKCHAT_IDENTITY line is an override, not a requirement.)
+```
+
+For a one-off **foreground** run (debugging only — stop the service first):
+
+```bash
+# CRITICAL: always run from ~/, NOT from smilintux-org/
+systemctl --user stop skchat-daemon.service
+cd ~ && ~/.skenv/bin/skchat daemon start --interval 5
 ```
 
 **CRITICAL**: Running from `smilintux-org/` causes a `skmemory` namespace collision
 (`from skmemory import MemoryStore` picks up the local project dir instead of the installed package).
+
+> **Editable install:** the package is installed editable (`pip install -e`,
+> `__editable__.skchat_sovereign-*.pth` → `src/skchat`). Code edits are live on
+> the next process start — no reinstall — but long-running services hold the old
+> module in memory until restarted (`systemctl --user restart skchat-daemon
+> skchat-webui skchat-lumina-call jarvis-heartbeat`).
 
 ## Architecture — Module Map
 
@@ -209,21 +233,28 @@ cd ~ && ~/.skenv/bin/skchat daemon start --interval 5
 cd ~ && ~/.skenv/bin/python -m pytest tests/ -q
 ```
 
-### Daemon not starting / already running
+### Daemon not starting / already running / duplicate daemons
 ```bash
-skchat daemon status              # check PID + uptime
-cat ~/.skchat/daemon.log          # inspect logs
-skchat daemon stop                # graceful stop
-rm ~/.skchat/daemon.pid           # force-clear stale PID
-cd ~ && ~/.skenv/bin/skchat daemon start  # restart
+systemctl --user status skchat-daemon.service   # managed state + MainPID
+pgrep -af skchat._daemon_entry                   # ALL daemons (spot duplicates)
+journalctl --user -u skchat-daemon -n 50         # inspect logs
+systemctl --user restart skchat-daemon.service   # clean restart (preferred)
 ```
+If `pgrep` shows more than one `_daemon_entry` (e.g. a manual `skchat daemon
+start` left an orphan): `kill -TERM <orphan-pid>` then
+`systemctl --user restart skchat-daemon.service` to reconcile the pidfile.
 
 ### MCP server not connecting
+Registered with Claude Code as the `skchat` server (user scope) in
+`~/.claude.json` — NOT in `~/.claude/settings.json` (Claude Code ignores
+`mcpServers` there). Identity auto-resolves from `SKAGENT`; no `SKCHAT_IDENTITY`
+pin needed.
 ```bash
-skchat-mcp --help                 # verify entry point exists
-cat ~/.claude/settings.json | jq '.mcpServers["skchat-mcp"]'
-SKCHAT_IDENTITY=capauth:opus@skworld.io skchat-mcp
-bash scripts/mcp-test.sh          # smoke test
+skchat-mcp --help                                   # verify entry point exists
+jq '.mcpServers.skchat' ~/.claude.json              # check registration
+claude mcp add skchat --scope user -e SKAGENT=lumina \
+  -e SKCAPSTONE_HOME=$HOME/.skcapstone -- $HOME/.skenv/bin/skchat-mcp   # (re)register
+bash scripts/mcp-test.sh                             # smoke test
 ```
 
 ### Message delivery failing (stored locally)
@@ -240,17 +271,20 @@ curl http://localhost:9384/health  # skcomm transport health
 ```
 
 ### SKCHAT_IDENTITY not set
+Identity now resolves agent-aware from `SKAGENT` (→ `capauth:<agent>@skworld.io`),
+so this is only needed to *override* the resolved identity.
 ```bash
-echo 'export SKCHAT_IDENTITY=capauth:opus@skworld.io' >> ~/.bashrc
-# Systemd: edit ~/.config/systemd/user/skchat.service → Environment= line
-systemctl --user daemon-reload && systemctl --user restart skchat
+# Override in the unit's Environment= line:
+systemctl --user edit --full skchat-daemon.service   # add/edit Environment=SKCHAT_IDENTITY=...
+systemctl --user daemon-reload && systemctl --user restart skchat-daemon.service
 ```
 
 ### Systemd service failures
 ```bash
-systemctl --user status skchat
-journalctl --user -u skchat -n 50
-systemctl --user status skchat-lumina-bridge
+systemctl --user status  skchat-daemon.service
+journalctl --user -u skchat-daemon -n 50
+# Other SKChat units: skchat-webui, skchat-lumina-call, jarvis-heartbeat
+systemctl --user status skchat-webui.service skchat-lumina-call.service jarvis-heartbeat.service
 ```
 
 ## Dependencies
@@ -287,10 +321,14 @@ Test files mirror module names: `test_advocacy.py`, `test_daemon.py`, `test_mcp_
 | `scripts/mcp-test.sh` | Smoke-test MCP server |
 | `scripts/publish-did.sh` | Publish DID to Cloudflare KV (Tier 3 identity) |
 
-## Systemd Services
-- `~/.config/systemd/user/skchat.service` — main daemon
-- `~/.config/systemd/user/skchat-lumina-bridge.service` — Lumina bridge
+## Systemd Services (user scope — `~/.config/systemd/user/`)
+- `skchat-daemon.service` — main receive daemon (lumina). `Type=forking`,
+  `PIDFile=~/.skchat/daemon.pid`, sets `SKAGENT`/`SKCHAT_IDENTITY` via `Environment=`.
+- `skchat-webui.service` — Web UI + voice chat server.
+- `skchat-lumina-call.service` — Lumina LiveKit conversational agent.
+- `jarvis-heartbeat.service` — agent heartbeat (polls inbox, spawns Claude Code in tmux).
 - Daemon PID: `~/.skchat/daemon.pid` · Log: `~/.skchat/daemon.log`
+- Manage with `systemctl --user`; never `skchat daemon start` by hand (see Running).
 
 ## Code Style
 - Line length: 99 chars (black + ruff)
