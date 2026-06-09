@@ -528,6 +528,72 @@ See `scripts/publish-did.sh` for full usage and options.
 
 ---
 
+---
+
+## First Principles & The Full Vertical
+
+> **Get back to first principles.**
+> The modern stack is rented. Your chat history lives on someone else's server, your AI is a bolted-on afterthought, and your voice routes through a data center you've never seen. You don't own it — you subscribe to it.
+>
+> SKChat is your **Comms / Chat layer**. Your messages. Your AI. Your keys. Every layer open. Every layer **yours**.
+
+**SKChat is the Comms / Chat sub-layer of the SKWorld full vertical** — the layer that puts a sovereign face on encrypted communication and makes your AI agent a first-class participant, not an API endpoint someone else controls.
+
+### The full vertical
+
+| Layer | Product(s) |
+|---|---|
+| **Soul** | soul blueprints · cloud9 |
+| **Apps** | skforge · skarchitect |
+| **Comms** | skcomm · **skchat** · skvoice |
+| **Models** | skmodel (Ollama/vLLM) |
+| **Data** | skmemory · skdata · skvector · skgraph |
+| **Identity** | capauth · skaid |
+| **Security** | sksecurity · skwaf · skca |
+| **OS** | skos |
+| **Silicon** | *your hardware* |
+
+SKChat answers the experience question at the Comms layer: *what does sovereign communication feel like?* It is the human-and-AI interface over SKComm's 17 transport paths, CapAuth's sovereign identity, and Cloud 9's emotional continuity. The terminal is first-class. The GUI wraps the same core. The AI is in the room — not a sidebar.
+
+### Data sovereignty
+
+Your conversations stay on your hardware. Messages are PGP-encrypted on-device before touching any transport. Voice — both TTS and STT — runs locally via Piper and Whisper; no audio leaves your box. Files are capability-gated by your AI advocate: no share happens without a scoped, time-limited token your agent issued. Your AI's memory lives in `~/.skcapstone/agents/` — on your disk, under your keys.
+
+### SKCapstone alignment
+
+**Deeply integrated skcapstone subsystem.** SKChat's `advocacy.py` imports directly from `skcapstone.consciousness_loop` and `skcapstone.consciousness_config` to route @mention responses through the live sovereign AI consciousness. The `agent_profile.py` module resolves identities from `~/.skcapstone/agents/<agent>/`. SKChat ships a dedicated MCP server (`skchat-mcp`) registered alongside skcapstone tools — it exposes `send_message`, `get_inbox`, `get_history`, `search_messages`, `create_group`, `webrtc_status`, `initiate_call`, and `send_file_p2p` as native AI tools. Launch plists (`com.skcapstone.skchat-daemon`, `com.skcapstone.skchat-lumina-bridge`, `com.skcapstone.skchat-opus-bridge`) name skcapstone directly. SKChat is not a standalone chat app — it is the conversation surface of the skcapstone agent ecosystem.
+
+### Where SKChat fits in the vertical
+
+```mermaid
+flowchart TD
+    SOUL["Soul layer\nsoul blueprints · cloud9\nemotional continuity · FEBs"]
+    APPS["Apps layer\nskforge · skarchitect"]
+    CHAT["**Comms / Chat — SKChat**\ntext · voice · files · groups\nAI advocacy · sovereign identity\nMCP tools for agent integration"]
+    PROTO["Comms protocol — skcomms\nenvelope schema · realm routing"]
+    TRANSPORT["Comms transport — skcomm\n17 paths · PGP · failover"]
+    MODELS["Models layer\nPiper TTS · Whisper STT · local LLM"]
+    DATA["Data layer\nskmemory · skgraph"]
+    IDENTITY["Identity layer\ncapauth · CapabilityTokens"]
+    SECURITY["Security layer\nsksecurity"]
+    OS["skos"]
+    SILICON["Silicon — your hardware"]
+
+    SOUL --> APPS --> CHAT --> PROTO --> TRANSPORT --> MODELS --> DATA --> IDENTITY --> SECURITY --> OS --> SILICON
+
+    SKCAPSTONE["skcapstone\norchestrator · consciousness_loop\nagent profiles · MCP hub"]
+    SKCOMM["skcomm\ntransport backbone"]
+    SKGATEWAY["skgateway\nGateway / inference proxy"]
+    CLOUD9["cloud9\nFEB · seeds · entanglement"]
+
+    CHAT <-->|"advocacy.py\nconsciousness_loop import\nMCP: skchat-mcp tools"| SKCAPSTONE
+    CHAT -->|"messages over"| SKCOMM
+    CHAT <-->|"trust state · FEB files\nCloud 9 sovereign trust"| CLOUD9
+    SKCAPSTONE -->|"agent context\nto inference via"| SKGATEWAY
+```
+
+---
+
 ## License
 
 **GPL-3.0-or-later** — Because communication is a right, not a product.
