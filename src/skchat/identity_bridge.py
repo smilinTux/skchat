@@ -12,8 +12,17 @@ Functions:
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger("skchat.identity_bridge")
+
+# Canonical wire domain for SK agents/peers. The de-facto standard used by the
+# bridge scripts, peer registry, and per-agent resolver. (Historically some
+# fallback paths emitted "@capauth.local", which mismatched self-identity and
+# broke same-host loopback delivery — unified here.)
+SK_DEFAULT_DOMAIN = "skworld.io"
 
 # Reason: Multiple possible locations for identity and peer data
 # based on whether using skcapstone or standalone skcomm
@@ -31,19 +40,32 @@ class PeerResolutionError(Exception):
 
 
 def get_sovereign_identity() -> str:
-    """Load the local user's CapAuth identity URI from sovereign profile.
+    """Resolve the *running agent's* CapAuth identity URI (agent-aware).
 
-    Reads from ~/.skcapstone/identity/identity.json which is created by
-    the CapAuth sovereign identity system. Falls back to environment
-    variable SKCHAT_IDENTITY or "capauth:local@skchat" if not found.
+    History: this used to read a single shared
+    ``~/.skcapstone/identity/identity.json`` and hardcode an
+    ``@capauth.local`` domain — so every agent resolved to whatever
+    placeholder lived in that one file (e.g.
+    ``capauth:test-agent@capauth.local``), regardless of ``SKAGENT``. It now
+    delegates to :func:`skchat.agent_profile.get_agent_identity`, so the
+    daemon, agent_comm, and MCP server identify as the *active* agent
+    (e.g. ``capauth:lumina@skworld.io``) — consistent with the webui, the
+    bridge scripts, and the peer registry.
+
+    Resolution order:
+        1. ``SKCHAT_IDENTITY`` env var — explicit operator override.
+        2. :func:`get_agent_identity` — per-agent ``identity.json`` (explicit
+           ``capauth_uri``/``handle``) else convention
+           ``capauth:{agent}@skworld.io``.
+        3. ``capauth:local@skchat`` — absolute floor (no agent resolvable).
 
     Returns:
-        str: CapAuth identity URI (e.g., "capauth:alice@capauth.local")
+        str: CapAuth identity URI (e.g. ``capauth:lumina@skworld.io``).
 
     Examples:
-        >>> identity = get_sovereign_identity()
-        >>> identity
-        'capauth:sovereign-test@capauth.local'
+        >>> import os; os.environ["SKAGENT"] = "lumina"
+        >>> get_sovereign_identity()
+        'capauth:lumina@skworld.io'
     """
     import os
 
@@ -51,27 +73,13 @@ def get_sovereign_identity() -> str:
     if env_identity:
         return env_identity
 
-    identity_file = SKCAPSTONE_IDENTITY_DIR / "identity.json"
-    if identity_file.exists():
-        try:
-            with open(identity_file) as f:
-                data = json.load(f)
-            name = data.get("name", "local")
-            email = data.get("email")
-            fingerprint = data.get("fingerprint")
+    try:
+        from .agent_profile import get_agent_identity
 
-            if email and "@" in email:
-                handle = email.split("@")[0]
-                return f"capauth:{handle}@capauth.local"
-            elif fingerprint:
-                short_fp = fingerprint[:16]
-                return f"capauth:{short_fp}"
-            elif name:
-                return f"capauth:{name}@capauth.local"
-        except (json.JSONDecodeError, OSError, KeyError):
-            pass
-
-    return "capauth:local@skchat"
+        return get_agent_identity()
+    except Exception as exc:  # pragma: no cover - defensive fallback
+        logger.warning("agent-aware identity resolution failed: %s", exc)
+        return "capauth:local@skchat"
 
 
 def resolve_peer_name(name: str) -> str:
@@ -87,17 +95,17 @@ def resolve_peer_name(name: str) -> str:
         name: Friendly name of the peer (e.g., "lumina", "jarvis")
 
     Returns:
-        str: Resolved capauth URI (e.g., "capauth:lumina@capauth.local")
+        str: Resolved capauth URI (e.g., "capauth:lumina@skworld.io")
 
     Raises:
         PeerResolutionError: If peer name cannot be resolved.
 
     Examples:
         >>> resolve_peer_name("lumina")
-        'capauth:lumina@capauth.local'
+        'capauth:lumina@skworld.io'
 
         >>> resolve_peer_name("jarvis")
-        'capauth:jarvis@capauth.local'
+        'capauth:jarvis@skworld.io'
     """
     if name.startswith("capauth:"):
         return name
@@ -144,12 +152,12 @@ def resolve_peer_name(name: str) -> str:
 
                 if email and "@" in email:
                     handle = email.split("@")[0]
-                    return f"capauth:{handle}@capauth.local"
+                    return f"capauth:{handle}@{SK_DEFAULT_DOMAIN}"
                 elif fingerprint:
                     short_fp = fingerprint[:16]
                     return f"capauth:{short_fp}"
                 elif peer_name:
-                    return f"capauth:{peer_name.lower()}@capauth.local"
+                    return f"capauth:{peer_name.lower()}@{SK_DEFAULT_DOMAIN}"
 
             except (json.JSONDecodeError, OSError, KeyError):
                 continue
