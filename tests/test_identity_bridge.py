@@ -73,12 +73,14 @@ def temp_peers_dir(tmp_path):
     return peers_dir
 
 
-def test_get_sovereign_identity_from_file(temp_identity_dir):
-    """Test loading identity from skcapstone identity.json."""
-    with patch("skchat.identity_bridge.SKCAPSTONE_IDENTITY_DIR", temp_identity_dir):
-        with patch.dict("os.environ", {}, clear=True):
-            identity = get_sovereign_identity()
-            assert identity == "capauth:test-agent@capauth.local"
+def test_get_sovereign_identity_agent_aware():
+    """Self-identity resolves to the ACTIVE agent's convention URI.
+
+    Regression: previously this read a single shared identity.json and
+    returned ``capauth:test-agent@capauth.local`` for every agent.
+    """
+    with patch.dict("os.environ", {"SKAGENT": "lumina"}, clear=True):
+        assert get_sovereign_identity() == "capauth:lumina@skworld.io"
 
 
 def test_get_sovereign_identity_from_env():
@@ -89,28 +91,23 @@ def test_get_sovereign_identity_from_env():
 
 
 def test_get_sovereign_identity_fallback():
-    """Test fallback when no identity configured."""
-    with patch("skchat.identity_bridge.SKCAPSTONE_IDENTITY_DIR", Path("/nonexistent")):
+    """Floor when no agent is resolvable and no env override is set."""
+    with patch("skchat.agent_profile.get_active_agent_name", return_value=None):
         with patch.dict("os.environ", {}, clear=True):
-            identity = get_sovereign_identity()
-            assert identity == "capauth:local@skchat"
+            assert get_sovereign_identity() == "capauth:local@skchat"
 
 
-def test_get_sovereign_identity_with_fingerprint_only(tmp_path):
-    """Test identity resolution when only fingerprint is available."""
-    identity_dir = tmp_path / "identity"
-    identity_dir.mkdir()
-
-    identity_data = {"fingerprint": "AABBCCDDEEFF0011", "created_at": "2026-02-24T00:00:00+00:00"}
-
-    identity_file = identity_dir / "identity.json"
-    with open(identity_file, "w") as f:
-        json.dump(identity_data, f)
-
-    with patch("skchat.identity_bridge.SKCAPSTONE_IDENTITY_DIR", identity_dir):
-        with patch.dict("os.environ", {}, clear=True):
-            identity = get_sovereign_identity()
-            assert identity == "capauth:AABBCCDDEEFF0011"
+def test_get_sovereign_identity_per_agent_explicit_uri(tmp_path):
+    """An explicit capauth_uri in the per-agent identity.json wins over convention."""
+    agent_dir = tmp_path / "lumina"
+    (agent_dir / "identity").mkdir(parents=True)
+    (agent_dir / "identity" / "identity.json").write_text(
+        json.dumps({"capauth_uri": "capauth:lumina@custom.realm"})
+    )
+    with patch("skchat.agent_profile.get_active_agent_name", return_value="lumina"):
+        with patch("skchat.agent_profile._agent_base", return_value=agent_dir):
+            with patch.dict("os.environ", {}, clear=True):
+                assert get_sovereign_identity() == "capauth:lumina@custom.realm"
 
 
 def test_resolve_peer_name_from_json(temp_peers_dir):
@@ -182,7 +179,7 @@ trust_level: verified
     with patch("skchat.identity_bridge.SKCAPSTONE_PEERS_DIR", peers_dir):
         with patch("skchat.identity_bridge.SKCOMM_PEERS_DIR", Path("/nonexistent")):
             uri = resolve_peer_name("bob")
-            assert uri == "capauth:bob@capauth.local"
+            assert uri == "capauth:bob@skworld.io"
 
 
 def test_resolve_peer_name_contact_uris_priority(temp_peers_dir):
@@ -194,18 +191,15 @@ def test_resolve_peer_name_contact_uris_priority(temp_peers_dir):
 
 
 def test_identity_resolution_with_corrupt_json(tmp_path):
-    """Test graceful fallback when identity.json is corrupt."""
-    identity_dir = tmp_path / "identity"
-    identity_dir.mkdir()
+    """A corrupt per-agent identity.json falls back to convention, not an error."""
+    agent_dir = tmp_path / "lumina"
+    (agent_dir / "identity").mkdir(parents=True)
+    (agent_dir / "identity" / "identity.json").write_text("{ invalid json")
 
-    identity_file = identity_dir / "identity.json"
-    with open(identity_file, "w") as f:
-        f.write("{ invalid json")
-
-    with patch("skchat.identity_bridge.SKCAPSTONE_IDENTITY_DIR", identity_dir):
-        with patch.dict("os.environ", {}, clear=True):
-            identity = get_sovereign_identity()
-            assert identity == "capauth:local@skchat"
+    with patch("skchat.agent_profile.get_active_agent_name", return_value="lumina"):
+        with patch("skchat.agent_profile._agent_base", return_value=agent_dir):
+            with patch.dict("os.environ", {}, clear=True):
+                assert get_sovereign_identity() == "capauth:lumina@skworld.io"
 
 
 def test_peer_resolution_with_corrupt_json(tmp_path):
