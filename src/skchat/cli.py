@@ -3604,6 +3604,168 @@ def health(url: str) -> None:
     _print("")
 
 
+# ─── Bridge status ────────────────────────────────────────────────────────────
+
+# The lumina + opus consciousness bridges each expose a Prometheus /metrics
+# endpoint (see scripts/{lumina,opus}-bridge.py — _make_metrics_handler).
+_BRIDGES: list[tuple[str, str]] = [
+    ("lumina", "http://127.0.0.1:9386/metrics"),
+    ("opus", "http://127.0.0.1:9387/metrics"),
+]
+
+
+def _default_bridge_fetch(url: str, timeout: float = 2.0) -> str:
+    """Fetch the raw body of a bridge metrics endpoint.
+
+    Isolated in its own function so tests can patch it and never touch the
+    network.
+
+    Args:
+        url: Full metrics URL to GET.
+        timeout: Socket timeout in seconds.
+
+    Returns:
+        str: Response body (Prometheus text exposition format).
+    """
+    import urllib.request
+
+    with urllib.request.urlopen(url, timeout=timeout) as resp:  # noqa: S310 (local-only)
+        return resp.read().decode("utf-8", errors="replace")
+
+
+def _parse_bridge_metrics(text: str) -> dict:
+    """Parse a bridge Prometheus /metrics body into a small dict.
+
+    Args:
+        text: Prometheus text exposition body.
+
+    Returns:
+        dict with ``messages``, ``errors``, ``uptime_s`` (ints; 0 if absent).
+    """
+    wanted = {
+        "bridge_messages_processed_total": "messages",
+        "bridge_errors_total": "errors",
+        "bridge_uptime_seconds": "uptime_s",
+    }
+    out = {"messages": 0, "errors": 0, "uptime_s": 0}
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        key = wanted.get(parts[0])
+        if key is None:
+            continue
+        try:
+            out[key] = int(float(parts[1]))
+        except ValueError:
+            continue
+    return out
+
+
+def _collect_bridge_statuses(bridges: list, fetch=_default_bridge_fetch) -> list[dict]:
+    """Query each bridge metrics endpoint and build a status row per bridge.
+
+    A bridge whose *fetch* raises (down / unreachable) is reported with
+    ``up=False`` instead of propagating the exception.
+
+    Args:
+        bridges: list of ``(name, url)`` tuples.
+        fetch: callable ``(url) -> str`` returning the metrics body.
+
+    Returns:
+        list[dict]: one row per bridge with ``name``, ``url``, ``up``,
+        ``messages``, ``errors``, ``uptime_s``, and (on failure) ``error``.
+    """
+    rows: list[dict] = []
+    for name, url in bridges:
+        row = {
+            "name": name,
+            "url": url,
+            "up": False,
+            "messages": 0,
+            "errors": 0,
+            "uptime_s": 0,
+        }
+        try:
+            body = fetch(url)
+            row.update(_parse_bridge_metrics(body))
+            row["up"] = True
+        except Exception as exc:  # noqa: BLE001 — any failure means "down"
+            row["error"] = str(exc)
+        rows.append(row)
+    return rows
+
+
+@main.command(name="bridge-status")
+@click.option(
+    "--json-out",
+    "json_out",
+    is_flag=True,
+    default=False,
+    help="Emit the status rows as a JSON list instead of a table.",
+)
+def bridge_status(json_out: bool) -> None:
+    """Show the up/down status of the lumina + opus consciousness bridges.
+
+    GETs each bridge's Prometheus /metrics endpoint and prints a per-bridge
+    table: up/down, messages processed, errors, and uptime. A bridge that is
+    not running is shown as ``down`` rather than crashing the command.
+
+    Examples:
+
+        skchat bridge-status
+
+        skchat bridge-status --json-out
+    """
+    import json as _json
+
+    rows = _collect_bridge_statuses(_BRIDGES, fetch=_default_bridge_fetch)
+
+    if json_out:
+        click.echo(_json.dumps(rows, indent=2, ensure_ascii=False))
+        return
+
+    _print("")
+    if HAS_RICH and console:
+        from rich.box import SIMPLE_HEAD
+
+        table = Table(
+            show_header=True,
+            header_style="bold cyan",
+            box=SIMPLE_HEAD,
+            padding=(0, 1),
+            title="Bridge status",
+        )
+        table.add_column("Bridge", style="cyan", no_wrap=True)
+        table.add_column("State", no_wrap=True)
+        table.add_column("Messages", justify="right")
+        table.add_column("Errors", justify="right")
+        table.add_column("Uptime (s)", justify="right")
+        for r in rows:
+            state = "[green]up[/]" if r["up"] else "[red]down[/]"
+            table.add_row(
+                r["name"],
+                state,
+                str(r["messages"]),
+                str(r["errors"]),
+                str(r["uptime_s"]),
+            )
+        console.print(table)
+    else:
+        _print(f"  {'Bridge':<10} {'State':<6} {'Msgs':>6} {'Errs':>6} {'Uptime':>8}")
+        _print("  " + "-" * 44)
+        for r in rows:
+            state = "up" if r["up"] else "down"
+            _print(
+                f"  {r['name']:<10} {state:<6} {r['messages']:>6} "
+                f"{r['errors']:>6} {r['uptime_s']:>8}"
+            )
+    _print("")
+
+
 @main.command()
 def status() -> None:
     """Show SKChat status and statistics.

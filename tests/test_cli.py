@@ -761,6 +761,134 @@ class TestStatsCommand:
         assert data["by_group"]["t1"] == 2
 
 
+_METRICS_FIXTURE = """\
+# HELP bridge_messages_processed_total Total messages processed by the bridge
+# TYPE bridge_messages_processed_total counter
+bridge_messages_processed_total 17
+
+# HELP bridge_errors_total Total errors encountered by the bridge
+# TYPE bridge_errors_total counter
+bridge_errors_total 2
+
+# HELP bridge_uptime_seconds Seconds since the bridge started
+# TYPE bridge_uptime_seconds gauge
+bridge_uptime_seconds 3600
+
+# HELP bridge_last_response_timestamp Unix timestamp of the last sent response
+# TYPE bridge_last_response_timestamp gauge
+bridge_last_response_timestamp 1700000000
+"""
+
+
+class TestBridgeStatusHelpers:
+    """Unit tests for the bridge-status parsing + collection helpers."""
+
+    def test_parse_bridge_metrics(self) -> None:
+        """Prometheus text is parsed into the named metric fields."""
+        from skchat.cli import _parse_bridge_metrics
+
+        parsed = _parse_bridge_metrics(_METRICS_FIXTURE)
+        assert parsed["messages"] == 17
+        assert parsed["errors"] == 2
+        assert parsed["uptime_s"] == 3600
+
+    def test_collect_both_up(self) -> None:
+        """Both bridges reachable → both report up with their metrics."""
+        from skchat.cli import _collect_bridge_statuses
+
+        def fake_fetch(url: str) -> str:
+            return _METRICS_FIXTURE
+
+        rows = _collect_bridge_statuses(
+            [("lumina", "http://x:9386/metrics"), ("opus", "http://x:9387/metrics")],
+            fetch=fake_fetch,
+        )
+        assert len(rows) == 2
+        assert all(r["up"] for r in rows)
+        assert rows[0]["messages"] == 17
+        assert rows[0]["errors"] == 2
+
+    def test_collect_one_down(self) -> None:
+        """A bridge whose fetch raises is reported down, not a crash."""
+        from skchat.cli import _collect_bridge_statuses
+
+        def fake_fetch(url: str) -> str:
+            if "9387" in url:
+                raise OSError("connection refused")
+            return _METRICS_FIXTURE
+
+        rows = _collect_bridge_statuses(
+            [("lumina", "http://x:9386/metrics"), ("opus", "http://x:9387/metrics")],
+            fetch=fake_fetch,
+        )
+        by_name = {r["name"]: r for r in rows}
+        assert by_name["lumina"]["up"] is True
+        assert by_name["opus"]["up"] is False
+
+    def test_collect_all_down(self) -> None:
+        """All bridges unreachable → all down, no exception."""
+        from skchat.cli import _collect_bridge_statuses
+
+        def fake_fetch(url: str) -> str:
+            raise OSError("down")
+
+        rows = _collect_bridge_statuses(
+            [("lumina", "http://x:9386/metrics"), ("opus", "http://x:9387/metrics")],
+            fetch=fake_fetch,
+        )
+        assert all(r["up"] is False for r in rows)
+
+
+class TestBridgeStatusCommand:
+    """Tests for the 'skchat bridge-status' command."""
+
+    @patch("skchat.cli._default_bridge_fetch", return_value=_METRICS_FIXTURE)
+    def test_bridge_status_both_up(
+        self,
+        mock_fetch: MagicMock,
+        runner: CliRunner,
+    ) -> None:
+        """Both bridges up → table shows up state and message counts."""
+        result = runner.invoke(main, ["bridge-status"])
+        assert result.exit_code == 0
+        assert "lumina" in result.output
+        assert "opus" in result.output
+        assert "17" in result.output
+
+    @patch("skchat.cli._default_bridge_fetch")
+    def test_bridge_status_one_down(
+        self,
+        mock_fetch: MagicMock,
+        runner: CliRunner,
+    ) -> None:
+        """One bridge down is rendered as down, command still exits 0."""
+
+        def side(url: str) -> str:
+            if "9387" in url:
+                raise OSError("refused")
+            return _METRICS_FIXTURE
+
+        mock_fetch.side_effect = side
+        result = runner.invoke(main, ["bridge-status"])
+        assert result.exit_code == 0
+        assert "down" in result.output.lower()
+
+    @patch("skchat.cli._default_bridge_fetch", side_effect=OSError("down"))
+    def test_bridge_status_json_out(
+        self,
+        mock_fetch: MagicMock,
+        runner: CliRunner,
+    ) -> None:
+        """--json-out emits a JSON list; all-down reports up=false."""
+        import json
+
+        result = runner.invoke(main, ["bridge-status", "--json-out"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert isinstance(data, list)
+        assert all(row["up"] is False for row in data)
+
+
 class TestStatusCommand:
     """Tests for the 'skchat status' command."""
 
