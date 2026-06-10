@@ -17,6 +17,9 @@ from typing import Optional
 
 from pydantic import BaseModel, Field
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 class PresenceState(str, Enum):
     """Possible presence states for a participant."""

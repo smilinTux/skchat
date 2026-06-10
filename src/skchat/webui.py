@@ -18,6 +18,9 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from . import __version__
 
+import logging
+logger = logging.getLogger(__name__)
+
 app = FastAPI(title="SKChat Web UI")
 _SKCHAT_HOME = Path("~/.skchat").expanduser()
 

@@ -18,6 +18,9 @@ from textual.binding import Binding
 from textual.containers import ScrollableContainer
 from textual.widgets import Input, Label, Static
 
+import logging
+logger = logging.getLogger(__name__)
+
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------

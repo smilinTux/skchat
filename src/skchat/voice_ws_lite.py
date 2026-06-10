@@ -16,6 +16,9 @@ import websockets
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse
 
+import logging
+logger = logging.getLogger(__name__)
+
 # SKVoice service on GPU box — handles the entire voice pipeline
 SKVOICE_URL = os.getenv("SKCHAT_SKVOICE_URL", "ws://127.0.0.1:18800/ws/voice")
 # SKVoice video endpoint (MuseTalk lip-synced avatar pipeline)
