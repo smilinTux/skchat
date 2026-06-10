@@ -130,6 +130,18 @@ class TestIdentityResolution:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """No agent on disk + SKCHAT_IDENTITY set → env var wins."""
+        import importlib
+
+        # Import skmemory.agents *before* clearing the env. skmemory eagerly
+        # resolves agent paths at import time and raises when none is
+        # configured — so it must load while a real agent is still resolvable,
+        # otherwise the bare import (here or inside skchat) crashes instead of
+        # exercising the fallback. (Skip cleanly if skmemory truly can't load.)
+        try:
+            import skmemory.agents  # noqa: F401
+        except Exception:
+            pytest.skip("skmemory not importable in this environment")
+
         base = tmp_path / ".skcapstone"
         (base / "agents").mkdir(parents=True)
         monkeypatch.setenv("SKCAPSTONE_HOME", str(base))
@@ -138,11 +150,14 @@ class TestIdentityResolution:
         monkeypatch.delenv("SKMEMORY_AGENT", raising=False)
         monkeypatch.setenv("SKCHAT_IDENTITY", "capauth:fallback@skworld.io")
 
-        import importlib
+        # The unit under test is skchat's *fallback*, so stub skmemory's
+        # resolver to the no-agent result (None). skchat.agent_profile does
+        # `from skmemory.agents import get_active_agent` at call time, so
+        # patching the module attribute takes effect.
+        monkeypatch.setattr(
+            "skmemory.agents.get_active_agent", lambda: None, raising=False
+        )
 
-        import skmemory.agents as sa
-
-        importlib.reload(sa)
         import skchat.agent_profile as ap
 
         importlib.reload(ap)

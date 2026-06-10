@@ -91,7 +91,12 @@ def _start_patches(mock_skcomm, mock_transport, mock_history, mock_advocacy):
     p_skcomm_cls, p_transport_cls, p_history_cls, p_id_fn, p_engine_cls, *_ = mocks
 
     p_skcomm_cls.from_config.return_value = mock_skcomm
-    # Daemon calls ChatTransport(skcomm=..., history=..., identity=...) — mock the ctor
+    # Daemon obtains its transport via ``ChatTransport.from_config(...)`` (see
+    # daemon.py run loop), so the from_config classmethod must return our
+    # mock_transport — otherwise the daemon polls a fresh auto-mock and never
+    # sees the injected inbox message. Wire the ctor too for any direct-construct
+    # path.
+    p_transport_cls.from_config.return_value = mock_transport
     p_transport_cls.return_value = mock_transport
     p_history_cls.from_config.return_value = mock_history
     p_id_fn.return_value = "capauth:bob@skworld.io"

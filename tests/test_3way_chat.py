@@ -140,6 +140,10 @@ both_services = pytest.mark.skipif(
     not (_service_up(DAEMON_HEALTH_URL) and _service_up(LUMINA_HEALTH_URL)),
     reason="skchat daemon or lumina-bridge not available",
 )
+group_present = pytest.mark.skipif(
+    not (GROUP_STORE / f"{SKWORLD_GROUP_ID}.json").exists(),
+    reason="skworld-team group not provisioned on this box (deployment smoke check)",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -242,12 +246,18 @@ def _poll_lumina_reply(
 
 
 # ---------------------------------------------------------------------------
-# Unit tests (no live services needed)
+# Deployment smoke checks (require the skworld-team group provisioned on disk)
 # ---------------------------------------------------------------------------
 
 
+@group_present
 class TestGroupPersistence:
-    """Verify the skworld-team group is persisted on disk."""
+    """Verify the skworld-team group is persisted on disk.
+
+    These assert a specific *deployed* group (``SKWORLD_GROUP_ID``) rather than
+    a hermetic fixture, so they skip when that group is not provisioned on the
+    box — mirroring the daemon/lumina service-availability guards above.
+    """
 
     def test_group_file_exists(self) -> None:
         path = GROUP_STORE / f"{SKWORLD_GROUP_ID}.json"
