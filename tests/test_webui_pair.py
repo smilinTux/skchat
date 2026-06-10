@@ -40,3 +40,9 @@ def test_pair_qr_embed_key(monkeypatch):
     monkeypatch.setattr(P, "bundle_from_self", _bundle)
     assert "pk=" in TestClient(webui.app).get("/pair/qr?embed=1").json()["uri"]
     assert "pk=" not in TestClient(webui.app).get("/pair/qr?embed=0").json()["uri"]
+
+
+def test_pair_page_has_selector_and_qr():
+    html = TestClient(webui.app).get("/pair").text
+    for tok in ["/pair/qr", "Syncthing", "Tailscale", "HTTPS", "Embed", 'id="pair-qr"']:
+        assert tok in html, tok

@@ -527,6 +527,39 @@ def pair_qr(sy: str = "1", ts: str = "1", https: str = "1", embed: str = "0"):
             "fqid": bundle.fqid, "fingerprint": bundle.fingerprint}
 
 
+_PAIR_HTML = """<!DOCTYPE html><html><head><meta charset="utf-8"><title>skchat — Pair</title>
+<style>body{font-family:system-ui;max-width:480px;margin:2rem auto;text-align:center}
+#pair-qr svg{width:280px;height:280px} label{display:block;text-align:left;margin:.3rem 0}
+#pair-uri{word-break:break-all;font-size:.8rem;color:#555;margin-top:1rem}</style></head>
+<body><h2>Pair a device</h2><p>Scan this with another agent's <code>skchat</code>.</p>
+<div id="pair-qr">loading…</div>
+<form id="caps">
+ <label><input type="checkbox" name="sy" checked> Share Syncthing device</label>
+ <label><input type="checkbox" name="ts" checked> Share Tailscale address</label>
+ <label><input type="checkbox" name="https" checked> Share HTTPS endpoint</label>
+ <label><input type="checkbox" name="embed"> Embed public key (offline-capable, bigger QR)</label>
+</form>
+<div id="pair-uri"></div><button id="copy">Copy link</button>
+<script>
+function flag(n){return document.querySelector('input[name='+n+']').checked?'1':'0';}
+function refresh(){
+ var q='/pair/qr?sy='+flag('sy')+'&ts='+flag('ts')+'&https='+flag('https')+'&embed='+flag('embed');
+ fetch(q).then(function(r){return r.json();}).then(function(d){
+   document.getElementById('pair-qr').innerHTML=d.svg;
+   document.getElementById('pair-uri').textContent=d.uri;
+   window._uri=d.uri;});
+}
+document.getElementById('caps').addEventListener('change',refresh);
+document.getElementById('copy').onclick=function(){if(window._uri)navigator.clipboard.writeText(window._uri);};
+refresh();
+</script></body></html>"""
+
+
+@app.get("/pair", response_class=HTMLResponse)
+async def pair_page() -> HTMLResponse:
+    return HTMLResponse(_PAIR_HTML)
+
+
 @app.get("/messages", response_class=HTMLResponse)
 async def messages() -> HTMLResponse:
     identity = _get_identity()
