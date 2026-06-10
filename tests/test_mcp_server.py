@@ -465,7 +465,7 @@ def _mock_webrtc_transport(
     """Create a mock WebRTCTransport for MCP tool tests."""
     from queue import Queue
 
-    from skcomm.transport import HealthStatus, TransportStatus
+    from skcomms.transport import HealthStatus, TransportStatus
 
     transport = MagicMock()
     transport._running = running
@@ -538,7 +538,7 @@ class TestWebRTCStatus:
     async def test_status_includes_peer_info(self):
         """Expected: active_peers includes info for connected peers."""
         pytest.importorskip("aiortc")
-        from skcomm.transports.webrtc import PeerConnection
+        from skcomms.transports.webrtc import PeerConnection
 
         mock_pc = MagicMock()
         peer = PeerConnection(
@@ -637,7 +637,7 @@ class TestAcceptCall:
     async def test_already_connected_returns_connected_status(self):
         """Expected: status=already_connected when peer is already connected."""
         pytest.importorskip("aiortc")
-        from skcomm.transports.webrtc import PeerConnection
+        from skcomms.transports.webrtc import PeerConnection
 
         peer = PeerConnection(peer_fingerprint=PEER_FP, pc=MagicMock(), connected=True)
         transport = _mock_webrtc_transport(peers={PEER_FP: peer})
@@ -759,7 +759,7 @@ class TestSendFileP2P:
         test_file = tmp_path / "direct.txt"
         test_file.write_bytes(b"direct transfer")
 
-        from skcomm.transports.webrtc import PeerConnection
+        from skcomms.transports.webrtc import PeerConnection
 
         mock_channel = MagicMock()
         peer = PeerConnection(

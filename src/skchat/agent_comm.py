@@ -108,7 +108,7 @@ class AgentMessenger:
         """
         try:
             if skcomm is None:
-                from skcomm import SKComm
+                from skcomms import SKComm
 
                 skcomm = SKComm.from_config()
             from .transport import ChatTransport

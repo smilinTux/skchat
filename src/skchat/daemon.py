@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 # SKComm is imported at module level so tests can patch skchat.daemon.SKComm.
 try:
-    from skcomm import SKComm  # type: ignore
+    from skcomms import SKComm  # type: ignore
 except ImportError:  # pragma: no cover
     SKComm = None  # type: ignore
 
@@ -565,7 +565,7 @@ class ChatDaemon:
 
         try:
             payload = indicator.model_dump_json()
-            from skcomm.models import MessageType
+            from skcomms.models import MessageType
 
             skcomm.send(
                 recipient="*",
@@ -837,7 +837,16 @@ class ChatDaemon:
 DAEMON_PID_FILE = Path("~/.skchat/daemon.pid")
 DAEMON_LOG_FILE = Path("~/.skchat/daemon.log")
 DAEMON_STATS_FILE = Path("~/.skchat/daemon_stats.json")
+DAEMON_LOCK_FILE = Path("~/.skchat/daemon.lock")
 _DAEMON_STATS_FILE = DAEMON_STATS_FILE  # internal alias used by _write_daemon_stats
+
+# Module-global holder for the single-instance flock. The lock is held for the
+# life of the daemon process; this reference keeps the file object (and thus the
+# lock) alive so it isn't garbage-collected and silently released.
+_daemon_lock_handle = None
+
+# How the running daemon subprocess identifies itself in the process table.
+_DAEMON_PROC_MARKER = "skchat._daemon_entry"
 
 
 def _pid_file() -> Path:
@@ -877,13 +886,59 @@ def _remove_pid() -> None:
     pid_path.unlink(missing_ok=True)
 
 
-def is_running() -> bool:
-    """Check if the daemon process is currently running.
+def _live_daemon_pids() -> list[int]:
+    """Return PIDs of all running skchat receive-daemon processes.
 
-    Reads the PID file and checks if the process exists.
+    Scans the process table (``/proc``) for the daemon subprocess marker rather
+    than trusting the PID file. This is what makes single-instance enforcement
+    robust: it detects a systemd-managed daemon even when the PID file is stale,
+    missing, or was clobbered by a competing manual ``skchat daemon start`` (the
+    duplicate-daemon trap). Excludes the current process.
+
+    Linux-only (reads ``/proc``); returns ``[]`` where ``/proc`` is unavailable,
+    in which case the flock in :func:`run_daemon` remains the backstop.
 
     Returns:
-        bool: True if daemon is alive, False otherwise.
+        list[int]: PIDs of live daemon subprocesses (may be empty).
+    """
+    import os
+
+    pids: list[int] = []
+    proc_dir = Path("/proc")
+    if not proc_dir.is_dir():
+        return pids
+    self_pid = os.getpid()
+    for entry in proc_dir.iterdir():
+        if not entry.name.isdigit():
+            continue
+        pid = int(entry.name)
+        if pid == self_pid:
+            continue
+        try:
+            cmdline = (entry / "cmdline").read_bytes().replace(b"\x00", b" ").decode(
+                "utf-8", "ignore"
+            )
+        except OSError:
+            continue  # process vanished or unreadable — skip
+        if _DAEMON_PROC_MARKER in cmdline:
+            pids.append(pid)
+    return pids
+
+
+def is_running() -> bool:
+    """Check if the daemon process is currently running (PID-file based).
+
+    Fast, PID-file-only check used for status and the friendly start pre-check.
+    It is deliberately NOT process-table aware: during a systemd restart the
+    just-killed predecessor may briefly linger, and a process-scan here would
+    race-block the legitimate new start. Authoritative single-instance
+    enforcement is the flock in :func:`run_daemon` (race-free: the kernel
+    releases the lock the instant the holder dies). For the desync case — a
+    stale/clobbered PID file while a daemon really is alive — the flock still
+    refuses a duplicate even though this returns False.
+
+    Returns:
+        bool: True if the PID-file process is alive, False otherwise.
     """
     import os
 
@@ -894,6 +949,82 @@ def is_running() -> bool:
         os.kill(pid, 0)
         return True
     except (ProcessLookupError, PermissionError):
+        return False
+
+
+def _acquire_singleton_lock(retries: int = 6, retry_delay: float = 0.4) -> bool:
+    """Acquire the exclusive single-instance lock for the daemon.
+
+    Takes a non-blocking ``flock`` on ``~/.skchat/daemon.lock`` and holds it for
+    the life of the process (the handle is stashed in the module global
+    ``_daemon_lock_handle`` so it isn't GC'd). This is the authoritative
+    single-instance guard: OS-enforced and race-free, and the kernel releases it
+    automatically when the holder dies — no stale-lock cleanup needed. A second
+    daemon simply cannot acquire it.
+
+    The acquisition is retried briefly so a systemd restart absorbs the kill →
+    start race: the new daemon waits out a predecessor that is still shutting
+    down rather than failing immediately. Total wait ≈ ``retries * retry_delay``.
+
+    Args:
+        retries: Additional attempts after the first if the lock is held.
+        retry_delay: Seconds to sleep between attempts.
+
+    Returns:
+        bool: True if the lock was acquired (this process may run), False if
+        another daemon still holds it after all retries. On platforms without
+        ``fcntl`` the lock is skipped (returns True).
+    """
+    global _daemon_lock_handle
+
+    try:
+        import fcntl
+    except ImportError:  # non-POSIX — best effort, no OS-level lock available
+        return True
+
+    lock_path = DAEMON_LOCK_FILE.expanduser()
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    handle = open(lock_path, "w")
+    for attempt in range(retries + 1):
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            _daemon_lock_handle = handle  # hold the lock for the process lifetime
+            return True
+        except OSError:
+            if attempt < retries:
+                time.sleep(retry_delay)
+    handle.close()
+    return False
+
+
+def _singleton_lock_held() -> bool:
+    """Return True if another process currently holds the daemon singleton lock.
+
+    Non-destructive probe: tries to grab the flock without blocking and, on
+    success, immediately releases it. A held lock means a daemon is alive even
+    when the PID file is stale (the desync case), so the launcher can refuse
+    *before* forking — avoiding even a short-lived duplicate process. Safe for
+    the systemd restart path: the predecessor is fully reaped before the new
+    ExecStart runs, so the lock is free and this returns False.
+
+    Returns:
+        bool: True if held by another process; False if free (or no ``fcntl``).
+    """
+    try:
+        import fcntl
+    except ImportError:
+        return False
+    lock_path = DAEMON_LOCK_FILE.expanduser()
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(lock_path, "w") as handle:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                return True  # another process holds it
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            return False
+    except OSError:
         return False
 
 
@@ -960,11 +1091,28 @@ def start_daemon(
     import os
     import subprocess
 
+    # Pre-fork guards (both non-racy w.r.t. systemd restart, since the
+    # predecessor is fully reaped before the new ExecStart runs):
+    #   1. PID-file check — fast path when the file is in sync.
+    #   2. Singleton-lock probe — desync-proof: catches a live daemon even when
+    #      the PID file is stale, so we refuse before forking a (doomed) child.
+    # The flock acquired by the daemon process itself remains the authoritative
+    # backstop against races the probe can't see.
     if is_running():
-        pid = _read_pid()
-        raise RuntimeError(f"Daemon already running (PID {pid})")
+        raise RuntimeError(f"Daemon already running (PID {_read_pid()})")
+    if _singleton_lock_held():
+        others = _live_daemon_pids()
+        raise RuntimeError(
+            f"Daemon already running (PID {others[0] if others else 'unknown'})"
+        )
 
     if not background:
+        if not _acquire_singleton_lock():
+            others = _live_daemon_pids()
+            raise RuntimeError(
+                "Daemon already running "
+                f"(PID {others[0] if others else 'unknown'})"
+            )
         log_path = Path(log_file).expanduser() if log_file else None
         d = ChatDaemon(interval=interval, log_file=log_path, quiet=quiet)
         _write_pid(os.getpid())
@@ -1055,6 +1203,19 @@ def run_daemon(
         >>> run_daemon(interval=10, log_file="~/.skchat/daemon.log")
     """
     import os
+
+    # Single-instance guard (authoritative): refuse to run if another daemon
+    # already holds the lock. Exit 0 — a duplicate launch is not a failure, the
+    # daemon IS running, and we must not trip systemd's Restart=on-failure.
+    if not _acquire_singleton_lock():
+        others = _live_daemon_pids()
+        msg = (
+            "Another skchat daemon already holds the lock "
+            f"(PID {others[0] if others else 'unknown'}); not starting a duplicate."
+        )
+        logger.warning(msg)
+        print(f"  {msg}")
+        sys.exit(0)
 
     log_path = Path(log_file).expanduser() if log_file else None
     daemon = ChatDaemon(interval=interval, log_file=log_path, quiet=quiet)

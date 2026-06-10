@@ -211,7 +211,7 @@ def _get_history():
 
 def _get_transport(identity: str):
     try:
-        from skcomm import SKComm
+        from skcomms import SKComm
 
         from .transport import ChatTransport
 

@@ -95,7 +95,7 @@ def _get_chat_transport():
         ChatTransport or None.
     """
     try:
-        from skcomm.core import SKComm
+        from skcomms.core import SKComm
 
         from .transport import ChatTransport
 
@@ -198,7 +198,7 @@ def _get_transport() -> "Optional[ChatTransport]":
         Optional[ChatTransport]: Transport bridge, or None.
     """
     try:
-        from skcomm import SKComm
+        from skcomms import SKComm
 
         from .transport import ChatTransport
 
@@ -1724,7 +1724,7 @@ def chat(peer: str, interval: float, thread: Optional[str], group: bool) -> None
         )
         payload = indicator.model_dump_json()
         try:
-            from skcomm.models import MessageType
+            from skcomms.models import MessageType
 
             xport = messenger._transport
             if xport is not None and hasattr(xport, "_skcomm"):
@@ -2176,7 +2176,7 @@ def send_file_cmd(recipient: str, file_path: Path) -> None:
 
     skcomm = None
     try:
-        from skcomm.core import SKComm
+        from skcomms.core import SKComm
 
         skcomm = SKComm.from_config()
     except Exception as exc:
