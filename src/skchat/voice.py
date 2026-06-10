@@ -1,27 +1,39 @@
-"""Piper TTS voice playback and Whisper STT recording for SKChat.
+"""Voice playback (TTS) and recording (STT) for SKChat — pluggable backends.
 
-Provides sovereign, local text-to-speech via Piper TTS and
-speech-to-text via openai-whisper.  No cloud dependency: both run
-entirely on-device.
+``VoicePlayer`` (TTS) and ``VoiceRecorder`` (STT) keep their original public
+signatures but now delegate to a **pluggable backend** selected from
+:mod:`skchat.voice_backends` (ports + registry + ``get_*``).  The defaults are
+the sovereign, on-device engines — **Piper** TTS and **openai-whisper** STT —
+so behaviour is identical to before; other engines (e.g. the ecosystem's
+Chatterbox TTS / SenseVoice STT, or any registered adapter) can be selected via
+the ``backend`` parameter or the ``SKCHAT_TTS_BACKEND`` / ``SKCHAT_STT_BACKEND``
+environment variables without changing call sites.
 
 Usage::
 
-    # TTS playback:
+    # TTS playback (default = piper):
     player = VoicePlayer()
     if player.is_available():
         player.speak("Hello from SKChat")
+    proc = player.speak("New message", blocking=False)   # non-blocking handle
+    player.stop()                                          # cancel mid-playback
 
-    # Non-blocking — returns Popen handle for the aplay process:
-    proc = player.speak("New message", blocking=False)
+    # Select a different backend by name, env, or injected instance:
+    player = VoicePlayer(backend="chatterbox")
+    player = VoicePlayer(backend=my_fake_tts_backend)
 
-    # Stop mid-playback:
-    player.stop()
-
-    # STT recording:
+    # STT recording (default = whisper):
     recorder = VoiceRecorder()
     if recorder.available:
         text = recorder.record(duration=10)        # fixed-length
         text = recorder.record_interactive()       # press Enter to stop
+
+The pluggable engines (Piper raw-PCM pipeline, Whisper transcription, the
+Chatterbox/SenseVoice scaffolds) live in :mod:`skchat.voice_backends`.  For the
+**default Piper** path, ``VoicePlayer`` retains the original in-class binary
+discovery + playback logic (so the existing public attributes/tests are
+unchanged) and only delegates to a separate backend object when a non-default
+backend is selected.
 """
 
 from __future__ import annotations
@@ -33,57 +45,108 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
+
+from .voice_backends import (
+    DEFAULT_VOICE,
+    LUMINA_VOICE,
+    STTBackend,
+    TTSBackend,
+    WhisperSTTBackend,
+    _PIPER_SEARCH_PATHS,
+    _VOICE_TMP_WAV,
+    _VOICES_DIRS,
+    get_stt_backend,
+    get_tts_backend,
+)
 
 logger = logging.getLogger("skchat.voice")
 
-# Piper binary search order (shutil.which is checked first).
-_PIPER_SEARCH_PATHS: list[str] = [
-    str(Path.home() / ".local/bin/piper"),
-    "/usr/local/bin/piper",
-    "/usr/bin/piper",
+# Re-exported for backward compatibility (callers + existing tests import these
+# names from skchat.voice). The canonical definitions live in voice_backends;
+# they are aliased here so the public surface is unchanged.
+__all__ = [
+    "DEFAULT_VOICE",
+    "LUMINA_VOICE",
+    "VoicePlayer",
+    "VoiceRecorder",
 ]
 
-# Default location for downloaded voice models.
-_VOICES_DIRS: list[Path] = [Path.home() / ".local/share/piper/voices"]
-if platform.system() == "Darwin":
-    _VOICES_DIRS.insert(0, Path.home() / "Library/Application Support/piper/voices")
-
-# Well-known voice names.
-DEFAULT_VOICE = "en_US-lessac-medium"
-LUMINA_VOICE = "en_US-jenny-medium"
+# Selection env vars.
+_TTS_ENV = "SKCHAT_TTS_BACKEND"
+_STT_ENV = "SKCHAT_STT_BACKEND"
 
 
 class VoicePlayer:
-    """Text-to-speech playback via Piper TTS (local, sovereign).
+    """Text-to-speech playback with a pluggable backend (default: Piper TTS).
 
-    Locates the ``piper`` binary and an ONNX voice model on construction.
-    All playback is piped through ``aplay`` as raw PCM, keeping the
-    dependency surface minimal (no Python audio library needed).
+    The **default Piper** engine is implemented in-class (binary discovery +
+    raw-PCM ``piper → aplay`` pipeline), preserving the original public surface
+    (``_piper_bin`` / ``_voice`` / ``_model_path`` / ``_current_procs``,
+    ``_find_piper`` / ``_resolve_model``).  When a *non-default* backend is
+    selected (by name, env var, or injected :class:`TTSBackend` instance),
+    ``is_available`` / ``speak`` / ``stop`` delegate to it instead.
     """
 
     def __init__(
         self,
         model_path: Optional[str] = None,
         voice: str = DEFAULT_VOICE,
+        backend: Optional[Union[str, TTSBackend]] = None,
     ) -> None:
         """Initialise VoicePlayer.
 
         Args:
-            model_path: Explicit path to a ``.onnx`` voice model.  When
-                ``None`` the standard ``~/.local/share/piper/voices/``
-                directory is searched by *voice* name.
-            voice: Voice identifier used to locate the ONNX model, e.g.
-                ``"en_US-lessac-medium"``.  Ignored when *model_path* is
-                given.
+            model_path: Explicit path to a ``.onnx`` voice model (Piper only).
+            voice: Voice identifier used to locate the ONNX model (Piper only).
+            backend: A backend name (e.g. ``"piper"``, ``"chatterbox"``), an
+                injected :class:`TTSBackend` instance, or ``None`` to select
+                the default (Piper, overridable via ``SKCHAT_TTS_BACKEND``).
         """
         self._voice = voice
         self._model_path = model_path
         self._piper_bin: Optional[str] = self._find_piper()
         self._current_procs: list[subprocess.Popen] = []
+        self._backend: Optional[TTSBackend] = self._resolve_backend(backend)
 
     # ------------------------------------------------------------------
-    # Internal helpers
+    # Backend selection
+    # ------------------------------------------------------------------
+
+    def _resolve_backend(
+        self, backend: Optional[Union[str, TTSBackend]]
+    ) -> Optional[TTSBackend]:
+        """Return a delegate backend, or ``None`` for the in-class Piper path.
+
+        An unknown name (param or ``SKCHAT_TTS_BACKEND``) degrades to the Piper
+        default so a bad selector never crashes voice playback.
+        """
+        if isinstance(backend, TTSBackend):
+            return backend
+        name = backend or os.environ.get(_TTS_ENV)
+        if not name or name.lower() == "piper":
+            return None  # use the in-class Piper implementation
+        try:
+            return get_tts_backend(name)
+        except KeyError:
+            logger.warning("Unknown TTS backend %r; falling back to piper.", name)
+            return None
+
+    @property
+    def backend(self) -> TTSBackend:
+        """The active backend.
+
+        For the default Piper path this is the player itself (it *is* a
+        TTSBackend-shaped object exposing ``name``/``is_available``/``speak``/
+        ``stop``); otherwise the delegated backend instance.
+        """
+        return self._backend if getattr(self, "_backend", None) is not None else self
+
+    #: Backend identifier for the in-class Piper default.
+    name = "piper"
+
+    # ------------------------------------------------------------------
+    # Internal helpers (Piper default)
     # ------------------------------------------------------------------
 
     def _find_piper(self) -> Optional[str]:
@@ -112,27 +175,30 @@ class VoicePlayer:
     # ------------------------------------------------------------------
 
     def is_available(self) -> bool:
-        """Return ``True`` if piper binary and voice model are both present."""
+        """Return whether the active backend can synthesise speech."""
+        _backend = getattr(self, "_backend", None)
+        if _backend is not None:
+            return _backend.is_available()
         return self._piper_bin is not None and self._resolve_model() is not None
 
     def speak(self, text: str, blocking: bool = False) -> Optional[subprocess.Popen]:
-        """Speak *text* via Piper TTS.
+        """Speak *text* via the active backend.
 
-        Pipes text through::
-
-            piper --model <model> --output_raw | aplay -r 22050 -f S16_LE -t raw -
+        For the Piper default, pipes text through
+        ``piper --output_raw | aplay`` (Linux) or a WAV + ``afplay`` (macOS).
 
         Args:
             text: The message text to synthesise.
-            blocking: When ``True``, wait until playback finishes before
-                returning.  When ``False`` (default) return immediately with
-                the ``aplay`` :class:`subprocess.Popen` handle so the caller
-                can wait or cancel later.
+            blocking: When ``True``, wait until playback finishes.
 
         Returns:
-            The ``aplay`` :class:`~subprocess.Popen` handle in non-blocking
-            mode, or ``None`` in blocking mode (or when Piper is unavailable).
+            The playback :class:`~subprocess.Popen` handle in non-blocking mode,
+            ``None`` in blocking mode or when the backend is unavailable.
         """
+        _backend = getattr(self, "_backend", None)
+        if _backend is not None:
+            return _backend.speak(text, blocking=blocking)
+
         if not self.is_available():
             logger.warning(
                 "Piper TTS not available (binary=%s, model=%s); skipping speech.",
@@ -212,7 +278,11 @@ class VoicePlayer:
             return None
 
     def stop(self) -> None:
-        """Terminate any currently playing audio processes."""
+        """Stop any currently playing audio (Piper default) or delegate."""
+        _backend = getattr(self, "_backend", None)
+        if _backend is not None:
+            _backend.stop()
+            return
         for proc in self._current_procs:
             try:
                 proc.terminate()
@@ -221,118 +291,67 @@ class VoicePlayer:
         self._current_procs = []
 
 
-# ---------------------------------------------------------------------------
-# Temporary file paths for voice recording
-# ---------------------------------------------------------------------------
-
-_VOICE_TMP_WAV: str = os.path.join(tempfile.gettempdir(), "skchat-voice.wav")
-
-
 class VoiceRecorder:
-    """Voice message recording via arecord + Whisper STT transcription.
+    """Voice recording + transcription with a pluggable backend (default: Whisper).
 
-    Records audio using ``arecord`` (ALSA) and transcribes locally with
-    the ``openai-whisper`` Python package.  No cloud dependency.
-
-    Usage::
-
-        recorder = VoiceRecorder()
-        if recorder.available:
-            # Fixed-duration recording:
-            text = recorder.record(duration=10)
-
-            # Interactive — press Enter to stop:
-            text = recorder.record_interactive()
+    Records audio via ``arecord`` (ALSA) and transcribes through the selected
+    :class:`STTBackend` — Whisper by default (local, sovereign).  Public
+    signatures (``record`` / ``record_interactive`` / ``available``) are
+    unchanged; transcription delegates to the backend.
     """
 
-    def __init__(self, whisper_model: str = "base") -> None:
+    def __init__(
+        self,
+        whisper_model: str = "base",
+        backend: Optional[Union[str, STTBackend]] = None,
+    ) -> None:
         """Initialise VoiceRecorder.
 
         Args:
-            whisper_model: Whisper model size to load for transcription.
-                Common values: ``"tiny"``, ``"base"``, ``"small"``,
-                ``"medium"``, ``"large"``.  Larger models are more accurate
-                but slower to load.
+            whisper_model: Whisper model size for the default backend
+                (``"tiny"``/``"base"``/``"small"``/``"medium"``/``"large"``).
+            backend: A backend name (e.g. ``"whisper"``, ``"sensevoice"``), an
+                injected :class:`STTBackend` instance, or ``None`` for the
+                default (Whisper, overridable via ``SKCHAT_STT_BACKEND``).
         """
         self.whisper_model = whisper_model
-        self.available = self._check_available()
+        self.backend: STTBackend = self._resolve_backend(backend, whisper_model)
 
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
-
-    def _check_available(self) -> bool:
-        """Return ``True`` if the ``openai-whisper`` package is importable."""
-        try:
-            import whisper  # noqa: F401 — openai-whisper package
-
-            return True
-        except ImportError:
-            logger.warning(
-                "openai-whisper not installed; voice recording unavailable. "
-                "Install with: pip install openai-whisper"
-            )
-            return False
-
-    def _run_arecord(self, wav_path: str, duration: int) -> bool:
-        """Record audio to *wav_path* for *duration* seconds via ``arecord``.
-
-        Args:
-            wav_path: Output WAV file path.
-            duration: Recording duration in seconds.
-
-        Returns:
-            ``True`` on success, ``False`` if ``arecord`` is unavailable or
-            the process failed.
-        """
-        try:
-            result = subprocess.run(
-                ["arecord", "-d", str(duration), "-f", "cd", "-t", "wav", wav_path],
-                capture_output=True,
-            )
-            if result.returncode != 0:
-                logger.warning(
-                    "arecord exited with code %d: %s",
-                    result.returncode,
-                    result.stderr.decode(errors="replace").strip(),
-                )
-                return False
-            return True
-        except FileNotFoundError:
-            logger.warning("arecord not found; install alsa-utils (apt/pacman)")
-            return False
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("arecord error: %s", exc)
-            return False
-
-    def _transcribe(self, wav_path: str) -> Optional[str]:
-        """Transcribe *wav_path* using the Whisper Python API.
-
-        Args:
-            wav_path: Path to a WAV audio file.
-
-        Returns:
-            Stripped transcription text, or ``None`` on failure / empty result.
-        """
-        if not self.available:
-            return None
-        try:
-            import whisper
-
-            model = whisper.load_model(self.whisper_model)
-            result = model.transcribe(wav_path)
-            text: str = result.get("text", "").strip()
-            return text if text else None
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Whisper transcription error: %s", exc)
-            return None
+    def _resolve_backend(
+        self, backend: Optional[Union[str, STTBackend]], whisper_model: str
+    ) -> STTBackend:
+        """Resolve the STT backend (instance / name / env / default Whisper)."""
+        if isinstance(backend, STTBackend):
+            return backend
+        name = backend or os.environ.get(_STT_ENV)
+        if name and name.lower() != "whisper":
+            try:
+                return get_stt_backend(name)
+            except KeyError:
+                logger.warning("Unknown STT backend %r; falling back to whisper.", name)
+        return WhisperSTTBackend(whisper_model=whisper_model)
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
+    @property
+    def available(self) -> bool:
+        """Return whether the selected STT backend can transcribe right now."""
+        return self.backend.is_available()
+
+    def _check_available(self) -> bool:
+        """Legacy helper — whether the selected backend is available."""
+        return self.backend.is_available()
+
+    def _transcribe(self, wav_path: str) -> Optional[str]:
+        """Transcribe *wav_path* via the selected backend (legacy helper)."""
+        if not self.available:
+            return None
+        return self.backend.transcribe(wav_path)
+
     def record(self, duration: int = 10) -> Optional[str]:
-        """Record audio for *duration* seconds then transcribe with Whisper.
+        """Record audio for *duration* seconds then transcribe.
 
         Args:
             duration: Recording length in seconds (default: 10).
@@ -342,28 +361,25 @@ class VoiceRecorder:
         """
         if not self.available:
             logger.warning(
-                "openai-whisper not available. Install with: pip install openai-whisper"
+                "STT backend unavailable. For the default backend install with: "
+                "pip install openai-whisper"
             )
             return None
-
-        if not self._run_arecord(_VOICE_TMP_WAV, duration):
-            return None
-
-        return self._transcribe(_VOICE_TMP_WAV)
+        return self.backend.record(duration=duration)
 
     def record_interactive(self) -> Optional[str]:
         """Record audio until the user presses Enter, then transcribe.
 
-        Starts ``arecord`` in the background.  When the user presses Enter,
-        ``SIGTERM`` is sent to the recording process and the captured WAV is
-        transcribed with Whisper.
+        Starts ``arecord`` in the background; on Enter it is terminated and the
+        captured WAV is transcribed via the selected backend.
 
         Returns:
             Transcribed text, or ``None`` on failure.
         """
         if not self.available:
             logger.warning(
-                "openai-whisper not available. Install with: pip install openai-whisper"
+                "STT backend unavailable. For the default backend install with: "
+                "pip install openai-whisper"
             )
             return None
 
@@ -389,4 +405,4 @@ class VoiceRecorder:
             except Exception:  # noqa: BLE001
                 pass
 
-        return self._transcribe(_VOICE_TMP_WAV)
+        return self.backend.transcribe(_VOICE_TMP_WAV)
