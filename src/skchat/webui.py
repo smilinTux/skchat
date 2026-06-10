@@ -583,6 +583,46 @@ async def pair_accept(payload: dict = Body(...)):
     return res
 
 
+_SCAN_HTML = """<!DOCTYPE html><html><head><meta charset="utf-8"><title>skchat — Scan to Pair</title>
+<style>body{font-family:system-ui;max-width:480px;margin:2rem auto;text-align:center}
+video{width:300px;max-width:100%;border-radius:8px;background:#111}
+#manual{width:100%;font-size:.8rem} #result{margin-top:1rem;font-weight:600}
+.err{color:#b00} .ok{color:#070}</style></head>
+<body><h2>Scan to pair</h2>
+<video id="cam" autoplay playsinline muted></video>
+<p id="camnote" style="color:#777"></p>
+<p>…or paste an <code>skp://</code> link:</p>
+<input id="manual" placeholder="skp://pair?v=1&fqid=…"><button id="go">Pair</button>
+<div id="result"></div>
+<script>
+function show(msg,ok){var r=document.getElementById('result');r.textContent=msg;r.className=ok?'ok':'err';}
+function accept(uri){
+ if(!uri||uri.indexOf('skp://')!==0){show('Not an skp:// pairing link',false);return;}
+ fetch('/pair/accept',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({uri:uri})})
+  .then(function(r){return r.json().then(function(d){return {ok:r.ok,d:d};});})
+  .then(function(x){show(x.ok?('Paired with '+x.d.fqid):(x.d.detail||'Pairing failed'),x.ok);});
+}
+document.getElementById('go').onclick=function(){accept(document.getElementById('manual').value.trim());};
+(function(){
+ var note=document.getElementById('camnote');
+ if(!('BarcodeDetector' in window)){note.textContent='Camera QR scan not supported here — paste the link instead.';return;}
+ navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}}).then(function(stream){
+   var v=document.getElementById('cam');v.srcObject=stream;
+   var det=new BarcodeDetector({formats:['qr_code']});var done=false;
+   var tick=function(){ if(done)return; det.detect(v).then(function(codes){
+     for(var i=0;i<codes.length;i++){var val=codes[i].rawValue||'';if(val.indexOf('skp://')===0){done=true;stream.getTracks().forEach(function(t){t.stop();});accept(val);return;}}
+     requestAnimationFrame(tick);}).catch(function(){requestAnimationFrame(tick);});};
+   requestAnimationFrame(tick);
+ }).catch(function(){note.textContent='Camera unavailable — paste the link instead.';});
+})();
+</script></body></html>"""
+
+
+@app.get("/pair/scan", response_class=HTMLResponse)
+async def pair_scan_page() -> HTMLResponse:
+    return HTMLResponse(_SCAN_HTML)
+
+
 @app.get("/messages", response_class=HTMLResponse)
 async def messages() -> HTMLResponse:
     identity = _get_identity()

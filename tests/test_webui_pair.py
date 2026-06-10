@@ -74,3 +74,9 @@ def test_pair_accept_mismatch_is_400(monkeypatch):
 def test_pair_accept_missing_uri_is_400():
     r = TestClient(webui.app).post("/pair/accept", json={})
     assert r.status_code == 400
+
+
+def test_pair_scan_page_wiring():
+    html = TestClient(webui.app).get("/pair/scan").text
+    for tok in ["/pair/accept", "BarcodeDetector", "getUserMedia", "skp://", 'id="manual"', "Pair"]:
+        assert tok in html, tok
