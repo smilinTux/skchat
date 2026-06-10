@@ -330,6 +330,13 @@ button{background:#1d4ed8;color:#fff;border:none;padding:6px 16px;cursor:pointer
 button:hover{background:#2563eb}
 #ws-dot{position:fixed;top:5px;right:8px;font-size:.75em;color:#333}
 #ws-dot.live{color:#4ade80}
+.att-img{max-width:240px;border-radius:8px;display:block;margin-top:4px}
+.att-file{display:inline-block;margin-top:4px;color:#7dd3fc;text-decoration:none}
+.att-file:hover{text-decoration:underline}
+#attach-btn{background:#374151}
+#attach-btn:hover{background:#4b5563}
+#upload-progress{position:fixed;bottom:46px;width:100%;background:#111;padding:4px 12px;font-size:.8em;color:#9ca3af;border-top:1px solid #1e1e1e}
+#upload-progress progress{width:200px;vertical-align:middle;margin-right:8px}
 </style>
 </head>
 <body>
@@ -343,8 +350,57 @@ button:hover{background:#2563eb}
     <option value="d4f3281e-fa92-474c-a8cd-f0a2a4c31c33">skworld-team</option>
   </select>
   <input type="text" name="content" placeholder="Message\u2026" autofocus autocomplete="off">
+  <input type="file" id="file-input" multiple style="display:none">
+  <button type="button" id="attach-btn" title="Attach">\U0001F4CE</button>
   <button type="submit">Send</button>
 </form>
+<div id="upload-progress" style="display:none"><progress id="up-bar" max="100" value="0"></progress> <span id="up-label"></span></div>
+<script>
+(function(){
+  var fi = document.getElementById('file-input');
+  document.getElementById('attach-btn').onclick = function(){ fi.click(); };
+  function recipient(){ return document.getElementById('recipient-sel').value; }
+  function caption(){ var c = document.querySelector('input[name=content]'); return c ? c.value : ''; }
+  function uploadFiles(files){
+    var prog = document.getElementById('upload-progress');
+    var bar = document.getElementById('up-bar'), label = document.getElementById('up-label');
+    var list = Array.prototype.slice.call(files);
+    var chain = Promise.resolve();
+    list.forEach(function(f){
+      chain = chain.then(function(){
+        return new Promise(function(res){
+          prog.style.display='block'; bar.value=0; label.textContent='Uploading '+f.name+'\u2026';
+          var fd = new FormData();
+          fd.append('recipient', recipient());
+          fd.append('caption', caption());
+          fd.append('file', f);
+          var xhr = new XMLHttpRequest();
+          xhr.open('POST','/upload');
+          xhr.upload.onprogress = function(e){ if(e.lengthComputable) bar.value = Math.round(100*e.loaded/e.total); };
+          xhr.onload = function(){ res(); };
+          xhr.onerror = function(){ res(); };
+          xhr.send(fd);
+        });
+      });
+    });
+    chain.then(function(){
+      prog.style.display='none';
+      if (window.htmx) htmx.ajax('GET','/messages',{target:'#chat',swap:'innerHTML'});
+    });
+  }
+  fi.onchange = function(){ if (fi.files.length) uploadFiles(fi.files); fi.value=''; };
+  var chat = document.getElementById('chat');
+  ['dragover','drop'].forEach(function(ev){ chat.addEventListener(ev, function(e){ e.preventDefault(); }); });
+  chat.addEventListener('drop', function(e){ if(e.dataTransfer.files.length) uploadFiles(e.dataTransfer.files); });
+  document.addEventListener('paste', function(e){
+    var items = (e.clipboardData && e.clipboardData.items) ? Array.prototype.slice.call(e.clipboardData.items) : [];
+    var imgs = items.filter(function(i){ return i.type.indexOf('image/')===0; })
+                    .map(function(i){ return i.getAsFile(); })
+                    .filter(Boolean);
+    if(imgs.length) uploadFiles(imgs);
+  });
+})();
+</script>
 <script>
 (function(){
   var ws, rtimer;

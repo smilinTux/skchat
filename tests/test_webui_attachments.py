@@ -104,3 +104,14 @@ def test_render_file_badge(monkeypatch):
     assert "/file/tid-doc" in html
     assert "r.pdf" in html
     assert "<img" not in html.split("tid-doc")[0][-80:]  # no inline image for pdf
+
+
+# ── Task 9: legacy upload affordances ─────────────────────────────────────────
+
+
+def test_legacy_html_has_upload_affordances():
+    html = TestClient(webui.app).get("/legacy").text
+    assert 'type="file"' in html
+    assert "/upload" in html
+    assert "drop" in html.lower() or "dragover" in html.lower()
+    assert "paste" in html.lower()
