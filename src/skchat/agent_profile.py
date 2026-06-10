@@ -79,18 +79,17 @@ def _agent_base(agent: str) -> Path:
 def get_agent_identity(agent: Optional[str] = None) -> str:
     """Resolve the CapAuth URI for *agent*.
 
+    T2 delegate: resolution is delegated to
+    ``capauth.agent_identity.resolve_agent_identity`` when available.
+    skchat is a thin consumer — the logic lives in capauth.
+
     Resolution order:
-        1. ``~/.skcapstone/agents/{agent}/identity/identity.json`` —
-           ONLY honored when it carries an explicit ``capauth_uri`` /
-           ``uri`` / ``handle`` field. The legacy identity.json holds
-           the *operator's* GPG key (Chef's email + fingerprint), not
-           the agent's wire identity, so we deliberately do NOT fall
-           back to ``email`` here — that would surface Chef's address
-           when the running agent is Lumina.
-        2. Convention: ``capauth:{agent}@skworld.io`` — what the bridge
-           scripts and peer registry already use, the de-facto standard.
-        3. ``SKCHAT_IDENTITY`` env var (last-resort, the historical default).
-        4. ``capauth:local@skchat`` (the absolute floor).
+        1. ``capauth.resolve_agent_identity(agent)`` — canonical resolver
+           (profile.json → convention capauth:<agent>@skworld.io).
+        2. Local fallback (no capauth installed): identity.json explicit
+           ``capauth_uri`` / ``handle`` field, then convention.
+        3. ``SKCHAT_IDENTITY`` env var (last-resort).
+        4. ``capauth:local@skchat`` (absolute floor).
 
     Args:
         agent: Agent name. ``None`` triggers ``get_active_agent_name()``.
@@ -98,6 +97,15 @@ def get_agent_identity(agent: Optional[str] = None) -> str:
     Returns:
         str: A non-empty CapAuth URI.
     """
+    # T2: delegate to capauth canonical resolver first
+    try:
+        from capauth.agent_identity import resolve_agent_identity
+
+        return resolve_agent_identity(agent).capauth_uri
+    except Exception as exc:
+        logger.debug("capauth resolver unavailable: %s", exc)
+
+    # Graceful local fallback (capauth not installed)
     if agent is None:
         agent = get_active_agent_name()
 

@@ -7,6 +7,10 @@ registry at ~/.skcapstone/peers/ or ~/.skcomm/peers/.
 Functions:
     get_sovereign_identity() -> Resolves the local user's CapAuth identity
     resolve_peer_name() -> Resolves friendly names to capauth URIs
+
+T2 (coord 1fec05a8): identity resolution now delegates to
+``capauth.agent_identity.resolve_agent_identity`` — the canonical resolver.
+skchat no longer maintains its own identity logic; it is a thin consumer.
 """
 
 from __future__ import annotations
@@ -42,22 +46,15 @@ class PeerResolutionError(Exception):
 def get_sovereign_identity() -> str:
     """Resolve the *running agent's* CapAuth identity URI (agent-aware).
 
-    History: this used to read a single shared
-    ``~/.skcapstone/identity/identity.json`` and hardcode an
-    ``@capauth.local`` domain — so every agent resolved to whatever
-    placeholder lived in that one file (e.g.
-    ``capauth:test-agent@capauth.local``), regardless of ``SKAGENT``. It now
-    delegates to :func:`skchat.agent_profile.get_agent_identity`, so the
-    daemon, agent_comm, and MCP server identify as the *active* agent
-    (e.g. ``capauth:lumina@skworld.io``) — consistent with the webui, the
-    bridge scripts, and the peer registry.
+    T2 delegate: resolution is fully handled by
+    ``capauth.agent_identity.resolve_agent_identity``.  skchat is a thin
+    consumer — it no longer maintains its own resolver logic.
 
     Resolution order:
         1. ``SKCHAT_IDENTITY`` env var — explicit operator override.
-        2. :func:`get_agent_identity` — per-agent ``identity.json`` (explicit
-           ``capauth_uri``/``handle``) else convention
-           ``capauth:{agent}@skworld.io``.
-        3. ``capauth:local@skchat`` — absolute floor (no agent resolvable).
+        2. ``capauth.resolve_agent_identity()`` — canonical resolver
+           (SKAGENT env → skmemory.agents → "local" fallback).
+        3. ``capauth:local@skchat`` — absolute floor when capauth absent.
 
     Returns:
         str: CapAuth identity URI (e.g. ``capauth:lumina@skworld.io``).
@@ -73,6 +70,15 @@ def get_sovereign_identity() -> str:
     if env_identity:
         return env_identity
 
+    # T2: delegate to the capauth canonical resolver
+    try:
+        from capauth.agent_identity import resolve_agent_identity
+
+        return resolve_agent_identity().capauth_uri
+    except Exception as exc:
+        logger.debug("capauth resolver unavailable, trying agent_profile: %s", exc)
+
+    # Graceful fallback when capauth not installed (older envs)
     try:
         from .agent_profile import get_agent_identity
 
@@ -85,14 +91,17 @@ def get_sovereign_identity() -> str:
 def resolve_peer_name(name: str) -> str:
     """Resolve a friendly peer name to a capauth URI.
 
+    T5 (coord f93f5db6): peer resolution uses the same @skworld.io domain
+    as self-identity, closing the loopback delivery mismatch.  The peer
+    registry ``identity`` field is also checked (populated by T4's
+    identity.json writes).
+
     Looks up the peer in the peer registry at ~/.skcapstone/peers/ or
     ~/.skcomm/peers/. Supports both JSON and YAML peer files.
 
-    The peer registry maps friendly names (like "lumina" or "jarvis") to
-    their full identity information including fingerprint and capauth URI.
-
     Args:
-        name: Friendly name of the peer (e.g., "lumina", "jarvis")
+        name: Friendly name of the peer (e.g., "lumina", "jarvis"),
+              or an already-resolved URI (returned as-is).
 
     Returns:
         str: Resolved capauth URI (e.g., "capauth:lumina@skworld.io")
@@ -109,6 +118,19 @@ def resolve_peer_name(name: str) -> str:
     """
     if name.startswith("capauth:"):
         return name
+
+    # T5: delegate to capauth resolver for known short names first —
+    # this is the canonical path and ensures consistent @skworld.io URIs.
+    # We still fall through to peer-file lookup for custom peers.
+    try:
+        from capauth.agent_identity import resolve_agent_identity
+
+        ident = resolve_agent_identity(name)
+        # Only use the canonical result if it's a real agent (not "local" fallback)
+        if ident.agent == name:
+            return ident.capauth_uri
+    except Exception as exc:
+        logger.debug("capauth resolver unavailable for peer '%s': %s", name, exc)
 
     peer_files_to_check = []
     for peers_dir in [SKCAPSTONE_PEERS_DIR, SKCOMM_PEERS_DIR]:
@@ -136,6 +158,11 @@ def resolve_peer_name(name: str) -> str:
                     except ImportError:
                         continue
 
+                # Prefer the explicit `identity` field (written by T4)
+                identity = peer_data.get("identity")
+                if isinstance(identity, str) and identity.startswith("capauth:") and "@" in identity:
+                    return identity
+
                 contact_uris = peer_data.get("contact_uris", [])
                 if contact_uris:
                     for uri in contact_uris:
@@ -151,8 +178,8 @@ def resolve_peer_name(name: str) -> str:
                 peer_name = peer_data.get("name", name)
 
                 if email and "@" in email:
-                    handle = email.split("@")[0]
-                    return f"capauth:{handle}@{SK_DEFAULT_DOMAIN}"
+                    local_part = email.split("@")[0]
+                    return f"capauth:{local_part}@{SK_DEFAULT_DOMAIN}"
                 elif fingerprint:
                     short_fp = fingerprint[:16]
                     return f"capauth:{short_fp}"
@@ -166,6 +193,27 @@ def resolve_peer_name(name: str) -> str:
         f"Cannot resolve peer '{name}'. No peer file found in "
         f"{SKCAPSTONE_PEERS_DIR} or {SKCOMM_PEERS_DIR}"
     )
+
+
+def is_loopback(recipient_uri: str) -> bool:
+    """Return True when *recipient_uri* matches the running agent's own identity.
+
+    T5 (coord f93f5db6): closes the same-host loopback delivery bug class.
+    A message addressed to ``capauth:lumina@skworld.io`` when the daemon IS
+    lumina must be detected as loopback and delivered to the local inbox
+    rather than going through the outbound transport.
+
+    Args:
+        recipient_uri: CapAuth URI of the intended recipient.
+
+    Returns:
+        bool: True when sender == recipient (same agent on same host).
+    """
+    try:
+        self_uri = get_sovereign_identity()
+        return recipient_uri == self_uri
+    except Exception:
+        return False
 
 
 def resolve_display_name(uri: str) -> str:
