@@ -319,7 +319,7 @@ class ChatTransport:
             try:
                 # Route HEARTBEAT envelopes to presence/typing handler
                 try:
-                    from skcomm.models import MessageType as _MsgType
+                    from skcomms.models import MessageType as _MsgType
 
                     if getattr(envelope, "message_type", None) == _MsgType.HEARTBEAT:
                         self._handle_heartbeat(envelope)
@@ -587,7 +587,7 @@ class ChatTransport:
 
             # Try full MessageEnvelope first (standard SKComm wire format)
             try:
-                from skcomm.models import MessageEnvelope
+                from skcomms.models import MessageEnvelope
 
                 envelope = MessageEnvelope.from_bytes(data)
                 payload_content = self._extract_payload(envelope)
@@ -749,7 +749,7 @@ class ChatTransport:
             thread_id=thread_id,
         )
         try:
-            from skcomm.models import MessageType
+            from skcomms.models import MessageType
 
             self._skcomm.send(
                 recipient=recipient,

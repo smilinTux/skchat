@@ -290,7 +290,7 @@ def mock_messenger(tmp_skchat_dir: Path):
     Returns:
         AgentMessenger: Ready for agent-to-agent messaging in tests.
     """
-    from skcomm.transports.file import FileTransport
+    from skcomms.transports.file import FileTransport
 
     from skchat.agent_comm import AgentMessenger
     from skchat.history import ChatHistory

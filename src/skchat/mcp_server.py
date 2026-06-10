@@ -1992,7 +1992,7 @@ def _get_webrtc_transport():
         WebRTCTransport instance, or None if not configured.
     """
     try:
-        from skcomm import SKComm
+        from skcomms import SKComm
 
         comm = SKComm.from_config()
         for t in comm.router.transports:
@@ -2251,8 +2251,8 @@ async def _handle_send_file_p2p(args: dict) -> list[TextContent]:
 
     # Fallback: send via SKComm as chunked WEBRTC_FILE messages
     try:
-        from skcomm import SKComm
-        from skcomm.models import MessageType
+        from skcomms import SKComm
+        from skcomms.models import MessageType
 
         comm = SKComm.from_config()
 
@@ -2317,7 +2317,7 @@ async def _handle_send_file(args: dict) -> list[TextContent]:
 
     skcomm = None
     try:
-        from skcomm.core import SKComm
+        from skcomms.core import SKComm
 
         skcomm = SKComm.from_config()
     except Exception as exc:
@@ -2534,8 +2534,8 @@ def _send_typing_indicator(recipient: str, typing: bool, thread_id: Optional[str
     )
 
     try:
-        from skcomm import SKComm
-        from skcomm.models import MessageType
+        from skcomms import SKComm
+        from skcomms.models import MessageType
 
         comm = SKComm.from_config()
         comm.send(
@@ -2692,7 +2692,7 @@ async def _handle_daemon_status(args: dict) -> list[TextContent]:
 
     # Enrich with live outbox pending count from skcomm PersistentOutbox.
     try:
-        from skcomm.outbox import PersistentOutbox
+        from skcomms.outbox import PersistentOutbox
 
         status["outbox_pending"] = PersistentOutbox().pending_count
     except Exception as e:

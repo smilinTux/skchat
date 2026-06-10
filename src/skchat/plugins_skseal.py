@@ -502,7 +502,7 @@ class SKSealPlugin(ChatPlugin):
         delivered = False
         transport_name = None
         try:
-            from skcomm import SKComm
+            from skcomms import SKComm
 
             from .transport import ChatTransport
 

@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 # SKComm is imported at module level so tests can patch skchat.daemon.SKComm.
 try:
-    from skcomm import SKComm  # type: ignore
+    from skcomms import SKComm  # type: ignore
 except ImportError:  # pragma: no cover
     SKComm = None  # type: ignore
 
@@ -565,7 +565,7 @@ class ChatDaemon:
 
         try:
             payload = indicator.model_dump_json()
-            from skcomm.models import MessageType
+            from skcomms.models import MessageType
 
             skcomm.send(
                 recipient="*",
