@@ -37,6 +37,77 @@ _BACKOFF_DELAYS: tuple = (5, 10, 20, 40, 60)
 _BACKOFF_ERROR_THRESHOLD: int = 5  # emit ERROR after this many consecutive failures
 
 
+# Environment variable holding the WebRTC/coturn HMAC shared secret.
+# When absent, relayed (TURN) calls can't authenticate — we warn but never
+# fail: STUN-only / LAN / local fallback still works.
+_TURN_SECRET_ENV: str = "SKCOMM_TURN_SECRET"
+
+
+def webrtc_signaling_health(
+    *,
+    webrtc_active: bool,
+    signaling_connected: bool,
+) -> str:
+    """Classify WebRTC signaling state into ``ok`` / ``degraded`` / ``down``.
+
+    Pure function — no I/O — so it is trivially testable without live
+    signaling/TURN/STUN servers.
+
+    Semantics:
+        - ``down``      — the WebRTC transport isn't wired at all; calls are
+          impossible (a stale ``signaling_connected`` flag doesn't change this).
+        - ``degraded``  — transport is wired (LAN / local fallback usable) but
+          the signaling server is unreachable; relayed calls won't connect.
+        - ``ok``        — transport wired and signaling connected.
+
+    Args:
+        webrtc_active: Whether the WebRTC transport was successfully wired.
+        signaling_connected: Whether the signaling server reports connected.
+
+    Returns:
+        str: One of ``"ok"``, ``"degraded"``, ``"down"``.
+    """
+    if not webrtc_active:
+        return "down"
+    return "ok" if signaling_connected else "degraded"
+
+
+def turn_secret_present(env: Optional[dict] = None) -> bool:
+    """Return True when a non-blank TURN shared secret is configured.
+
+    Args:
+        env: Environment mapping to inspect (defaults to ``os.environ``).
+
+    Returns:
+        bool: True when ``SKCOMM_TURN_SECRET`` is set and non-blank.
+    """
+    import os
+
+    source = env if env is not None else os.environ
+    return bool((source.get(_TURN_SECRET_ENV) or "").strip())
+
+
+def webrtc_turn_warning(env: Optional[dict] = None) -> Optional[str]:
+    """Return a clear warning string when the TURN secret is missing, else None.
+
+    Non-fatal by design: the caller logs this and continues. Without the
+    secret, relayed (coturn) calls can't authenticate, so calls fall back to
+    STUN/LAN only.
+
+    Args:
+        env: Environment mapping to inspect (defaults to ``os.environ``).
+
+    Returns:
+        Optional[str]: Warning message, or ``None`` when the secret is present.
+    """
+    if turn_secret_present(env):
+        return None
+    return (
+        f"{_TURN_SECRET_ENV} not set — relayed (TURN/coturn) calls cannot "
+        "authenticate; falling back to STUN/LAN only"
+    )
+
+
 class DaemonShutdown(Exception):
     """Raised to trigger graceful daemon shutdown."""
 
@@ -518,6 +589,12 @@ class ChatDaemon:
             if webrtc_transport is None:
                 return
 
+            # Surface a missing TURN secret early — non-fatal. Without it,
+            # relayed (coturn) calls can't authenticate; STUN/LAN still works.
+            turn_warning = webrtc_turn_warning()
+            if turn_warning:
+                self._log(turn_warning, "warning")
+
             # Start the transport if not already running
             if hasattr(webrtc_transport, "start") and not webrtc_transport._running:
                 webrtc_transport.start()
@@ -852,12 +929,20 @@ class ChatDaemon:
             except Exception as exc:
                 logger.warning("Failed to read WebRTC signaling state: %s", exc)
 
+        signaling_health = webrtc_signaling_health(
+            webrtc_active=self._webrtc_active,
+            signaling_connected=webrtc_signaling_ok,
+        )
+        if self._webrtc_active and signaling_health != "ok":
+            logger.warning("WebRTC signaling %s — relayed calls may fall back", signaling_health)
+
         stats = {
             "uptime_seconds": uptime_seconds,
             "messages_sent": self.total_sent,
             "messages_received": self.total_received,
             "transport_status": transport_status,
             "webrtc_signaling_ok": webrtc_signaling_ok,
+            "webrtc_signaling_health": signaling_health,
             "last_heartbeat_at": (
                 self.last_heartbeat_at.isoformat() if self.last_heartbeat_at else None
             ),
@@ -1136,8 +1221,9 @@ def daemon_status() -> dict:
     Returns:
         dict with keys: running, pid, pid_file, log_file, plus
         uptime_seconds, messages_sent, messages_received,
-        transport_status, webrtc_signaling_ok, last_heartbeat_at,
-        online_peer_count, updated_at (when daemon was last running).
+        transport_status, webrtc_signaling_ok, webrtc_signaling_health,
+        last_heartbeat_at, online_peer_count, updated_at
+        (when daemon was last running).
     """
     pid = _read_pid()
     running = is_running()
