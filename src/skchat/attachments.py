@@ -70,21 +70,89 @@ class AttachmentService:
             direction=direction,
         )
 
+    def _real_method(self, name: str):
+        """Return a genuinely-declared method on the file_service, else None.
+
+        Looks the attribute up on the *type* so that test doubles (e.g. a bare
+        ``MagicMock`` that auto-vivifies every attribute access) do not spuriously
+        advertise fast-path capabilities. Fast-paths are NEVER required.
+        """
+        if hasattr(type(self._files), name):
+            checker = getattr(self._files, name, None)
+            return checker if callable(checker) else None
+        return None
+
+    def _webrtc_available(self, recipient: str) -> bool:
+        """Best-effort: is a live WebRTC data channel open to recipient?"""
+        try:
+            checker = self._real_method("webrtc_channel_open")
+            return bool(checker(recipient)) if checker is not None else False
+        except Exception:  # noqa: BLE001
+            return False
+
+    def _tailscale_available(self, recipient: str) -> bool:
+        """Best-effort: does the peer have a reachable tailscale address?
+
+        NEVER required — returns False on any uncertainty so we fall back.
+        """
+        try:
+            checker = self._real_method("tailscale_addr")
+            return bool(checker(recipient)) if checker is not None else False
+        except Exception:  # noqa: BLE001
+            return False
+
+    def _select_transport(self, recipient, transport="auto", webrtc_ok=None, tailscale_ok=None):
+        """Pick a transport. 'auto' tries fast-paths, falls back to skcomm."""
+        if transport != "auto":
+            return transport
+        webrtc_ok = webrtc_ok or self._webrtc_available
+        tailscale_ok = tailscale_ok or self._tailscale_available
+        if webrtc_ok(recipient):
+            return "webrtc"
+        if tailscale_ok(recipient):
+            return "tailscale"
+        return "skcomm"
+
     def send_attachment(
-        self, recipient: str, path: Path, caption: Optional[str] = None
+        self,
+        recipient: str,
+        path: Path,
+        caption: Optional[str] = None,
+        transport: str = "auto",
     ) -> ChatMessage:
         """Send *path* to *recipient* and post an outbound message for it."""
         path = Path(path)
-        transfer_id = self._files.send_file(recipient, path)
+        chosen = self._select_transport(recipient, transport)
+        transfer_id: Optional[str] = None
+        if chosen == "webrtc":
+            sender = self._real_method("send_file_p2p")
+            if sender is not None:
+                try:
+                    transfer_id = sender(recipient, path)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "webrtc send_file_p2p failed (%s), falling back to skcomm", exc
+                    )
+                    transfer_id = None
+        # tailscale direct-send is a future enhancement; falls through to skcomm.
+        if transfer_id is None:
+            transfer_id = self._files.send_file(recipient, path)
         ref = self._build_ref(path, transfer_id, direction="sent")
         msg = ChatMessage(
             sender=self._identity,
             recipient=recipient,
             content=caption or "",
             attachments=[ref],
+            metadata={"transport": chosen},
         )
         self._history.save(msg)
-        logger.info("sent attachment %s (%s) to %s", ref.filename, transfer_id, recipient)
+        logger.info(
+            "sent attachment %s (%s) to %s via %s",
+            ref.filename,
+            transfer_id,
+            recipient,
+            chosen,
+        )
         return msg
 
     def on_transfer_complete(self, transfer_id: str, sender: str) -> Optional[ChatMessage]:
