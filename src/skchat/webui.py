@@ -511,6 +511,22 @@ async def legacy_index() -> HTMLResponse:
     return HTMLResponse(_HTML)
 
 
+@app.get("/pair/qr")
+def pair_qr(sy: str = "1", ts: str = "1", https: str = "1", embed: str = "0"):
+    import io
+    import segno
+    from skcomms import pairing
+    def _on(v): return str(v).lower() not in ("0", "false", "no", "off", "")
+    bundle = pairing.bundle_from_self(embed_key=_on(embed))
+    if not _on(sy): bundle.syncthing_device_id = None
+    if not _on(ts): bundle.tailscale = None
+    if not _on(https): bundle.https = None
+    uri = pairing.to_skp_uri(bundle)
+    buf = io.BytesIO(); segno.make(uri, error="m").save(buf, kind="svg", scale=5)
+    return {"uri": uri, "svg": buf.getvalue().decode("utf-8"),
+            "fqid": bundle.fqid, "fingerprint": bundle.fingerprint}
+
+
 @app.get("/messages", response_class=HTMLResponse)
 async def messages() -> HTMLResponse:
     identity = _get_identity()
