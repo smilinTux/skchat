@@ -21,6 +21,43 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+def presence_status(
+    last_seen: Optional[datetime],
+    now: Optional[datetime] = None,
+    online_within: float = 120.0,
+    away_within: float = 600.0,
+) -> str:
+    """Derive a human-readable presence status from a last-seen timestamp.
+
+    Pure threshold function shared by ``PresenceCache.get_status``, the
+    ``skchat who`` CLI command, and the ``who_is_online`` MCP tool so the
+    online/away/offline boundaries are defined in exactly one place.
+
+    Thresholds (defaults):
+        - ``online``  : last seen within ``online_within`` seconds (inclusive)
+        - ``away``    : last seen within ``away_within`` seconds (inclusive)
+        - ``offline`` : older than ``away_within`` seconds, or ``last_seen`` is None
+
+    Args:
+        last_seen: When the peer was last seen, or None if never seen.
+        now: Reference "now" (default: current UTC time).
+        online_within: Online window in seconds.
+        away_within: Away window in seconds.
+
+    Returns:
+        str: One of ``"online"``, ``"away"``, or ``"offline"``.
+    """
+    if last_seen is None:
+        return "offline"
+    ref = now or datetime.now(timezone.utc)
+    age = (ref - last_seen).total_seconds()
+    if age <= online_within:
+        return "online"
+    if age <= away_within:
+        return "away"
+    return "offline"
+
+
 class PresenceState(str, Enum):
     """Possible presence states for a participant."""
 
@@ -321,16 +358,10 @@ class PresenceCache:
         if not entry:
             return "offline"
         try:
-            ts = datetime.fromisoformat(entry["timestamp"])
-            age = (datetime.now(timezone.utc) - ts).total_seconds()
-            state = entry.get("state", "")
-            if state == PresenceState.OFFLINE.value:
+            if entry.get("state", "") == PresenceState.OFFLINE.value:
                 return "offline"
-            if age <= 120:
-                return "online"
-            if age <= 600:
-                return "away"
-            return "offline"
+            ts = datetime.fromisoformat(entry["timestamp"])
+            return presence_status(ts)
         except Exception as e:
             logger.warning("presence.py: %s", e)
             return "offline"

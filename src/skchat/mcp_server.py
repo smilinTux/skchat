@@ -3724,7 +3724,7 @@ async def _handle_who_is_online(args: dict) -> list[TextContent]:
         [{identity, display_name, last_seen, status}].
     """
 
-    from .presence import PresenceCache, PresenceState
+    from .presence import PresenceCache, PresenceState, presence_status
 
     max_age: int = int(args.get("max_age", 300))
 
@@ -3759,16 +3759,10 @@ async def _handle_who_is_online(args: dict) -> list[TextContent]:
         if entry:
             try:
                 ts = datetime.fromisoformat(entry["timestamp"])
-                age = (now - ts).total_seconds()
-                state_val = entry.get("state", "")
-                if state_val == PresenceState.OFFLINE.value:
+                if entry.get("state", "") == PresenceState.OFFLINE.value:
                     status = "offline"
-                elif age <= 120:
-                    status = "online"
-                elif age <= max_age:
-                    status = "away"
                 else:
-                    status = "offline"
+                    status = presence_status(ts, now, away_within=max_age)
                 last_seen = ts.isoformat()
             except Exception as e:
                 logger.warning("mcp_server.py: %s", e)

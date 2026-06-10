@@ -4294,7 +4294,7 @@ def who() -> None:
     """
     import json as _json
 
-    from .presence import PresenceCache, PresenceState
+    from .presence import PresenceCache, PresenceState, presence_status
 
     KNOWN_PEERS: dict[str, str] = {
         "capauth:lumina@skworld.io": "lumina",
@@ -4333,16 +4333,10 @@ def who() -> None:
         if entry:
             try:
                 ts = datetime.fromisoformat(entry["timestamp"])
-                age = (now - ts).total_seconds()
-                state_val = entry.get("state", "")
-                if state_val == PresenceState.OFFLINE.value:
+                if entry.get("state", "") == PresenceState.OFFLINE.value:
                     status = "offline"
-                elif age <= 120:
-                    status = "online"
-                elif age <= 600:
-                    status = "away"
                 else:
-                    status = "offline"
+                    status = presence_status(ts, now)
                 last_seen = ts.strftime("%H:%M:%S")
             except Exception as e:
                 logger.warning("cli.py: %s", e)

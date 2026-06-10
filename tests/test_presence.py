@@ -6,7 +6,13 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from skchat.presence import PresenceCache, PresenceIndicator, PresenceState, PresenceTracker
+from skchat.presence import (
+    PresenceCache,
+    PresenceIndicator,
+    PresenceState,
+    PresenceTracker,
+    presence_status,
+)
 
 
 class TestPresenceIndicator:
@@ -288,3 +294,87 @@ class TestPresenceCacheTyping:
         """get_typing_peers returns empty list when no peers are typing."""
         pc = PresenceCache(cache_file=tmp_path / "presence_cache.json")
         assert pc.get_typing_peers() == []
+
+
+class TestPresenceStatus:
+    """Tests for the pure presence_status() threshold function."""
+
+    def test_recent_is_online(self) -> None:
+        """A last-seen within the online window is online."""
+        now = datetime(2026, 6, 10, 12, 0, 0, tzinfo=timezone.utc)
+        seen = now - timedelta(seconds=30)
+        assert presence_status(seen, now) == "online"
+
+    def test_online_boundary_inclusive(self) -> None:
+        """Exactly online_within seconds old is still online."""
+        now = datetime(2026, 6, 10, 12, 0, 0, tzinfo=timezone.utc)
+        seen = now - timedelta(seconds=120)
+        assert presence_status(seen, now) == "online"
+
+    def test_middle_window_is_away(self) -> None:
+        """A last-seen between the online and away thresholds is away."""
+        now = datetime(2026, 6, 10, 12, 0, 0, tzinfo=timezone.utc)
+        seen = now - timedelta(seconds=300)
+        assert presence_status(seen, now) == "away"
+
+    def test_away_boundary_inclusive(self) -> None:
+        """Exactly away_within seconds old is still away."""
+        now = datetime(2026, 6, 10, 12, 0, 0, tzinfo=timezone.utc)
+        seen = now - timedelta(seconds=600)
+        assert presence_status(seen, now) == "away"
+
+    def test_stale_is_offline(self) -> None:
+        """A last-seen past the away threshold is offline."""
+        now = datetime(2026, 6, 10, 12, 0, 0, tzinfo=timezone.utc)
+        seen = now - timedelta(seconds=601)
+        assert presence_status(seen, now) == "offline"
+
+    def test_missing_last_seen_is_offline(self) -> None:
+        """A None last-seen is offline."""
+        now = datetime(2026, 6, 10, 12, 0, 0, tzinfo=timezone.utc)
+        assert presence_status(None, now) == "offline"
+
+    def test_custom_thresholds(self) -> None:
+        """online_within / away_within are honored when overridden."""
+        now = datetime(2026, 6, 10, 12, 0, 0, tzinfo=timezone.utc)
+        seen = now - timedelta(seconds=45)
+        assert presence_status(seen, now, online_within=30, away_within=60) == "away"
+        assert presence_status(seen, now, online_within=60, away_within=120) == "online"
+
+    def test_default_now_uses_wall_clock(self) -> None:
+        """Omitting *now* defaults to the current UTC time."""
+        seen = datetime.now(timezone.utc) - timedelta(seconds=5)
+        assert presence_status(seen) == "online"
+
+
+class TestPresenceCacheStatus:
+    """Tests for PresenceCache.get_status threshold behavior."""
+
+    def _seed(self, pc: PresenceCache, uri: str, age_s: float, state: PresenceState) -> None:
+        ts = datetime.now(timezone.utc) - timedelta(seconds=age_s)
+        pc.record(uri, state, timestamp=ts)
+
+    def test_unknown_peer_offline(self, tmp_path: Path) -> None:
+        pc = PresenceCache(cache_file=tmp_path / "presence_cache.json")
+        assert pc.get_status("capauth:ghost@skworld.io") == "offline"
+
+    def test_recent_online(self, tmp_path: Path) -> None:
+        pc = PresenceCache(cache_file=tmp_path / "presence_cache.json")
+        self._seed(pc, "capauth:a@skworld.io", 10, PresenceState.ONLINE)
+        assert pc.get_status("capauth:a@skworld.io") == "online"
+
+    def test_middle_away(self, tmp_path: Path) -> None:
+        pc = PresenceCache(cache_file=tmp_path / "presence_cache.json")
+        self._seed(pc, "capauth:a@skworld.io", 300, PresenceState.ONLINE)
+        assert pc.get_status("capauth:a@skworld.io") == "away"
+
+    def test_stale_offline(self, tmp_path: Path) -> None:
+        pc = PresenceCache(cache_file=tmp_path / "presence_cache.json")
+        self._seed(pc, "capauth:a@skworld.io", 1200, PresenceState.ONLINE)
+        assert pc.get_status("capauth:a@skworld.io") == "offline"
+
+    def test_explicit_offline_state_overrides_recency(self, tmp_path: Path) -> None:
+        """A recent record whose state is OFFLINE reports offline."""
+        pc = PresenceCache(cache_file=tmp_path / "presence_cache.json")
+        self._seed(pc, "capauth:a@skworld.io", 5, PresenceState.OFFLINE)
+        assert pc.get_status("capauth:a@skworld.io") == "offline"
