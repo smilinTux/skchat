@@ -11,6 +11,7 @@ only exposes signing/verification, not encryption/decryption.
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -21,6 +22,8 @@ from pgpy.constants import (
 )
 
 from .models import ChatMessage
+
+logger = logging.getLogger(__name__)
 
 # Default peer store location — mirrors skcapstone's convention
 SKCAPSTONE_PEERS_DIR = Path.home() / ".skcapstone" / "peers"
