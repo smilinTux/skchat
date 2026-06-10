@@ -1254,6 +1254,50 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
+            name="skchat_add_peer",
+            description=(
+                "Register a peer into the skcapstone peer store so it becomes "
+                "addressable via skchat_send / visible via skchat_peers. Supply the "
+                "peer's identity (or fqid) and, optionally, its PGP public key — "
+                "either inline (pubkey_armored) or as a file path (pubkey_path); the "
+                "fingerprint is derived automatically. Re-adding the same identity "
+                "updates it in place (idempotent)."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "identity": {
+                        "type": "string",
+                        "description": (
+                            "Peer identity URI (e.g. 'capauth:bob@skworld.io'). "
+                            "Either identity or fqid is required."
+                        ),
+                    },
+                    "fqid": {
+                        "type": "string",
+                        "description": "Sovereign FQID (e.g. 'bob@chef.skworld'). Alias for identity.",
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": "Human-readable display name (defaults to the local part).",
+                    },
+                    "entity_type": {
+                        "type": "string",
+                        "description": "Entity type, e.g. 'ai-agent', 'human', 'service'.",
+                    },
+                    "pubkey_armored": {
+                        "type": "string",
+                        "description": "ASCII-armored PGP public key for this peer.",
+                    },
+                    "pubkey_path": {
+                        "type": "string",
+                        "description": "Path to a file containing the peer's ASCII-armored public key.",
+                    },
+                },
+                "required": [],
+            },
+        ),
+        Tool(
             name="skchat_who_is_online",
             description=(
                 "List all known peers with their current presence status. "
@@ -1351,6 +1395,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         "skchat_get_presence": _handle_skchat_get_presence,
         "skchat_inbox": _handle_skchat_inbox,
         "skchat_peers": _handle_skchat_peers,
+        "skchat_add_peer": _handle_skchat_add_peer,
         "skchat_who_is_online": _handle_who_is_online,
         "skchat_get_group_history": _handle_skchat_get_group_history,
         "skchat_conversation": _handle_skchat_conversation,
@@ -1468,6 +1513,82 @@ async def _handle_skchat_peers(args: dict) -> list[TextContent]:
         {
             "count": len(result),
             "peers": result,
+        }
+    )
+
+
+async def _handle_skchat_add_peer(args: dict) -> list[TextContent]:
+    """Register a peer into the skcapstone peer store.
+
+    Writes a peer JSON record (the same format ``skchat_peers`` /
+    ``PeerDiscovery`` reads) keyed by the identity's local part. When a public
+    key is supplied — either inline (``pubkey_armored``) or via a file
+    (``pubkey_path``) — its PGP fingerprint is derived with
+    :meth:`crypto.ChatCrypto.fingerprint_from_armor`. Re-adding the same
+    identity overwrites its file in place, so the operation is idempotent.
+
+    Args:
+        args: ``identity`` or ``fqid`` (required), optional ``name``,
+            ``entity_type``, ``pubkey_armored``, ``pubkey_path``.
+
+    Returns:
+        JSON with ``added``, ``identity``, ``fingerprint``, and ``path``.
+    """
+    from pathlib import Path
+
+    from .crypto import ChatCrypto
+    from .peer_discovery import default_peers_dir
+
+    identity: str = (args.get("identity") or args.get("fqid") or "").strip()
+    if not identity:
+        return _error("identity (or fqid) is required")
+
+    # Resolve the public key from either an inline armor blob or a file path.
+    pubkey_armored: str = args.get("pubkey_armored", "") or ""
+    pubkey_path: str = args.get("pubkey_path", "") or ""
+    if pubkey_path and not pubkey_armored:
+        try:
+            pubkey_armored = Path(pubkey_path).expanduser().read_text(encoding="utf-8")
+        except OSError as exc:
+            return _error(f"could not read pubkey_path {pubkey_path}: {exc}")
+
+    fingerprint: str | None = None
+    if pubkey_armored:
+        fingerprint = ChatCrypto.fingerprint_from_armor(pubkey_armored)
+        if fingerprint is None:
+            return _error("pubkey is not a valid ASCII-armored PGP public key")
+
+    # Derive the handle / local part used both for display and the filename.
+    body = identity.split(":", 1)[1] if ":" in identity else identity
+    local = body.split("@", 1)[0] or body
+    handle = body if "@" in body else identity
+
+    peers_dir = default_peers_dir()
+    peers_dir.mkdir(parents=True, exist_ok=True)
+    peer_file = peers_dir / f"{local}.json"
+
+    record = {
+        "name": args.get("name") or local,
+        "identity": identity,
+        "handle": handle,
+        "entity_type": args.get("entity_type", "ai-agent"),
+        "public_key": pubkey_armored,
+        "fingerprint": fingerprint or "",
+        "contact_uris": [identity],
+        "capabilities": args.get("capabilities", []),
+        "added_at": datetime.now(timezone.utc).isoformat(),
+        "last_seen": None,
+        "source": "skchat_add_peer",
+    }
+
+    peer_file.write_text(json.dumps(record, indent=2), encoding="utf-8")
+
+    return _json(
+        {
+            "added": True,
+            "identity": identity,
+            "fingerprint": fingerprint,
+            "path": str(peer_file),
         }
     )
 

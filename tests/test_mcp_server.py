@@ -37,6 +37,7 @@ from skchat.mcp_server import (
     _handle_search_messages,
     _handle_send_file_p2p,
     _handle_send_message,
+    _handle_skchat_add_peer,
     _handle_webrtc_status,
 )
 
@@ -802,3 +803,89 @@ class TestSendFileP2P:
         assert data["sent"] is True
         assert data["transport"] == "webrtc-direct"
         assert data["transfer_id"] == "xfer-002"
+
+
+# ---------------------------------------------------------------------------
+# skchat_add_peer
+# ---------------------------------------------------------------------------
+
+
+class TestAddPeer:
+    """Tests for the skchat_add_peer tool."""
+
+    @pytest.mark.asyncio
+    async def test_add_peer_appears_in_store(self, tmp_path, monkeypatch, bob_keys):
+        """Happy path: a registered peer is written and visible via skchat_peers."""
+        from skchat.mcp_server import _handle_skchat_peers
+
+        peers_dir = tmp_path / "peers"
+        monkeypatch.setenv("SKCHAT_PEERS_DIR", str(peers_dir))
+        _priv, pub_armor = bob_keys
+
+        result = await _handle_skchat_add_peer(
+            {
+                "identity": "capauth:bob@skworld.io",
+                "name": "Bob",
+                "pubkey_armored": pub_armor,
+            }
+        )
+        data = _parse_result(result)
+        assert data["added"] is True
+        assert data["identity"] == "capauth:bob@skworld.io"
+        # A fingerprint was derived from the supplied public key.
+        assert data.get("fingerprint")
+
+        # The peer now shows up through the existing listing tool.
+        listed = _parse_result(await _handle_skchat_peers({}))
+        names = [p["name"] for p in listed["peers"]]
+        assert "Bob" in names
+
+    @pytest.mark.asyncio
+    async def test_add_peer_from_pubkey_path(self, tmp_path, monkeypatch, bob_keys):
+        """A pubkey supplied via file path is read and imported."""
+        peers_dir = tmp_path / "peers"
+        monkeypatch.setenv("SKCHAT_PEERS_DIR", str(peers_dir))
+        _priv, pub_armor = bob_keys
+        key_file = tmp_path / "bob.asc"
+        key_file.write_text(pub_armor, encoding="utf-8")
+
+        result = await _handle_skchat_add_peer(
+            {
+                "identity": "capauth:bob@skworld.io",
+                "pubkey_path": str(key_file),
+            }
+        )
+        data = _parse_result(result)
+        assert data["added"] is True
+        assert data.get("fingerprint")
+
+    @pytest.mark.asyncio
+    async def test_add_peer_missing_identity(self, tmp_path, monkeypatch):
+        """Failure: no identity/fqid is rejected."""
+        monkeypatch.setenv("SKCHAT_PEERS_DIR", str(tmp_path / "peers"))
+        result = await _handle_skchat_add_peer({"name": "Nobody"})
+        data = _parse_result(result)
+        assert "error" in data
+
+    @pytest.mark.asyncio
+    async def test_add_peer_idempotent(self, tmp_path, monkeypatch, bob_keys):
+        """Idempotent: re-adding the same peer does not create a duplicate."""
+        from skchat.mcp_server import _handle_skchat_peers
+
+        peers_dir = tmp_path / "peers"
+        monkeypatch.setenv("SKCHAT_PEERS_DIR", str(peers_dir))
+        _priv, pub_armor = bob_keys
+        payload = {
+            "identity": "capauth:bob@skworld.io",
+            "name": "Bob",
+            "pubkey_armored": pub_armor,
+        }
+
+        await _handle_skchat_add_peer(payload)
+        await _handle_skchat_add_peer(payload)
+
+        listed = _parse_result(await _handle_skchat_peers({}))
+        bobs = [p for p in listed["peers"] if p["name"] == "Bob"]
+        assert len(bobs) == 1
+        # Exactly one JSON file on disk for this peer.
+        assert len(list(peers_dir.glob("*.json"))) == 1

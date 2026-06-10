@@ -19,12 +19,27 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger("skchat.peer_discovery")
 
 SKCAPSTONE_PEERS_DIR = Path.home() / ".skcapstone" / "peers"
+
+
+def default_peers_dir() -> Path:
+    """Resolve the active peer-store directory.
+
+    Honors the ``SKCHAT_PEERS_DIR`` environment override (used by tests and
+    sandboxed deployments) and otherwise falls back to the canonical
+    ``~/.skcapstone/peers/`` location.
+
+    Returns:
+        Path: the peer-store directory.
+    """
+    override = os.environ.get("SKCHAT_PEERS_DIR")
+    return Path(override).expanduser() if override else SKCAPSTONE_PEERS_DIR
 
 
 class PeerDiscovery:
@@ -35,11 +50,12 @@ class PeerDiscovery:
 
     Args:
         peers_dir: Path to the peers directory.
-            Defaults to ~/.skcapstone/peers/.
+            Defaults to ``SKCHAT_PEERS_DIR`` env override, else
+            ~/.skcapstone/peers/.
     """
 
     def __init__(self, peers_dir: Optional[Path] = None) -> None:
-        self.peers_dir = peers_dir or SKCAPSTONE_PEERS_DIR
+        self.peers_dir = peers_dir or default_peers_dir()
 
     def list_peers(self) -> list[dict]:
         """Load all peer JSON files from the peers directory.
