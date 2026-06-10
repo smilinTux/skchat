@@ -61,7 +61,7 @@ cd ~ && ~/.skenv/bin/skchat daemon start --interval 5
 | `group.py` | `GroupChat` — encrypted group messaging |
 | `presence.py` | `PresenceCache` — online/offline tracking |
 | `peer_discovery.py` | Loads peers from `~/.skcapstone/peers/` |
-| `identity_bridge.py` | Resolves CapAuth identities ↔ SKComm addresses |
+| `identity_bridge.py` | Thin delegate to the canonical `capauth.resolve_agent_identity` (CapAuth ↔ SKComm addresses) — see "Identity" below |
 | `memory_bridge.py` | Reads/writes skcapstone memory from chat context |
 | `crypto.py` | PGP sign/verify helpers (PGPy) |
 | `encrypted_store.py` | AES-encrypted local store |
@@ -269,6 +269,15 @@ ls ~/.skcomm/outbox/              # pending outbox entries
 curl http://localhost:9385/health  # skchat health
 curl http://localhost:9384/health  # skcomm transport health
 ```
+
+### Identity (unified resolver)
+skchat does **not** own identity logic — `identity_bridge.py` / `agent_profile.py`
+are thin delegates to the one canonical resolver,
+`capauth.resolve_agent_identity` (epic `2b264064`; this is the real fix for the
+prematurely-closed `b5fcf55d`). It yields the dual URI: `capauth_uri`
+(`capauth:<agent>@skworld.io`, wire) + `fqid` (`<agent>@<operator>.<realm>`,
+sovereign). Validate the whole layer with `skcapstone doctor` (`identity:*`
+checks). See capauth's CLAUDE.md "Unified Identity Resolver" for the full contract.
 
 ### SKCHAT_IDENTITY not set
 Identity now resolves agent-aware from `SKAGENT` (→ `capauth:<agent>@skworld.io`),
