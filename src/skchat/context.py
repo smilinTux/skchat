@@ -14,11 +14,57 @@ filter (the DM lens).
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 logger = logging.getLogger("skchat.context")
 
 DEFAULT_CONTEXT_MESSAGES = 5
+DEFAULT_MEMORY_HITS = 3
+
+# A memory source is any callable ``(query: str, limit: int) -> list[str]``
+# returning relevant memory snippets (already rendered to plain strings).
+MemorySource = Callable[[str, int], list]
+
+
+def _default_memory_source(query: str, limit: int) -> list:
+    """Best-effort relevant-memory lookup via skcapstone's ``memory_search``.
+
+    Reuses the same MCP JSON-RPC path that :mod:`skchat.advocacy` uses so the
+    reply-context assembler and the advocacy engine agree on how memories are
+    retrieved. Import is graceful: when skchat's advocacy helper (or the
+    underlying skcapstone MCP binary) is unavailable, returns ``[]`` so callers
+    degrade cleanly to history-only context.
+
+    Args:
+        query: Free-text query (typically the triggering message content).
+        limit: Maximum number of snippets to return.
+
+    Returns:
+        list[str]: Memory snippet strings, or ``[]`` on any failure.
+    """
+    try:
+        from skchat.advocacy import AdvocacyEngine
+    except Exception as exc:  # pragma: no cover — import guard
+        logger.debug("memory source unavailable (advocacy import): %s", exc)
+        return []
+
+    try:
+        raw = AdvocacyEngine()._get_memory_context(query[:200])
+    except Exception as exc:
+        logger.debug("memory source query failed: %s", exc)
+        return []
+
+    if not raw:
+        return []
+
+    # ``_get_memory_context`` returns a "Relevant context:\n- a\n- b" block;
+    # split it back into bare snippet lines for uniform formatting here.
+    snippets: list[str] = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if line.startswith("- "):
+            snippets.append(line[2:].strip())
+    return snippets[:limit]
 
 
 def _looks_like_group_recipient(uri: str) -> bool:
@@ -72,6 +118,9 @@ def fetch_context(
     *,
     limit: int = DEFAULT_CONTEXT_MESSAGES,
     history: Optional[Any] = None,
+    memory_source: Optional[MemorySource] = None,
+    memory_query: Optional[str] = None,
+    memory_hits: int = DEFAULT_MEMORY_HITS,
 ) -> str:
     """Fetch recent conversation context, group-aware.
 
@@ -91,11 +140,21 @@ def fetch_context(
         self_identity: CapAuth URI of the agent calling for context.
         sender: CapAuth URI of the message that triggered this fetch.
         thread_id: Thread/group identifier, if any.
-        limit: Max lines to return.
+        limit: Max history lines to return.
         history: Optional ChatHistory instance — useful for tests.
+        memory_source: Optional ``(query, limit) -> list[str]`` callable that
+            returns relevant memory snippets. When omitted, a best-effort
+            default (skcapstone ``memory_search`` via the advocacy bridge) is
+            used; when that is unavailable the function degrades to
+            history-only. Pass an explicit callable in tests to avoid network.
+        memory_query: Query used for the memory lookup. Defaults to the
+            triggering ``sender``'s most recent content when derivable, else
+            empty (which suppresses the memory lookup).
+        memory_hits: Max number of memory snippets to inject.
 
     Returns:
-        Multi-line string, oldest first, or empty string on any failure.
+        Multi-line string with an optional ``Relevant memories`` block followed
+        by chat history (oldest first), or empty string on total failure.
     """
     try:
         if history is None:
@@ -184,9 +243,6 @@ def fetch_context(
                 except Exception as exc:
                     logger.debug("history.load(peer=...) fallback failed: %s", exc)
 
-        if not messages:
-            return ""
-
         # Oldest-first chronological ordering.
         messages.sort(key=lambda d: d.get("timestamp") or "")
 
@@ -198,8 +254,69 @@ def fetch_context(
             line = _format_message(m, self_identity, is_group)
             if line:
                 lines.append(line)
-        return "\n".join(lines)
+        history_block = "\n".join(lines)
+
+        # Derive the memory query from the most recent message content when no
+        # explicit query was provided. An empty query suppresses the lookup.
+        query = memory_query
+        if query is None:
+            query = next(
+                (m.get("content") for m in reversed(windowed) if m.get("content")),
+                "",
+            )
+
+        memory_block = _fetch_memory_block(
+            query or "", memory_source, memory_hits
+        )
+
+        sections = [s for s in (memory_block, history_block) if s]
+        return "\n\n".join(sections)
 
     except Exception as exc:
         logger.debug("fetch_context failed: %s", exc)
         return ""
+
+
+def _fetch_memory_block(
+    query: str,
+    memory_source: Optional[MemorySource],
+    memory_hits: int,
+) -> str:
+    """Render a clearly-delimited ``Relevant memories`` block, or ``""``.
+
+    Resolves the memory source (explicit arg or best-effort default), queries
+    it, and formats the resulting snippets. Returns ``""`` on an empty query,
+    no source, no hits, or any failure — so callers degrade to history-only.
+
+    Args:
+        query: Free-text memory query (empty → no lookup).
+        memory_source: Explicit ``(query, limit) -> list[str]`` callable, or
+            ``None`` to use the default skcapstone bridge.
+        memory_hits: Max snippets to include.
+
+    Returns:
+        str: ``"Relevant memories:\\n- ...\\n- ..."`` or ``""``.
+    """
+    if not query or memory_hits <= 0:
+        return ""
+
+    source = memory_source if memory_source is not None else _default_memory_source
+    try:
+        hits = source(query, memory_hits)
+    except Exception as exc:
+        logger.debug("memory_source raised: %s", exc)
+        return ""
+
+    if not hits:
+        return ""
+
+    snippet_lines: list[str] = []
+    for h in hits[:memory_hits]:
+        text = str(h).strip()
+        if text:
+            snippet_lines.append(f"- {text}")
+
+    if not snippet_lines:
+        return ""
+
+    return "Relevant memories:\n" + "\n".join(snippet_lines)
