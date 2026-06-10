@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Optional
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class ContentType(str, Enum):
@@ -45,6 +45,29 @@ class Reaction(BaseModel):
     emoji: str = Field(description="Reaction emoji or short text")
     sender: str = Field(description="CapAuth identity URI of the reactor")
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class FileRef(BaseModel):
+    """A file/image attached to a chat message (the transfer it rode on).
+
+    Attributes:
+        transfer_id: ID of the underlying FileTransferService transfer.
+        filename: Original file name.
+        size: Size in bytes.
+        mime_type: Detected MIME type (e.g. ``image/png``).
+        sha256: Whole-file SHA-256 (hex), for integrity display.
+        thumbnail_id: Present for images that have a generated thumbnail
+            (equals transfer_id; the thumb is served from the transfer dir).
+        direction: ``"sent"`` or ``"received"``.
+    """
+
+    transfer_id: str
+    filename: str
+    size: int
+    mime_type: str
+    sha256: str
+    thumbnail_id: Optional[str] = None
+    direction: str = "sent"
 
 
 class ChatMessage(BaseModel):
@@ -87,6 +110,7 @@ class ChatMessage(BaseModel):
     )
     reactions: list[Reaction] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    attachments: list[FileRef] = Field(default_factory=list)
     ttl: Optional[int] = Field(default=None, description="Seconds until auto-delete")
     delivery_status: DeliveryStatus = Field(default=DeliveryStatus.PENDING)
     encrypted: bool = Field(default=False)
@@ -105,13 +129,12 @@ class ChatMessage(BaseModel):
             raise ValueError("Identity URI cannot be empty")
         return v.strip()
 
-    @field_validator("content")
-    @classmethod
-    def content_must_not_be_empty(cls, v: str) -> str:
-        """Ensure message has content."""
-        if not v.strip():
-            raise ValueError("Message content cannot be empty")
-        return v
+    @model_validator(mode="after")
+    def _require_content_or_attachments(self) -> "ChatMessage":
+        """A message must carry text content OR at least one attachment."""
+        if not (self.content or "").strip() and not self.attachments:
+            raise ValueError("Message must have content or at least one attachment")
+        return self
 
     def is_ephemeral(self) -> bool:
         """Check if this message has a time-to-live.
