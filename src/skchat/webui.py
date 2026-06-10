@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re as _re
 import uuid as _uuid
 import webbrowser
 from datetime import datetime, timedelta, timezone
@@ -23,7 +24,12 @@ from fastapi import (
     WebSocket,
     WebSocketDisconnect,
 )
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+)
 
 from . import __version__
 
@@ -227,6 +233,26 @@ def _get_history():
 def _skchat_home() -> Path:
     """Resolve the skchat home dir, honouring SKCHAT_HOME (tests sandbox it)."""
     return Path(os.environ.get("SKCHAT_HOME", str(Path.home() / ".skchat")))
+
+
+# Transfer ids are path components served from disk — restrict to a safe charset
+# (no slashes / dotdot) so a request can never escape the per-subdir base.
+_TID_RE = _re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def _safe_transfer_dir(transfer_id: str, sub: str) -> Optional[Path]:
+    """Resolve <home>/<sub>/<transfer_id>, guarding against path traversal.
+
+    Returns the directory only if the transfer_id is well-formed and the
+    resolved path stays under the base; otherwise None.
+    """
+    if not _TID_RE.match(transfer_id):
+        return None
+    base = (_skchat_home() / sub).resolve()
+    target = (base / transfer_id).resolve()
+    if base not in target.parents and target != base:
+        return None
+    return target if target.exists() else None
 
 
 def _attachment_service():
@@ -461,6 +487,35 @@ async def upload(
             "filename": msg.attachments[0].filename,
         }
     )
+
+
+@app.get("/file/{transfer_id}")
+def download_file(transfer_id: str) -> FileResponse:
+    """Download the file for a completed transfer (path-traversal guarded)."""
+    d = _safe_transfer_dir(transfer_id, "received") or _safe_transfer_dir(
+        transfer_id, "uploads"
+    )
+    if d is None:
+        raise HTTPException(status_code=404, detail="not found")
+    files = [p for p in d.rglob("*") if p.is_file() and p.name != "thumb.webp"]
+    if not files:
+        raise HTTPException(status_code=404, detail="empty")
+    f = files[0]
+    return FileResponse(
+        str(f),
+        filename=f.name,
+        headers={"Content-Disposition": f'attachment; filename="{f.name}"'},
+    )
+
+
+@app.get("/file/{transfer_id}/thumb")
+def file_thumb(transfer_id: str) -> FileResponse:
+    """Serve the WebP thumbnail for an image transfer, if one exists."""
+    for sub in ("received", "thumbnails", "uploads"):
+        d = _safe_transfer_dir(transfer_id, sub)
+        if d and (d / "thumb.webp").exists():
+            return FileResponse(str(d / "thumb.webp"), media_type="image/webp")
+    raise HTTPException(status_code=404, detail="no thumbnail")
 
 
 @app.get("/inbox")

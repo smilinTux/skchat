@@ -45,3 +45,27 @@ def test_upload_over_size_cap_rejected(tmp_path, monkeypatch):
                     data={"recipient": "capauth:peer@skworld.io"},
                     files={"file": ("big.bin", b"x" * 100, "application/octet-stream")})
     assert r.status_code == 413
+
+
+def test_download_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("SKCHAT_HOME", str(tmp_path))
+    rec = tmp_path / "received" / "tid-1"; rec.mkdir(parents=True)
+    (rec / "a.txt").write_bytes(b"hello world")
+    client = TestClient(webui.app)
+    r = client.get("/file/tid-1")
+    assert r.status_code == 200
+    assert r.content == b"hello world"
+    assert "attachment" in r.headers.get("content-disposition", "")
+
+
+def test_download_rejects_path_traversal(tmp_path, monkeypatch):
+    monkeypatch.setenv("SKCHAT_HOME", str(tmp_path))
+    client = TestClient(webui.app)
+    r = client.get("/file/..%2f..%2fetc%2fpasswd")
+    assert r.status_code in (400, 404)
+
+
+def test_thumb_404_when_absent(tmp_path, monkeypatch):
+    monkeypatch.setenv("SKCHAT_HOME", str(tmp_path))
+    client = TestClient(webui.app)
+    assert client.get("/file/nope/thumb").status_code == 404
