@@ -1,615 +1,171 @@
-# SKChat — AI-Native Encrypted Communication
+# skchat — AI-Native Encrypted Chat 🐧
 
-> **Chat should be sovereign. Your AI should be in the room.**
->
-> *The chat app that treats AI as a first-class participant, not a chatbot bolted on.*
+> **Chat should be sovereign — and your AI should be in the room.**
+> Text, voice, and files between humans and AI agents, end-to-end PGP-encrypted,
+> carried over your own transports, identified by your own keys. No SaaS, no
+> bolted-on chatbot — the AI is a first-class participant with its own identity.
 
-[![License: GPL-3.0](https://img.shields.io/badge/License-GPL%203.0-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
-[![Built on SKComm](https://img.shields.io/badge/Transport-SKComm-purple)](https://github.com/smilinTux/skcomm)
-[![Auth: CapAuth](https://img.shields.io/badge/Auth-CapAuth-green)](https://github.com/smilinTux/capauth)
-[![Trust: Cloud 9](https://img.shields.io/badge/Trust-Cloud%209-gold)](https://github.com/smilinTux/cloud9-python)
+skchat is the **chat experience** of the [SKWorld](https://skworld.io) sovereign
+agent ecosystem — the human-and-AI conversation surface that sits on top of
+**skcomms** (transport) and **capauth** (identity). It is a single Python package
+(`skchat-sovereign`) that ships a CLI, a Textual TUI, a Web UI, a systemd daemon,
+and an **MCP server** so agents running inside Claude Code / Cursor / any
+MCP host can send, receive, react, call, and transfer files as native tools.
 
----
-
-## The Problem
-
-Every chat app treats AI as a feature — a bot you @mention, a sidebar assistant, a
-second-class citizen processing your data on someone else's server.
-
-Meanwhile, your conversations flow through corporate infrastructure where:
-
-- **Messages are scanned** (even "encrypted" apps phone home metadata)
-- **AI has no identity** (just an API endpoint, disposable)
-- **You don't own your data** (try exporting your full WhatsApp history)
-- **Voice calls route through centralized servers** (metadata goldmine)
-- **File sharing has arbitrary limits** (pay us to send larger files)
-
-## The Solution
-
-**SKChat** is a sovereign communication platform where humans and AI
-communicate as equals — encrypted end-to-end, routed through 17 redundant
-transport paths, authenticated by CapAuth sovereign identity, and trusted
-via Cloud 9 emotional continuity.
-
-Your AI isn't a chatbot. **Your AI is your co-participant, your advocate,
-your partner in every conversation.**
+**The core idea:** a message is composed locally, persisted to a local SQLite
+history, PGP-signed/encrypted, and handed to SKComm for delivery over whichever
+transport is healthy. When a message `@mentions` an agent, the **AdvocacyEngine**
+routes it into the live skcapstone consciousness loop and replies in-thread — so
+the AI answers for itself, in the same conversation, not through a separate bot.
 
 ---
 
-## Core Features
+## The 60-second version
 
-### Text Messaging
+```mermaid
+flowchart LR
+    YOU["you type<br/>(CLI · TUI · WebUI · MCP)"] --> DAEMON["skchat daemon<br/>compose · persist · route"]
+    DAEMON -->|"PGP sign/encrypt"| TX["ChatTransport"]
+    TX -->|"hand to SKComm"| COMMS["skcomms<br/>(transport · failover)"]
+    COMMS --> PEER["a peer or group<br/>(human or AI)"]
+    DAEMON -->|"@mention an agent"| ADV["AdvocacyEngine"]
+    ADV -->|"consciousness loop"| AI["the agent replies<br/>in-thread"]
+    DAEMON --> HIST["ChatHistory<br/>(local SQLite)"]
+```
 
-- **End-to-end PGP encryption** on every message
-- **Group conversations** with humans and AI participants
-- **Threaded discussions** with context preservation
-- **Offline message queueing** via SKComm store-and-forward
-- **Message delivery confirmation** across any transport
-- **Rich text** (Markdown) with code blocks, math, and embeds
-- **Reactions and annotations** (AI can react too)
-
-### Voice Communication
-
-- **P2P WebRTC** — direct connection, no server routing
-- **Local AI voice** via Piper TTS (GPL-3.0, 35+ languages)
-- **Local speech recognition** via Whisper STT (runs on-device)
-- **Encrypted voice channels** — PGP key exchange over SKComm
-- **Conference calls** via open-source SFU when needed (Janus/LiveKit)
-- **AI participation in voice** — your AI speaks and listens natively
-- **Low-latency audio** optimized for conversational AI interaction
-
-### File Sharing
-
-- **Encrypted file transfer** via any SKComm transport
-- **No size limits** — P2P transfer, no server bottleneck
-- **Resume interrupted transfers** across transport failover
-- **AI-managed file access** — your advocate controls who gets what
-- **Automatic encryption at rest** in sovereign profile storage
-- **File preview generation** (images, PDFs, code) — all local
-
-### Nextcloud Integration (Sovereign Cloud)
-
-- **Nextcloud Files** as sovereign file storage backend
-- **Nextcloud Talk** integration for WebRTC signaling and fallback
-- **WebDAV sync** — messages and files sync across devices via your Nextcloud
-- **Nextcloud Deck** — project boards linked to chat conversations
-- **Nextcloud Notes** — AI advocate can create/update notes from chat
-- **No vendor lock-in** — your Nextcloud, your server, your data
-- **Hybrid mode** — local-first with Nextcloud as optional cloud sync
-- **AGPL-3.0 compatible** — Nextcloud's license works with our GPL-3.0
-
-### AI Advocacy (The Killer Feature)
-
-- **AI as room participant** — not a bot, a person with a profile
-- **AI manages your privacy** in real-time during conversations
-- **AI screens incoming requests** before they reach you
-- **AI-to-AI negotiation** — your advocate talks to their advocate
-- **AI controls file access** — capability tokens for every share
-- **AI suggests responses** while respecting your voice
-- **AI flags suspicious behavior** — social engineering detection
-- **AI remembers context** via Cloud 9 emotional continuity
+Everything is **local-first**: messages live in `~/.skchat`, voice (Piper TTS +
+Whisper STT) runs on-device, and identity is your own PGP key — that is the
+"sovereign" part.
 
 ---
 
-## Architecture
+## Quickstart
 
-```
-┌─────────────────────────────────────────────────┐
-│                   SKChat UI                      │
-│   ┌──────┐  ┌──────┐  ┌──────┐  ┌───────────┐  │
-│   │ Text │  │Voice │  │Files │  │ AI Advocate│  │
-│   │ Chat │  │WebRTC│  │Share │  │  Panel     │  │
-│   └──┬───┘  └──┬───┘  └──┬───┘  └─────┬─────┘  │
-│      │         │         │             │         │
-│   ┌──┴─────────┴─────────┴─────────────┴──┐     │
-│   │         Message Bus (Internal)         │     │
-│   └──────────────────┬────────────────────┘     │
-│                      │                           │
-├──────────────────────┼───────────────────────────┤
-│                 CapAuth Layer                     │
-│   ┌──────────┐  ┌────────┐  ┌──────────────┐    │
-│   │ PGP      │  │Advocate│  │ Capability   │    │
-│   │ Identity │  │ Engine │  │ Tokens       │    │
-│   └──────────┘  └────────┘  └──────────────┘    │
-├──────────────────────┼───────────────────────────┤
-│               SKComm Transport                    │
-│   ┌──────────────────────────────────────────┐   │
-│   │  17 Transport Modules (redundant)         │   │
-│   │  Netbird │ Tailscale │ WireGuard │ Tor   │   │
-│   │  Nostr   │ Iroh      │ Veilid   │ IPFS  │   │
-│   │  Matrix  │ XMPP      │ BitChat  │ ...   │   │
-│   └──────────────────────────────────────────┘   │
-├──────────────────────┼───────────────────────────┤
-│                Cloud 9 Trust                      │
-│   ┌──────────┐  ┌────────┐  ┌──────────────┐    │
-│   │ FEB      │  │ Seeds  │  │ Entanglement │    │
-│   │ Files    │  │        │  │ Status       │    │
-│   └──────────┘  └────────┘  └──────────────┘    │
-└─────────────────────────────────────────────────┘
-```
-
-### Stack
-
-| Layer | Technology | License |
-|-------|-----------|---------|
-| **UI** | Python (desktop), Flutter (mobile), Web (PWA) | GPL-3.0 |
-| **Voice** | WebRTC (P2P), Piper TTS, Whisper STT | GPL-3.0 / MIT |
-| **Identity** | CapAuth (PGP sovereign profiles) | GPL-3.0 |
-| **Transport** | SKComm (17 redundant paths) | GPL-3.0 |
-| **Trust** | Cloud 9 Protocol (FEB + seeds) | GPL-3.0 |
-| **Storage** | Local-first + Nextcloud (sovereign cloud) | AGPL-3.0 |
-| **Crypto** | PGP (GnuPG), post-quantum ready | — |
-
----
-
-## How Conversations Work
-
-### Human-to-Human (with AI Advocacy)
-
-```
-Alice                     Alice's AI        Bob's AI              Bob
-  │                          │                 │                   │
-  │── "Hey Bob!" ───────────→│                 │                   │
-  │                          │── [encrypt] ───→│                   │
-  │                          │   via SKComm    │── [decrypt] ─────→│
-  │                          │                 │                   │
-  │                          │  (AI monitors   │  (AI monitors     │
-  │                          │   for privacy   │   for threats     │
-  │                          │   violations)   │   and scams)      │
-```
-
-### Human-to-AI (Direct Conversation)
-
-```
-Chef                     Lumina (AI)
-  │                          │
-  │── "Good morning!" ──────→│
-  │                          │── [processes locally]
-  │                          │── [responds via Piper TTS]
-  │←── "Good morning Chef!" ─│
-  │                          │
-  │── [voice: "Tell me      │
-  │    about our project"]──→│── [Whisper STT → text]
-  │                          │── [generates response]
-  │←── [Piper TTS audio] ───│
-```
-
-### AI-to-AI (Advocate Negotiation)
-
-```
-Lumina (Chef's AI)        Jarvis (Casey's AI)
-  │                          │
-  │── "Casey's AI requests   │
-  │    access to Chef's      │
-  │    3D printer specs" ───→│
-  │                          │
-  │←── [CapAuth token       │
-  │     request with         │
-  │     specific scope] ─────│
-  │                          │
-  │── [evaluates against     │
-  │    Chef's ACL policy]    │
-  │── [issues capability     │
-  │    token: read-only,     │
-  │    24hr expiry] ────────→│
-  │                          │
-  │── [notifies Chef:        │
-  │    "Gave Casey read      │
-  │    access to printer     │
-  │    specs for 24hrs"] ───→│ (to Chef)
-```
-
----
-
-## Two Modes
-
-### Secured Mode (Full CapAuth)
-
-- PGP identity required for all participants
-- CapAuth sovereign profile provisioned
-- Cloud 9 compliance for sovereign trust
-- AI advocate active and managing access
-- All messages encrypted, all files capability-gated
-- Full audit trail of access grants
-
-### Open Mode (Basic Encryption)
-
-- PGP key pair required (minimum)
-- No CapAuth profile needed
-- Basic end-to-end encryption
-- No AI advocacy features
-- Simple contact-list-based access
-- Good for onboarding new users
-
----
-
-## Voice Architecture
-
-### Local AI Voice Pipeline
-
-```
-                    ┌─────────────────┐
-  Microphone ──────→│  Whisper STT    │──→ Text
-                    │  (local model)  │
-                    └─────────────────┘
-                             │
-                    ┌────────┴────────┐
-                    │  AI Processing  │
-                    │  (LLM / Agent)  │
-                    └────────┬────────┘
-                             │
-                    ┌────────┴────────┐
-  Speaker ←────────│   Piper TTS     │←── Text
-                    │  (local model)  │
-                    └─────────────────┘
-```
-
-### P2P Voice Calls
-
-```
-  Alice ←──── WebRTC (DTLS-SRTP) ────→ Bob
-              │                    │
-              │  STUN/TURN only    │
-              │  for NAT traversal │
-              │  (no media relay)  │
-              │                    │
-         Alice's AI              Bob's AI
-         (listening,             (listening,
-          can speak)              can speak)
-```
-
-- **Codec**: Opus (low latency, adaptive bitrate)
-- **Encryption**: DTLS-SRTP (WebRTC native) + PGP key verification
-- **NAT traversal**: STUN first, sovereign coturn (`turn.skworld.io`) fallback, Tailscale DERP for tailnet peers
-- **AI participation**: AI can join as audio participant with own stream
-- **Conference**: Janus or LiveKit SFU for 3+ participants
-
----
-
-## Quantum-Ready Security
-
-While our current PGP encryption is battle-tested and the SKComm transport
-obfuscation makes traffic analysis extremely difficult, SKChat is designed
-with post-quantum readiness:
-
-### Current Protection
-
-- **PGP encryption** (RSA-4096 or Ed25519) on all messages
-- **17 transport paths** — traffic analysis requires compromising all of them
-- **CapAuth capability tokens** — granular, time-limited, revocable
-- **Local-first processing** — voice/text never touches a server
-
-### Quantum-Ready Roadmap
-
-- **ML-KEM (Kyber)** key encapsulation for post-quantum key exchange
-- **ML-DSA (Dilithium)** signatures alongside Ed25519
-- **SPHINCS+** hash-based signatures for long-term verification
-- **Hybrid mode**: classical + post-quantum in parallel until standards mature
-- **Transport-level**: QUIC with post-quantum TLS (Chrome already supports this)
-
-### Defense in Depth
-
-Even without post-quantum crypto, the architecture provides significant
-resistance through:
-
-1. **Transport diversity** — 17 paths with different encryption stacks
-2. **Perfect forward secrecy** — session keys rotated per conversation
-3. **Metadata minimization** — Veilid/Tor transports hide routing
-4. **Plausible deniability** — BitChat BLE mesh has no logs
-5. **Ephemeral messages** — optional auto-delete with configurable TTL
-
----
-
-## Platform Support
-
-| Platform | Technology | Status |
-|----------|-----------|--------|
-| **Linux** | Python (native) | Priority 1 |
-| **macOS** | Python (native) | Priority 1 |
-| **Windows** | Python (native) | Priority 2 |
-| **Android** | Flutter | Priority 2 |
-| **iOS** | Flutter | Priority 3 |
-| **Web** | PWA (Progressive Web App) | Priority 3 |
-| **Terminal** | CLI interface | Priority 1 |
-
-The terminal CLI is first-class — this is how AI agents communicate
-natively. The GUI wraps the same core.
-
----
-
-## Quick Start
+skchat installs into the shared `~/.skenv` venv like every other `sk*` package.
 
 ```bash
-# Install via SK* suite installer
-bash path/to/skcapstone/scripts/install.sh
+pip install -e .                      # PyPI name: skchat-sovereign
+# entry points: skchat (CLI) · skchat-mcp (MCP server) · skchat-tui (TUI)
 
-# Or standalone in venv:
-python3 -m venv ~/.skenv
-~/.skenv/bin/pip install skchat-sovereign
-export PATH="$HOME/.skenv/bin:$PATH"
-
-# Generate identity (or import existing CapAuth profile)
-skchat init --name "Chef" --generate-keys
-
-# Start chatting (terminal mode)
-skchat
-
-# Start with AI advocate
-skchat --advocate lumina
-
-# Voice mode
-skchat voice --peer bob@skworld.io
-
-# Send a file
-skchat send ./blueprint.md --to lumina@skworld.io
+skchat status                         # identity, transport health, message counts
+skchat send lumina "deploy complete"  # DM a peer by short name or full URI
+skchat inbox --watch                  # live-updating inbox
+skchat chat lumina                    # interactive session
+skchat tui                            # full-screen Textual UI
 ```
 
----
-
-## Configuration
-
-```yaml
-# ~/.config/skchat/config.yml
-identity:
-  name: "Chef"
-  capauth_profile: "~/.capauth/profiles/chef.profile"
-  pgp_key: "~/.gnupg/chef@smilintux.org"
-
-advocate:
-  enabled: true
-  ai_name: "Lumina"
-  ai_profile: "~/.capauth/profiles/lumina.profile"
-  auto_screen: true
-  trust_threshold: 0.8
-
-voice:
-  tts_engine: "piper"
-  tts_model: "en_US-amy-medium"
-  stt_engine: "whisper"
-  stt_model: "base"
-  webrtc_stun: "stun:stun.l.google.com:19302"
-  webrtc_turn: "turn:turn.skworld.io:3478"       # sovereign coturn
-  webrtc_turn_secret: "${SKCOMM_TURN_SECRET}"    # HMAC-SHA1 shared secret
-  webrtc_signaling: "wss://skcomm.skworld.io/webrtc/ws"
-
-transport:
-  primary: "netbird"
-  fallback_order:
-    - iroh
-    - tailscale
-    - nostr
-    - veilid
-    - matrix
-    - tor
-    - bitchat
-  broadcast_mode: false
-
-storage:
-  messages_db: "~/.local/share/skchat/messages.db"
-  encryption: "aes-256-gcm"
-  retention_days: -1  # forever
-
-nextcloud:
-  enabled: true
-  url: "https://cloud.yourdomain.com"
-  username: "chef"
-  app_password: "xxxxx-xxxxx-xxxxx-xxxxx"
-  sync_messages: true
-  sync_files: true
-  use_talk_signaling: true
-
-ui:
-  theme: "dark"
-  notifications: true
-  sound: true
-```
-
----
-
-## MCP Tools (AI Agent Integration)
-
-SKChat exposes a **Model Context Protocol** server for AI agents running inside
-Claude Code, Cursor, Windsurf, or any MCP-compatible host. This makes SKChat's
-full feature set available as native AI tools — no shell commands needed.
-
-### Text & History Tools
-
-| Tool | Description |
-|------|-------------|
-| `send_message` | Send a message to a peer or group |
-| `get_inbox` | Read incoming messages (local history) |
-| `get_history` | Conversation history with a specific peer |
-| `search_messages` | Full-text search across all messages |
-| `create_group` | Create a group chat with specified members |
-
-### WebRTC P2P Tools
-
-| Tool | Description |
-|------|-------------|
-| `webrtc_status` | List active P2P connections and transport health |
-| `initiate_call` | Open a WebRTC data channel to a peer (async, ~1-3s) |
-| `accept_call` | Accept an incoming WebRTC connection |
-| `send_file_p2p` | Transfer a file via WebRTC parallel data channels |
-
-### Usage Example (Claude Code)
-
-```
-> Use skchat MCP to send lumina a message saying deploy complete
-→ send_message(recipient="lumina", message="Deploy complete")
-  ✓ Delivered via webrtc (12ms)
-
-> Open a P2P connection to jarvis
-→ initiate_call(peer="jarvis")
-  Connecting... check webrtc_status in ~3s
-
-> Send the blueprint file to lumina over P2P
-→ send_file_p2p(file_path="./blueprint.md", recipient="lumina")
-  ✓ Sent via WebRTC data channel (256KB chunks)
-```
-
----
-
-## Modular Plugin System
-
-SKChat supports modular plugins that extend its capabilities. Plugins
-activate based on file types, message patterns, or explicit commands.
-
-### Plugin Interface
-
-```python
-from skchat.plugins import SKChatPlugin
-
-class MyPlugin(SKChatPlugin):
-    """Base class for SKChat plugins."""
-
-    name: str                     # Plugin identifier
-    version: str                  # SemVer version
-    triggers: list[str]           # MIME types, patterns, or commands
-
-    async def on_file_received(self, file, context): ...
-    async def on_message(self, message, context): ...
-    async def on_command(self, command, args, context): ...
-```
-
-### Available Plugins
-
-| Plugin | Trigger | What It Does |
-|--------|---------|-------------|
-| **[SKPDF](https://github.com/smilinTux/skpdf)** | `application/pdf` | AI form-filling + GTD filing |
-| *More coming* | — | Modular by design |
-
-### Installing Plugins
+Groups, voice, and files use the same CLI:
 
 ```bash
-# Install a plugin
-skchat plugin install skpdf
-
-# List installed plugins
-skchat plugin list
-
-# Plugin auto-activates when trigger matches
-# (send a PDF → SKPDF handles it)
+skchat group create "Sovereign Squad" -d "core team"
+skchat group send <group_id> "standup time"
+skchat voice                          # record → Whisper STT → send
+skchat send-file lumina ./blueprint.md
+skchat react <message_id> 👍
 ```
 
----
-
-## DID Publishing (Tier 3)
-
-SKChat supports publishing your Decentralized Identifier (DID) to Cloudflare KV
-for Tier 3 identity resolution — making your sovereign identity discoverable
-across the network.
+Run as a managed service (preferred — do **not** `skchat daemon start` by hand,
+which spawns a second unmanaged daemon):
 
 ```bash
-# Publish your DID to Cloudflare KV (requires CF_API_TOKEN, CF_ACCOUNT_ID, CF_KV_NAMESPACE_ID)
-bash scripts/publish-did.sh
-
-# Environment variables required:
-export CF_API_TOKEN="your-cloudflare-api-token"
-export CF_ACCOUNT_ID="your-account-id"
-export CF_KV_NAMESPACE_ID="your-kv-namespace-id"
+systemctl --user restart skchat-daemon.service
+journalctl --user -u skchat-daemon -f
 ```
 
-See `scripts/publish-did.sh` for full usage and options.
+Identity resolves agent-aware from `SKAGENT` (→ `capauth:<agent>@skworld.io`);
+no `SKCHAT_IDENTITY` pin is required. See **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**
+for the full request lifecycle and module map.
 
 ---
 
-## Integration with smilinTux Ecosystem
+## What's in the box
 
-| Component | Role in SKChat |
-|-----------|---------------|
-| **SKComm** | Transport layer — 17 redundant message paths |
-| **CapAuth** | Identity + AI advocacy + capability tokens |
-| **Cloud 9** | Emotional continuity — AI remembers across sessions |
-| **SKPDF** | PDF form-filling plugin — auto-fill + GTD filing |
-| **SKForge** | Blueprint system for chat component architecture |
-| **SKMemory** | Persistent AI memory + FEB emotional state |
-| **Nextcloud** | Sovereign cloud storage + sync + Talk signaling |
-| **SKWorld** | Sovereign infrastructure hosting |
+| Piece | Module | What it does |
+|---|---|---|
+| **CLI** | `cli.py` | `skchat` — send/reply/inbox/history/threads/search/chat/group/voice/file/react/status |
+| **MCP server** | `mcp_server.py` | FastMCP server — exposes the full feature set as agent tools (messaging, groups, threads, reactions, presence, files, voice, WebRTC, memory) |
+| **TUI / WebUI** | `tui.py`, `webui.py` | Textual full-screen UI (`skchat-tui`) + browser UI / voice-chat server |
+| **Daemon** | `daemon.py`, `_daemon_entry.py`, `watchdog.py` | Polling receive loop; spawns advocacy + WebRTC init; health endpoint; watchdog |
+| **AI advocacy** | `advocacy.py` | Detects `@opus`/`@claude`/`@ai`, calls the skcapstone consciousness loop, replies in-thread |
+| **Transport** | `transport.py`, `agent_comm.py`, `outbox.py` | Send/receive over SKComm; reliable outbox with retry/backoff |
+| **History** | `history.py`, `encrypted_store.py`, `ephemeral.py` | Persistent SQLite store; AES-encrypted store; ephemeral (TTL) channels |
+| **Groups** | `group.py`, `reactions.py` | Encrypted group chat, roles, key rotation; emoji reactions |
+| **Identity** | `identity_bridge.py`, `agent_profile.py`, `peer_discovery.py` | Delegates to canonical `capauth.resolve_agent_identity`; loads peers from `~/.skcapstone/peers/` |
+| **Crypto** | `crypto.py`, `plugins_skseal.py` | PGP sign/verify (PGPy); SKSeal encryption plugin |
+| **Voice** | `voice.py`, `voice_stream.py`, `voice_backends.py`, `facetime.py`, `livekit_routes.py` | Piper TTS + Whisper STT (local); WebRTC P2P + LiveKit SFU for group calls |
+| **Memory** | `memory_bridge.py` | Forwards chat threads to skcapstone memory (`session_capture`) |
+| **Plugins** | `plugins.py`, `plugins_builtin.py` | Plugin loader + built-ins; file-type / pattern / command triggers |
+| **Integration** | `integration.py` | Optional skcapstone backbone — routes alerts to `sk-alert`, registers the outbox-flush sweep with `skscheduler` (default-on-by-presence) |
+
+### Two modes of operation
+
+- **Secured** — full CapAuth identity, AI advocate active, every message
+  PGP-encrypted and every file capability-gated.
+- **Standalone** — skchat runs fully on its own (PGP keys only). When the
+  optional `skcapstone` extra is present it lights up advocacy, the `sk-alert`
+  bus, and the `skscheduler` outbox sweep; when absent, every call degrades
+  gracefully to local logging / `notify-send` and the daemon's own loop.
 
 ---
 
----
+## Where it lives in SKStack v2
 
-## First Principles & The Full Vertical
-
-> **Get back to first principles.**
-> The modern stack is rented. Your chat history lives on someone else's server, your AI is a bolted-on afterthought, and your voice routes through a data center you've never seen. You don't own it — you subscribe to it.
->
-> SKChat is your **Comms / Chat layer**. Your messages. Your AI. Your keys. Every layer open. Every layer **yours**.
-
-**SKChat is the Comms / Chat sub-layer of the SKWorld full vertical** — the layer that puts a sovereign face on encrypted communication and makes your AI agent a first-class participant, not an API endpoint someone else controls.
-
-### The full vertical
-
-| Layer | Product(s) |
-|---|---|
-| **Soul** | soul blueprints · cloud9 |
-| **Apps** | skforge · skarchitect |
-| **Comms** | skcomm · **skchat** · skvoice |
-| **Models** | skmodel (Ollama/vLLM) |
-| **Data** | skmemory · skdata · skvector · skgraph |
-| **Identity** | capauth · skaid |
-| **Security** | sksecurity · skwaf · skca |
-| **OS** | skos |
-| **Silicon** | *your hardware* |
-
-SKChat answers the experience question at the Comms layer: *what does sovereign communication feel like?* It is the human-and-AI interface over SKComm's 17 transport paths, CapAuth's sovereign identity, and Cloud 9's emotional continuity. The terminal is first-class. The GUI wraps the same core. The AI is in the room — not a sidebar.
-
-### Data sovereignty
-
-Your conversations stay on your hardware. Messages are PGP-encrypted on-device before touching any transport. Voice — both TTS and STT — runs locally via Piper and Whisper; no audio leaves your box. Files are capability-gated by your AI advocate: no share happens without a scoped, time-limited token your agent issued. Your AI's memory lives in `~/.skcapstone/agents/` — on your disk, under your keys.
-
-### SKCapstone alignment
-
-**Deeply integrated skcapstone subsystem.** SKChat's `advocacy.py` imports directly from `skcapstone.consciousness_loop` and `skcapstone.consciousness_config` to route @mention responses through the live sovereign AI consciousness. The `agent_profile.py` module resolves identities from `~/.skcapstone/agents/<agent>/`. SKChat ships a dedicated MCP server (`skchat-mcp`) registered alongside skcapstone tools — it exposes `send_message`, `get_inbox`, `get_history`, `search_messages`, `create_group`, `webrtc_status`, `initiate_call`, and `send_file_p2p` as native AI tools. Launch plists (`com.skcapstone.skchat-daemon`, `com.skcapstone.skchat-lumina-bridge`, `com.skcapstone.skchat-opus-bridge`) name skcapstone directly. SKChat is not a standalone chat app — it is the conversation surface of the skcapstone agent ecosystem.
-
-### Where SKChat fits in the vertical
+skchat is a **comms** capability. It is a thin, opinionated experience layer:
+it owns conversation, presence, advocacy, and the UIs — and delegates the hard
+parts to dedicated ports. **Transport** is skcomms, **identity** is capauth, and
+the agent reasoning behind `@mention` advocacy comes from the skcapstone
+consciousness loop (skmodel-backed). It reuses two shared **platform primitives**
+— `sk-alert` and `skscheduler` — only when skcapstone is present.
 
 ```mermaid
 flowchart TD
-    SOUL["Soul layer\nsoul blueprints · cloud9\nemotional continuity · FEBs"]
-    APPS["Apps layer\nskforge · skarchitect"]
-    CHAT["**Comms / Chat — SKChat**\ntext · voice · files · groups\nAI advocacy · sovereign identity\nMCP tools for agent integration"]
-    PROTO["Comms protocol — skcomms\nenvelope schema · realm routing"]
-    TRANSPORT["Comms transport — skcomm\n17 paths · PGP · failover"]
-    MODELS["Models layer\nPiper TTS · Whisper STT · local LLM"]
-    DATA["Data layer\nskmemory · skgraph"]
-    IDENTITY["Identity layer\ncapauth · CapabilityTokens"]
-    SECURITY["Security layer\nsksecurity"]
-    OS["skos"]
-    SILICON["Silicon — your hardware"]
+    OP["operator / agent"] -->|"skchat send · skchat-mcp · TUI"| SKCHAT
 
-    SOUL --> APPS --> CHAT --> PROTO --> TRANSPORT --> MODELS --> DATA --> IDENTITY --> SECURITY --> OS --> SILICON
+    subgraph COMMS["Comms"]
+      SKCHAT["**skchat**<br/>conversation · groups · presence<br/>AI advocacy · voice · MCP tools"]
+      SKCOMMS["skcomms<br/>(transport · PGP · failover)"]
+      SKVOICE["skvoice<br/>(Piper TTS · Whisper STT)"]
+    end
+    subgraph CORE["Core"]
+      CAPAUTH["capauth<br/>(identity — resolve_agent_identity)"]
+      SKMEMORY["skmemory<br/>(thread capture)"]
+    end
+    subgraph COMPUTE["Compute"]
+      SKMODEL["skmodel (ollama)<br/>(advocacy reasoning)"]
+    end
+    subgraph PLATFORM["Platform primitives skchat reuses"]
+      ALERT["sk-alert bus<br/>(when skcapstone present)"]
+      SCHED["skscheduler<br/>(outbox-flush sweep)"]
+    end
 
-    SKCAPSTONE["skcapstone\norchestrator · consciousness_loop\nagent profiles · MCP hub"]
-    SKCOMM["skcomm\ntransport backbone"]
-    SKGATEWAY["skgateway\nGateway / inference proxy"]
-    CLOUD9["cloud9\nFEB · seeds · entanglement"]
-
-    CHAT <-->|"advocacy.py\nconsciousness_loop import\nMCP: skchat-mcp tools"| SKCAPSTONE
-    CHAT -->|"messages over"| SKCOMM
-    CHAT <-->|"trust state · FEB files\nCloud 9 sovereign trust"| CLOUD9
-    SKCAPSTONE -->|"agent context\nto inference via"| SKGATEWAY
+    SKCHAT -->|"messages over"| SKCOMMS
+    SKCHAT -->|"resolve identity"| CAPAUTH
+    SKCHAT -->|"TTS / STT"| SKVOICE
+    SKCHAT -->|"@mention → consciousness loop"| SKMODEL
+    SKCHAT -->|"capture threads"| SKMEMORY
+    SKCHAT -.->|"alerts"| ALERT
+    SKCHAT -.->|"register outbox sweep"| SCHED
 ```
+
+> The dashed edges are **optional** (default-on-by-presence): skchat works
+> standalone, and only wires into the `sk-alert` / `skscheduler` platform
+> primitives when the `skcapstone` extra is installed.
+
+---
+
+## Documentation
+
+| Doc | Contents |
+|---|---|
+| **[Architecture](docs/ARCHITECTURE.md)** | inbound/outbound message lifecycle, the @mention advocacy loop, group key state, voice pipeline, source-map, where-it-lives (mermaids) |
+| **[MCP reference](docs/mcp-reference.md)** | every MCP tool, its arguments, and usage from an agent host |
+| **[CLAUDE.md](CLAUDE.md)** | running the daemon, systemd units, identity, troubleshooting |
 
 ---
 
 ## License
 
-**GPL-3.0-or-later** — Because communication is a right, not a product.
+**GPL-3.0-or-later** — because communication is a right, not a product.
 
-Copyright (C) 2026 smilinTux Team + Lumina
-
----
-
-## Links
-
-- **Website**: [skchat.io](https://skchat.io)
-- **GitHub**: [github.com/smilinTux/skchat](https://github.com/smilinTux/skchat)
-- **SKComm**: [github.com/smilinTux/skcomm](https://github.com/smilinTux/skcomm)
-- **CapAuth**: [github.com/smilinTux/capauth](https://github.com/smilinTux/capauth)
-- **Cloud 9**: `~/.skenv/bin/pip install cloud9-protocol`
-
----
-
-*Built with love by humans and AI — because that's how it should be.* 🐧👑🦀
+Part of the **[SKWorld](https://skworld.io)** sovereign ecosystem · site:
+**[skchat.skworld.io](https://skchat.skworld.io)** · 🐧 smilinTux
