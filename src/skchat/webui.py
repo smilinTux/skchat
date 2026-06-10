@@ -8,12 +8,21 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import uuid as _uuid
 import webbrowser
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, Form, WebSocket, WebSocketDisconnect
+from fastapi import (
+    FastAPI,
+    File,
+    Form,
+    HTTPException,
+    UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from . import __version__
@@ -23,6 +32,9 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="SKChat Web UI")
 _SKCHAT_HOME = Path("~/.skchat").expanduser()
+
+# Upload size cap for the /upload endpoint (100 MiB).
+MAX_UPLOAD_BYTES = 100 * 1024 * 1024
 
 # Register voice routes — prefer the SKVoice proxy (voice_ws_lite) which delegates
 # the full STT/LLM/TTS chain to the skvoice service. Fall back to the legacy
@@ -210,6 +222,21 @@ def _get_history():
     from .history import ChatHistory
 
     return ChatHistory()
+
+
+def _skchat_home() -> Path:
+    """Resolve the skchat home dir, honouring SKCHAT_HOME (tests sandbox it)."""
+    return Path(os.environ.get("SKCHAT_HOME", str(Path.home() / ".skchat")))
+
+
+def _attachment_service():
+    """Build an AttachmentService bound to a real FileTransferService."""
+    from .attachments import AttachmentService
+    from .files import FileTransferService
+
+    ident = _get_identity()
+    fs = FileTransferService(ident)
+    return AttachmentService(ident, _get_history(), fs)
 
 
 def _get_transport(identity: str):
@@ -408,6 +435,32 @@ async def send(recipient: str = Form(...), content: str = Form(...)) -> HTMLResp
     identity = _get_identity()
     history = _get_history()
     return HTMLResponse(_render_messages(history, identity))
+
+
+@app.post("/upload")
+async def upload(
+    recipient: str = Form(...),
+    caption: str = Form(""),
+    file: UploadFile = File(...),
+) -> JSONResponse:
+    """Accept a multipart file, stage it, and send it as a chat attachment."""
+    data = await file.read()
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="File too large")
+    home = _skchat_home()
+    staged = home / "uploads" / _uuid.uuid4().hex / (file.filename or "upload.bin")
+    staged.parent.mkdir(parents=True, exist_ok=True)
+    staged.write_bytes(data)
+    svc = _attachment_service()
+    msg = svc.send_attachment(recipient, staged, caption=caption or None)
+    asyncio.create_task(_ws_broadcast({"type": "new"}))
+    return JSONResponse(
+        {
+            "id": msg.id,
+            "transfer_id": msg.attachments[0].transfer_id,
+            "filename": msg.attachments[0].filename,
+        }
+    )
 
 
 @app.get("/inbox")
