@@ -62,6 +62,7 @@ from .presence import (
 )
 from .reactions import ReactionEvent, ReactionManager, ReactionSummary
 from .transport import ChatTransport
+from . import integration  # noqa: F401 — optional skcapstone backbone (ADR adapter)
 
 __all__ = [
     "ChatMessage",
@@ -108,5 +109,6 @@ __all__ = [
     "PluginState",
     "AgentMessenger",
     "EncryptedChatHistory",
+    "integration",
     "__version__",
 ]

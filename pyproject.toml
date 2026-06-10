@@ -37,6 +37,12 @@ cli = [
     "click>=8.1",
     "rich>=13.0",
 ]
+skcapstone = [
+    # Optional integration backbone (ADR-optional-integration-backbone).
+    # skchat runs fully standalone without this; when present the integration
+    # adapter routes alerts to sk-alert and registers jobs with skscheduler.
+    "skcapstone>=0.1",
+]
 all = [
     "skchat-sovereign[cli]",
 ]
