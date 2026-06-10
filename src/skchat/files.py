@@ -563,6 +563,8 @@ class FileTransferService:
             "direction": "outbound",
             "created_at": transfer.created_at.isoformat(),
             "chunks_sent": 0,
+            "init_sent": False,
+            "source_path": str(path.resolve()),
         }
         meta_path = self._transfers_dir / f"{transfer.transfer_id}.json"
         meta_path.write_text(_json.dumps(meta, indent=2))
@@ -585,26 +587,39 @@ class FileTransferService:
         recipient: str,
         meta: "dict[str, Any]",
         meta_path: Path,
+        start_idx: int = 0,
     ) -> None:
+        """Send INIT (if not already sent) + chunks from *start_idx* + DONE.
+
+        Persists ``init_sent`` and ``chunks_sent`` to *meta_path* after each
+        step so an interruption leaves enough state for :meth:`resume_send`
+        to continue from exactly where it stopped. Re-entrant: chunks already
+        acked (index < ``start_idx``) are never re-sent.
+        """
         import json as _json
 
-        init_msg = _json.dumps(
-            {
-                "type": "FILE_TRANSFER_INIT",
-                "transfer_id": transfer.transfer_id,
-                "filename": transfer.filename,
-                "size": transfer.file_size,
-                "sha256": transfer.sha256,
-                "total_chunks": transfer.total_chunks,
-                "transfer_key": transfer.transfer_key,
-                "sender": self._identity,
-            }
-        )
-        self._skcomm.send(  # type: ignore[union-attr]
-            recipient=recipient, message=init_msg, thread_id=transfer.transfer_id
-        )
+        if not meta.get("init_sent"):
+            init_msg = _json.dumps(
+                {
+                    "type": "FILE_TRANSFER_INIT",
+                    "transfer_id": transfer.transfer_id,
+                    "filename": transfer.filename,
+                    "size": transfer.file_size,
+                    "sha256": transfer.sha256,
+                    "total_chunks": transfer.total_chunks,
+                    "transfer_key": transfer.transfer_key,
+                    "sender": self._identity,
+                }
+            )
+            self._skcomm.send(  # type: ignore[union-attr]
+                recipient=recipient, message=init_msg, thread_id=transfer.transfer_id
+            )
+            meta["init_sent"] = True
+            meta_path.write_text(_json.dumps(meta, indent=2))
 
         for chunk in chunks:
+            if chunk.sequence < start_idx:
+                continue
             chunk_msg = _json.dumps(
                 {
                     "type": "FILE_CHUNK",
@@ -634,11 +649,87 @@ class FileTransferService:
         meta["status"] = "complete"
         meta_path.write_text(_json.dumps(meta, indent=2))
         logger.info(
-            "Sent %d chunks for transfer %s (%s)",
-            len(chunks),
+            "Sent chunks [%d..%d) for transfer %s (%s)",
+            start_idx,
+            transfer.total_chunks,
             transfer.transfer_id[:8],
             transfer.filename,
         )
+
+    def resume_send(self, transfer_id: str) -> bool:
+        """Resume an interrupted outbound transfer.
+
+        Reads the persisted transfer metadata, re-chunks the source file, and
+        re-sends only the chunks not yet acknowledged (``chunks_sent`` onward),
+        followed by FILE_TRANSFER_DONE. The FILE_TRANSFER_INIT message is
+        re-sent only if it never went out on the original attempt.
+
+        Args:
+            transfer_id: The transfer identifier to resume.
+
+        Returns:
+            bool: True if the transfer completed (or was already complete),
+            False if the transfer is unknown, not outbound, or its source
+            file is missing. A transport failure during resume re-raises.
+
+        Raises:
+            FileNotFoundError: If the recorded source file no longer exists.
+        """
+        import json as _json
+
+        meta_path = self._transfers_dir / f"{transfer_id}.json"
+        if not meta_path.exists():
+            return False
+
+        meta = _json.loads(meta_path.read_text())
+        if meta.get("direction") != "outbound":
+            return False
+        if meta.get("status") == "complete":
+            return True
+
+        total = int(meta.get("total_chunks", 0))
+        start_idx = int(meta.get("chunks_sent", 0))
+        if total and start_idx >= total:
+            # All chunks already sent; just finalize with DONE.
+            pass
+
+        source = meta.get("source_path", "")
+        path = Path(source) if source else None
+        if path is None or not path.exists():
+            raise FileNotFoundError(f"Source file unavailable for resume: {source!r}")
+
+        if self._skcomm is None:
+            return False
+
+        recipient = str(meta.get("recipient", ""))
+        transfer = FileTransfer(
+            transfer_id=transfer_id,
+            filename=str(meta.get("filename", path.name)),
+            file_size=int(meta.get("file_size", path.stat().st_size)),
+            chunk_size=TRANSFER_CHUNK_SIZE,
+            total_chunks=total,
+            sha256=str(meta.get("sha256", "")),
+            sender=str(meta.get("sender", self._identity)),
+            recipient=recipient,
+            transfer_key=str(meta.get("transfer_key", "")),
+            status=TransferStatus.SENDING,
+        )
+        chunks = FileSender(self._identity).chunks(transfer, path)
+
+        meta["status"] = "sending"
+        meta_path.write_text(_json.dumps(meta, indent=2))
+        try:
+            self._send_via_skcomm(
+                transfer, chunks, recipient, meta, meta_path, start_idx=start_idx
+            )
+        except Exception as exc:
+            logger.warning("SKComm resume failed: %s", exc)
+            meta["status"] = "failed"
+            meta["error"] = str(exc)
+            meta_path.write_text(_json.dumps(meta, indent=2))
+            raise
+
+        return True
 
     # ------------------------------------------------------------ inbound
 
@@ -679,6 +770,11 @@ class FileTransferService:
             chunks_dir.mkdir(parents=True, exist_ok=True)
             chunk_idx: int = int(msg.get("chunk_idx", 0))
             total_chunks: int = int(msg.get("total_chunks", 0))
+            chunk_path = chunks_dir / f"{chunk_idx:08d}.json"
+            # Idempotent: skip chunks already stored so a resumed/duplicated
+            # send doesn't rewrite (and the receive side stays restartable).
+            if chunk_path.exists():
+                return
             chunk = FileChunk(
                 transfer_id=transfer_id,
                 sequence=chunk_idx,
@@ -686,7 +782,7 @@ class FileTransferService:
                 data=msg.get("data_b64", ""),
                 chunk_hash=msg.get("chunk_hash", ""),
             )
-            (chunks_dir / f"{chunk_idx:08d}.json").write_text(chunk.to_json())
+            chunk_path.write_text(chunk.to_json())
 
         elif msg_type == "FILE_TRANSFER_DONE":
             meta_path = self._transfers_dir / f"{transfer_id}.json"
@@ -841,3 +937,27 @@ class FileTransferService:
         if not chunks_dir.exists():
             return 0
         return sum(1 for _ in chunks_dir.glob("*.json"))
+
+    def received_chunk_indices(self, transfer_id: str) -> "set[int]":
+        """Return the set of chunk indices already stored for an inbound transfer.
+
+        Useful for resuming a receive: the sender can be told which chunks are
+        still missing. Idempotent re-receipt of a chunk already in this set is
+        a no-op (see :meth:`store_incoming_chunk`).
+
+        Args:
+            transfer_id: The transfer identifier.
+
+        Returns:
+            set[int]: Stored chunk sequence numbers (empty if none/unknown).
+        """
+        chunks_dir = self._transfers_dir / transfer_id / "chunks"
+        if not chunks_dir.exists():
+            return set()
+        out: set[int] = set()
+        for p in chunks_dir.glob("*.json"):
+            try:
+                out.add(int(p.stem))
+            except ValueError:
+                continue
+        return out

@@ -16,6 +16,7 @@ from pgpy.constants import (
 
 from skchat.files import (
     CHUNK_SIZE,
+    TRANSFER_CHUNK_SIZE,
     FileChunk,
     FileReceiver,
     FileSender,
@@ -507,3 +508,221 @@ class TestFileTransferService:
         assert types[-1] == "FILE_TRANSFER_DONE"
         # Every message has the right transfer_id
         assert all(c["message"]["transfer_id"] == transfer_id for c in mock.calls)
+
+
+class _FlakySKComm:
+    """In-memory SKComm fake that fails after a configured number of sends.
+
+    Records every message it accepted; raises RuntimeError once *fail_after*
+    successful sends have been made, simulating an interrupted connection.
+    """
+
+    def __init__(self, fail_after: int | None = None) -> None:
+        self.calls: list[dict] = []
+        self.fail_after = fail_after
+
+    def send(self, recipient: str, message: str, **kwargs: object) -> None:
+        import json
+
+        if self.fail_after is not None and len(self.calls) >= self.fail_after:
+            raise RuntimeError("simulated transport failure")
+        self.calls.append({"recipient": recipient, "message": json.loads(message)})
+
+    def chunk_indices(self) -> list[int]:
+        """Return chunk_idx values for every FILE_CHUNK actually sent."""
+        return [c["message"]["chunk_idx"] for c in self.calls if c["message"]["type"] == "FILE_CHUNK"]
+
+
+class TestResumeSend:
+    """Tests for resuming an interrupted outbound transfer."""
+
+    def test_interrupted_send_records_partial_progress(self, tmp_path: Path) -> None:
+        """A send that fails mid-way persists chunks_sent < total_chunks."""
+        f = _create_test_file(tmp_path, "resume.bin", TRANSFER_CHUNK_SIZE * 5)
+        base = tmp_path / ".skchat"
+        # INIT (1 call) + 2 chunks, then fail
+        flaky = _FlakySKComm(fail_after=3)
+        service = FileTransferService(identity="capauth:alice@test", skcomm=flaky, base_dir=base)
+        tid = service.send_file("capauth:bob@test", f)
+
+        import json
+
+        meta = json.loads((base / "transfers" / f"{tid}.json").read_text())
+        assert meta["status"] == "failed"
+        assert meta["chunks_sent"] == 2
+        assert meta["total_chunks"] == 5
+
+    def test_resume_send_only_sends_remaining_chunks(self, tmp_path: Path) -> None:
+        """resume_send re-sends only the chunks not yet acked, then DONE."""
+        f = _create_test_file(tmp_path, "resume2.bin", TRANSFER_CHUNK_SIZE * 5)
+        base = tmp_path / ".skchat"
+        flaky = _FlakySKComm(fail_after=3)  # INIT + chunks 0,1 succeed
+        service = FileTransferService(identity="capauth:alice@test", skcomm=flaky, base_dir=base)
+        tid = service.send_file("capauth:bob@test", f)
+        assert flaky.chunk_indices() == [0, 1]
+
+        # Reconnect with a healthy transport and resume.
+        good = _FlakySKComm()
+        service2 = FileTransferService(identity="capauth:alice@test", skcomm=good, base_dir=base)
+        service2.resume_send(tid)
+
+        # Only the remaining chunks (2,3,4) are re-sent — no duplicates.
+        assert good.chunk_indices() == [2, 3, 4]
+        types = [c["message"]["type"] for c in good.calls]
+        assert types[-1] == "FILE_TRANSFER_DONE"
+        assert "FILE_TRANSFER_INIT" not in types
+
+        import json
+
+        meta = json.loads((base / "transfers" / f"{tid}.json").read_text())
+        assert meta["status"] == "complete"
+        assert meta["chunks_sent"] == 5
+
+    def test_resume_completed_transfer_is_noop(self, tmp_path: Path) -> None:
+        """resume_send on an already-complete transfer sends nothing."""
+        f = _create_test_file(tmp_path, "done.bin", TRANSFER_CHUNK_SIZE * 2)
+        base = tmp_path / ".skchat"
+        good = _FlakySKComm()
+        service = FileTransferService(identity="capauth:alice@test", skcomm=good, base_dir=base)
+        tid = service.send_file("capauth:bob@test", f)
+        sent_before = len(good.calls)
+
+        good2 = _FlakySKComm()
+        service2 = FileTransferService(identity="capauth:alice@test", skcomm=good2, base_dir=base)
+        result = service2.resume_send(tid)
+        assert good2.calls == []
+        assert result is True  # already complete counts as success
+        assert sent_before > 0
+
+    def test_resume_unknown_transfer_returns_false(self, tmp_path: Path) -> None:
+        """resume_send on an unknown transfer_id returns False."""
+        good = _FlakySKComm()
+        service = FileTransferService(
+            identity="capauth:alice@test", skcomm=good, base_dir=tmp_path / ".skchat"
+        )
+        assert service.resume_send("no-such-id") is False
+        assert good.calls == []
+
+    def test_resume_reassembles_correctly(self, tmp_path: Path) -> None:
+        """A resumed send delivers chunks a receiver can reassemble intact."""
+        original = _create_test_file(tmp_path, "roundtrip.bin", TRANSFER_CHUNK_SIZE * 4 + 17)
+        send_base = tmp_path / "send" / ".skchat"
+        recv_base = tmp_path / "recv" / ".skchat"
+
+        # Receiver service stores whatever the transport delivers.
+        recv = FileTransferService(identity="capauth:bob@test", base_dir=recv_base)
+
+        class _Relay:
+            """Transport that forwards each message into the receiver's store."""
+
+            def __init__(self) -> None:
+                self.count = 0
+
+            def send(self, recipient: str, message: str, **kwargs: object) -> None:
+                import json
+
+                self.count += 1
+                if self.count == 3:  # drop after INIT + 1 chunk
+                    raise RuntimeError("link down")
+                recv.store_incoming_chunk(json.loads(message))
+
+        relay = _Relay()
+        sender = FileTransferService(identity="capauth:alice@test", skcomm=relay, base_dir=send_base)
+        tid = sender.send_file("capauth:bob@test", original)
+
+        # Resume over a clean relay that always delivers.
+        class _GoodRelay:
+            def send(self, recipient: str, message: str, **kwargs: object) -> None:
+                import json
+
+                recv.store_incoming_chunk(json.loads(message))
+
+        sender2 = FileTransferService(
+            identity="capauth:alice@test", skcomm=_GoodRelay(), base_dir=send_base
+        )
+        sender2.resume_send(tid)
+
+        out = recv.receive_file(tid)
+        assert out is not None
+        assert out.read_bytes() == original.read_bytes()
+
+
+class TestReceiveIdempotent:
+    """Tests for idempotent inbound chunk storage."""
+
+    def test_duplicate_chunk_is_idempotent(self, tmp_path: Path) -> None:
+        """Re-storing the same chunk twice yields the same single chunk file."""
+        original = _create_test_file(tmp_path, "idem.bin", TRANSFER_CHUNK_SIZE * 3)
+        sender = FileSender("capauth:bob@test")
+        transfer = sender.prepare(
+            original, recipient="capauth:alice@test", chunk_size=TRANSFER_CHUNK_SIZE
+        )
+        chunks = sender.chunks(transfer, original)
+
+        base = tmp_path / ".skchat"
+        service = FileTransferService(identity="capauth:alice@test", base_dir=base)
+        service.store_incoming_chunk(
+            {
+                "type": "FILE_TRANSFER_INIT",
+                "transfer_id": transfer.transfer_id,
+                "filename": transfer.filename,
+                "size": transfer.file_size,
+                "sha256": transfer.sha256,
+                "total_chunks": transfer.total_chunks,
+                "sender": transfer.sender,
+                "transfer_key": transfer.transfer_key,
+            }
+        )
+
+        def _store(c: FileChunk) -> None:
+            service.store_incoming_chunk(
+                {
+                    "type": "FILE_CHUNK",
+                    "transfer_id": transfer.transfer_id,
+                    "chunk_idx": c.sequence,
+                    "total_chunks": c.total_chunks,
+                    "data_b64": c.data,
+                    "chunk_hash": c.chunk_hash,
+                }
+            )
+
+        # Store every chunk, then re-store chunk 0 twice more (idempotent).
+        for c in chunks:
+            _store(c)
+        _store(chunks[0])
+        _store(chunks[0])
+
+        chunks_dir = base / "transfers" / transfer.transfer_id / "chunks"
+        stored = sorted(chunks_dir.glob("*.json"))
+        assert len(stored) == len(chunks)
+
+        service.store_incoming_chunk(
+            {"type": "FILE_TRANSFER_DONE", "transfer_id": transfer.transfer_id}
+        )
+        out = service.receive_file(transfer.transfer_id)
+        assert out is not None
+        assert out.read_bytes() == original.read_bytes()
+
+    def test_received_indices_helper(self, tmp_path: Path) -> None:
+        """received_chunk_indices reflects which chunks are already stored."""
+        original = _create_test_file(tmp_path, "indices.bin", TRANSFER_CHUNK_SIZE * 3)
+        sender = FileSender("capauth:bob@test")
+        transfer = sender.prepare(
+            original, recipient="capauth:alice@test", chunk_size=TRANSFER_CHUNK_SIZE
+        )
+        chunks = sender.chunks(transfer, original)
+
+        base = tmp_path / ".skchat"
+        service = FileTransferService(identity="capauth:alice@test", base_dir=base)
+        for c in (chunks[0], chunks[2]):
+            service.store_incoming_chunk(
+                {
+                    "type": "FILE_CHUNK",
+                    "transfer_id": transfer.transfer_id,
+                    "chunk_idx": c.sequence,
+                    "total_chunks": c.total_chunks,
+                    "data_b64": c.data,
+                    "chunk_hash": c.chunk_hash,
+                }
+            )
+        assert service.received_chunk_indices(transfer.transfer_id) == {0, 2}
