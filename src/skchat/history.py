@@ -9,11 +9,14 @@ vector-search / thread helpers remain available.
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
 from .models import ChatMessage, Thread
+
+logger = logging.getLogger(__name__)
 
 _DEFAULT_HISTORY_DIR = Path("~/.skchat/history")
 
@@ -162,6 +165,99 @@ class ChatHistory:
                     break
 
         return results
+
+    def get_unread(
+        self,
+        last_read: Optional[datetime] = None,
+        peer: Optional[str] = None,
+        limit: int = 1000,
+    ) -> list[ChatMessage]:
+        """Return messages newer than the *last_read* cursor.
+
+        "Unread" follows the same convention the CLI inbox uses: a message is
+        unread when its ``timestamp`` is strictly **after** the last-read
+        marker.  A message exactly at the cursor is considered already read.
+        Pass ``last_read=None`` to treat the whole history as unread.
+
+        Args:
+            last_read: Last-read timestamp cursor.  Naive datetimes are
+                treated as UTC.  ``None`` returns all messages.
+            peer: If given, only messages where *peer* is the ``sender`` or
+                ``recipient``.
+            limit: Maximum number of messages to return (newest first).
+
+        Returns:
+            list[ChatMessage]: Unread messages, newest first.
+        """
+        messages = self.load(peer=peer, limit=limit)
+        if last_read is None:
+            return messages
+
+        if last_read.tzinfo is None:
+            last_read = last_read.replace(tzinfo=timezone.utc)
+
+        unread: list[ChatMessage] = []
+        for msg in messages:
+            ts = msg.timestamp
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            if ts > last_read:
+                unread.append(msg)
+        return unread
+
+    def prune(self, before: datetime) -> int:
+        """Delete history entries older than *before*.
+
+        Rewrites each dated JSONL file, dropping every message whose
+        ``timestamp`` is strictly before the cutoff.  Files left empty are
+        removed.  Malformed lines are dropped (they cannot be dated safely).
+
+        Args:
+            before: Cutoff datetime.  Messages with ``timestamp < before`` are
+                deleted.  Naive datetimes are treated as UTC.
+
+        Returns:
+            int: Number of messages removed.
+        """
+        if before.tzinfo is None:
+            before = before.replace(tzinfo=timezone.utc)
+
+        removed = 0
+        for path in self._history_dir.glob("*.jsonl"):
+            try:
+                lines = path.read_text(encoding="utf-8").splitlines()
+            except OSError:
+                continue
+
+            kept: list[str] = []
+            for raw in lines:
+                stripped = raw.strip()
+                if not stripped:
+                    continue
+                try:
+                    msg = ChatMessage.model_validate_json(stripped)
+                except Exception as e:
+                    logger.warning("history.py prune: dropping malformed line: %s", e)
+                    removed += 1
+                    continue
+                ts = msg.timestamp
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                if ts < before:
+                    removed += 1
+                else:
+                    kept.append(stripped)
+
+            if kept:
+                path.write_text("\n".join(kept) + "\n", encoding="utf-8")
+            else:
+                # Nothing left in this file — remove it.
+                try:
+                    path.unlink()
+                except OSError as e:
+                    logger.warning("history.py prune: could not remove %s: %s", path, e)
+
+        return removed
 
     @classmethod
     def from_config(cls, store_path: Optional[str] = None) -> "ChatHistory":

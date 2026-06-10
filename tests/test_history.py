@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any, Optional
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -259,3 +261,110 @@ class TestChatHistory:
         assert d["recipient"] == "capauth:bob@skworld.io"
         assert d["content"] == "Dict test"
         assert d["thread_id"] == "thread-dict"
+
+
+def _write_msg(history_dir, sender, recipient, content, iso_ts) -> ChatMessage:
+    """Append a ChatMessage to the dated JSONL file matching its timestamp.
+
+    Writing to the date-named file directly (rather than via save(), which
+    always uses *today*) makes since/prune date filtering deterministic.
+    """
+    ts = datetime.fromisoformat(iso_ts)
+    msg = ChatMessage(sender=sender, recipient=recipient, content=content, timestamp=ts)
+    path = history_dir / f"{ts.strftime('%Y-%m-%d')}.jsonl"
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(msg.model_dump_json())
+        fh.write("\n")
+    return msg
+
+
+@pytest.fixture()
+def jsonl_history(tmp_path):
+    """A ChatHistory whose JSONL store lives in a fresh tmp dir."""
+    hist_dir = tmp_path / "history"
+    hist_dir.mkdir()
+    hist = ChatHistory(store=MagicMock(), history_dir=hist_dir)
+    return hist, hist_dir
+
+
+class TestChatHistorySince:
+    """The load() since= filter (audit: already present — these lock it in)."""
+
+    def test_since_filters_older_messages(self, jsonl_history) -> None:
+        hist, hist_dir = jsonl_history
+        _write_msg(hist_dir, "a", "b", "old", "2026-02-20T10:00:00+00:00")
+        _write_msg(hist_dir, "a", "b", "new", "2026-02-25T10:00:00+00:00")
+
+        cutoff = datetime(2026, 2, 23, tzinfo=timezone.utc)
+        results = hist.load(since=cutoff)
+        contents = [m.content for m in results]
+        assert "new" in contents
+        assert "old" not in contents
+
+    def test_since_naive_treated_as_utc(self, jsonl_history) -> None:
+        hist, hist_dir = jsonl_history
+        _write_msg(hist_dir, "a", "b", "keep", "2026-02-25T10:00:00+00:00")
+        # naive cutoff — must be coerced to UTC, not crash
+        results = hist.load(since=datetime(2026, 2, 24))
+        assert [m.content for m in results] == ["keep"]
+
+
+class TestChatHistoryPrune:
+    """Tests for prune(before=...)."""
+
+    def test_prune_removes_old_messages(self, jsonl_history) -> None:
+        hist, hist_dir = jsonl_history
+        _write_msg(hist_dir, "a", "b", "old1", "2026-02-20T10:00:00+00:00")
+        _write_msg(hist_dir, "a", "b", "old2", "2026-02-21T10:00:00+00:00")
+        _write_msg(hist_dir, "a", "b", "fresh", "2026-02-25T10:00:00+00:00")
+
+        removed = hist.prune(before=datetime(2026, 2, 23, tzinfo=timezone.utc))
+        assert removed == 2
+        remaining = [m.content for m in hist.load()]
+        assert remaining == ["fresh"]
+
+    def test_prune_empty_history_noop(self, jsonl_history) -> None:
+        hist, _ = jsonl_history
+        assert hist.prune(before=datetime(2026, 2, 23, tzinfo=timezone.utc)) == 0
+
+    def test_prune_keeps_everything_when_cutoff_is_old(self, jsonl_history) -> None:
+        hist, hist_dir = jsonl_history
+        _write_msg(hist_dir, "a", "b", "m1", "2026-02-25T10:00:00+00:00")
+        _write_msg(hist_dir, "a", "b", "m2", "2026-02-26T10:00:00+00:00")
+        removed = hist.prune(before=datetime(2026, 1, 1, tzinfo=timezone.utc))
+        assert removed == 0
+        assert len(hist.load()) == 2
+
+
+class TestChatHistoryGetUnread:
+    """Tests for get_unread(last_read=...)."""
+
+    def test_unread_returns_messages_after_cursor(self, jsonl_history) -> None:
+        hist, hist_dir = jsonl_history
+        _write_msg(hist_dir, "a", "b", "seen", "2026-02-20T10:00:00+00:00")
+        _write_msg(hist_dir, "a", "b", "unseen", "2026-02-25T10:00:00+00:00")
+
+        cursor = datetime(2026, 2, 22, tzinfo=timezone.utc)
+        unread = hist.get_unread(last_read=cursor)
+        assert [m.content for m in unread] == ["unseen"]
+
+    def test_unread_none_cursor_returns_all(self, jsonl_history) -> None:
+        hist, hist_dir = jsonl_history
+        _write_msg(hist_dir, "a", "b", "m1", "2026-02-20T10:00:00+00:00")
+        _write_msg(hist_dir, "a", "b", "m2", "2026-02-25T10:00:00+00:00")
+        unread = hist.get_unread(last_read=None)
+        assert len(unread) == 2
+
+    def test_unread_filters_by_peer(self, jsonl_history) -> None:
+        hist, hist_dir = jsonl_history
+        _write_msg(hist_dir, "alice", "me", "from alice", "2026-02-25T10:00:00+00:00")
+        _write_msg(hist_dir, "bob", "me", "from bob", "2026-02-25T11:00:00+00:00")
+        unread = hist.get_unread(last_read=None, peer="alice")
+        assert [m.content for m in unread] == ["from alice"]
+
+    def test_unread_excludes_boundary_equal_cursor(self, jsonl_history) -> None:
+        hist, hist_dir = jsonl_history
+        _write_msg(hist_dir, "a", "b", "exact", "2026-02-25T10:00:00+00:00")
+        cursor = datetime(2026, 2, 25, 10, 0, 0, tzinfo=timezone.utc)
+        # strictly-after semantics: a message AT the cursor is already read
+        assert hist.get_unread(last_read=cursor) == []
