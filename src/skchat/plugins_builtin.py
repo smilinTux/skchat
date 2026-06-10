@@ -17,6 +17,7 @@ Trigger-based plugins (SKChatPlugin subclasses):
 
 from __future__ import annotations
 
+import logging
 import re
 import subprocess
 from datetime import datetime, timezone
@@ -24,6 +25,8 @@ from typing import Optional
 
 from .models import ChatMessage
 from .plugins import ChatPlugin, SKChatPlugin
+
+logger = logging.getLogger(__name__)
 
 
 class LinkPreviewPlugin(ChatPlugin):

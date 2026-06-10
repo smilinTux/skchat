@@ -101,7 +101,18 @@ def get_agent_identity(agent: Optional[str] = None) -> str:
     try:
         from capauth.agent_identity import resolve_agent_identity
 
-        return resolve_agent_identity(agent).capauth_uri
+        ident = resolve_agent_identity(agent)
+        # The resolver yields a ``local`` floor (capauth:local@…) when no real
+        # agent resolves. An explicitly-set SKCHAT_IDENTITY is meant to override
+        # the resolved identity (see this module's docstring step 3 and the
+        # skchat README), so prefer it over the generic floor. A real resolved
+        # agent always wins over the env var.
+        if ident.agent != "local":
+            return ident.capauth_uri
+        env_identity = os.environ.get("SKCHAT_IDENTITY")
+        if env_identity:
+            return env_identity
+        return ident.capauth_uri
     except Exception as exc:
         logger.debug("capauth resolver unavailable: %s", exc)
 
