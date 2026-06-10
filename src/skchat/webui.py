@@ -414,11 +414,29 @@ def _render_messages(history, identity: str) -> str:
         css = _msg_css(sender, identity)
         name = _display_name(sender)
         safe = content.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+        att_html = ""
+        for att in getattr(m, "attachments", []) or []:
+            fname = att.filename.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            if att.mime_type.startswith("image/") and att.thumbnail_id:
+                att_html += (
+                    f'<a href="/file/{att.transfer_id}" target="_blank">'
+                    f'<img class="att-img" src="/file/{att.transfer_id}/thumb" '
+                    f'alt="{fname}" loading="lazy"></a>'
+                )
+            else:
+                kb = max(1, att.size // 1024)
+                att_html += (
+                    f'<a class="att-file" href="/file/{att.transfer_id}">'
+                    f'\U0001F4C4 {fname} · {kb} KB · {att.mime_type}</a>'
+                )
+
         parts.append(
             f'<div class="msg {css}">'
             f'<span class="ts">{ts_str}</span>'
             f'<span class="who">{name}</span>'
             f'<span class="text">{safe}</span>'
+            f"{att_html}"
             f"</div>"
         )
     return "\n".join(parts)
