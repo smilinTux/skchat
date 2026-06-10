@@ -57,6 +57,30 @@ def _peer_css_class(sender: str) -> str:
     return "msg-other"
 
 
+def parse_file_command(text: str):
+    """Parse '/file <path>' or '@name /file <path>'. Returns (recipient|None, path) or None."""
+    recipient = None
+    t = text.strip()
+    if t.startswith("@"):
+        parts = t.split(" ", 1)
+        recipient = parts[0][1:]
+        t = parts[1].strip() if len(parts) > 1 else ""
+    if t.startswith("/file "):
+        path = t[len("/file "):].strip()
+        if path:
+            return (recipient, path)
+    return None
+
+
+def format_attachment_label(attachments) -> str:
+    """One-line indicator for a message's attachments (TUI message list)."""
+    if not attachments:
+        return ""
+    names = [a.get("filename", "file") if isinstance(a, dict) else getattr(a, "filename", "file")
+             for a in attachments]
+    return "📎 " + ", ".join(names)
+
+
 def _common_prefix(strs: list[str]) -> str:
     if not strs:
         return ""
@@ -91,6 +115,7 @@ def _fetch_recent_messages() -> list[dict]:
                     "sender": m.sender,
                     "recipient": getattr(m, "recipient", ""),
                     "content": m.content,
+                    "attachments": getattr(m, "attachments", []),
                     "thread_id": getattr(m, "thread_id", ""),
                     "timestamp": str(m.timestamp) if m.timestamp else "",
                 }
@@ -193,6 +218,9 @@ class SKChatTUI(App):
 
             sender = str(msg.get("sender", "unknown"))
             content = str(msg.get("content", ""))
+            att = format_attachment_label(msg.get("attachments"))
+            if att:
+                content = att if not content else f"{content} {att}"
             ts_raw = msg.get("timestamp", "")
             try:
                 if isinstance(ts_raw, str):
@@ -228,6 +256,13 @@ class SKChatTUI(App):
     async def _send(self, text: str) -> None:
         """Parse text for @mention prefix then dispatch via skchat CLI."""
         recipient: Optional[str] = None
+
+        # '/file <path>' (optionally '@name /file <path>') sends a file attachment.
+        fc = parse_file_command(text)
+        if fc is not None:
+            file_recipient, path = fc
+            await self._send_file(file_recipient or "lumina", path)
+            return
 
         # @mention at start overrides group mode
         if text.startswith("@"):
@@ -269,6 +304,35 @@ class SKChatTUI(App):
         )
         container.mount(Label(label_text, classes="msg-self"))
         container.scroll_end(animate=False)
+
+    async def _send_file(self, recipient: str, path: str) -> None:
+        env = {**os.environ, "SKCHAT_IDENTITY": SELF_IDENTITY}
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "skchat",
+                "send-file",
+                recipient,
+                path,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env,
+            )
+            await asyncio.wait_for(proc.wait(), timeout=30)
+            ok = proc.returncode == 0
+        except Exception as e:
+            logger.warning("tui.py: %s", e)
+            ok = False
+        ts_str = datetime.now().strftime("%H:%M")
+        suffix = "" if ok else " [!]"
+        fname = os.path.basename(path)
+        container = self.query_one("#messages", ScrollableContainer)
+        label_text = (
+            f"\\[{ts_str}] you → {_markup_escape(recipient)}: "
+            f"📎 {_markup_escape(fname)}{suffix}"
+        )
+        container.mount(Label(label_text, classes="msg-self"))
+        container.scroll_end(animate=False)
+        self._status_flash(f"Sent file {fname}" if ok else f"File send failed: {fname}")
 
     async def _send_group(self, text: str) -> None:
         env = {**os.environ, "SKCHAT_IDENTITY": SELF_IDENTITY}

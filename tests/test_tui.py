@@ -44,3 +44,18 @@ def test_tui_app_init() -> None:
     assert "ctrl+c" in keys
     assert "ctrl+g" in keys
     assert "tab" in keys
+
+
+def test_parse_file_command():
+    from skchat.tui import parse_file_command
+
+    assert parse_file_command("/file /tmp/a.png") == (None, "/tmp/a.png")
+    assert parse_file_command("@bob /file /tmp/a.png") == ("bob", "/tmp/a.png")
+    assert parse_file_command("hello") is None
+
+
+def test_format_attachment_label():
+    from skchat.tui import format_attachment_label
+
+    assert format_attachment_label([{"filename": "p.png", "mime_type": "image/png"}]) == "📎 p.png"
+    assert format_attachment_label([]) == ""
