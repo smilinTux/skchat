@@ -30,7 +30,7 @@ import uuid
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from pydantic import BaseModel, Field
 
@@ -508,6 +508,7 @@ class FileTransferService:
     ) -> None:
         self._identity = identity
         self._skcomm = skcomm
+        self.on_complete: Optional[Callable[[str, str], None]] = None
         _base = (base_dir or Path("~/.skchat")).expanduser()
         self._transfers_dir = _base / "transfers"
         self._received_dir = _base / "received"
@@ -693,6 +694,11 @@ class FileTransferService:
                 existing = _json.loads(meta_path.read_text())
                 existing["status"] = "ready_to_assemble"
                 meta_path.write_text(_json.dumps(existing, indent=2))
+            if self.on_complete is not None:
+                try:
+                    self.on_complete(msg.get("transfer_id", ""), msg.get("sender", ""))
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("on_complete callback failed: %s", exc)
 
     # ------------------------------------------------------------ receive
 

@@ -86,3 +86,26 @@ class AttachmentService:
         self._history.save(msg)
         logger.info("sent attachment %s (%s) to %s", ref.filename, transfer_id, recipient)
         return msg
+
+    def on_transfer_complete(self, transfer_id: str, sender: str) -> Optional[ChatMessage]:
+        """Called when an inbound transfer finishes: assemble + post a message."""
+        path = self._files.receive_file(transfer_id)
+        if path is None:
+            logger.warning("transfer %s completed but no file assembled", transfer_id)
+            return None
+        path = Path(path)
+        ref = self._build_ref(path, transfer_id, direction="received")
+        msg = ChatMessage(
+            sender=sender or "capauth:unknown@skworld.io",
+            recipient=self._identity,
+            content="",
+            attachments=[ref],
+        )
+        self._history.save(msg)
+        logger.info("received attachment %s (%s) from %s", ref.filename, transfer_id, sender)
+        return msg
+
+    def bind(self, file_service: Any = None) -> None:
+        """Wire this service's on_transfer_complete into a FileTransferService."""
+        target = file_service or self._files
+        target.on_complete = self.on_transfer_complete
