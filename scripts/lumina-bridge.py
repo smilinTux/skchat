@@ -51,6 +51,11 @@ POLL_INTERVAL = int(os.environ.get("LUMINA_BRIDGE_INTERVAL", "3"))
 RATE_LIMIT_SECONDS = 10
 CONTEXT_MESSAGES = 5
 
+# When True, the consciousness loop still runs (poll, dedup, generate replies)
+# but no reply is actually delivered — send_reply logs what it WOULD send
+# instead. Toggled by the --dry-run CLI flag.
+DRY_RUN = False
+
 OUTBOX_PATH = Path.home() / ".skcomm" / "outbox"
 INBOX_PATH = Path.home() / ".skcomm" / "inbox"
 
@@ -776,6 +781,16 @@ def send_reply(original_msg: dict, reply_text: str) -> None:
     sender_peer = original_msg.get("sender", OPUS_IDENTITY)
     thread_id = original_msg.get("thread_id")
     reply_to = original_msg.get("message_id")
+
+    if DRY_RUN:
+        logger.info(
+            "[dry-run] would send reply to %s (%d chars): %s",
+            sender_peer,
+            len(reply_text),
+            reply_text,
+        )
+        return
+
     try:
         deliver_reply_to_inbox(
             reply_text=reply_text,
@@ -793,6 +808,27 @@ def send_reply(original_msg: dict, reply_text: str) -> None:
 
 
 # ─── Main loop ────────────────────────────────────────────────────────────────
+
+def _build_arg_parser():
+    """Build the CLI argument parser for the bridge.
+
+    Returns:
+        argparse.ArgumentParser with the ``--dry-run`` flag.
+    """
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog="lumina-bridge",
+        description="Lumina consciousness bridge — polls the inbox and replies as Lumina.",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=False,
+        help="Run the loop but do NOT deliver replies — log what would be sent instead.",
+    )
+    return parser
+
 
 def run_bridge() -> None:
     """Main polling loop."""
@@ -964,4 +1000,8 @@ def run_bridge() -> None:
 
 
 if __name__ == "__main__":
+    _args = _build_arg_parser().parse_args()
+    DRY_RUN = _args.dry_run
+    if DRY_RUN:
+        logger.info("Lumina bridge running in --dry-run mode: replies will NOT be delivered.")
     run_bridge()
