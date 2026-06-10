@@ -46,3 +46,31 @@ def test_pair_page_has_selector_and_qr():
     html = TestClient(webui.app).get("/pair").text
     for tok in ["/pair/qr", "Syncthing", "Tailscale", "HTTPS", "Embed", 'id="pair-qr"']:
         assert tok in html, tok
+
+
+def test_pair_accept_ok(monkeypatch):
+    import skcomms.pairing as P
+    seen = {}
+    def _accept(src, **kw):
+        seen["src"] = src
+        return {"fqid": "opus@chef.skworld", "fingerprint": "CD"*20}
+    monkeypatch.setattr(P, "accept_pairing", _accept)
+    r = TestClient(webui.app).post("/pair/accept", json={"uri": "skp://pair?v=1&fqid=opus@chef.skworld&fp=CDCD"})
+    assert r.status_code == 200, r.text
+    assert seen["src"].startswith("skp://pair?")
+    assert r.json()["fqid"] == "opus@chef.skworld"
+
+
+def test_pair_accept_mismatch_is_400(monkeypatch):
+    import skcomms.pairing as P
+    def _accept(src, **kw):
+        raise ValueError("fingerprint mismatch for opus@chef.skworld — refusing to pair")
+    monkeypatch.setattr(P, "accept_pairing", _accept)
+    r = TestClient(webui.app).post("/pair/accept", json={"uri": "skp://pair?v=1&fqid=x&fp=00"})
+    assert r.status_code == 400
+    assert "mismatch" in r.json()["detail"].lower()
+
+
+def test_pair_accept_missing_uri_is_400():
+    r = TestClient(webui.app).post("/pair/accept", json={})
+    assert r.status_code == 400

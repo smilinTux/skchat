@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import (
+    Body,
     FastAPI,
     File,
     Form,
@@ -558,6 +559,28 @@ refresh();
 @app.get("/pair", response_class=HTMLResponse)
 async def pair_page() -> HTMLResponse:
     return HTMLResponse(_PAIR_HTML)
+
+
+@app.post("/pair/accept")
+async def pair_accept(payload: dict = Body(...)):
+    """Accept a scanned/pasted skp:// pairing URI.
+
+    Delegates to ``skcomms.pairing.accept_pairing`` which securely verifies the
+    key fingerprint before TOFU-adding the peer; a fingerprint mismatch or an
+    unresolvable key raises ``ValueError`` → mapped to HTTP 400.
+    """
+    from skcomms import pairing
+
+    uri = (payload or {}).get("uri", "").strip()
+    if not uri:
+        raise HTTPException(status_code=400, detail="missing 'uri'")
+    try:
+        res = pairing.accept_pairing(uri)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    # peer list / a system note may change
+    asyncio.create_task(_ws_broadcast({"type": "new"}))
+    return res
 
 
 @app.get("/messages", response_class=HTMLResponse)
