@@ -294,6 +294,60 @@ def test_daemon_health_endpoint(inbox_dir):
 
 
 # ---------------------------------------------------------------------------
+# Test — attachment wiring: _init_attachments binds on_complete (no live transport)
+# ---------------------------------------------------------------------------
+
+
+def test_init_attachments_binds_on_complete(tmp_path):
+    """``_init_attachments`` builds a persistent FileTransferService and binds
+    the AttachmentService's ``on_transfer_complete`` into it.
+
+    This is a focused unit test of the daemon wiring helper — it does NOT start
+    the poll loop or touch any live transport / network.  After wiring, the
+    file_service's ``on_complete`` callback must be set so that a completed
+    inbound transfer posts a chat message.
+    """
+    from skchat.attachments import AttachmentService
+    from skchat.files import FileTransferService
+
+    mock_history = MagicMock()
+
+    daemon = ChatDaemon(interval=0.05, quiet=True)
+    # Patch FileTransferService so it writes under a tmp dir, not real ~/.skchat.
+    with patch("skchat.files.FileTransferService") as _fs_cls:
+        fs = FileTransferService("capauth:bob@skworld.io", base_dir=tmp_path / ".skchat")
+        _fs_cls.return_value = fs
+        svc = daemon._init_attachments(
+            history=mock_history,
+            identity="capauth:bob@skworld.io",
+            skcomm=MagicMock(),
+        )
+
+    assert svc is not None
+    assert isinstance(svc, AttachmentService)
+    # The persistent receive FileTransferService is stored on the daemon ...
+    assert daemon._file_service is fs
+    assert daemon._attachment_service is svc
+    # ... and the on_complete callback is wired to post inbound messages.
+    assert fs.on_complete is not None
+    assert fs.on_complete == svc.on_transfer_complete
+
+
+def test_init_attachments_non_fatal_on_failure():
+    """If attachment wiring blows up, ``_init_attachments`` returns None and the
+    daemon stays usable (the call must not raise)."""
+    daemon = ChatDaemon(interval=0.05, quiet=True)
+    with patch("skchat.files.FileTransferService", side_effect=RuntimeError("boom")):
+        svc = daemon._init_attachments(
+            history=MagicMock(),
+            identity="capauth:bob@skworld.io",
+            skcomm=MagicMock(),
+        )
+    assert svc is None
+    assert daemon._attachment_service is None
+
+
+# ---------------------------------------------------------------------------
 # Test 3 — daemon counts zero messages when inbox is empty
 # ---------------------------------------------------------------------------
 

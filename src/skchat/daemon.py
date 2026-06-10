@@ -75,6 +75,11 @@ class ChatDaemon:
         self.advocacy_responses: int = 0
         self._outbox_messenger: Optional[object] = None
         self._skcomm: Optional[object] = None  # set in start(), used for reconnect
+        # Persistent receive-side file-transfer plumbing (set by _init_attachments).
+        # _file_service stores incoming FILE_* chunks; _attachment_service.on_complete
+        # is bound to it so a completed inbound transfer posts a chat message.
+        self._file_service: Optional[object] = None
+        self._attachment_service: Optional[object] = None
 
         if log_file:
             logging.basicConfig(
@@ -189,6 +194,7 @@ class ChatDaemon:
             queue = self._init_queue(skcomm, identity)
             bridge = self._init_memory_bridge(history)
             self._init_webrtc(skcomm, identity)
+            self._init_attachments(history=history, identity=identity, skcomm=skcomm)
             watchdog = self._init_watchdog(skcomm)
             try:
                 from skchat.advocacy import AdvocacyEngine
@@ -219,6 +225,8 @@ class ChatDaemon:
             ]
             if self._webrtc_active:
                 subsystems.append("webrtc")
+            if self._attachment_service is not None:
+                subsystems.append("attachments")
             self._log(f"Subsystems ready: {', '.join(subsystems) or 'none'}")
 
         threading.Thread(target=_init_subsystems_bg, daemon=True, name="skchat-init").start()
@@ -257,6 +265,12 @@ class ChatDaemon:
                         )
 
                         for msg in messages:
+                            # Route file-transfer envelopes to the receive-side
+                            # FileTransferService (a completed transfer fires the
+                            # bound on_complete, posting an inbound message). Skip
+                            # normal advocacy/plugin/notify handling for them.
+                            if self._route_file_message(msg):
+                                continue
                             sender_short = msg.sender.split("@")[0].replace("capauth:", "")
                             preview = msg.content[:60] + ("..." if len(msg.content) > 60 else "")
                             self._log(f"  [{sender_short}] {preview}")
@@ -514,6 +528,87 @@ class ChatDaemon:
         except Exception as exc:
             logger.warning("daemon.py: %s", exc)
             self._log(f"WebRTC init skipped: {exc}", "warning")
+
+    def _init_attachments(self, history: object, identity: str, skcomm: object) -> object:
+        """Wire the receive-side AttachmentService into a FileTransferService.
+
+        Builds a *persistent* FileTransferService (the one the poll loop routes
+        incoming FILE_TRANSFER_INIT / FILE_CHUNK / FILE_TRANSFER_DONE messages
+        through) and an AttachmentService over the same identity + history, then
+        binds ``AttachmentService.on_transfer_complete`` as the file_service's
+        ``on_complete`` callback.  When a transfer completes, the assembled file
+        is posted as an inbound chat message so received images/files appear in
+        the recipient's conversation.
+
+        Stores both on ``self._file_service`` / ``self._attachment_service``.
+
+        Failure is NON-FATAL — the daemon keeps running without attachment
+        wiring if any step raises.
+
+        Args:
+            history: ChatHistory instance (where inbound messages are saved).
+            identity: Local CapAuth identity URI (recipient of inbound files).
+            skcomm: Initialized SKComm instance (transport for the service).
+
+        Returns:
+            AttachmentService or None if initialization fails.
+        """
+        try:
+            from .attachments import AttachmentService
+            from .files import FileTransferService
+
+            file_service = FileTransferService(identity, skcomm=skcomm)
+            attach = AttachmentService(
+                identity=identity,
+                history=history,
+                file_service=file_service,
+            )
+            attach.bind(file_service)
+            self._file_service = file_service
+            self._attachment_service = attach
+            return attach
+        except Exception as exc:
+            logger.warning("daemon.py: %s", exc)
+            self._log(f"AttachmentService init skipped: {exc}", "warning")
+            self._file_service = None
+            self._attachment_service = None
+            return None
+
+    def _route_file_message(self, msg: "ChatMessage") -> bool:
+        """Route a FILE_TRANSFER_* message to the persistent FileTransferService.
+
+        Incoming file-transfer envelopes ride as JSON dicts (``{"type":
+        "FILE_TRANSFER_INIT" | "FILE_CHUNK" | "FILE_TRANSFER_DONE", ...}``) and
+        are surfaced by the transport as plain-text ChatMessages.  This forwards
+        them to ``store_incoming_chunk`` so chunks are persisted and a completed
+        transfer fires the bound ``on_complete`` (posting an inbound message).
+
+        Returns True if the message was a recognised file-transfer envelope and
+        was handed off (so the poll loop can skip normal processing for it).
+        """
+        if self._file_service is None:
+            return False
+        content = getattr(msg, "content", "") or ""
+        if "FILE_TRANSFER_INIT" not in content and "FILE_CHUNK" not in content \
+                and "FILE_TRANSFER_DONE" not in content:
+            return False
+        try:
+            payload = json.loads(content)
+        except Exception:
+            return False
+        if not isinstance(payload, dict):
+            return False
+        msg_type = payload.get("type", "")
+        if msg_type not in ("FILE_TRANSFER_INIT", "FILE_CHUNK", "FILE_TRANSFER_DONE"):
+            return False
+        # Carry the envelope sender through so on_complete can attribute the
+        # inbound message to the right peer.
+        payload.setdefault("sender", getattr(msg, "sender", ""))
+        try:
+            self._file_service.store_incoming_chunk(payload)
+        except Exception as exc:
+            logger.warning("file-transfer routing failed: %s", exc)
+        return True
 
     def _init_memory_bridge(self, history: object) -> object:
         """Initialize the MemoryBridge for hourly auto-capture to skcapstone.
