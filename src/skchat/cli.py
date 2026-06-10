@@ -1662,6 +1662,103 @@ def export(fmt: str, output: Optional[str], peer: Optional[str]) -> None:
 
 @main.command()
 @click.option(
+    "--json-out",
+    "json_out",
+    is_flag=True,
+    default=False,
+    help="Emit the summary as a JSON document instead of a table.",
+)
+@click.option(
+    "--top",
+    "top_n",
+    type=int,
+    default=10,
+    show_default=True,
+    help="How many senders/groups to show in the table view.",
+)
+def stats(json_out: bool, top_n: int) -> None:
+    """Summarise the local chat history.
+
+    Reports total messages, a breakdown by sender, by day, and by group
+    (thread / conversation), plus the first and last message timestamps.
+    Reads the same JSONL history store as ``search`` and ``export``.
+
+    Examples:
+
+        skchat stats
+
+        skchat stats --top 5
+
+        skchat stats --json-out
+    """
+    import json as _json
+    from collections import Counter
+
+    chat_history = _get_history()
+    # Pull the whole on-disk history; load() reads the JSONL files newest-first.
+    messages = chat_history.load(limit=1_000_000)
+
+    total = len(messages)
+    by_sender: Counter = Counter()
+    by_day: Counter = Counter()
+    by_group: Counter = Counter()
+    timestamps: list[datetime] = []
+
+    for m in messages:
+        by_sender[m.sender] += 1
+        ts = m.timestamp
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        timestamps.append(ts)
+        by_day[ts.strftime("%Y-%m-%d")] += 1
+        # "group" = the thread/conversation grouping; direct messages have none.
+        group_key = m.thread_id or "(direct)"
+        by_group[group_key] += 1
+
+    first_ts = min(timestamps).isoformat() if timestamps else None
+    last_ts = max(timestamps).isoformat() if timestamps else None
+
+    if json_out:
+        payload = {
+            "total": total,
+            "by_sender": dict(by_sender),
+            "by_day": dict(sorted(by_day.items())),
+            "by_group": dict(by_group),
+            "first_timestamp": first_ts,
+            "last_timestamp": last_ts,
+        }
+        click.echo(_json.dumps(payload, indent=2, ensure_ascii=False))
+        return
+
+    _print("")
+    if total == 0:
+        _print("  [dim]No messages in history.[/]")
+        _print("")
+        return
+
+    def _short_uri(uri: str) -> str:
+        u = (uri or "?").replace("capauth:", "").replace("group:", "grp/")
+        return u.split("@")[0][:24] if "@" in u else u[:24]
+
+    _print(f"  [bold]Total messages:[/] {total}")
+    _print(f"  [bold]Span:[/] {first_ts}  →  {last_ts}")
+    _print("")
+    _print("  [bold cyan]By sender[/]")
+    for sender, count in by_sender.most_common(top_n):
+        _print(f"    {_short_uri(sender):<26} {count}")
+    _print("")
+    _print("  [bold cyan]By group[/]")
+    for group, count in by_group.most_common(top_n):
+        _print(f"    {_short_uri(group):<26} {count}")
+    _print("")
+    _print("  [bold cyan]By day[/]")
+    for day, count in sorted(by_day.items()):
+        _print(f"    {day:<26} {count}")
+    _print("")
+
+
+@main.command()
+@click.option(
     "--to", "peer", default="lumina", show_default=True, help="Recipient peer name or capauth URI."
 )
 @click.option(

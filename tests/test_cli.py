@@ -646,6 +646,121 @@ class TestBuildWatchTable:
         assert panel is not None
 
 
+class TestStatsCommand:
+    """Tests for the 'skchat stats' command."""
+
+    @staticmethod
+    def _seed_history(history_dir, rows) -> None:
+        """Write ChatMessage rows into a real ChatHistory JSONL store.
+
+        Args:
+            history_dir: tmp directory backing the ChatHistory.
+            rows: list of (sender, recipient, content, thread_id, iso_ts).
+        """
+        from skchat.history import ChatHistory
+        from skchat.models import ChatMessage
+
+        hist = ChatHistory(store=MagicMock(), history_dir=history_dir)
+        for sender, recipient, content, thread_id, iso_ts in rows:
+            msg = ChatMessage(
+                sender=sender,
+                recipient=recipient,
+                content=content,
+                thread_id=thread_id,
+                timestamp=datetime.fromisoformat(iso_ts),
+            )
+            # Write directly so the on-disk file name doesn't depend on "today".
+            path = history_dir / f"{msg.timestamp.strftime('%Y-%m-%d')}.jsonl"
+            with path.open("a", encoding="utf-8") as fh:
+                fh.write(msg.model_dump_json())
+                fh.write("\n")
+
+    @patch("skchat.cli._get_history")
+    def test_stats_counts(
+        self,
+        mock_hist_fn: MagicMock,
+        runner: CliRunner,
+        tmp_path,
+    ) -> None:
+        """Happy path: totals, by-sender, by-day are all correct."""
+        from skchat.history import ChatHistory
+
+        hist_dir = tmp_path / "history"
+        hist_dir.mkdir()
+        self._seed_history(
+            hist_dir,
+            [
+                ("capauth:alice@test", "capauth:bob@test", "hi", "t1", "2026-02-23T10:00:00+00:00"),
+                ("capauth:alice@test", "capauth:bob@test", "yo", "t1", "2026-02-23T11:00:00+00:00"),
+                ("capauth:bob@test", "capauth:alice@test", "sup", None, "2026-02-24T09:00:00+00:00"),
+            ],
+        )
+        mock_hist_fn.return_value = ChatHistory(store=MagicMock(), history_dir=hist_dir)
+
+        result = runner.invoke(main, ["stats"])
+        assert result.exit_code == 0
+        # total = 3
+        assert "3" in result.output
+        # both senders represented
+        assert "alice" in result.output.lower()
+        assert "bob" in result.output.lower()
+
+    @patch("skchat.cli._get_history")
+    def test_stats_empty(
+        self,
+        mock_hist_fn: MagicMock,
+        runner: CliRunner,
+        tmp_path,
+    ) -> None:
+        """Edge case: empty history is handled gracefully."""
+        from skchat.history import ChatHistory
+
+        hist_dir = tmp_path / "history"
+        hist_dir.mkdir()
+        mock_hist_fn.return_value = ChatHistory(store=MagicMock(), history_dir=hist_dir)
+
+        result = runner.invoke(main, ["stats"])
+        assert result.exit_code == 0
+        assert "No messages" in result.output
+
+    @patch("skchat.cli._get_history")
+    def test_stats_json_out(
+        self,
+        mock_hist_fn: MagicMock,
+        runner: CliRunner,
+        tmp_path,
+    ) -> None:
+        """--json-out emits a well-shaped JSON document."""
+        import json
+
+        from skchat.history import ChatHistory
+
+        hist_dir = tmp_path / "history"
+        hist_dir.mkdir()
+        self._seed_history(
+            hist_dir,
+            [
+                ("capauth:alice@test", "capauth:bob@test", "hi", "t1", "2026-02-23T10:00:00+00:00"),
+                ("capauth:bob@test", "capauth:alice@test", "yo", "t1", "2026-02-23T11:00:00+00:00"),
+                ("capauth:bob@test", "capauth:alice@test", "x", None, "2026-02-24T09:00:00+00:00"),
+            ],
+        )
+        mock_hist_fn.return_value = ChatHistory(store=MagicMock(), history_dir=hist_dir)
+
+        result = runner.invoke(main, ["stats", "--json-out"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["total"] == 3
+        assert data["by_sender"]["capauth:bob@test"] == 2
+        assert data["by_sender"]["capauth:alice@test"] == 1
+        assert data["by_day"]["2026-02-23"] == 2
+        assert data["by_day"]["2026-02-24"] == 1
+        assert data["first_timestamp"] == "2026-02-23T10:00:00+00:00"
+        assert data["last_timestamp"] == "2026-02-24T09:00:00+00:00"
+        # by_group keyed by thread/conversation grouping
+        assert data["by_group"]["t1"] == 2
+
+
 class TestStatusCommand:
     """Tests for the 'skchat status' command."""
 
