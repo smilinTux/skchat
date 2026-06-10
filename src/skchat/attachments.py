@@ -102,7 +102,7 @@ class AttachmentService:
             return False
 
     def _select_transport(self, recipient, transport="auto", webrtc_ok=None, tailscale_ok=None):
-        """Pick a transport. 'auto' tries fast-paths, falls back to skcomm."""
+        """Pick a transport. 'auto' tries fast-paths, falls back to skcomms (default)."""
         if transport != "auto":
             return transport
         webrtc_ok = webrtc_ok or self._webrtc_available
@@ -111,7 +111,7 @@ class AttachmentService:
             return "webrtc"
         if tailscale_ok(recipient):
             return "tailscale"
-        return "skcomm"
+        return "skcomms"
 
     def send_attachment(
         self,
@@ -131,10 +131,10 @@ class AttachmentService:
                     transfer_id = sender(recipient, path)
                 except Exception as exc:  # noqa: BLE001
                     logger.warning(
-                        "webrtc send_file_p2p failed (%s), falling back to skcomm", exc
+                        "webrtc send_file_p2p failed (%s), falling back to skcomms", exc
                     )
                     transfer_id = None
-        # tailscale direct-send is a future enhancement; falls through to skcomm.
+        # tailscale direct-send is a future enhancement; falls through to skcomms.
         if transfer_id is None:
             transfer_id = self._files.send_file(recipient, path)
         ref = self._build_ref(path, transfer_id, direction="sent")

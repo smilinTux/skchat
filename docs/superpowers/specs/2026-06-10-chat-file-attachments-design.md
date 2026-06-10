@@ -19,7 +19,7 @@ network transport**.
   per-chunk + whole-file **SHA-256 verified** transfer; chunk/metadata
   persistence under `~/.skchat/transfers/`; daemon-driven reassembly into
   `~/.skchat/received/<transfer_id>/<filename>`.
-- MCP tools `send_file` (SKComm `FILE_CHUNK`), `send_file_p2p` (WebRTC data
+- MCP tools `send_file` (skcomms `FILE_CHUNK`), `send_file_p2p` (WebRTC data
   channel), `list_transfers`.
 - `webui.py`: FastAPI + HTMX **text-only** chat (`POST /send` takes
   `recipient`+`content`; `/ws/chat` WebSocket pushes `{type:"new"}`).
@@ -68,7 +68,7 @@ needed). `ContentType` unchanged; attachments are orthogonal to body type.
 
 **3. Transport selection (the "best method" decision):**
 - **Default — always available, never relies on a mesh:** the existing
-  `FileTransferService` over **SKComm** (`FILE_CHUNK`). Chunked, encrypted,
+  `FileTransferService` over **skcomms** (`FILE_CHUNK`). Chunked, encrypted,
   SHA-256-verified, **works when the peer is offline** (queued). This is the
   floor — the feature is fully functional with only this.
 - **Optional fast-paths (used only when present, auto-detected, graceful
@@ -81,8 +81,8 @@ needed). `ContentType` unchanged; attachments are orthogonal to body type.
 - **Substrate, not a new pipe:** skcomms/Syncthing remains the realm replication
   substrate the default transport can ride later; we do not build a second
   parallel file pipeline now (YAGNI).
-- `transport="auto"` (default) tries fast-paths, falls back to SKComm; explicit
-  `"skcomm"|"webrtc"|"tailscale"` override allowed.
+- `transport="auto"` (default) tries fast-paths, falls back to skcomms; explicit
+  `"skcomms"|"webrtc"|"tailscale"` override allowed.
 
 **4. MIME + thumbnails** (`media.py`):
 - MIME detection: `filetype` (magic-bytes) with `mimetypes` fallback.
@@ -137,7 +137,7 @@ needed). `ContentType` unchanged; attachments are orthogonal to body type.
 - **Size cap:** configurable, default **100 MB**; over-cap upload → 413 + clear
   UI error before any transfer starts.
 - **Transport degradation:** fast-path failure (no WebRTC / no tailscale / mesh
-  down) falls back to SKComm silently; offline peer → queued.
+  down) falls back to skcomms silently; offline peer → queued.
 - **Thumbnail/MIME failure** → generic file badge, transfer unaffected.
 
 ## Security
@@ -156,7 +156,7 @@ needed). `ContentType` unchanged; attachments are orthogonal to body type.
   posts the outbound message + FileRef; `on_transfer_complete` posts inbound +
   MIME + thumbnail; MIME detection (image/pdf/unknown); thumbnail gen + bomb
   guard; transport selection (auto picks fast-path when present, falls back to
-  SKComm when not — including "tailscale absent → SKComm").
+  skcomms when not — including "tailscale absent → skcomms").
 - **webui:** `POST /upload` multipart (image + non-image, over-cap → 413);
   `GET /file/<id>` + `/thumb` (happy + path-traversal attempt rejected + 404);
   `_render_messages` emits inline `<img>` for image attachments and a download

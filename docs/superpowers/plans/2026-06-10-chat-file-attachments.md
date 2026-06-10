@@ -4,7 +4,7 @@
 
 **Goal:** Let a user drop/paste/pick an image or file in the skchat web window and have it transfer to the peer (encrypted, chunked) and render inline (image thumbnails / file download badges) with progress.
 
-**Architecture:** A surface-agnostic core — `FileRef`/`attachments` on `ChatMessage`, an `AttachmentService` that wraps the existing `FileTransferService` (send → post a message with the FileRef; receive → assemble → post an inbound message), MIME+thumbnail helpers, and a transport selector (SKComm default; WebRTC/Tailscale optional fast-paths, never required) — consumed by the webui (upload endpoint, download/thumb endpoints, inline rendering, drag/drop/paste, WebSocket progress).
+**Architecture:** A surface-agnostic core — `FileRef`/`attachments` on `ChatMessage`, an `AttachmentService` that wraps the existing `FileTransferService` (send → post a message with the FileRef; receive → assemble → post an inbound message), MIME+thumbnail helpers, and a transport selector (skcomms default; WebRTC/Tailscale optional fast-paths, never required) — consumed by the webui (upload endpoint, download/thumb endpoints, inline rendering, drag/drop/paste, WebSocket progress).
 
 **Tech Stack:** Python 3.12, Pydantic v2, FastAPI + HTMX, Pillow (thumbnails), `filetype` (MIME), pytest. Repo: `/home/cbrd21/clawd/skcapstone-repos/skchat`.
 
@@ -305,7 +305,7 @@ Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 - Create: `src/skchat/attachments.py`
 - Test: `tests/test_attachments.py`
 
-Notes for the implementer: `FileTransferService(identity).send_file(recipient, Path) -> transfer_id: str` already chunks+encrypts+sends over SKComm and persists state under `~/.skchat/transfers/`. `ChatHistory(history_dir=...).save(ChatMessage)` appends to dated JSONL. Inject both so tests use fakes/tmp dirs.
+Notes for the implementer: `FileTransferService(identity).send_file(recipient, Path) -> transfer_id: str` already chunks+encrypts+sends over skcomms and persists state under `~/.skchat/transfers/`. `ChatHistory(history_dir=...).save(ChatMessage)` appends to dated JSONL. Inject both so tests use fakes/tmp dirs.
 
 - [ ] **Step 1: Write failing tests**
 
@@ -591,13 +591,13 @@ Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 
 ---
 
-## Task 5: Transport selection (default SKComm; optional fast-paths)
+## Task 5: Transport selection (default skcomms; optional fast-paths)
 
 **Files:**
 - Modify: `src/skchat/attachments.py` (a `_select_transport` + `transport` arg on `send_attachment`)
 - Test: `tests/test_attachments.py`
 
-Architecture note: the default `send_file` path (SKComm) MUST work with zero fast-paths. WebRTC/Tailscale are *probes* — if a probe says "available", use it; otherwise fall back to SKComm. **No path may require tailscale.**
+Architecture note: the default `send_file` path (skcomms) MUST work with zero fast-paths. WebRTC/Tailscale are *probes* — if a probe says "available", use it; otherwise fall back to skcomms. **No path may require tailscale.**
 
 - [ ] **Step 1: Write failing tests**
 
@@ -609,7 +609,7 @@ def test_transport_auto_falls_back_to_skcomm_when_no_fastpath(tmp_path):
     # no webrtc, no tailscale available
     chosen = svc._select_transport("capauth:peer@skworld.io", "auto",
                                     webrtc_ok=lambda r: False, tailscale_ok=lambda r: False)
-    assert chosen == "skcomm"
+    assert chosen == "skcomms"
 
 
 def test_transport_auto_prefers_webrtc_then_tailscale(tmp_path):
@@ -622,8 +622,8 @@ def test_transport_auto_prefers_webrtc_then_tailscale(tmp_path):
 
 def test_transport_explicit_override(tmp_path):
     svc, _, _ = _service(tmp_path)
-    assert svc._select_transport("r", "skcomm", webrtc_ok=lambda r: True,
-                                 tailscale_ok=lambda r: True) == "skcomm"
+    assert svc._select_transport("r", "skcomms", webrtc_ok=lambda r: True,
+                                 tailscale_ok=lambda r: True) == "skcomms"
 ```
 
 - [ ] **Step 2: Run to verify failure**
@@ -664,7 +664,7 @@ In `src/skchat/attachments.py`, add to `AttachmentService` and use it in `send_a
             return "webrtc"
         if tailscale_ok(recipient):
             return "tailscale"
-        return "skcomm"
+        return "skcomms"
 ```
 Update `send_attachment` to accept `transport: str = "auto"`, compute `chosen = self._select_transport(recipient, transport)`, and dispatch: for `"webrtc"` call `self._files.send_file_p2p(recipient, path)` if available, else fall back to `send_file`; `"tailscale"` likewise falls back to `send_file` if no tailscale sender exists yet (Tailscale direct-send is a future enhancement — the selector is in place, the default still ships). Record the chosen transport in `msg.metadata["transport"] = chosen`. Always return a valid transfer_id (fall back to `send_file` if a fast-path call raises).
 
@@ -676,7 +676,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 ```bash
 git add src/skchat/attachments.py tests/test_attachments.py
-git commit -m "feat(attachments): transport selector — SKComm default, WebRTC/Tailscale optional
+git commit -m "feat(attachments): transport selector — skcomms default, WebRTC/Tailscale optional
 
 Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 ```

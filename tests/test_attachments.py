@@ -93,13 +93,13 @@ def test_files_fires_on_complete_callback():
     assert called.get("args", (None, None))[0] == "tid-7"
 
 
-def test_transport_auto_falls_back_to_skcomm_when_no_fastpath(tmp_path):
+def test_transport_auto_falls_back_to_skcomms_when_no_fastpath(tmp_path):
     svc, fake_transfer, _ = _service(tmp_path)
     f = tmp_path / "d.bin"; f.write_bytes(b"x")
     # no webrtc, no tailscale available
     chosen = svc._select_transport("capauth:peer@skworld.io", "auto",
                                     webrtc_ok=lambda r: False, tailscale_ok=lambda r: False)
-    assert chosen == "skcomm"
+    assert chosen == "skcomms"
 
 
 def test_transport_auto_prefers_webrtc_then_tailscale(tmp_path):
@@ -112,5 +112,5 @@ def test_transport_auto_prefers_webrtc_then_tailscale(tmp_path):
 
 def test_transport_explicit_override(tmp_path):
     svc, _, _ = _service(tmp_path)
-    assert svc._select_transport("r", "skcomm", webrtc_ok=lambda r: True,
-                                 tailscale_ok=lambda r: True) == "skcomm"
+    assert svc._select_transport("r", "skcomms", webrtc_ok=lambda r: True,
+                                 tailscale_ok=lambda r: True) == "skcomms"
