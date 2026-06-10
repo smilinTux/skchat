@@ -2346,6 +2346,10 @@ if platform.system() == "Darwin":
 
 def _notify(sender_short: str, preview: str) -> None:
     """Fire a desktop notification (best-effort, cross-platform)."""
+    from .notifications import desktop_notifications_enabled
+
+    if not desktop_notifications_enabled():
+        return
     if platform.system() == "Darwin":
         subprocess.run(
             [

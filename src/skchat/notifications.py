@@ -6,8 +6,30 @@ Silently no-ops when notify-send is not available.
 
 from __future__ import annotations
 
+import os
 import subprocess
 from enum import Enum
+
+_DISABLED_VALUES = {"0", "false", "no", "off", ""}
+
+
+def desktop_notifications_enabled() -> bool:
+    """Whether desktop notifications may actually be dispatched.
+
+    Enabled by default (production behavior is unchanged). Set the
+    ``SK_DESKTOP_NOTIFY`` env var to a falsey value (``0``/``false``/``no``/
+    ``off``) to suppress every desktop notification — used by the test suite
+    (``tests/conftest.py`` defaults it off so no test fires a real
+    notification) and useful for headless/cron runs. Opt back in by setting
+    ``SK_DESKTOP_NOTIFY=1``.
+
+    Returns:
+        True when notifications should be dispatched.
+    """
+    val = os.environ.get("SK_DESKTOP_NOTIFY")
+    if val is None:
+        return True
+    return val.strip().lower() not in _DISABLED_VALUES
 
 
 class NotificationLevel(Enum):
@@ -28,6 +50,8 @@ class DesktopNotifier:
         self.available = self._check_available()
 
     def _check_available(self) -> bool:
+        if not desktop_notifications_enabled():
+            return False
         return subprocess.run(["which", "notify-send"], capture_output=True).returncode == 0
 
     def notify(
@@ -50,7 +74,7 @@ class DesktopNotifier:
         Returns:
             True if notify-send exited successfully, False otherwise.
         """
-        if not self.available:
+        if not self.available or not desktop_notifications_enabled():
             return False
         cmd = [
             "notify-send",

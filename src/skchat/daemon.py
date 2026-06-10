@@ -263,10 +263,13 @@ class ChatDaemon:
                             try:
                                 import subprocess
 
-                                subprocess.run(
-                                    ["notify-send", "SKChat", f"[{sender_short}] {preview}"],
-                                    capture_output=True,
-                                )
+                                from .notifications import desktop_notifications_enabled
+
+                                if desktop_notifications_enabled():
+                                    subprocess.run(
+                                        ["notify-send", "SKChat", f"[{sender_short}] {preview}"],
+                                        capture_output=True,
+                                    )
                             except Exception as exc:
                                 logger.warning("notify-send failed: %s", exc)
                             if engine:

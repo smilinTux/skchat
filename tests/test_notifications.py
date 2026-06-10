@@ -9,6 +9,14 @@ import pytest
 from skchat.notifications import DesktopNotifier, NotificationLevel
 
 
+@pytest.fixture(autouse=True)
+def _enable_desktop_notify(monkeypatch):
+    """This module exercises the notify dispatch path itself, so re-enable the
+    SK_DESKTOP_NOTIFY gate that conftest defaults off for the rest of the suite.
+    subprocess.run is mocked in every test here, so nothing real ever fires."""
+    monkeypatch.setenv("SK_DESKTOP_NOTIFY", "1")
+
+
 @pytest.fixture
 def notifier_available():
     """DesktopNotifier with notify-send marked available."""

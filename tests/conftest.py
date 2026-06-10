@@ -6,6 +6,15 @@ from __future__ import annotations
 # No sys.path manipulation needed — see [tool.pytest.ini_options] pythonpath
 # in pyproject.toml and `pip install -e` in the dev environment.
 
+import os
+
+# Suppress REAL desktop notifications during the test suite. Several code paths
+# (DesktopNotifier, the daemon's message loop, the CLI --notify watcher) shell
+# out to notify-send/osascript and would otherwise pop notifications on the
+# developer's desktop while tests run. Default them off for the whole session;
+# a test (or a developer) can opt back in with SK_DESKTOP_NOTIFY=1 in the env.
+os.environ.setdefault("SK_DESKTOP_NOTIFY", "0")
+
 import asyncio
 import json
 from datetime import datetime, timezone
