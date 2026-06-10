@@ -908,3 +908,27 @@ class TestStatusCommand:
         assert result.exit_code == 0
         assert "capauth:local@skchat" in result.output
         assert "42" in result.output
+
+
+def test_send_file_posts_chat_message(tmp_path, monkeypatch):
+    monkeypatch.setenv("SKCHAT_HOME", str(tmp_path))
+    from unittest.mock import patch, MagicMock
+    f = tmp_path / "doc.pdf"; f.write_bytes(b"%PDF-1.4 x")
+    captured = {}
+    fake = MagicMock()
+    def _send_attachment(recipient, path, caption=None):
+        from skchat.models import ChatMessage, FileRef
+        captured["recipient"] = recipient; captured["caption"] = caption
+        return ChatMessage(sender="capauth:me@skworld.io", recipient=recipient,
+            content=caption or "",
+            attachments=[FileRef(transfer_id="t1", filename=path.name, size=1,
+                mime_type="application/pdf", sha256="x", direction="sent")])
+    fake.send_attachment.side_effect = _send_attachment
+    from click.testing import CliRunner
+    from skchat import cli
+    with patch.object(cli, "_attachment_service_for", return_value=fake):
+        r = CliRunner().invoke(cli.main, ["send-file", "capauth:peer@skworld.io",
+                                          str(f), "--caption", "look"])
+    assert r.exit_code == 0, r.output
+    assert captured["recipient"] == "capauth:peer@skworld.io"
+    assert captured["caption"] == "look"

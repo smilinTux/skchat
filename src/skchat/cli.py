@@ -2247,24 +2247,34 @@ def watch(
     )
 
 
+def _attachment_service_for(identity, skcomm):
+    from .attachments import AttachmentService
+    from .files import FileTransferService
+    from .history import ChatHistory
+
+    fs = FileTransferService(identity=identity, skcomm=skcomm)
+    return AttachmentService(identity, ChatHistory(), fs)
+
+
 @main.command(name="send-file")
 @click.argument("recipient")
 @click.argument("file_path", type=click.Path(exists=True, path_type=Path))
-def send_file_cmd(recipient: str, file_path: Path) -> None:
+@click.option("--caption", default=None, help="Optional caption shown with the file.")
+def send_file_cmd(recipient: str, file_path: Path, caption: Optional[str]) -> None:
     """Send a file to a recipient via SKComm.
 
     Chunks and AES-256-GCM encrypts the file, then sends
     FILE_TRANSFER_INIT, FILE_CHUNK (xN), and FILE_TRANSFER_DONE messages.
+    The file is posted to the conversation as a chat message (with an
+    optional ``--caption``), not just a raw transfer.
     Transfer metadata is persisted to ~/.skchat/transfers/.
 
     Examples:
 
         skchat send-file lumina ~/report.pdf
 
-        skchat send-file capauth:bob@skworld.io /tmp/contract.zip
+        skchat send-file capauth:bob@skworld.io /tmp/contract.zip --caption "draft"
     """
-    from .files import FileTransferService
-
     identity = _get_identity()
     try:
         resolved_recipient = resolve_peer_name(recipient)
@@ -2279,13 +2289,13 @@ def send_file_cmd(recipient: str, file_path: Path) -> None:
     except Exception as exc:
         logger.warning("SKComm unavailable for CLI file send: %s", exc)
 
-    service = FileTransferService(identity=identity, skcomm=skcomm)
-
     _print("")
     _print(f"  Sending [cyan]{file_path.name}[/] to [cyan]{resolved_recipient}[/] ...")
 
     try:
-        transfer_id = service.send_file(resolved_recipient, file_path)
+        svc = _attachment_service_for(identity, skcomm)
+        msg = svc.send_attachment(resolved_recipient, file_path, caption=caption)
+        transfer_id = msg.attachments[0].transfer_id
     except FileNotFoundError as exc:
         _print(f"\n  [red]Error:[/] {exc}\n")
         sys.exit(1)
@@ -2296,11 +2306,11 @@ def send_file_cmd(recipient: str, file_path: Path) -> None:
 
     if HAS_RICH and console:
         console.print(
-            f"  [green]Done.[/] Transfer ID: [dim]{transfer_id}[/]\n"
+            f"  [green]Done.[/] Sent {file_path.name} ([dim]{transfer_id}[/]) — posted to chat.\n"
             f"  Track with: [cyan]skchat transfers[/]"
         )
     else:
-        click.echo(f"  Done. Transfer ID: {transfer_id}")
+        click.echo(f"  Sent {file_path.name} ({transfer_id}) — posted to chat.")
     _print("")
 
 
