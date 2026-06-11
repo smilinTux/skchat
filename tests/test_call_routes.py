@@ -155,3 +155,5 @@ def test_call_peers_lists_paired(client):
     assert r.status_code == 200
     peers = r.json()["peers"]
     assert any(p["fqid"] == "lumina@chef.skworld" for p in peers)
+    lumina = next(p for p in peers if p["fqid"] == "lumina@chef.skworld")
+    assert lumina["fingerprint"] == "FP"

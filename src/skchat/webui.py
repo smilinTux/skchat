@@ -78,13 +78,15 @@ except ImportError:
 
 # LiveKit routes — primary video stack (token endpoint + room signalling helper).
 try:
-    from .call_routes import register_call_routes as _register_call_routes
     from .livekit_routes import register_livekit_routes as _register_livekit_routes
-
     _register_livekit_routes(app)
+except ImportError as _e:
+    logger.warning("livekit routes not registered: %s", _e)
+try:
+    from .call_routes import register_call_routes as _register_call_routes
     _register_call_routes(app)
-except ImportError:
-    pass
+except ImportError as _e:
+    logger.warning("call routes not registered: %s", _e)
 
 
 @app.get("/health")
@@ -574,6 +576,7 @@ refresh();
   background:#143;color:#fff;padding:12px;text-align:center;z-index:9999"></div>
 <div id="peer-list" style="max-width:520px;margin:12px auto;font-family:sans-serif"></div>
 <script>
+function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
 async function loadPeers(){
   try{
     const r = await fetch('/call/peers'); if(!r.ok)return;
@@ -583,7 +586,7 @@ async function loadPeers(){
     el.innerHTML = '<h3>Paired peers</h3>' + peers.map(p =>
       '<div style="padding:6px;border-bottom:1px solid #ccc;display:flex;'
       +'justify-content:space-between;align-items:center">'
-      +'<span>'+p.fqid+'</span>'
+      +'<span>'+esc(p.fqid)+'</span>'
       +'<button onclick="callPeer(\''+p.fqid+'\')">📞 Call</button></div>'
     ).join('');
   }catch(e){}
@@ -614,7 +617,7 @@ async function pollRing(){
     const b = document.getElementById('ring-banner');
     if(invites && invites.length){
       const inv = invites[0];
-      b.innerHTML = '📞 Incoming call from '+inv.from_fqid+' '
+      b.innerHTML = '📞 Incoming call from '+esc(inv.from_fqid)+' '
         +'<button onclick="answerPeer(\''+inv.from_fqid+'\')">Accept</button>';
       b.style.display='block';
     } else { b.style.display='none'; }

@@ -522,13 +522,22 @@ setInterval(refreshRecordingState, 5000);  // poll for state in case stopped ext
 (async () => {
   const secure = preflight();
   const cfg = await loadConfig();
+  const qp = new URLSearchParams(location.search);
+  const qpRoom = qp.get('room');
+  const qpIdentity = qp.get('identity');
   const path = location.pathname.replace(/^\/livekit\/?/, '');
-  $('#room').value = path || cfg.default_room;
-  $('#identity').value = localStorage.getItem('skchat.identity') || '';
+  // Query params take precedence over path param and localStorage defaults.
+  $('#room').value = qpRoom || path || cfg.default_room;
+  const storedIdentity = localStorage.getItem('skchat.identity') || '';
+  $('#identity').value = qpIdentity || storedIdentity;
+  if (qpIdentity) localStorage.setItem('skchat.identity', qpIdentity);
   $('#identity').addEventListener('change', e => localStorage.setItem('skchat.identity', e.target.value));
   if (!cfg.available) { setStatus('', 'server: livekit not configured'); $('#connect').disabled = true; return; }
   setStatus('', secure ? 'ready' : 'ready (no media — insecure context)');
   if (secure) await enumerateDevices();
+  // Auto-connect when both room and identity arrive via query params
+  // (e.g. redirected from callPeer/answerPeer in the pair page).
+  if (qpRoom && qpIdentity) await connect();
 })();
 </script>
 </body>
