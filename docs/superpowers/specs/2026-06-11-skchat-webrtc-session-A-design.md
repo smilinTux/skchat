@@ -18,7 +18,43 @@ that sub-projects B and C depend on.
 ## Non-goals (deferred)
 - **B:** true peer-to-peer media over skcomms WebRTC (no SFU).
 - **C:** layered negotiation (try P2P, fall back to LiveKit) and the Talk-compat shim.
-- Recording/egress changes, group calls (>2), TURN provisioning for off-tailnet.
+- Recording/egress changes, group calls (>2).
+- **skmesh / netbird overlay** (connectivity tier 4) — designed-for but not wired in A.
+
+## Connectivity tiers (ICE policy) — shared foundation
+A small, transport-agnostic module both A (LiveKit) and B (P2P) consume. It produces
+the ordered ICE configuration and preferred-path policy. **Sovereign-first ladder:**
+
+| Tier | Path | When | ICE servers |
+|---|---|---|---|
+| 1 | **Tailscale** (priority) | both peers on the tailnet | none needed — tailnet handles NAT; direct |
+| 2 | **Same-network / LAN** | homogenous local network | host candidates only |
+| 3 | **coturn TURN** | cross-NAT / off-tailnet | STUN+TURN via `signal.nativeassetmanagement.com` (coturn on the chi docker-swarm cluster) |
+| 4 | **skmesh / netbird** | larger sovereign mesh | overlay-provided (DESIGN-FOR, not built in A) |
+
+### `skchat/connectivity.py` (new)
+```
+ice_config(local_ctx, peer_ctx) -> {
+    ice_servers: [ {urls:[...], username?, credential?}, ... ],
+    policy: "all" | "relay",          # relay only when forced
+    preferred_tier: 1|2|3,
+    on_tailnet: bool,
+}
+```
+- **Tier detection:** are both peers reachable on the tailnet (FQID/peer hint carries a
+  `tail*.ts.net` or 100.64/10 addr)? → tier 1, empty `ice_servers`. Else same-subnet
+  hint → tier 2. Else → tier 3 (emit STUN+TURN).
+- **Tier 3 credentials:** coturn uses the **REST/`use-auth-secret`** ephemeral-credential
+  scheme — `username = "<expiry-ts>:<peer>"`, `credential = base64(hmac-sha1(secret, username))`.
+  The shared secret is sourced from config (`SKCHAT_TURN_SECRET` / skstacks secret),
+  **NOT hardcoded**, and a TURN cred is short-TTL per call. 🔴 Credential hygiene: source
+  a fresh secret scoped to skchat; never reuse cluster admin creds (cf. the NC_PASS lesson).
+- **Exposure:** `GET /connectivity/ice?peer=<fqid>` returns the config for `livekit.html`
+  (LiveKit `RoomOptions.rtcConfiguration.iceServers`) and, later, B's `RTCPeerConnection`.
+- **LiveKit leg:** when the SFU itself must be reachable off-tailnet, the LiveKit server's
+  `rtc.turn_servers` / external coturn is configured to the same `signal.…` host so the
+  client↔SFU leg can relay. (A keeps LiveKit on the tailnet by default = tier 1; tier-3
+  SFU exposure is configured but only engaged when a participant is off-tailnet.)
 
 ## Architecture
 
@@ -132,9 +168,18 @@ Integration:
 
 ## Files touched
 - new `skchat/call_session.py` (derive_room, CALL_INVITE model)
-- edit `skchat/livekit_routes.py` (`/call/start`)
-- edit `skchat/webui.py` (Call button + ring banner wiring + inbox surfacing)
+- new `skchat/connectivity.py` (ICE policy ladder; `ice_config`, `/connectivity/ice`)
+- edit `skchat/livekit_routes.py` (`/call/start`, `/call/answer`)
+- edit `skchat/webui.py` (Call button + ring banner + inbox surfacing + pass ICE to livekit.html)
 - edit `skchat/mcp_server.py` (`call_peer` tool)
-- config: `~/.config/livekit/livekit.yaml`, `~/.config/skchat/webui-opus.env`
+- config: `~/.config/livekit/livekit.yaml` (skchat-opus key + optional `rtc.turn_servers`),
+  `~/.config/skchat/webui-opus.env`, `SKCHAT_TURN_SECRET` (sourced, not committed)
 - tests under `skchat/tests/`
+
+## Connectivity testing (added)
+- `ice_config`: both-on-tailnet → tier 1, empty ice_servers; cross-NAT → tier 3 with a
+  TURN entry whose `username` is `<expiry>:<peer>` and `credential` = HMAC of the secret.
+- TURN credential is ephemeral (TTL) and the secret is never emitted in logs/responses
+  beyond the derived short-lived credential.
+- `/connectivity/ice` returns tier-appropriate config for a paired peer; rejects unpaired.
 ```
