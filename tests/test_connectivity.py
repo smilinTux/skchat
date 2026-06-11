@@ -40,6 +40,28 @@ def test_tier3_cross_nat_emits_ephemeral_turn(monkeypatch):
     assert entry["credential"] == expected
 
 
+def test_tier2_same_subnet_has_no_relay(monkeypatch):
+    monkeypatch.delenv("SKCHAT_TURN_SECRET", raising=False)
+    cfg = ice_config(
+        local_fqid="lumina@chef.skworld",
+        peer_fqid="opus@chef.skworld",
+        peer_hint={"same_subnet": True},
+    )
+    assert cfg["preferred_tier"] == 2
+    assert cfg["on_tailnet"] is False
+    assert cfg["ice_servers"] == []
+
+
+def test_tier3_stun_only_when_no_turn_secret(monkeypatch):
+    monkeypatch.delenv("SKCHAT_TURN_SECRET", raising=False)
+    monkeypatch.setenv("SKCHAT_STUN_URLS", "stun:turn.example.com:3478")
+    cfg = ice_config("a@x.y", "b@x.y", peer_hint={"on_tailnet": False})
+    assert cfg["preferred_tier"] == 3
+    # a STUN entry is present; no TURN entry (no secret)
+    assert any("stun:" in u for s in cfg["ice_servers"] for u in s["urls"])
+    assert all("username" not in s for s in cfg["ice_servers"])
+
+
 def test_secret_never_appears_in_config(monkeypatch):
     monkeypatch.setenv("SKCHAT_TURN_SECRET", "topsecret-xyz")
     monkeypatch.setenv("SKCHAT_TURN_URLS", "turn:turn.example.com:3478")

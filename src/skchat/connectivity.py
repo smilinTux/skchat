@@ -18,6 +18,7 @@ import hmac
 import os
 import time
 
+# Resolved once at import; restart the process to change it.
 _TURN_TTL_SECONDS = int(os.getenv("SKCHAT_TURN_TTL", "300"))
 
 
@@ -29,7 +30,7 @@ def _turn_credentials(local_fqid: str, secret: str, ttl: int) -> tuple[str, str]
     expiry = int(time.time()) + ttl
     username = f"{expiry}:{local_fqid}"
     credential = base64.b64encode(
-        hmac.new(secret.encode(), username.encode(), hashlib.sha1).digest()
+        hmac.HMAC(secret.encode(), username.encode(), hashlib.sha1).digest()
     ).decode("ascii")
     return username, credential
 
