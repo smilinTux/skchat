@@ -66,9 +66,9 @@ def _env(subject, from_fqid, to_fqid, room):
 
 def test_incoming_returns_only_invites_for_self(client, monkeypatch):
     inbox = [
-        (_env("CALL_INVITE", "lumina@chef.skworld", "opus@chef.skworld", "call-r1"), None),
-        (_env("text/plain note", "lumina@chef.skworld", "opus@chef.skworld", "call-x"), None),
-        (_env("CALL_INVITE", "stranger@x.y", "someone@else.z", "call-r2"), None),
+        (_env("CALL_INVITE", "lumina@chef.skworld", "opus@chef.skworld", "call-r1"), SimpleNamespace(valid=True)),
+        (_env("text/plain note", "lumina@chef.skworld", "opus@chef.skworld", "call-x"), SimpleNamespace(valid=True)),
+        (_env("CALL_INVITE", "stranger@x.y", "someone@else.z", "call-r2"), SimpleNamespace(valid=True)),
     ]
     monkeypatch.setattr(cr, "_read_inbox", lambda: inbox)
     r = client.get("/call/incoming")
@@ -127,7 +127,10 @@ def test_incoming_skips_malformed_invite(client, monkeypatch):
         subject="CALL_INVITE", from_fqid="lumina@chef.skworld",
         to_fqid="opus@chef.skworld", body="{not json",
     )
-    monkeypatch.setattr(cr, "_read_inbox", lambda: [(bad, None), (good, None)])
+    monkeypatch.setattr(
+        cr, "_read_inbox",
+        lambda: [(bad, SimpleNamespace(valid=True)), (good, SimpleNamespace(valid=True))],
+    )
     r = client.get("/call/incoming")
     invites = r.json()["invites"]
     assert len(invites) == 1
@@ -138,6 +141,14 @@ def test_incoming_empty_inbox(client, monkeypatch):
     monkeypatch.setattr(cr, "_read_inbox", lambda: [])
     r = client.get("/call/incoming")
     assert r.status_code == 200
+    assert r.json()["invites"] == []
+
+
+def test_incoming_skips_unverified_invite(client, monkeypatch):
+    from types import SimpleNamespace
+    env = _env("CALL_INVITE", "lumina@chef.skworld", "opus@chef.skworld", "call-unsigned")
+    monkeypatch.setattr(cr, "_read_inbox", lambda: [(env, SimpleNamespace(valid=False))])
+    r = client.get("/call/incoming")
     assert r.json()["invites"] == []
 
 

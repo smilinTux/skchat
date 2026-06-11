@@ -587,8 +587,11 @@ async function loadPeers(){
       '<div style="padding:6px;border-bottom:1px solid #ccc;display:flex;'
       +'justify-content:space-between;align-items:center">'
       +'<span>'+esc(p.fqid)+'</span>'
-      +'<button onclick="callPeer(\''+p.fqid+'\')">📞 Call</button></div>'
+      +'<button data-fqid="'+esc(p.fqid)+'" class="call-btn">📞 Call</button></div>'
     ).join('');
+    el.querySelectorAll('.call-btn').forEach(function(btn){
+      btn.addEventListener('click', function(){ callPeer(this.dataset.fqid); });
+    });
   }catch(e){}
 }
 loadPeers();
@@ -600,7 +603,8 @@ async function callPeer(fqid){
   if(!r.ok){alert('call failed: '+r.status);return;}
   const d = await r.json();
   location.href = '/livekit?room='+encodeURIComponent(d.room)
-    +'&identity='+encodeURIComponent(d.identity);
+    +'&identity='+encodeURIComponent(d.identity)
+    +'&token='+encodeURIComponent(d.token);
 }
 async function answerPeer(fqid){
   const r = await fetch('/call/answer',{method:'POST',
@@ -608,7 +612,8 @@ async function answerPeer(fqid){
   if(!r.ok){alert('answer failed: '+r.status);return;}
   const d = await r.json();
   location.href = '/livekit?room='+encodeURIComponent(d.room)
-    +'&identity='+encodeURIComponent(d.identity);
+    +'&identity='+encodeURIComponent(d.identity)
+    +'&token='+encodeURIComponent(d.token);
 }
 async function pollRing(){
   try{
@@ -618,7 +623,8 @@ async function pollRing(){
     if(invites && invites.length){
       const inv = invites[0];
       b.innerHTML = '📞 Incoming call from '+esc(inv.from_fqid)+' '
-        +'<button onclick="answerPeer(\''+inv.from_fqid+'\')">Accept</button>';
+        +'<button class="answer-btn" data-fqid="'+esc(inv.from_fqid)+'">Accept</button>';
+      b.querySelector('.answer-btn').addEventListener('click', function(){ answerPeer(this.dataset.fqid); });
       b.style.display='block';
     } else { b.style.display='none'; }
   }catch(e){}

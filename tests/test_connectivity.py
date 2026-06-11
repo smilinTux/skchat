@@ -35,7 +35,7 @@ def test_tier3_cross_nat_emits_ephemeral_turn(monkeypatch):
     expiry, _, who = entry["username"].partition(":")
     assert who == "lumina@chef.skworld"
     expected = base64.b64encode(
-        hmac.new(b"s3cr3t", entry["username"].encode(), hashlib.sha1).digest()
+        hmac.HMAC(b"s3cr3t", entry["username"].encode(), hashlib.sha1).digest()
     ).decode()
     assert entry["credential"] == expected
 

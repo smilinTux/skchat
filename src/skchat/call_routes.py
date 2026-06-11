@@ -127,6 +127,8 @@ def register_call_routes(app: FastAPI) -> None:
         me = _self_fqid()
         invites = []
         for env, _verify in _read_inbox():
+            if not getattr(_verify, "valid", False):
+                continue  # drop unsigned/invalid-signature envelopes
             if getattr(env, "subject", None) != CALL_INVITE_SUBJECT:
                 continue
             if getattr(env, "to_fqid", None) != me:

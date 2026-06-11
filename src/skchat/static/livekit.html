@@ -138,6 +138,8 @@ const log = (...a) => {
 let room = null;
 const tiles = new Map();
 let micTrack = null, camTrack = null;
+// Query-param values hoisted to module scope so connect() can read them.
+let qpIdentity = null, qpToken = null;
 
 // ── Pre-flight: secure context check ─────────────────────────────────────────
 function preflight() {
@@ -353,11 +355,38 @@ async function connect() {
     const roomName = $('#room').value || cfg.default_room;
     const identity = $('#identity').value || `chef-${Math.random().toString(36).slice(2, 7)}`;
     setStatus('connecting', `connecting to ${roomName}…`);
-    log('mint token for', identity, '@', roomName);
-    const t = await mintToken(identity, identity, roomName);
-    log('token ok, ttl', t.ttl_seconds, 's; connecting', t.url);
 
-    room = new Room({ adaptiveStream: true, dynacast: true });
+    // Fetch ICE config for this identity's tier (tailnet-first: returns empty
+    // iceServers on tier 1, STUN/TURN entries for cross-NAT tier 3).
+    // TODO: pass remote peer FQID when available (currently using local identity).
+    let rtcConfig = {};
+    try {
+      const ident = qpIdentity || identity;
+      if (ident) {
+        const ir = await fetch('/connectivity/ice?peer=' + encodeURIComponent(ident));
+        if (ir.ok) {
+          const ic = await ir.json();
+          rtcConfig = { iceServers: ic.ice_servers || [], iceTransportPolicy: ic.policy || 'all' };
+        }
+      }
+    } catch(e) {}
+
+    // Use the pre-authorized token from /call/start or /call/answer if present;
+    // otherwise fall back to minting a new token via the ungated /livekit/token.
+    let livekitUrl, livekitToken;
+    if (qpToken) {
+      log('using pre-authorized token from call start/answer');
+      livekitUrl = cfg.url;
+      livekitToken = qpToken;
+    } else {
+      log('mint token for', identity, '@', roomName);
+      const t = await mintToken(identity, identity, roomName);
+      log('token ok, ttl', t.ttl_seconds, 's; connecting', t.url);
+      livekitUrl = t.url;
+      livekitToken = t.token;
+    }
+
+    room = new Room({ adaptiveStream: true, dynacast: true, rtcConfiguration: rtcConfig });
     room
       .on(RoomEvent.ParticipantConnected, p => { log('+', p.identity); makeTile(p); refreshPeers(); })
       .on(RoomEvent.ParticipantDisconnected, p => { log('-', p.identity); removeTile(p.sid); refreshPeers(); })
@@ -369,9 +398,9 @@ async function connect() {
       .on(RoomEvent.ParticipantMetadataChanged, (_prev, p) => { updateAgentState(p); })
       .on(RoomEvent.Disconnected, reason => { log('disconnected:', reason); cleanup(); });
 
-    await room.connect(t.url, t.token);
-    setStatus('connected', `${t.identity} in ${t.room}`);
-    $('#room-pill').textContent = `room: ${t.room}`;
+    await room.connect(livekitUrl, livekitToken);
+    setStatus('connected', `${identity} in ${roomName}`);
+    $('#room-pill').textContent = `room: ${roomName}`;
     log('connected; existing peers:', [...room.remoteParticipants.values()].map(p => p.identity).join(', ') || 'none');
 
     for (const p of room.remoteParticipants.values()) makeTile(p);
@@ -524,7 +553,8 @@ setInterval(refreshRecordingState, 5000);  // poll for state in case stopped ext
   const cfg = await loadConfig();
   const qp = new URLSearchParams(location.search);
   const qpRoom = qp.get('room');
-  const qpIdentity = qp.get('identity');
+  qpIdentity = qp.get('identity');  // assigned to module-level var
+  qpToken = qp.get('token');        // assigned to module-level var
   const path = location.pathname.replace(/^\/livekit\/?/, '');
   // Query params take precedence over path param and localStorage defaults.
   $('#room').value = qpRoom || path || cfg.default_room;
