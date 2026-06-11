@@ -139,6 +139,15 @@ def register_call_routes(app: FastAPI) -> None:
         invites.sort(key=lambda i: i.get("ts", 0), reverse=True)
         return JSONResponse({"invites": invites})
 
+    @app.get("/call/peers")
+    async def call_peers() -> JSONResponse:
+        """List paired peers (FQID + fingerprint) for the call UI."""
+        peers = [
+            {"fqid": fqid, "fingerprint": (meta or {}).get("fingerprint")}
+            for fqid, meta in _list_peers().items()
+        ]
+        return JSONResponse({"peers": peers})
+
     @app.get("/connectivity/ice")
     async def connectivity_ice(peer: str) -> JSONResponse:
         peer_fqid = _resolve_peer(peer)

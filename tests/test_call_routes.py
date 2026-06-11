@@ -148,3 +148,10 @@ def test_webui_registers_call_routes():
     assert "/call/answer" in paths
     assert "/call/incoming" in paths
     assert "/connectivity/ice" in paths
+
+
+def test_call_peers_lists_paired(client):
+    r = client.get("/call/peers")
+    assert r.status_code == 200
+    peers = r.json()["peers"]
+    assert any(p["fqid"] == "lumina@chef.skworld" for p in peers)

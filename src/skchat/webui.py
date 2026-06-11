@@ -572,6 +572,24 @@ refresh();
 </script>
 <div id="ring-banner" style="display:none;position:fixed;top:0;left:0;right:0;
   background:#143;color:#fff;padding:12px;text-align:center;z-index:9999"></div>
+<div id="peer-list" style="max-width:520px;margin:12px auto;font-family:sans-serif"></div>
+<script>
+async function loadPeers(){
+  try{
+    const r = await fetch('/call/peers'); if(!r.ok)return;
+    const {peers} = await r.json();
+    const el = document.getElementById('peer-list');
+    if(!peers || !peers.length){ el.innerHTML = '<em>No paired peers yet.</em>'; return; }
+    el.innerHTML = '<h3>Paired peers</h3>' + peers.map(p =>
+      '<div style="padding:6px;border-bottom:1px solid #ccc;display:flex;'
+      +'justify-content:space-between;align-items:center">'
+      +'<span>'+p.fqid+'</span>'
+      +'<button onclick="callPeer(\''+p.fqid+'\')">📞 Call</button></div>'
+    ).join('');
+  }catch(e){}
+}
+loadPeers();
+</script>
 <script>
 async function callPeer(fqid){
   const r = await fetch('/call/start',{method:'POST',
