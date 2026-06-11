@@ -1,0 +1,113 @@
+"""Call orchestration routes: start (ring), answer (no ring), incoming, ICE.
+
+Builds on the deterministic room (call_session) + LiveKit token mint
+(livekit_routes) + skcomms mailbox for the CALL_INVITE ring.
+"""
+
+from __future__ import annotations
+
+import logging
+
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
+
+from .call_session import (
+    CALL_INVITE_SUBJECT,
+    build_invite_body,
+    derive_room,
+)
+from .livekit_routes import LIVEKIT_URL, _have_creds, _mint_token
+
+logger = logging.getLogger("skchat.call_routes")
+_TOKEN_TTL = 21600
+
+
+# --- thin wrappers (monkeypatchable seams; keep I/O out of route bodies) -----
+def _list_peers() -> dict:
+    from skcomms.peers import list_peers
+
+    return list_peers()
+
+
+def _self_fqid() -> str:
+    from capauth import resolve_agent_identity
+
+    return resolve_agent_identity().fqid
+
+
+def _send_invite(*, from_fqid: str, to_fqid: str, room: str, livekit_url: str) -> None:
+    from skcomms.mailbox import send_message
+
+    body = build_invite_body(
+        from_fqid=from_fqid, to_fqid=to_fqid, room=room, livekit_url=livekit_url
+    )
+    send_message(to_fqid, body, subject=CALL_INVITE_SUBJECT)
+
+
+def _read_inbox() -> list:
+    from skcomms.mailbox import read_inbox
+
+    return read_inbox()
+
+
+def _resolve_peer(peer: str) -> str:
+    """Resolve a peer arg (FQID or bare name) to a paired FQID, or 404."""
+    peers = _list_peers()
+    if peer in peers:
+        return peer
+    matches = [fqid for fqid in peers if fqid.split("@", 1)[0] == peer]
+    if len(matches) == 1:
+        return matches[0]
+    raise HTTPException(status_code=404, detail=f"peer not paired: {peer}")
+
+
+def _prepare_call(peer: str) -> dict:
+    if not _have_creds():
+        raise HTTPException(status_code=503, detail="livekit not configured")
+    peer_fqid = _resolve_peer(peer)
+    local_fqid = _self_fqid()
+    room = derive_room(local_fqid, peer_fqid)
+    token = _mint_token(local_fqid, local_fqid.split("@", 1)[0], room, _TOKEN_TTL)
+    return {
+        "room": room,
+        "token": token,
+        "livekit_url": LIVEKIT_URL,
+        "peer_fqid": peer_fqid,
+        "local_fqid": local_fqid,
+        "identity": local_fqid,
+    }
+
+
+async def _peer_arg(request: Request) -> str:
+    try:
+        body = await request.json()
+    except Exception:
+        body = dict(await request.form())
+    peer = (body.get("peer") or "").strip()
+    if not peer:
+        raise HTTPException(status_code=400, detail="peer required")
+    return peer
+
+
+def register_call_routes(app: FastAPI) -> None:
+    @app.post("/call/start")
+    async def call_start(request: Request) -> JSONResponse:
+        peer = await _peer_arg(request)
+        ctx = _prepare_call(peer)
+        _send_invite(
+            from_fqid=ctx["local_fqid"],
+            to_fqid=ctx["peer_fqid"],
+            room=ctx["room"],
+            livekit_url=ctx["livekit_url"],
+        )
+        return JSONResponse(
+            {k: ctx[k] for k in ("room", "token", "livekit_url", "peer_fqid", "identity")}
+        )
+
+    @app.post("/call/answer")
+    async def call_answer(request: Request) -> JSONResponse:
+        peer = await _peer_arg(request)
+        ctx = _prepare_call(peer)  # NB: no _send_invite — answering never rings
+        return JSONResponse(
+            {k: ctx[k] for k in ("room", "token", "livekit_url", "peer_fqid", "identity")}
+        )
