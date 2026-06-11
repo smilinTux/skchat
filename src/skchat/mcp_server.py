@@ -495,6 +495,26 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
+            name="call_peer",
+            description=(
+                "Place a WebRTC call to a paired peer; rings them via skcomms and "
+                "returns the LiveKit room+token."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "peer": {
+                        "type": "string",
+                        "description": (
+                            "Paired peer FQID or bare name (e.g. 'lumina' or "
+                            "'lumina@chef.skworld')."
+                        ),
+                    },
+                },
+                "required": ["peer"],
+            },
+        ),
+        Tool(
             name="send_file_p2p",
             description=(
                 "Send a file directly to a peer via WebRTC data channels. "
@@ -1366,6 +1386,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         "webrtc_status": _handle_webrtc_status,
         "initiate_call": _handle_initiate_call,
         "accept_call": _handle_accept_call,
+        "call_peer": _handle_call_peer,
         "send_file_p2p": _handle_send_file_p2p,
         "send_file": _handle_send_file,
         "list_transfers": _handle_list_transfers,
@@ -2104,6 +2125,59 @@ async def _handle_get_thread(args: dict) -> list[TextContent]:
 # ─────────────────────────────────────────────────────────────
 # Tool Handlers — WebRTC
 # ─────────────────────────────────────────────────────────────
+
+
+# ── call_peer helpers (module-level so tests can monkeypatch them) ──────────
+
+
+def _prepare_call_for(peer: str) -> dict:
+    """Resolve + mint a call context for a peer (reuses call_routes logic)."""
+    from .call_routes import _prepare_call
+
+    return _prepare_call(peer)
+
+
+def _ring_peer(*, from_fqid: str, to_fqid: str, room: str, livekit_url: str) -> None:
+    """Send a call invite to a peer via skcomms."""
+    from .call_routes import _send_invite
+
+    _send_invite(from_fqid=from_fqid, to_fqid=to_fqid, room=room, livekit_url=livekit_url)
+
+
+def call_peer(peer: str) -> dict:
+    """MCP tool: place a call to a paired peer. Returns {room, token, ...} and rings them.
+
+    Args:
+        peer: paired peer FQID or bare name.
+    """
+    ctx = _prepare_call_for(peer)
+    _ring_peer(
+        from_fqid=ctx["identity"],
+        to_fqid=ctx["peer_fqid"],
+        room=ctx["room"],
+        livekit_url=ctx["livekit_url"],
+    )
+    return {k: ctx[k] for k in ("room", "token", "livekit_url", "peer_fqid", "identity")}
+
+
+async def _handle_call_peer(args: dict) -> list[TextContent]:
+    """Place a WebRTC call to a paired peer.
+
+    Args:
+        args: peer (str) — paired peer FQID or bare name.
+
+    Returns:
+        JSON with room, token, livekit_url, peer_fqid, identity.
+    """
+    peer: str = args.get("peer", "")
+    if not peer:
+        return _error("peer is required")
+    try:
+        result = call_peer(peer)
+    except Exception as exc:
+        logger.warning("call_peer failed: %s", exc)
+        return _error(f"call_peer failed: {exc}")
+    return _json(result)
 
 
 def _get_webrtc_transport():

@@ -889,3 +889,31 @@ class TestAddPeer:
         assert len(bobs) == 1
         # Exactly one JSON file on disk for this peer.
         assert len(list(peers_dir.glob("*.json"))) == 1
+
+
+# ---------------------------------------------------------------------------
+# call_peer
+# ---------------------------------------------------------------------------
+
+
+class TestCallPeer:
+    def test_call_peer_returns_room_and_token(self, monkeypatch):
+        import skchat.mcp_server as m
+
+        monkeypatch.setattr(
+            m,
+            "_prepare_call_for",
+            lambda peer: {
+                "room": "call-xyz",
+                "token": "tok",
+                "peer_fqid": "lumina@chef.skworld",
+                "livekit_url": "wss://x:8443",
+                "identity": "opus@chef.skworld",
+            },
+        )
+        sent = []
+        monkeypatch.setattr(m, "_ring_peer", lambda **kw: sent.append(kw))
+        out = m.call_peer("lumina")
+        assert out["room"] == "call-xyz"
+        assert out["peer_fqid"] == "lumina@chef.skworld"
+        assert len(sent) == 1
