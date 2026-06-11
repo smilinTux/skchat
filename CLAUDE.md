@@ -53,6 +53,9 @@ cd ~ && ~/.skenv/bin/skchat daemon start --interval 5
 | `daemon.py` | Polling loop; spawns advocacy engine; manages WebRTC init (`_init_webrtc`) |
 | `_daemon_entry.py` | Systemd/process entry point wrapper |
 | `advocacy.py` | `AdvocacyEngine` — detects `@mention`, calls skcapstone for AI responses |
+| `call_session.py` | **WebRTC calls** — `derive_room()` (deterministic per-pair LiveKit room) + `CALL_INVITE` envelope build/parse. See `docs/superpowers/specs/2026-06-11-webrtc-architecture-overview.md` |
+| `connectivity.py` | **WebRTC calls** — `ice_config()` sovereign ICE tier ladder (Tailscale→LAN→coturn ephemeral creds) |
+| `call_routes.py` | **WebRTC calls** — `/call/start` (ring), `/call/answer` (no ring), `/call/incoming` (sig-gated), `/call/peers`, `/connectivity/ice` |
 | `transport.py` | `ChatTransport` — send/receive over SKComm |
 | `mcp_server.py` | FastMCP server — 24 tools exposed to AI agents |
 | `models.py` | `ChatMessage`, `Group`, `Peer`, `MessageType` Pydantic models |
@@ -215,6 +218,15 @@ skchat group rotate-key <gid>
 | `webrtc_status` | — | — |
 | `initiate_call` | `peer` | `signaling_url` |
 | `accept_call` | `peer` | — |
+| `call_peer` | `peer` | — (places a LiveKit call to a paired peer: derives the room, mints an FQID-identity token, rings them over signed skcomms) |
+
+### Call subsystem (sub-project A, merged)
+LiveKit call after pairing — two paired peers land in a deterministic per-pair room.
+`/call/start` rings the peer with a capauth-signed `CALL_INVITE`; `/call/incoming`
+surfaces only signature-verified invites addressed to self; `/call/answer` joins the
+same room without re-ringing. The webui `/pair` page has a 📞 Call button per peer + an
+incoming-call ring banner. Runbook: `runbooks/browser-call-test.md`. P2P (sub-project B)
+is in design — `docs/superpowers/specs/2026-06-11-skchat-webrtc-session-B-design.md`.
 
 ## Message Types
 `text` (default) · `finding` · `task` · `query` · `response`
