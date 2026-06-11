@@ -17,6 +17,7 @@ from .call_session import (
     derive_room,
     parse_invite_body,
 )
+from .connectivity import ice_config
 from .livekit_routes import LIVEKIT_URL, _have_creds, _mint_token
 
 logger = logging.getLogger("skchat.call_routes")
@@ -130,3 +131,10 @@ def register_call_routes(app: FastAPI) -> None:
             invites.append(inv)
         invites.sort(key=lambda i: i.get("ts", 0), reverse=True)
         return JSONResponse({"invites": invites})
+
+    @app.get("/connectivity/ice")
+    async def connectivity_ice(peer: str) -> JSONResponse:
+        peer_fqid = _resolve_peer(peer)
+        local_fqid = _self_fqid()
+        cfg = ice_config(local_fqid, peer_fqid, peer_hint={"on_tailnet": True})
+        return JSONResponse(cfg)

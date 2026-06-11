@@ -77,3 +77,18 @@ def test_incoming_returns_only_invites_for_self(client, monkeypatch):
     assert len(invites) == 1
     assert invites[0]["from_fqid"] == "lumina@chef.skworld"
     assert invites[0]["room"] == "call-r1"
+
+
+# ── Task 6: /connectivity/ice ─────────────────────────────────────────────────
+
+
+def test_connectivity_ice_for_paired_peer(client):
+    r = client.get("/connectivity/ice", params={"peer": "lumina@chef.skworld"})
+    assert r.status_code == 200
+    data = r.json()
+    assert "ice_servers" in data and "preferred_tier" in data
+
+
+def test_connectivity_ice_rejects_unpaired(client):
+    r = client.get("/connectivity/ice", params={"peer": "nobody@x.y"})
+    assert r.status_code == 404
