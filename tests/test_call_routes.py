@@ -92,3 +92,50 @@ def test_connectivity_ice_for_paired_peer(client):
 def test_connectivity_ice_rejects_unpaired(client):
     r = client.get("/connectivity/ice", params={"peer": "nobody@x.y"})
     assert r.status_code == 404
+
+
+def test_call_start_503_no_creds(client, monkeypatch):
+    monkeypatch.setattr(cr, "_have_creds", lambda: False)
+    r = client.post("/call/start", json={"peer": "lumina@chef.skworld"})
+    assert r.status_code == 503
+
+
+def test_call_start_rejects_ambiguous_bare_name(client, monkeypatch):
+    monkeypatch.setattr(
+        cr, "_list_peers",
+        lambda: {"lumina@chef.skworld": {}, "lumina@other.world": {}},
+    )
+    r = client.post("/call/start", json={"peer": "lumina"})
+    assert r.status_code == 409
+    assert "ambiguous" in r.json()["detail"]
+
+
+def test_call_start_bare_name_resolves(client):
+    r = client.post("/call/start", json={"peer": "lumina"})
+    assert r.status_code == 200
+    assert r.json()["peer_fqid"] == "lumina@chef.skworld"
+
+
+def test_call_start_missing_peer_400(client):
+    r = client.post("/call/start", json={})
+    assert r.status_code == 400
+
+
+def test_incoming_skips_malformed_invite(client, monkeypatch):
+    good = _env("CALL_INVITE", "lumina@chef.skworld", "opus@chef.skworld", "call-good")
+    bad = SimpleNamespace(
+        subject="CALL_INVITE", from_fqid="lumina@chef.skworld",
+        to_fqid="opus@chef.skworld", body="{not json",
+    )
+    monkeypatch.setattr(cr, "_read_inbox", lambda: [(bad, None), (good, None)])
+    r = client.get("/call/incoming")
+    invites = r.json()["invites"]
+    assert len(invites) == 1
+    assert invites[0]["room"] == "call-good"
+
+
+def test_incoming_empty_inbox(client, monkeypatch):
+    monkeypatch.setattr(cr, "_read_inbox", lambda: [])
+    r = client.get("/call/incoming")
+    assert r.status_code == 200
+    assert r.json()["invites"] == []
