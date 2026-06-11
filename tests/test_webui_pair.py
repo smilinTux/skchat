@@ -80,3 +80,21 @@ def test_pair_scan_page_wiring():
     html = TestClient(webui.app).get("/pair/scan").text
     for tok in ["/pair/accept", "BarcodeDetector", "getUserMedia", "skp://", 'id="manual"', "Pair"]:
         assert tok in html, tok
+
+
+def test_pair_qr_embed_too_big_falls_back_to_compact(monkeypatch):
+    """A pubkey too large to embed in a QR falls back to a compact QR + warning."""
+    import skcomms.pairing as P
+    big = "X" * 6000  # an armored key way past QR capacity
+    def _bundle(agent=None, embed_key=False):
+        b = P.PairingBundle(fqid="opus@chef.skworld", fingerprint="CD"*20,
+                            syncthing_device_id="DEV-2")
+        if embed_key:
+            b.pubkey = "-----BEGIN PGP PUBLIC KEY BLOCK-----\n" + big + "\n-----END-----\n"
+        return b
+    monkeypatch.setattr(P, "bundle_from_self", _bundle)
+    j = TestClient(webui.app).get("/pair/qr?embed=1").json()
+    assert j["embedded"] is False                 # fell back
+    assert "pk=" not in j["uri"]                   # compact
+    assert j["warning"] and "too large" in j["warning"].lower()
+    assert "<svg" in j["svg"]                      # still renders

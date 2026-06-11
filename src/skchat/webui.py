@@ -518,14 +518,28 @@ def pair_qr(sy: str = "1", ts: str = "1", https: str = "1", embed: str = "0"):
     import segno
     from skcomms import pairing
     def _on(v): return str(v).lower() not in ("0", "false", "no", "off", "")
-    bundle = pairing.bundle_from_self(embed_key=_on(embed))
-    if not _on(sy): bundle.syncthing_device_id = None
-    if not _on(ts): bundle.tailscale = None
-    if not _on(https): bundle.https = None
-    uri = pairing.to_skp_uri(bundle)
-    buf = io.BytesIO(); segno.make(uri, error="m").save(buf, kind="svg", scale=5)
+
+    def _build(embed_key: bool):
+        b = pairing.bundle_from_self(embed_key=embed_key)
+        if not _on(sy): b.syncthing_device_id = None
+        if not _on(ts): b.tailscale = None
+        if not _on(https): b.https = None
+        return b, pairing.to_skp_uri(b)
+
+    bundle, uri = _build(_on(embed))
+    warning = None
+    try:
+        # error="l" = max data capacity (a QR tops out ~2953 bytes).
+        qr = segno.make(uri, error="l")
+    except Exception:  # segno.encoder.DataOverflowError — key too big to embed
+        bundle, uri = _build(False)            # fall back to a compact QR
+        qr = segno.make(uri, error="l")
+        warning = ("Public key too large to embed in a QR — using a compact "
+                   "code (the peer fetches + verifies the key on accept).")
+    buf = io.BytesIO(); qr.save(buf, kind="svg", scale=5)
     return {"uri": uri, "svg": buf.getvalue().decode("utf-8"),
-            "fqid": bundle.fqid, "fingerprint": bundle.fingerprint}
+            "fqid": bundle.fqid, "fingerprint": bundle.fingerprint,
+            "embedded": bundle.pubkey is not None, "warning": warning}
 
 
 _PAIR_HTML = """<!DOCTYPE html><html><head><meta charset="utf-8"><title>skchat — Pair</title>
