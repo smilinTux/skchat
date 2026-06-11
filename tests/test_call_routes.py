@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 import skchat.call_routes as cr
-from skchat.call_session import derive_room
+from skchat.call_session import build_invite_body, derive_room
 
 
 @pytest.fixture
@@ -49,3 +51,29 @@ def test_call_answer_mints_same_room_without_ringing(client):
     data = r.json()
     assert data["room"] == derive_room("opus@chef.skworld", "lumina@chef.skworld")
     assert len(client._sent) == 0
+
+
+# ── Task 5: /call/incoming ────────────────────────────────────────────────────
+
+
+def _env(subject, from_fqid, to_fqid, room):
+    body = build_invite_body(
+        from_fqid=from_fqid, to_fqid=to_fqid, room=room,
+        livekit_url="wss://x:8443",
+    )
+    return SimpleNamespace(subject=subject, from_fqid=from_fqid, to_fqid=to_fqid, body=body)
+
+
+def test_incoming_returns_only_invites_for_self(client, monkeypatch):
+    inbox = [
+        (_env("CALL_INVITE", "lumina@chef.skworld", "opus@chef.skworld", "call-r1"), None),
+        (_env("text/plain note", "lumina@chef.skworld", "opus@chef.skworld", "call-x"), None),
+        (_env("CALL_INVITE", "stranger@x.y", "someone@else.z", "call-r2"), None),
+    ]
+    monkeypatch.setattr(cr, "_read_inbox", lambda: inbox)
+    r = client.get("/call/incoming")
+    assert r.status_code == 200
+    invites = r.json()["invites"]
+    assert len(invites) == 1
+    assert invites[0]["from_fqid"] == "lumina@chef.skworld"
+    assert invites[0]["room"] == "call-r1"

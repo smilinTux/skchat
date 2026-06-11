@@ -15,6 +15,7 @@ from .call_session import (
     CALL_INVITE_SUBJECT,
     build_invite_body,
     derive_room,
+    parse_invite_body,
 )
 from .livekit_routes import LIVEKIT_URL, _have_creds, _mint_token
 
@@ -111,3 +112,21 @@ def register_call_routes(app: FastAPI) -> None:
         return JSONResponse(
             {k: ctx[k] for k in ("room", "token", "livekit_url", "peer_fqid", "identity")}
         )
+
+    @app.get("/call/incoming")
+    async def call_incoming() -> JSONResponse:
+        """Surface CALL_INVITE envelopes addressed to us, newest first."""
+        me = _self_fqid()
+        invites = []
+        for env, _verify in _read_inbox():
+            if getattr(env, "subject", None) != CALL_INVITE_SUBJECT:
+                continue
+            if getattr(env, "to_fqid", None) != me:
+                continue  # never trust an invite not addressed to us
+            try:
+                inv = parse_invite_body(env.body)
+            except ValueError:
+                continue
+            invites.append(inv)
+        invites.sort(key=lambda i: i.get("ts", 0), reverse=True)
+        return JSONResponse({"invites": invites})
