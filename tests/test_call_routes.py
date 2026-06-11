@@ -139,3 +139,12 @@ def test_incoming_empty_inbox(client, monkeypatch):
     r = client.get("/call/incoming")
     assert r.status_code == 200
     assert r.json()["invites"] == []
+
+
+def test_webui_registers_call_routes():
+    from skchat.webui import app
+    paths = {r.path for r in app.routes}
+    assert "/call/start" in paths
+    assert "/call/answer" in paths
+    assert "/call/incoming" in paths
+    assert "/connectivity/ice" in paths

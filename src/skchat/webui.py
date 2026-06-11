@@ -78,9 +78,11 @@ except ImportError:
 
 # LiveKit routes — primary video stack (token endpoint + room signalling helper).
 try:
+    from .call_routes import register_call_routes as _register_call_routes
     from .livekit_routes import register_livekit_routes as _register_livekit_routes
 
     _register_livekit_routes(app)
+    _register_call_routes(app)
 except ImportError:
     pass
 
@@ -567,6 +569,40 @@ function refresh(){
 document.getElementById('caps').addEventListener('change',refresh);
 document.getElementById('copy').onclick=function(){if(window._uri)navigator.clipboard.writeText(window._uri);};
 refresh();
+</script>
+<div id="ring-banner" style="display:none;position:fixed;top:0;left:0;right:0;
+  background:#143;color:#fff;padding:12px;text-align:center;z-index:9999"></div>
+<script>
+async function callPeer(fqid){
+  const r = await fetch('/call/start',{method:'POST',
+    headers:{'Content-Type':'application/json'},body:JSON.stringify({peer:fqid})});
+  if(!r.ok){alert('call failed: '+r.status);return;}
+  const d = await r.json();
+  location.href = '/livekit?room='+encodeURIComponent(d.room)
+    +'&identity='+encodeURIComponent(d.identity);
+}
+async function answerPeer(fqid){
+  const r = await fetch('/call/answer',{method:'POST',
+    headers:{'Content-Type':'application/json'},body:JSON.stringify({peer:fqid})});
+  if(!r.ok){alert('answer failed: '+r.status);return;}
+  const d = await r.json();
+  location.href = '/livekit?room='+encodeURIComponent(d.room)
+    +'&identity='+encodeURIComponent(d.identity);
+}
+async function pollRing(){
+  try{
+    const r = await fetch('/call/incoming'); if(!r.ok)return;
+    const {invites} = await r.json();
+    const b = document.getElementById('ring-banner');
+    if(invites && invites.length){
+      const inv = invites[0];
+      b.innerHTML = '📞 Incoming call from '+inv.from_fqid+' '
+        +'<button onclick="answerPeer(\''+inv.from_fqid+'\')">Accept</button>';
+      b.style.display='block';
+    } else { b.style.display='none'; }
+  }catch(e){}
+}
+setInterval(pollRing, 4000); pollRing();
 </script></body></html>"""
 
 
