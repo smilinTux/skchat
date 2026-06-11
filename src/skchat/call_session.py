@@ -13,6 +13,9 @@ import json
 import time
 import uuid
 
+_ROOM_PREFIX = "call-"
+_ROOM_SUFFIX_LEN = 16  # 16 base32 chars = 80 bits; birthday bound ~2^40 pairs
+
 
 def derive_room(fqid_a: str, fqid_b: str) -> str:
     """Return a stable, order-independent room name for a pair of FQIDs.
@@ -28,7 +31,7 @@ def derive_room(fqid_a: str, fqid_b: str) -> str:
     joined = "\n".join(sorted([fqid_a.strip(), fqid_b.strip()]))
     digest = hashlib.sha256(joined.encode("utf-8")).digest()
     b32 = base64.b32encode(digest).decode("ascii").rstrip("=").lower()
-    return "call-" + b32[:16]
+    return _ROOM_PREFIX + b32[:_ROOM_SUFFIX_LEN]
 
 
 CALL_INVITE_SUBJECT = "CALL_INVITE"
@@ -56,7 +59,10 @@ def build_invite_body(
 
 def parse_invite_body(body: str) -> dict:
     """Parse + validate a CALL_INVITE payload. Raises ValueError if not one."""
-    data = json.loads(body)
+    try:
+        data = json.loads(body)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"invalid JSON in CALL_INVITE body: {exc}") from exc
     if data.get("type") != CALL_INVITE_SUBJECT:
         raise ValueError(f"not a CALL_INVITE: type={data.get('type')!r}")
     return data

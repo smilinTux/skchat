@@ -1,4 +1,11 @@
-from skchat.call_session import derive_room
+import pytest
+
+from skchat.call_session import (
+    CALL_INVITE_SUBJECT,
+    build_invite_body,
+    derive_room,
+    parse_invite_body,
+)
 
 
 def test_derive_room_is_order_independent():
@@ -19,11 +26,10 @@ def test_derive_room_distinct_pairs_differ():
     assert derive_room("a@x.y", "b@x.y") != derive_room("a@x.y", "c@x.y")
 
 
-from skchat.call_session import (
-    CALL_INVITE_SUBJECT,
-    build_invite_body,
-    parse_invite_body,
-)
+def test_derive_room_strips_whitespace():
+    assert derive_room("  lumina@chef.skworld  ", "opus@chef.skworld") == derive_room(
+        "lumina@chef.skworld", "opus@chef.skworld"
+    )
 
 
 def test_invite_body_roundtrip():
@@ -34,7 +40,7 @@ def test_invite_body_roundtrip():
         livekit_url="wss://noroc2027.tail204f0c.ts.net:8443",
     )
     inv = parse_invite_body(body)
-    assert inv["type"] == "CALL_INVITE"
+    assert inv["type"] == CALL_INVITE_SUBJECT
     assert inv["from_fqid"] == "opus@chef.skworld"
     assert inv["to_fqid"] == "lumina@chef.skworld"
     assert inv["room"] == "call-abc"
@@ -43,6 +49,5 @@ def test_invite_body_roundtrip():
 
 
 def test_parse_invite_rejects_non_invite():
-    import pytest
     with pytest.raises(ValueError):
         parse_invite_body('{"type":"SOMETHING_ELSE"}')
