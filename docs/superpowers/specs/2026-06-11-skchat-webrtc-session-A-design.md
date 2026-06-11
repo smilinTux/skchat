@@ -21,16 +21,37 @@ that sub-projects B and C depend on.
 - Recording/egress changes, group calls (>2).
 - **skmesh / netbird overlay** (connectivity tier 4) — designed-for but not wired in A.
 
-## Connectivity tiers (ICE policy) — shared foundation
-A small, transport-agnostic module both A (LiveKit) and B (P2P) consume. It produces
-the ordered ICE configuration and preferred-path policy. **Sovereign-first ladder:**
+## Connectivity — two planes
+A common confusion to head off: **reachability** (how a client reaches skchat's
+signaling/SFU HTTP/WS endpoints) and **media/ICE** (how WebRTC media traverses NAT) are
+**different planes**. Cloudflare Tunnel lives in the first; coturn/TURN in the second.
+They compose (e.g. cloudflared-exposed signaling + coturn-relayed media).
 
+### Plane 1 — Reachability (how clients reach the service)
+Deployment/ingress concern; A's code is agnostic (it just serves HTTP/WS). Options,
+sovereign-first:
+| Option | Exposure | Notes |
+|---|---|---|
+| **Tailscale serve** (priority) | tailnet-only HTTPS | current default; camera secure-context works |
+| **Cloudflare Tunnel** (cloudflared → Traefik) | public HTTPS/WS | TCP only — fronts signaling + LiveKit `wss` signaling + the webui; **cannot** relay WebRTC UDP media (still needs TURN). The nativeassetmanagement cluster already fronts everything this way. |
+| **Direct LAN / standalone host** | local network | homogenous network, no ingress |
+
+### Plane 2 — Media / ICE policy (`skchat/connectivity.py`) — shared by A + B
+A small transport-agnostic module producing the ordered ICE config + preferred tier:
 | Tier | Path | When | ICE servers |
 |---|---|---|---|
-| 1 | **Tailscale** (priority) | both peers on the tailnet | none needed — tailnet handles NAT; direct |
+| 1 | **Tailscale** (priority) | both peers on the tailnet | none — tailnet handles NAT; direct |
 | 2 | **Same-network / LAN** | homogenous local network | host candidates only |
-| 3 | **coturn TURN** | cross-NAT / off-tailnet | STUN+TURN via `signal.nativeassetmanagement.com` (coturn on the chi docker-swarm cluster) |
+| 3 | **coturn TURN** | cross-NAT / off-tailnet | STUN+TURN via the shared skstack coturn `skhub.<cluster>.<domain>:3478` (turn,turns / udp,tcp), the **same coturn used by Nextcloud Talk + netbird**. Secret = vault `skhub.turn_secret`. |
 | 4 | **skmesh / netbird** | larger sovereign mesh | overlay-provided (DESIGN-FOR, not built in A) |
+
+> **coturn host TBD-confirm:** the skstack v1 spreed config points TURN at
+> `skhub.<CLUSTERNAME>.<DOMAIN>:3478` (e.g. `skhub.nativeassetmanagement.com:3478`); Chef
+> recalled `signal.nativeassetmanagement.com`. Resolve at provisioning via env
+> `SKCHAT_TURN_URLS` — do not hardcode.
+> **coturn breakout (infra, separate):** coturn is currently bundled in the skhub stack
+> (down ~1mo). Recommend breaking it out as a standalone service so TURN availability is
+> decoupled from skhub. Tracked as an ops follow-up, not part of sub-project A code.
 
 ### `skchat/connectivity.py` (new)
 ```
