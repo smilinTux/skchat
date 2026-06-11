@@ -917,3 +917,4 @@ class TestCallPeer:
         assert out["room"] == "call-xyz"
         assert out["peer_fqid"] == "lumina@chef.skworld"
         assert len(sent) == 1
+        assert set(out) == {"room", "token", "livekit_url", "peer_fqid", "identity"}

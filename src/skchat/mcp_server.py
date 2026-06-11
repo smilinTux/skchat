@@ -2131,10 +2131,20 @@ async def _handle_get_thread(args: dict) -> list[TextContent]:
 
 
 def _prepare_call_for(peer: str) -> dict:
-    """Resolve + mint a call context for a peer (reuses call_routes logic)."""
+    """Resolve + mint a call context for a peer (reuses call_routes logic).
+
+    Translates the route layer's HTTPException into a plain ValueError so
+    callers outside the FastAPI context (MCP handler, REPL, tests) get a
+    sensible error rather than an HTTP exception.
+    """
+    from fastapi import HTTPException
+
     from .call_routes import _prepare_call
 
-    return _prepare_call(peer)
+    try:
+        return _prepare_call(peer)
+    except HTTPException as exc:
+        raise ValueError(f"call setup failed ({exc.status_code}): {exc.detail}") from exc
 
 
 def _ring_peer(*, from_fqid: str, to_fqid: str, room: str, livekit_url: str) -> None:
