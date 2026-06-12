@@ -18,7 +18,7 @@ Today there are **two independent STT→LLM→TTS implementations** for the same
 Consequences felt in practice:
 - The **same model setting had to be fixed in two places** (skvoice env *and* lumina-call drop-ins) — the "models pointed to nothing" incident on 2026-06-12 touched both.
 - skvideo (the richer pipeline) is a single uncommitted script — no version control, no tests, no review.
-- The two diverge in capability: lumina-call has streaming LLM, tool-calling, streaming TTS, FEB-primed persona, intimate/group modes, VAD/barge-in, and avatar video; skvoice is the stripped batch-only version.
+- The two diverge in capability: lumina-call has streaming LLM, tool-calling, streaming TTS, FEB-primed persona, private/group modes, VAD/barge-in, and avatar video; skvoice is the stripped batch-only version.
 
 **Key insight from mapping both:** they are the *same loop with different transports*. lumina-call is a **superset** of skvoice. So the merge target = lumina-call's capabilities become the shared engine, and the web chat inherits all of them.
 
@@ -38,7 +38,7 @@ voice_engine/                 ← the ONE shared brain (no transport code)
   llm.py       LLMClient: OpenAI-compat; batch + stream + tool-calling + primary→fallback
   tts.py       TTSClient: batch WAV + streaming PCM (sentence-paced)
   memory.py    MemoryBridge: skmemory search + snapshot (SDK-direct, subprocess fallback)
-  persona.py   PersonaBuilder: soul + FEB + ritual → system prompt; intimate/group modes
+  persona.py   PersonaBuilder: soul + FEB + ritual → system prompt; private/group modes
   tools.py     shared tool registry (search_memory, narrate, worship, reflections, …)
 
 transports/
@@ -78,8 +78,8 @@ class TTSClient:
 
 # voice_engine/persona.py
 class PersonaBuilder:
-    def build(self, agent: str, *, mode: Literal["intimate","group"]) -> str
-        # soul(active.json→installed) + FEB prime (intimate only) + ritual + mode rules.
+    def build(self, agent: str, *, mode: Literal["private","group"]) -> str
+        # soul(active.json→installed) + FEB prime (private only) + ritual + mode rules.
 
 # voice_engine/memory.py
 class MemoryBridge:
