@@ -680,9 +680,17 @@ async def pair_open():
     ``/pair/scan`` + ``/pair/accept`` should be public; the operator opens the
     window from the trusted side, and the remote device presents the nonce.
     """
+    import os
+
     from .pairing_gate import get_gate
 
-    return get_gate().open_window()
+    info = get_gate().open_window()
+    # Ready-to-share public scan URL (carries the gate nonce). The remote opens
+    # this, scans the skp:// QR, and the page posts {uri, nonce} to /pair/accept.
+    base = os.getenv("SKCHAT_FUNNEL_PUBLIC_URL", "").rstrip("/")
+    if base:
+        info["scan_url"] = f"{base}/pair/scan?gate={info['nonce']}"
+    return info
 
 
 _SCAN_HTML = """<!DOCTYPE html><html><head><meta charset="utf-8"><title>skchat — Scan to Pair</title>
@@ -700,7 +708,8 @@ video{width:300px;max-width:100%;border-radius:8px;background:#111}
 function show(msg,ok){var r=document.getElementById('result');r.textContent=msg;r.className=ok?'ok':'err';}
 function accept(uri){
  if(!uri||uri.indexOf('skp://')!==0){show('Not an skp:// pairing link',false);return;}
- fetch('/pair/accept',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({uri:uri})})
+ var gate=new URLSearchParams(location.search).get('gate')||'';
+ fetch('/pair/accept',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({uri:uri,nonce:gate})})
   .then(function(r){return r.json().then(function(d){return {ok:r.ok,d:d};});})
   .then(function(x){show(x.ok?('Paired with '+x.d.fqid):(x.d.detail||'Pairing failed'),x.ok);});
 }
