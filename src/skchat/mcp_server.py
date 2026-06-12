@@ -515,6 +515,45 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
+            name="p2p_call",
+            description=(
+                "Dial a paired peer over the SOVEREIGN P2P stack (direct WebRTC data "
+                "channel + audio, no SFU, signed mailbox signaling). We are the offerer."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "peer": {"type": "string", "description": "Paired peer FQID or bare name."},
+                },
+                "required": ["peer"],
+            },
+        ),
+        Tool(
+            name="p2p_listen",
+            description=(
+                "Start auto-answering incoming P2P offers (runs the route loop so peers "
+                "can call this agent)."
+            ),
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        Tool(
+            name="p2p_status",
+            description="List active sovereign-P2P sessions + any surfaced incoming calls.",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        Tool(
+            name="p2p_send",
+            description="Send a text message over an open P2P data channel to a peer.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "peer": {"type": "string", "description": "Paired peer FQID or bare name."},
+                    "text": {"type": "string", "description": "Message to send over the data channel."},
+                },
+                "required": ["peer", "text"],
+            },
+        ),
+        Tool(
             name="send_file_p2p",
             description=(
                 "Send a file directly to a peer via WebRTC data channels. "
@@ -1387,6 +1426,10 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         "initiate_call": _handle_initiate_call,
         "accept_call": _handle_accept_call,
         "call_peer": _handle_call_peer,
+        "p2p_call": _handle_p2p_call,
+        "p2p_listen": _handle_p2p_listen,
+        "p2p_status": _handle_p2p_status,
+        "p2p_send": _handle_p2p_send,
         "send_file_p2p": _handle_send_file_p2p,
         "send_file": _handle_send_file,
         "list_transfers": _handle_list_transfers,
@@ -2188,6 +2231,50 @@ async def _handle_call_peer(args: dict) -> list[TextContent]:
         logger.warning("call_peer failed: %s", exc)
         return _error(f"call_peer failed: {exc}")
     return _json(result)
+
+
+# -- sovereign P2P (sub-project B) ------------------------------------------
+async def _handle_p2p_call(args: dict) -> list[TextContent]:
+    peer: str = args.get("peer", "")
+    if not peer:
+        return _error("peer is required")
+    try:
+        from .p2p_calls import p2p_call
+        return _json(await p2p_call(peer))
+    except Exception as exc:
+        logger.warning("p2p_call failed: %s", exc)
+        return _error(f"p2p_call failed: {exc}")
+
+
+async def _handle_p2p_listen(args: dict) -> list[TextContent]:
+    try:
+        from .p2p_calls import p2p_listen
+        return _json(await p2p_listen())
+    except Exception as exc:
+        logger.warning("p2p_listen failed: %s", exc)
+        return _error(f"p2p_listen failed: {exc}")
+
+
+async def _handle_p2p_status(args: dict) -> list[TextContent]:
+    try:
+        from .p2p_calls import p2p_status
+        return _json(p2p_status())
+    except Exception as exc:
+        logger.warning("p2p_status failed: %s", exc)
+        return _error(f"p2p_status failed: {exc}")
+
+
+async def _handle_p2p_send(args: dict) -> list[TextContent]:
+    peer: str = args.get("peer", "")
+    text: str = args.get("text", "")
+    if not peer or not text:
+        return _error("peer and text are required")
+    try:
+        from .p2p_calls import p2p_send
+        return _json(await p2p_send(peer, text))
+    except Exception as exc:
+        logger.warning("p2p_send failed: %s", exc)
+        return _error(f"p2p_send failed: {exc}")
 
 
 def _get_webrtc_transport():
