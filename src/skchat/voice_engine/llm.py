@@ -37,6 +37,14 @@ def strip_formatting(text: str) -> str:
     return text.strip()
 
 
+def strip_think(text: str) -> str:
+    """Remove qwen-style <think> reasoning. Handles closed tags AND tags
+    left unclosed by max_tokens truncation (strip from <think> to end)."""
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
+    text = re.sub(r"<think>.*$", "", text, flags=re.DOTALL)
+    return text.strip()
+
+
 ChatFn = Callable[[str, str, list], Awaitable[str]]
 StreamFn = Callable[[str, str, list], AsyncIterator[str]]
 
@@ -61,7 +69,7 @@ class LLMClient:
             r = await http.post(url, json=payload)
             r.raise_for_status()
             text = r.json()["choices"][0]["message"]["content"] or ""
-            return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+            return strip_think(text)
 
     async def _http_stream(self, url: str, model: str, messages: list) -> AsyncIterator[str]:
         payload = {"model": model, "max_tokens": self.cfg.max_tokens,
@@ -100,6 +108,13 @@ class LLMClient:
         return _SAFE
 
     async def stream(self, messages: list[Msg]) -> AsyncIterator[str]:
-        """Yield token deltas from the primary endpoint (fast first-audio)."""
+        """Yield token deltas from the primary endpoint (fast first-audio).
+
+        NOTE: deltas are RAW — no <think> stripping or markdown filtering is
+        applied here. The streaming transport (Phase 2) is responsible for
+        sentence assembly and filtering before audio is handed to TTS. The
+        primary endpoint (claude-haiku proxy) does not emit <think> tags, so
+        this is a documented boundary rather than a runtime concern.
+        """
         async for delta in self._stream(self.cfg.llm_url, self.cfg.model, messages):
             yield delta

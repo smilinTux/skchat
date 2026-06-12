@@ -1,7 +1,7 @@
 import pytest
 
 from skchat.voice_engine.config import VoiceConfig
-from skchat.voice_engine.llm import LLMClient, strip_formatting
+from skchat.voice_engine.llm import LLMClient, strip_formatting, strip_think
 
 
 def test_strip_formatting_removes_markdown_and_emoji():
@@ -73,3 +73,16 @@ async def test_stream_yields_deltas():
     llm = LLMClient(cfg, _stream=fake_stream)
     got = [t async for t in llm.stream([{"role": "user", "content": "hi"}])]
     assert "".join(got) == "Hello there"
+
+
+def test_strip_think_removes_closed_block():
+    assert strip_think("<think>hmm let me see</think>Hello there") == "Hello there"
+
+
+def test_strip_think_removes_truncated_unclosed_block():
+    # qwen truncated mid-think at max_tokens — no closing tag
+    assert strip_think("Sure!\n<think>I should consider whether") == "Sure!"
+
+
+def test_strip_think_noop_when_absent():
+    assert strip_think("Just a normal reply.") == "Just a normal reply."

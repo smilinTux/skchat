@@ -39,8 +39,11 @@ async def test_synthesize_returns_empty_on_error():
 
 
 @pytest.mark.asyncio
-async def test_stream_yields_pcm_chunks_then_none():
+async def test_stream_yields_pcm_chunks_and_uses_stream_url():
+    seen = {}
+
     async def fake_stream(url, payload):
+        seen["url"] = url
         for chunk in [b"\x01\x02", b"\x03\x04"]:
             yield chunk
 
@@ -48,3 +51,4 @@ async def test_stream_yields_pcm_chunks_then_none():
     tts = TTSClient(cfg, _stream=fake_stream)
     chunks = [c async for c in tts.stream("hi", voice="lumina")]
     assert chunks == [b"\x01\x02", b"\x03\x04"]
+    assert seen["url"] == "http://localhost:15091/audio/speech/stream"
