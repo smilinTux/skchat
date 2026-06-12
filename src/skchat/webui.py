@@ -648,16 +648,41 @@ async def pair_accept(payload: dict = Body(...)):
     """
     from skcomms import pairing
 
+    from .pairing_gate import gate_required, get_gate
+
     uri = (payload or {}).get("uri", "").strip()
     if not uri:
         raise HTTPException(status_code=400, detail="missing 'uri'")
+    # When exposed publicly (Tailscale Funnel), require an operator-opened,
+    # time-boxed pairing window + nonce + rate limit. Tailnet usage is unchanged.
+    gate = get_gate()
+    if gate_required():
+        ok, reason = gate.check((payload or {}).get("nonce", ""))
+        if not ok:
+            code = 429 if "rate limited" in reason else 403
+            raise HTTPException(status_code=code, detail=reason)
     try:
         res = pairing.accept_pairing(uri)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    if gate_required():
+        gate.consume()
     # peer list / a system note may change
     asyncio.create_task(_ws_broadcast({"type": "new"}))
     return res
+
+
+@app.post("/pair/open")
+async def pair_open():
+    """Operator opens a time-boxed pairing window; returns a nonce.
+
+    Keep this endpoint tailnet-only — do NOT expose it over Funnel. Only
+    ``/pair/scan`` + ``/pair/accept`` should be public; the operator opens the
+    window from the trusted side, and the remote device presents the nonce.
+    """
+    from .pairing_gate import get_gate
+
+    return get_gate().open_window()
 
 
 _SCAN_HTML = """<!DOCTYPE html><html><head><meta charset="utf-8"><title>skchat — Scan to Pair</title>
