@@ -1,6 +1,7 @@
-import wave
 import io
 import struct
+import wave
+
 from skchat.voice_engine.audio_codec import pcm_to_wav, rms
 
 

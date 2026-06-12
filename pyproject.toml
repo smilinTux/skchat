@@ -108,5 +108,5 @@ markers = [
     "e2e_live: end-to-end tests using file-based transport (no daemon or network required)",
     "e2e_3way: 3-way group chat E2E tests (Chef + Opus + Lumina in skworld-team)",
 ]
-addopts = "-m 'not live'"
+addopts = "-v --tb=short -m 'not live'"
 asyncio_mode = "auto"

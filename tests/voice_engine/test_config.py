@@ -1,4 +1,3 @@
-import os
 from skchat.voice_engine.config import VoiceConfig
 
 
