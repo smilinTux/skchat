@@ -22,6 +22,7 @@ def client(monkeypatch):
     monkeypatch.setattr(cr, "_mint_token", lambda identity, name, room, ttl: f"tok::{identity}::{room}")
     sent = []
     monkeypatch.setattr(cr, "_send_invite", lambda **kw: sent.append(kw))
+    monkeypatch.setattr(cr, "_alert_operator", lambda **kw: None)
     app = FastAPI()
     cr.register_call_routes(app)
     c = TestClient(app)
@@ -168,3 +169,14 @@ def test_call_peers_lists_paired(client):
     assert any(p["fqid"] == "lumina@chef.skworld" for p in peers)
     lumina = next(p for p in peers if p["fqid"] == "lumina@chef.skworld")
     assert lumina["fingerprint"] == "FP"
+
+
+def test_call_start_threads_topic_and_alerts(client, monkeypatch):
+    alerts = []
+    monkeypatch.setattr(cr, "_alert_operator", lambda **kw: alerts.append(kw))
+    r = client.post(
+        "/call/start", json={"peer": "lumina@chef.skworld", "topic": "ingest debugging"}
+    )
+    assert r.status_code == 200
+    assert client._sent[0]["topic"] == "ingest debugging"   # invite carried the topic
+    assert len(alerts) == 1 and alerts[0]["topic"] == "ingest debugging"

@@ -40,9 +40,13 @@ CALL_DECLINE_SUBJECT = "CALL_DECLINE"
 
 
 def build_invite_body(
-    *, from_fqid: str, to_fqid: str, room: str, livekit_url: str
+    *, from_fqid: str, to_fqid: str, room: str, livekit_url: str, topic: str = ""
 ) -> str:
-    """Serialize a CALL_INVITE control payload (JSON string) for skcomms."""
+    """Serialize a CALL_INVITE control payload (JSON string) for skcomms.
+
+    ``topic`` is an optional human-readable subject of the call (what the agents are
+    working on) — surfaced in the operator-observability sk-alert.
+    """
     return json.dumps(
         {
             "type": CALL_INVITE_SUBJECT,
@@ -51,6 +55,7 @@ def build_invite_body(
             "room": room,
             "transport": "livekit",
             "livekit_url": livekit_url,
+            "topic": topic,
             "ts": int(time.time()),
             "nonce": uuid.uuid4().hex,
         }

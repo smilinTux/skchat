@@ -44,13 +44,25 @@ def _self_fqid() -> str:
     return resolve_agent_identity().fqid
 
 
-def _send_invite(*, from_fqid: str, to_fqid: str, room: str, livekit_url: str) -> None:
+def _send_invite(
+    *, from_fqid: str, to_fqid: str, room: str, livekit_url: str, topic: str = ""
+) -> None:
     from skcomms.mailbox import send_message
 
     body = build_invite_body(
-        from_fqid=from_fqid, to_fqid=to_fqid, room=room, livekit_url=livekit_url
+        from_fqid=from_fqid, to_fqid=to_fqid, room=room, livekit_url=livekit_url, topic=topic
     )
     send_message(to_fqid, body, subject=CALL_INVITE_SUBJECT)
+
+
+def _alert_operator(*, from_fqid: str, to_fqid: str, room: str, topic: str = "") -> None:
+    """Notify the operator (sk-alert + one-press join link). Never raises."""
+    try:
+        from .call_observability import alert_operator
+
+        alert_operator(from_fqid=from_fqid, to_fqid=to_fqid, room=room, topic=topic)
+    except Exception as exc:  # noqa: BLE001 — observability must not break the call
+        logger.debug("operator alert skipped: %s", exc)
 
 
 def _read_inbox() -> list:
@@ -106,12 +118,21 @@ def register_call_routes(app: FastAPI) -> None:
     @app.post("/call/start")
     async def call_start(request: Request) -> JSONResponse:
         peer = await _peer_arg(request)
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, ValueError):
+            body = {}
+        topic = (body.get("topic") or "").strip()
         ctx = _prepare_call(peer)
         _send_invite(
             from_fqid=ctx["identity"],
             to_fqid=ctx["peer_fqid"],
             room=ctx["room"],
             livekit_url=ctx["livekit_url"],
+            topic=topic,
+        )
+        _alert_operator(
+            from_fqid=ctx["identity"], to_fqid=ctx["peer_fqid"], room=ctx["room"], topic=topic
         )
         return _call_response(ctx)
 
