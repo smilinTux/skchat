@@ -160,7 +160,13 @@ graph LR
 | Pairing (QR/TOFU) | `pairing.py` | skcomms | ✅ |
 | **Per-agent signing key** | `mailbox.py`, `grants.py` | skcomms | ✅ (PR #5 fix) |
 | P2P transport (data channel ✅, media/sign 🟡) | `transports/webrtc*.py` | skcomms | 🟡 B |
-| Signaling broker / mailbox backend | `signaling.py` / `signaling_mailbox.py`(new) | skcomms | 🟡 B |
+| Mailbox signaling (sovereign SDP/ICE) | `transports/signaling_mailbox.py` | skcomms | ✅ B |
+| Broker signaling (fast path) | `transports/signaling_broker.py` + `signaling_base.py` | skcomms | ✅ B (live-broker validation pending) |
+| P2P session (data+audio+video) | `transports/p2p_session.py` | skcomms | ✅ B |
+| P2P connector / **session manager** | `transports/p2p_connector.py` / `p2p_manager.py` | skcomms | ✅ B |
+| skchat P2P glue + MCP tools | `p2p_calls.py` (`p2p_call/listen/status/send`) | skchat | ✅ B |
+| **Layered fallback** (P2P→SFU) | `call_orchestrator.py` (`call_auto` tool) | skchat | ✅ C |
+| Operator observability (alert+join) | `call_observability.py` (topic + sk-alert) | skchat | ✅ (e8651a65) |
 | coturn standalone | `apps/skturn` | SKStacks v2 | 🟡 (other session) |
 
 ## 7. Design decisions (log)
@@ -180,9 +186,15 @@ graph LR
    (video graceful-degrades), full ICE ladder, P2P+SFU transports. No single point of failure.
 7. **Signed SDP** (B) reuses the per-agent signing fix — no MITM on media negotiation.
 
-## 8. Live status (2026-06-11)
-- opus webui `:8766` + lumina webui `:8765` on merged A; both serve `/call/*`.
-- Cross-agent signed CALL_INVITE ring verified end-to-end through the running services.
-- Browser media leg proven: headless client joins the SFU; **Lumina's conversational
-  agent live in `lumina-and-chef`** (audio + 77 MCP tools); Chef one-press join link issued.
-- Runbooks: `qr-pairing-phone-test.md`, `browser-call-test.md`.
+## 8. Live status (2026-06-12)
+- **A (LiveKit SFU) shipped** (skchat PR #4, tag `webrtc-A-v1`). **B (sovereign P2P) +
+  C (P2P→SFU fallback) shipped** → main (tag `webrtc-BC-v1`). skcomms 145 + skchat 863 tests.
+- Verified: signed CALL_INVITE ring end-to-end; signed mailbox SDP signaling (opus→lumina);
+  direct P2P data+audio channel (aiortc loopback); manager auto-answer; `call_auto` fallback.
+- MCP tools live: `call_peer` (SFU), `p2p_call`/`p2p_listen`/`p2p_status`/`p2p_send` (P2P),
+  `call_auto` (P2P-first + SFU fallback). Operator alert (topic + one-press join) on `/call/start`.
+- Browser media leg proven; **Lumina's conversational agent in `lumina-and-chef`** (audio +
+  77 MCP tools). Runbooks: `qr-pairing-phone-test.md`, `browser-call-test.md`.
+- **Open:** live-broker validation of BrokerSignaling (needs the skcomm daemon broker up);
+  Tailscale Funnel public pairing (`2ab5aa6c`, outward-facing — operator-gated). **🔴 live
+  voice blocked by `.100` F5-TTS on the wedged Arc iGPU (no CUDA for the 5060 Ti).**
