@@ -102,10 +102,11 @@ target-version = ["py311"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
-addopts = "-v --tb=short"
-asyncio_mode = "auto"
 markers = [
+    "live: test hits live model endpoints (skworld-100/.100/localhost); run with -m live",
     "integration: mark test as an integration test requiring live external services",
     "e2e_live: end-to-end tests using file-based transport (no daemon or network required)",
     "e2e_3way: 3-way group chat E2E tests (Chef + Opus + Lumina in skworld-team)",
 ]
+addopts = "-m 'not live'"
+asyncio_mode = "auto"
