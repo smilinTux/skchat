@@ -39,3 +39,12 @@ async def test_snapshot_returns_bool():
 
     mb = MemoryBridge(_snapshot=fake_snap)
     assert await mb.snapshot("we talked", agent="lumina", tags="voice-chat") is True
+
+
+@pytest.mark.asyncio
+async def test_snapshot_swallows_errors():
+    async def fake_snap(content, agent, tags):
+        raise RuntimeError("skmemory down")
+
+    mb = MemoryBridge(_snapshot=fake_snap)
+    assert await mb.snapshot("x", agent="lumina", tags="voice-chat") is False

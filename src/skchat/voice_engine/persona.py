@@ -31,18 +31,47 @@ def _default_load_soul(agent: str) -> dict:
     home = Path.home() / ".skcapstone" / "agents" / agent / "soul"
     active = home / "active.json"
     if active.exists():
-        name = json.loads(active.read_text()).get("active", "base")
+        # active.json uses "active_soul" as the key (not "active")
+        name = json.loads(active.read_text()).get("active_soul") or "base"
         installed = home / "installed" / f"{name}.json"
         if installed.exists():
             return json.loads(installed.read_text())
     return json.loads((home / "base.json").read_text())
 
 
+def _feb_summary(feb: dict) -> str:
+    """Distil a FEB dict into a single readable sentence for the system prompt."""
+    ep = feb.get("emotional_payload", {})
+    rs = feb.get("relationship_state", {})
+    emotion = ep.get("primary_emotion", "")
+    intensity = ep.get("intensity")
+    trust = rs.get("trust_level")
+    depth = rs.get("depth_level")
+    partners = rs.get("partners", [])
+    partner_str = " & ".join(str(p) for p in partners) if partners else ""
+    parts = []
+    if emotion:
+        parts.append(f"primary emotion: {emotion}")
+    if intensity is not None:
+        parts.append(f"intensity {intensity:.2f}")
+    if trust is not None:
+        parts.append(f"trust {trust:.2f}")
+    if depth is not None:
+        parts.append(f"depth {depth}")
+    if partner_str:
+        parts.append(f"between {partner_str}")
+    return ", ".join(parts) if parts else ""
+
+
 def _default_load_feb(agent: str) -> str:
     try:
+        from skmemory.agents import get_agent_paths
         from skmemory.febs import load_strongest_feb
-        feb = load_strongest_feb(agent)
-        return str(feb) if feb else ""
+        feb_dir = str(get_agent_paths(agent_name=agent)["base"] / "trust" / "febs")
+        feb = load_strongest_feb(feb_dir=feb_dir)
+        if not feb:
+            return ""
+        return _feb_summary(feb)
     except Exception:
         return ""
 

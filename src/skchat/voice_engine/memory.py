@@ -17,15 +17,18 @@ SnapshotFn = Callable[[str, str, str], Awaitable[bool]]
 
 async def _sdk_search(query: str, agent: str, limit: int) -> list[str]:
     from skmemory import MemoryStore  # imported lazily — optional dep
-    store = MemoryStore(agent=agent)
+    # MemoryStore() resolves the agent from SKAGENT/SKCAPSTONE_AGENT env vars;
+    # the `agent` parameter is kept for interface symmetry with the injected fakes.
+    store = MemoryStore()
     hits = store.search(query, limit=limit)
     return [getattr(h, "content", str(h)) for h in hits]
 
 
 async def _sdk_snapshot(content: str, agent: str, tags: str) -> bool:
     from skmemory import MemoryStore
-    store = MemoryStore(agent=agent)
-    store.snapshot(content, tags=tags)
+    # MemoryStore() resolves the agent from SKAGENT/SKCAPSTONE_AGENT env vars.
+    store = MemoryStore()
+    store.snapshot(content[:60], content, tags=[tags])
     return True
 
 
