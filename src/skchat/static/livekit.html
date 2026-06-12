@@ -255,6 +255,9 @@ function attachTrack(track, participant) {
     const ph = tile.querySelector('.placeholder');
     track.attach(video);
     video.style.display = 'block';
+    // Mirror only your own self-view (every selfie/video app does this; raw
+    // camera reads reversed). Remote tiles — incl. Lumina's avatar — stay as-is.
+    if (participant.isLocal) video.style.transform = 'scaleX(-1)';
     if (ph) ph.style.display = 'none';
   } else if (track.kind === Track.Kind.Audio && !participant.isLocal) {
     const el = track.attach();

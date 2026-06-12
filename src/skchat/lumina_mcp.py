@@ -102,7 +102,13 @@ DEFAULT_EXPOSE: dict[str, list[str]] = {
     # since voice should not drive infra changes blind.
     "skcapstone": [
         "agent_status", "agent_context",
+        # Coordination board (full surface — status shows the board)
         "coord_status", "coord_create", "coord_claim", "coord_complete",
+        # ITIL service management — incidents / problems / changes / CAB / KEDB
+        "itil_status", "itil_incident_create", "itil_incident_list",
+        "itil_incident_update", "itil_problem_create", "itil_problem_update",
+        "itil_change_propose", "itil_change_update", "itil_cab_vote",
+        "itil_kedb_search",
         # Lumina's own GTD (agent-scoped via SKAGENT=lumina env)
         "gtd_capture", "gtd_inbox", "gtd_next", "gtd_projects", "gtd_review",
         "gtd_status", "gtd_done", "gtd_clarify", "gtd_move", "gtd_waiting",
@@ -527,11 +533,18 @@ _TOOL_GROUPS: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
       "you remember"), (
         "skmemory__*",
     )),
-    # gtd / inbox / task / next action / project / waiting
+    # gtd / inbox / task / next action / project / waiting / coord board
     (("gtd", "task", "next action", "next thing", "project", "waiting", "todo",
-      "do next"), (
+      "do next", "coord", "board", "working on", "what are you working",
+      "what's on the board", "assignments"), (
         "skcapstone__gtd_*",
         "skcapstone__coord_*",
+    )),
+    # ITIL service management — incidents / problems / changes / CAB / KEDB
+    (("itil", "incident", "outage", "ticket", "problem record", "change request",
+      "cab", "known error", "kedb", "service desk", "what's broken",
+      "whats broken", "down right now"), (
+        "skcapstone__itil_*",
     )),
     # send / message / telegram / text / dm
     (("send ", "message", "telegram", "text ", "dm ", "chat with"), (
