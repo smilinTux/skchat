@@ -554,6 +554,21 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
+            name="call_auto",
+            description=(
+                "Connect to a paired peer with automatic transport fallback: tries the "
+                "sovereign direct P2P link first, falls back to the LiveKit SFU room (same "
+                "deterministic room) if P2P can't establish. Returns the chosen transport."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "peer": {"type": "string", "description": "Paired peer FQID or bare name."},
+                },
+                "required": ["peer"],
+            },
+        ),
+        Tool(
             name="send_file_p2p",
             description=(
                 "Send a file directly to a peer via WebRTC data channels. "
@@ -1430,6 +1445,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         "p2p_listen": _handle_p2p_listen,
         "p2p_status": _handle_p2p_status,
         "p2p_send": _handle_p2p_send,
+        "call_auto": _handle_call_auto,
         "send_file_p2p": _handle_send_file_p2p,
         "send_file": _handle_send_file,
         "list_transfers": _handle_list_transfers,
@@ -2275,6 +2291,18 @@ async def _handle_p2p_send(args: dict) -> list[TextContent]:
     except Exception as exc:
         logger.warning("p2p_send failed: %s", exc)
         return _error(f"p2p_send failed: {exc}")
+
+
+async def _handle_call_auto(args: dict) -> list[TextContent]:
+    peer: str = args.get("peer", "")
+    if not peer:
+        return _error("peer is required")
+    try:
+        from .call_orchestrator import connect_with_fallback
+        return _json(await connect_with_fallback(peer))
+    except Exception as exc:
+        logger.warning("call_auto failed: %s", exc)
+        return _error(f"call_auto failed: {exc}")
 
 
 def _get_webrtc_transport():
