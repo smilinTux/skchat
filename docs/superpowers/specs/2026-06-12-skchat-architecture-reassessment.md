@@ -68,6 +68,33 @@ Ratified refinements (Chef, 2026-06-12):
 fleet that already has skcomms + a working TG path, lightweight adapters win;
 Matrix-as-adapter remains the escape hatch if the bridge count ever justifies it.
 
+## 2.5 The collaborative session (product experience)
+
+The headline UX: **one shared session = voice + video + chat + whiteboard + your
+agent team (Lumina + Opus)**, reachable directly (sovereign) or by a link (guests).
+
+- **Sovereign tiers (direct-first).** The ICE ladder already does
+  **Tailscale → LAN → coturn → Netbird**. On the tailnet or LAN you connect
+  peer-to-peer with no relay; only off-net peers fall to coturn. "Just local
+  network if you want" works out of the box.
+- **One-link guest join ("just works").** A guest with no Tailscale opens a
+  **Funnel** link → the webui → joins the LiveKit room. Their *media* reaches the
+  room via **coturn** (tier-3 TURN relay), so video works even off-tailnet. The
+  existing **pairing gate** (time-boxed, nonce, rate-limited) keeps the public
+  link safe. Net: send a friend a link, they're on a call with you + the agents.
+- **In-call text chat (same session).** Reuse the LiveKit **data channel** (already
+  used for agent "speak" commands) to carry a chat panel — share links/snippets
+  while on audio/video. Persists to skchat history under the room's FQID.
+- **Whiteboard — Excalidraw, sovereign.** Embed `@excalidraw/excalidraw` and sync
+  scene diffs **over the same LiveKit data channel** — no separate excalidraw-room
+  server. The board rides the call; agents can read/annotate it as another channel.
+- **Agent team as participants.** Lumina + Opus join the same room (today's
+  roundtable), hear everyone, and answer — addressing discipline + loop-cap already
+  built. Guests interact with the agents naturally.
+
+This is all **one LiveKit room** carrying multiple data lanes (audio, video, chat,
+whiteboard, agent control) — minimal moving parts, fully self-hostable.
+
 ## 3. Current state (what exists, 2026-06-12)
 
 **Built & running (systemd, this box):**
@@ -145,9 +172,17 @@ skcomms channel-adapter pattern should absorb.
 - **C5** **Matrix adapter (optional)** — only if Element/federation is wanted; this
   is where mautrix-style reach plugs in without making Matrix load-bearing.
 
-### Batch D — Reach + clients
-- **D1** NC-Talk + Teams adapters (more custom; later).
-- **D2** skchat web/mobile client polish over the tailnet (the SKWorld UX).
+### Batch D — The collaborative session (the headline UX)
+*One room = voice + video + chat + whiteboard + agent team; direct or by link.*
+- **D1** **One-link guest join** — Funnel link → webui → LiveKit room, media via
+  coturn for off-tailnet guests; harden the pairing gate for shareable links.
+- **D2** **In-call chat panel** — chat lane over the LiveKit data channel, rendered
+  in the call UI, persisted to skchat history under the room FQID.
+- **D3** **Excalidraw whiteboard** — embed `@excalidraw/excalidraw`, sync scene
+  diffs over the LiveKit data channel (no excalidraw-room server); agents can read it.
+- **D4** Connectivity polish: surface tier (tailnet/LAN/Netbird/relay) in the UI;
+  Netbird as a first-class mesh option alongside Tailscale.
+- **D5** Platform reach adapters (NC-Talk, Teams) — after the core session UX.
 
 ### Batch E — Multi-agent + hardening
 - **E1** Promote today's roundtable to durable `skchat-agent@<name>` stack
