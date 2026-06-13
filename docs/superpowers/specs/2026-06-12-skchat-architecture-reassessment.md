@@ -106,6 +106,13 @@ agent team (Lumina + Opus)**, reachable directly (sovereign) or by a link (guest
 This is all **one LiveKit room** carrying multiple data lanes (audio, video, chat,
 whiteboard, agent control) — minimal moving parts, fully self-hostable.
 
+**Multi-conversation client.** The client is a real messaging app: a **conversation
+list** (DMs, groups, active call rooms) with a switcher to "pop into one or the
+other," multiple threads live at once, unread/presence indicators. The backend
+already supports it (groups + threads + DMs; `list_groups`/`list_threads`/
+`get_thread`) — this is the client UX layer over it. A "conversation" can be
+text-only or carry a live session (the collaborative room above).
+
 ## 3. Current state (what exists, 2026-06-12)
 
 **Built & running (systemd, this box):**
@@ -197,8 +204,11 @@ skcomms channel-adapter pattern should absorb.
   sync URL + play/pause/seek over the data channel for lockstep playback.
 - **D6** Connectivity polish: surface tier (tailnet/LAN/Netbird/relay) in the UI;
   Netbird as a first-class mesh option alongside Tailscale.
-- **D7** Platform reach adapters (NC-Talk, Teams) — after the core session UX.
-- **D8** *(★ future requirement)* **agents as visual co-creators** — read (vision on
+- **D7** **Multi-conversation client** — conversation list (DMs/groups/call rooms) +
+  switcher, multiple live threads, unread/presence; over the existing groups/threads
+  backend. A conversation can be text-only or host a live collaborative session.
+- **D8** Platform reach adapters (NC-Talk, Teams) — after the core session UX.
+- **D9** *(★ future requirement)* **agents as visual co-creators** — read (vision on
   screen/board) AND write (push Excalidraw elements, generate diagrams/images onto
   the shared canvas, annotate screen regions) in real time, over the same data channel.
 
