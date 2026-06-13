@@ -50,10 +50,14 @@ def _default_verify(payload: bytes, sig: str, pub: str) -> bool:
 
 
 def _default_resolve_pubkey(fqid: str) -> Optional[str]:
-    # NOTE: verified import path 2026-06-13 — skcomms.mailbox._load_verifier_key
-    # resolves (the deprecated `skcomm` alias forwards here).
-    from skcomms.mailbox import _load_verifier_key
-    return _load_verifier_key(fqid)
+    # NOTE: federation verification requires a REALM-qualified pinned key. We
+    # resolve the pubkey from a TOFU/directory pin keyed on the FULL fqid
+    # (agent@host.realm). The bare-agent skcomms resolver
+    # (skcomms.mailbox._load_verifier_key) is intentionally NOT used here: it
+    # discards the realm, so `lumina@chef.skworld` and `lumina@evil.attacker`
+    # would collide → impersonation (S5 review C1).
+    from skchat.spaces.federation.keystore import federation_pubkey
+    return federation_pubkey(fqid)
 
 
 def build_signed(a: Assertion, *, sign: Callable[[bytes], str] = _default_sign) -> dict:
@@ -76,11 +80,24 @@ def verify_signed(
                       issued_at=int(d["issued_at"]), nonce=d["nonce"])
     except Exception as exc:
         raise AssertionError(f"malformed claim: {exc}") from exc
+    # M1: a fqid must be a strict `agent@host` — exactly one `@`, both halves
+    # non-empty. A malformed fqid (e.g. "@host", "host", "a@b@c") must never
+    # reach key resolution / trust policy.
+    parts = a.fqid.split("@")
+    if len(parts) != 2 or not parts[0] or not parts[1]:
+        raise AssertionError(f"malformed fqid {a.fqid!r}")
     pub = resolve_pubkey(a.fqid)
     if not pub:
         raise AssertionError(f"no pubkey for fqid {a.fqid!r}")
     if not verify(claim.encode(), sig, pub):
         raise AssertionError("signature verification failed")
-    if max_age and (time.time() - a.issued_at) > max_age:
-        raise AssertionError("assertion expired/stale")
+    # I1b: two-sided freshness — reject assertions that are too old AND ones
+    # dated too far in the future (clock-skew attack / pre-minted replays). A
+    # small future skew (issued_at slightly ahead) within max_age is tolerated.
+    if max_age:
+        skew = time.time() - a.issued_at
+        if skew > max_age:
+            raise AssertionError("assertion expired/stale")
+        if -skew > max_age:
+            raise AssertionError("assertion future-dated")
     return a
