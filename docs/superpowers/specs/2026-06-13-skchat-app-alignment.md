@@ -68,13 +68,17 @@ phone app; the UI adapts per form factor (phone bottom-nav/single-pane ↔ deskt
 sidebar/multi-pane via responsive breakpoints / master-detail). Batch G targets
 this single consolidated app.
 
-**Keep the lightweight HTML (`livekit.html`) as the web/guest surface.** "Send a
-friend a link → it just works" needs an *instant* zero-install page; Flutter Web
-bundles are heavy (slow first paint), which hurts the magic-link guest join. So:
-- **Members, native (iOS/Android/Linux/macOS/Windows)** → the consolidated Flutter app.
-- **Guests / zero-install browser** → the light HTML page.
-Both share the same LiveKit rooms + skcomms identity underneath. (All-Flutter-incl-web
-is possible for a single codebase, trading guest-link lightness — not recommended.)
+**UPDATED 2026-06-13 (Chef: "give the guest our nice flutter app view… consolidate!"):
+go ALL-FLUTTER.** Guests open the **Flutter-web build** of the same app — one codebase
+for iOS/Android/Linux/macOS/Windows **and web/guest**. Tradeoff (heavier web bundle)
+accepted for one codebase + identical UX; mitigate with deferred loading, a thin
+pre-auth invite landing, CDN/caching. `livekit.html` stays as a fallback/dev surface
+(restyled to the 2027 tokens in the interim). Full decision +
+mitigations: `2026-06-13-sk-design-system-2027.md` §4.
+
+**Design language:** every skchat surface uses the **SK "2027" design system** (OLED
+black, frosted-glass cards, purple `#A855F7` accent, Inter/JetBrains Mono, per-agent
+soul colors) — spec `2026-06-13-sk-design-system-2027.md`. Add it to every UI task's DoD.
 
 ## 5. Verdict
 A genuinely solid, substantial native client that's ~3 months behind the architecture.
