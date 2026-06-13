@@ -1,0 +1,55 @@
+# skchat-daemon — SKComm receive loop, history store, advocacy engine (:9385)
+# Polls SKComm transports; manages outbox retry; drives the advocacy engine.
+# Non-root user; /health endpoint at :9385.
+#
+# Build context: repo root
+# docker build -f deploy/Dockerfile.daemon -t skchat-daemon:<tag> .
+
+FROM python:3.12-slim
+
+# ── system deps ────────────────────────────────────────────────────────────────
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+ && rm -rf /var/lib/apt/lists/*
+
+# ── non-root user ──────────────────────────────────────────────────────────────
+RUN groupadd --gid 1001 skchat \
+ && useradd  --uid 1001 --gid skchat --create-home --shell /sbin/nologin skchat
+
+WORKDIR /app
+
+# ── install ───────────────────────────────────────────────────────────────────
+COPY pyproject.toml README.md ./
+COPY src/ ./src/
+
+RUN pip install --no-cache-dir \
+    ".[cli]" \
+    httpx
+
+# ── persistent state directories ─────────────────────────────────────────────
+# History DB, outbox, and capauth keys live here; mount as a named volume so
+# state survives container recreation.
+RUN mkdir -p /data/skchat /data/skcomm /data/capauth \
+ && chown -R skchat:skchat /data
+
+# ── runtime config defaults ───────────────────────────────────────────────────
+ENV SKCHAT_HOME=/data/skchat \
+    SKCOMM_HOME=/data/skcomm \
+    SKCHAT_DAEMON_INTERVAL=5 \
+    SKCHAT_DAEMON_QUIET=false
+
+# ── ownership ────────────────────────────────────────────────────────────────
+RUN chown -R skchat:skchat /app
+USER skchat
+
+# 9385 = daemon health/API; 9384 = skcomm transport health (served by daemon)
+EXPOSE 9385 9384
+
+# ── health ────────────────────────────────────────────────────────────────────
+HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
+    CMD curl -fs http://localhost:9385/health || exit 1
+
+# ── entrypoint ────────────────────────────────────────────────────────────────
+# Run in the foreground; systemd supervision is replaced by Docker Swarm's
+# restart_policy. Never use `skchat daemon start` (background fork) here.
+ENTRYPOINT ["skchat", "daemon", "run", "--interval", "5"]

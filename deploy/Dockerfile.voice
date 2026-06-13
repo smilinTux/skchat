@@ -1,0 +1,63 @@
+# skchat-voice — voice_engine WebSocket service (ex-skvoice, :18800)
+# STT→LLM→TTS pipeline; non-root user; /health endpoint.
+#
+# Build context: repo root
+# docker build -f deploy/Dockerfile.voice -t skchat-voice:<tag> .
+#
+# NOTE: torch (Silero VAD) makes the image large (~2 GB). If CPU-only is
+# acceptable in prod, install torch with --index-url
+# https://download.pytorch.org/whl/cpu to keep the image under 1 GB.
+
+FROM python:3.12-slim
+
+# ── system deps ────────────────────────────────────────────────────────────────
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    ffmpeg \
+ && rm -rf /var/lib/apt/lists/*
+
+# ── non-root user ──────────────────────────────────────────────────────────────
+RUN groupadd --gid 1001 skchat \
+ && useradd  --uid 1001 --gid skchat --no-create-home --shell /sbin/nologin skchat
+
+WORKDIR /app
+
+# ── install ───────────────────────────────────────────────────────────────────
+COPY pyproject.toml README.md ./
+COPY src/ ./src/
+
+# CPU-only torch keeps the layer lean for Swarm workers without a GPU.
+# Remove the --index-url override if the target node has CUDA.
+RUN pip install --no-cache-dir \
+    ".[cli]" \
+    fastapi \
+    "uvicorn[standard]" \
+    httpx \
+    websockets \
+    torch --index-url https://download.pytorch.org/whl/cpu \
+    torchaudio --index-url https://download.pytorch.org/whl/cpu
+
+# ── runtime config defaults ───────────────────────────────────────────────────
+# STT/TTS/LLM endpoints, model name, and voice persona are all injected at
+# runtime via skchat.env.  The SKVOICE_* vars are read by
+# skchat.voice_engine.config.VoiceConfig.from_env().
+ENV SKVOICE_PORT=18800 \
+    SKVOICE_HOST=0.0.0.0
+
+# ── ownership ────────────────────────────────────────────────────────────────
+RUN chown -R skchat:skchat /app
+USER skchat
+
+EXPOSE 18800
+
+# ── health ────────────────────────────────────────────────────────────────────
+# The voice WebSocket server exposes a minimal /health HTTP endpoint on the
+# same port (served by the FastAPI app that wraps the WS handler).
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD curl -fs http://localhost:18800/health || exit 1
+
+# ── entrypoint ────────────────────────────────────────────────────────────────
+# voice-engine subcommand is the consolidated skvoice replacement (Phase 2+).
+# Until that CLI subcommand lands (Batch A2), wire directly to the WS server
+# module. Adjust once `skchat voice-engine` exists.
+ENTRYPOINT ["python", "-m", "skchat.voice_stream", "--host", "0.0.0.0", "--port", "18800"]

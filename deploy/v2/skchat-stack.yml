@@ -1,0 +1,251 @@
+# skchat v2 Docker Swarm stack — Tailscale-native
+#
+# Deploy:
+#   docker stack deploy \
+#     --env-file /var/data/deploy_skchat/skchat.env \
+#     -c deploy/v2/skchat-stack.yml \
+#     skchat
+#
+# Reachability model (tailnet-first):
+#   • Default: all three services are reachable inside the tailnet via the
+#     node's tailscale name (e.g. noroc2027.tailnet-xyz.ts.net) or a
+#     `tailscale serve` proxy.  No public ingress is needed for the system
+#     to work.
+#   • Opt-in public: the webui router gets a Traefik label set so that
+#     the Traefik edge (cloud-public-prod overlay) can expose
+#     skchat.skstack01.douno.it — gated by the existing pairing-gate + TLS.
+#     Disable by removing the traefik.enable label on the webui service.
+#   • voice and daemon services are NOT exposed via Traefik; they are
+#     internal to the tailnet and must be reached through webui or directly
+#     on the tailnet by peer services.
+#
+# Networks:
+#   cloud-public-prod — external Traefik overlay (opt-in public routes only)
+#   skchat-internal   — internal overlay; all three services; no public routing
+#
+# Secrets: ALL sensitive values come from /var/data/deploy_skchat/skchat.env
+#          (or OpenBao — see deploy/SECRETS.md).  Nothing is hardcoded here.
+
+version: "3.8"
+
+services:
+
+  # ── webui ────────────────────────────────────────────────────────────────────
+  # FastAPI web UI, LiveKit token mint, /call/* ring/answer, /pair gate.
+  webui:
+    image: ${SKCHAT_IMAGE_REGISTRY:-skchat-webui}:${SKCHAT_VERSION:-latest}
+    env_file: []          # loaded by `docker stack deploy --env-file`
+    environment:
+      SKCHAT_HOST: "0.0.0.0"
+      SKCHAT_PORT: "8765"
+      SKCHAT_NO_BROWSER: "true"
+      SKAGENT: "${SKAGENT:-lumina}"
+      # LLM / voice
+      SKCHAT_LLM_URL: "${SKCHAT_LLM_URL}"
+      SKCHAT_LLM_MODEL: "${SKCHAT_LLM_MODEL}"
+      SKCHAT_STT_URL: "${SKCHAT_STT_URL}"
+      SKCHAT_TTS_URL: "${SKCHAT_TTS_URL}"
+      # LiveKit (API key + secret come from skchat.env — not echoed here)
+      SKCHAT_LIVEKIT_URL: "${SKCHAT_LIVEKIT_URL}"
+      SKCHAT_LIVEKIT_API_KEY: "${SKCHAT_LIVEKIT_API_KEY}"
+      SKCHAT_LIVEKIT_API_SECRET: "${SKCHAT_LIVEKIT_API_SECRET}"
+      SKCHAT_LIVEKIT_DEFAULT_ROOM: "${SKCHAT_LIVEKIT_DEFAULT_ROOM:-lumina-and-chef}"
+      # TURN (secret never logged; only short-lived derived creds leave the app)
+      SKCHAT_TURN_SECRET: "${SKCHAT_TURN_SECRET}"
+      SKCHAT_TURN_URLS: "${SKCHAT_TURN_URLS}"
+      SKCHAT_STUN_URLS: "${SKCHAT_STUN_URLS}"
+      SKCHAT_TURN_TTL: "${SKCHAT_TURN_TTL:-300}"
+      # skvoice / voice_engine WS (internal overlay hostname)
+      SKCHAT_SKVOICE_URL: "ws://voice:18800/ws/voice"
+      # CapAuth / identity
+      SKCHAT_IDENTITY: "${SKCHAT_IDENTITY}"
+      SKCAPSTONE_HOME: "${SKCAPSTONE_HOME:-/data/skcapstone}"
+    networks:
+      - cloud-public-prod
+      - skchat-internal
+    volumes:
+      # capauth keys and pairing state — must persist across redeploys
+      - skchat-identity:/data/capauth
+      - skchat-data:/data/skchat
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == worker
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 5
+        window: 120s
+      update_config:
+        parallelism: 1
+        delay: 10s
+        failure_action: rollback
+        monitor: 30s
+        max_failure_ratio: 0
+        order: start-first
+      rollback_config:
+        parallelism: 1
+        delay: 0s
+        failure_action: pause
+        monitor: 30s
+        max_failure_ratio: 0
+        order: stop-first
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 128M
+      labels:
+        # ── Traefik (opt-in public) ──────────────────────────────────────────
+        # Remove traefik.enable to keep this tailnet-only.
+        traefik.enable: "true"
+        traefik.swarm.network: "cloud-public-prod"
+        # HTTPS public hostname (Cloudflare → Traefik → pairing gate)
+        traefik.http.routers.skchat-webui.rule: "Host(`skchat.skstack01.douno.it`)"
+        traefik.http.routers.skchat-webui.entrypoints: "websecure"
+        traefik.http.routers.skchat-webui.tls: "true"
+        traefik.http.routers.skchat-webui.tls.certresolver: "main"
+        traefik.http.routers.skchat-webui.service: "skchat-webui"
+        traefik.http.services.skchat-webui.loadbalancer.server.port: "8765"
+        traefik.http.services.skchat-webui.loadbalancer.server.scheme: "http"
+        # WebSocket upgrade passthrough (needed for /ws/voice and LiveKit WS)
+        traefik.http.middlewares.skchat-ws.headers.customrequestheaders.Connection: "upgrade"
+        traefik.http.middlewares.skchat-ws.headers.customrequestheaders.Upgrade: "websocket"
+        traefik.http.routers.skchat-webui.middlewares: "skchat-ws"
+
+  # ── voice engine ─────────────────────────────────────────────────────────────
+  # WebSocket voice service (ex-skvoice): STT → LLM → TTS pipeline.
+  # Internal only — reached by webui at ws://voice:18800/ws/voice.
+  # NOT exposed via Traefik.
+  voice:
+    image: ${SKCHAT_IMAGE_REGISTRY:-skchat-voice}:${SKCHAT_VERSION:-latest}
+    environment:
+      SKVOICE_HOST: "0.0.0.0"
+      SKVOICE_PORT: "18800"
+      SKVOICE_AGENT: "${SKAGENT:-lumina}"
+      SKVOICE_LLM_URL: "${SKCHAT_LLM_URL}"
+      SKVOICE_MODEL: "${SKCHAT_LLM_MODEL}"
+      SKVOICE_FALLBACK_URL: "${SKVOICE_FALLBACK_URL}"
+      SKVOICE_FALLBACK_MODEL: "${SKVOICE_FALLBACK_MODEL}"
+      SKVOICE_STT_URL: "${SKCHAT_STT_URL}"
+      SKVOICE_TTS_URL: "${SKCHAT_TTS_URL}"
+      SKVOICE_TTS_VOICE: "${SKVOICE_TTS_VOICE:-lumina}"
+      SKVOICE_MAX_TOKENS: "${SKVOICE_MAX_TOKENS:-200}"
+      SKVOICE_STT_MIN_RMS: "${SKVOICE_STT_MIN_RMS:-800}"
+    networks:
+      - skchat-internal
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == worker
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 5
+        window: 120s
+      update_config:
+        parallelism: 1
+        delay: 10s
+        failure_action: rollback
+        monitor: 30s
+        max_failure_ratio: 0
+        order: start-first
+      rollback_config:
+        parallelism: 1
+        delay: 0s
+        failure_action: pause
+        monitor: 30s
+        max_failure_ratio: 0
+        order: stop-first
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 256M
+      labels:
+        traefik.enable: "false"
+
+  # ── daemon ───────────────────────────────────────────────────────────────────
+  # SKComm receive loop, history (SQLite), advocacy engine, outbox retry.
+  # Internal only — health reachable on the tailnet at :9385.
+  # NOT exposed via Traefik.
+  daemon:
+    image: ${SKCHAT_IMAGE_REGISTRY:-skchat-daemon}:${SKCHAT_VERSION:-latest}
+    environment:
+      SKAGENT: "${SKAGENT:-lumina}"
+      SKCHAT_DAEMON_INTERVAL: "${SKCHAT_DAEMON_INTERVAL:-5}"
+      SKCHAT_DAEMON_QUIET: "${SKCHAT_DAEMON_QUIET:-false}"
+      SKCHAT_HOME: "/data/skchat"
+      SKCOMM_HOME: "/data/skcomm"
+      # Identity
+      SKCHAT_IDENTITY: "${SKCHAT_IDENTITY}"
+      SKCAPSTONE_HOME: "${SKCAPSTONE_HOME:-/data/skcapstone}"
+      # skmem-pg (memory backend)
+      SKMEMORY_PG_HOST: "${SKMEMORY_PG_HOST}"
+      SKMEMORY_PG_PORT: "${SKMEMORY_PG_PORT:-5432}"
+      SKMEMORY_PG_DB: "${SKMEMORY_PG_DB:-skmemory}"
+      SKMEMORY_PG_USER: "${SKMEMORY_PG_USER}"
+      SKMEMORY_PG_PASSWORD: "${SKMEMORY_PG_PASSWORD}"
+    networks:
+      - skchat-internal
+    volumes:
+      # All state that must survive redeploys
+      - skchat-data:/data/skchat
+      - skchat-skcomm:/data/skcomm
+      - skchat-identity:/data/capauth
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == worker
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 5
+        window: 120s
+      update_config:
+        parallelism: 1
+        delay: 10s
+        failure_action: rollback
+        monitor: 30s
+        max_failure_ratio: 0
+        order: stop-first          # stop old first — only one daemon polls the inbox
+      rollback_config:
+        parallelism: 1
+        delay: 0s
+        failure_action: pause
+        monitor: 30s
+        max_failure_ratio: 0
+        order: stop-first
+      resources:
+        limits:
+          memory: 256M
+        reservations:
+          memory: 64M
+      labels:
+        traefik.enable: "false"
+
+# ── networks ──────────────────────────────────────────────────────────────────
+networks:
+  cloud-public-prod:
+    external: true          # shared Traefik overlay — must exist before deploy
+  skchat-internal:
+    driver: overlay
+    internal: true          # no external routing; tailnet is the only ingress path
+    attachable: false
+
+# ── volumes ───────────────────────────────────────────────────────────────────
+# Named volumes persist on the placement node.
+# Backup target: Garage (see deploy/SECRETS.md — Batch B5).
+volumes:
+  skchat-data:              # history.db, outbox.db, recordings
+    driver: local
+  skchat-skcomm:            # skcomm transport state, pending outbox
+    driver: local
+  skchat-identity:          # capauth keys, pairing state — shared webui+daemon
+    driver: local

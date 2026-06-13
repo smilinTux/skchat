@@ -1,0 +1,54 @@
+# skchat-webui — FastAPI web UI + LiveKit token mint + WebRTC call routes
+# Port 8765, /health endpoint, non-root user.
+#
+# Build context: repo root (same as the main Dockerfile)
+# docker build -f deploy/Dockerfile.webui -t skchat-webui:<tag> .
+
+FROM python:3.12-slim
+
+# ── system deps ────────────────────────────────────────────────────────────────
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+ && rm -rf /var/lib/apt/lists/*
+
+# ── non-root user ──────────────────────────────────────────────────────────────
+RUN groupadd --gid 1001 skchat \
+ && useradd  --uid 1001 --gid skchat --no-create-home --shell /sbin/nologin skchat
+
+WORKDIR /app
+
+# ── install: runtime deps only ────────────────────────────────────────────────
+# Copy the package source and install with web/voice extras.
+# skchat is editable in dev; here we do a regular install so the image is
+# self-contained and reproducible.
+COPY pyproject.toml README.md ./
+COPY src/ ./src/
+
+RUN pip install --no-cache-dir \
+    ".[cli]" \
+    fastapi \
+    "uvicorn[standard]" \
+    httpx \
+    websockets \
+    python-multipart \
+    livekit-api
+
+# ── runtime config defaults ───────────────────────────────────────────────────
+# All sensitive values (API keys, secrets) MUST come from the host .env or
+# OpenBao at runtime — never baked in here.
+ENV SKCHAT_HOST=0.0.0.0 \
+    SKCHAT_PORT=8765 \
+    SKCHAT_NO_BROWSER=true
+
+# ── ownership ────────────────────────────────────────────────────────────────
+RUN chown -R skchat:skchat /app
+USER skchat
+
+EXPOSE 8765
+
+# ── health ────────────────────────────────────────────────────────────────────
+HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
+    CMD curl -fs http://localhost:8765/health || exit 1
+
+# ── entrypoint ────────────────────────────────────────────────────────────────
+ENTRYPOINT ["skchat", "webui", "--port", "8765", "--no-browser"]
