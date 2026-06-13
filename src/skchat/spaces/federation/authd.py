@@ -6,8 +6,17 @@ from __future__ import annotations
 from typing import Callable
 
 from skchat.spaces.federation.assertion import Assertion, verify_signed
+from skchat.spaces.federation.nonce import NonceCache
 from skchat.spaces.federation.trust import AccessLevel, TrustPolicy
 from skchat.spaces.roles import Role
+
+# Replay window — kept in lockstep with the assertion freshness `max_age` so a
+# nonce can't outlive the assertion that carried it.
+MAX_AGE = 300
+
+# Process-wide replay cache (single-replica). A multi-replica authd must swap
+# this for a shared store — see nonce.py.
+_NONCE = NonceCache()
 
 
 class AuthDenied(Exception):
@@ -29,8 +38,13 @@ def authorize(
     _verify: Callable[..., Assertion] = verify_signed,
     _access: Callable[[str], AccessLevel] | None = None,
     _mint: Callable[..., str] | None = None,
+    _nonce: NonceCache = _NONCE,
 ) -> dict:
     assertion = _verify(signed)
+    # I1: reject replayed assertions (same fqid+nonce within the freshness
+    # window) BEFORE minting any token.
+    if not _nonce.check_and_add(assertion.fqid, assertion.nonce, MAX_AGE):
+        raise AuthDenied("replay detected")
     access = (_access or TrustPolicy().access_for)(assertion.fqid)
     if access == AccessLevel.DENY:
         raise AuthDenied(f"fqid {assertion.fqid!r} not permitted")

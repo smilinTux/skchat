@@ -34,7 +34,7 @@ def test_full_access_gets_host_token():
         _mint=lambda identity, role, space: f"TOKEN:{role}:{space}",
     )
     assert out["sfu_ws_url"] == "wss://h:8443"
-    assert out["role"] in ("host", "speaker")
+    assert out["role"] == "speaker"
     assert out["token"].startswith("TOKEN:")
 
 
@@ -58,6 +58,30 @@ def test_denied_access_raises():
             _access=lambda f: AccessLevel.DENY,
             _mint=lambda *a: "X",
         )
+
+
+def test_replay_same_nonce_is_rejected():
+    from skchat.spaces.federation.nonce import NonceCache
+
+    nc = NonceCache()
+    # a verifier that always returns the SAME fqid+nonce (a replayed assertion)
+    fixed = Assertion(fqid="lumina@chef.skworld", space_id="space-x",
+                      issued_at=int(time.time()), nonce="replay-nonce")
+
+    def _v(signed, **kw):
+        return fixed
+
+    kwargs = dict(
+        sfu_ws_url="wss://h:8443",
+        _verify=_v,
+        _access=lambda f: AccessLevel.FULL,
+        _mint=lambda identity, role, space: "TOKEN",
+        _nonce=nc,
+    )
+    out = authorize(_signed("lumina@chef.skworld", "space-x"), **kwargs)
+    assert out["token"] == "TOKEN"
+    with pytest.raises(AuthDenied, match="replay"):
+        authorize(_signed("lumina@chef.skworld", "space-x"), **kwargs)
 
 
 def test_sfu_get_route_rejects_malformed_body():
