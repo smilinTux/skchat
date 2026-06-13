@@ -11,6 +11,12 @@
 <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
 <script src="https://unpkg.com/@excalidraw/excalidraw@0.17.6/dist/excalidraw.production.min.js" crossorigin></script>
+<!-- D5: Yjs CRDT UMD bundle — collaborative document lane.
+     Using the UMD build from unpkg (no bundler needed). Yjs 13.x is stable;
+     pin major to avoid breaking changes. y-websocket is NOT loaded — we
+     transport updates over the LiveKit data channel instead (sovereign, no
+     extra server). -->
+<script src="https://unpkg.com/yjs@13.6.20/dist/yjs.cjs" crossorigin></script>
 <!-- 2027 design system: Inter + JetBrains Mono from Google Fonts CDN -->
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -420,6 +426,75 @@
   }
   #screen-unsupported-msg.show { display: inline; }
 
+  /* ── D5: Collaborative document panel ───────────────────────────────────── */
+  #doc-panel { display: flex; flex-direction: column; }
+
+  #doc-editor-wrap {
+    flex: 1; display: flex; flex-direction: column;
+    padding: 10px 12px; gap: 8px;
+    min-height: 240px;
+  }
+
+  /* Presence bar — shows who is currently in the doc */
+  #doc-presence-bar {
+    display: flex; gap: 6px; align-items: center; flex-wrap: wrap;
+    min-height: 22px;
+    flex-shrink: 0;
+  }
+  #doc-presence-bar .doc-peer-pill {
+    font-size: 10px; padding: 2px 8px;
+    border-radius: 99px;
+    background: var(--surface-2); border: 1px solid var(--border-mid);
+    color: #8892a8; font-family: var(--font-mono);
+    transition: border-color var(--t-expand) ease;
+  }
+  #doc-presence-bar .doc-peer-pill.active {
+    background: var(--accent-mute); border-color: var(--accent);
+    color: var(--accent);
+  }
+
+  /* Agent co-author affordance */
+  #doc-agent-note {
+    font-size: 11px; color: #6b7280;
+    display: flex; align-items: center; gap: 6px;
+    font-style: italic; flex-shrink: 0;
+  }
+  #doc-agent-note .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); flex-shrink: 0; }
+
+  /* The editor — monospaced textarea with 2027 tokens */
+  #doc-textarea {
+    flex: 1;
+    width: 100%; min-height: 200px;
+    background: var(--surface-2);
+    border: 1px solid var(--border-mid);
+    border-radius: var(--r-md);
+    color: #d4d9e8;
+    font-family: var(--font-mono); font-size: 13px; line-height: 1.65;
+    padding: 10px 12px;
+    resize: vertical;
+    transition: border-color var(--t-expand) ease;
+    /* No blur, no glass — flat discipline */
+  }
+  #doc-textarea:focus {
+    outline: none;
+    border-color: var(--accent);
+    background: var(--surface-3);
+  }
+  #doc-textarea::placeholder { color: #4b5263; }
+
+  #doc-footer {
+    display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+    padding: 6px 12px 10px;
+    border-top: 1px solid var(--border-sub);
+    background: var(--surface-3);
+    font-size: 11px; color: #6b7280;
+    font-family: var(--font-mono);
+    flex-shrink: 0;
+  }
+  #doc-sync-status { flex: 1; }
+  #doc-word-count  { color: #4b5263; }
+  #doc-clear-btn   { font-size: 11px; padding: 3px 10px; }
+
   /* ── Responsive ──────────────────────────────────────────────────────────── */
   @media (max-width: 640px) {
     header { padding: 8px 10px; gap: 6px; }
@@ -429,6 +504,7 @@
     #status { width: 100%; margin-left: 0; order: 99; font-size: 11px; }
     #wb-container { height: 300px; }
     #watch-video { max-height: 240px; }
+    #doc-textarea { min-height: 140px; }
   }
 </style>
 </head>
@@ -463,6 +539,7 @@
     <!-- D4: Screen share + Watch-together toggles -->
     <button id="screen-share-btn"  class="toggle off" title="Share your screen">🖥️ Screen</button>
     <button id="watch-toggle-btn"  class="toggle off" title="Watch-together panel">📺 Watch</button>
+    <button id="doc-toggle-btn"    class="toggle off" title="Collaborative document panel (Yjs CRDT)">📝 Doc</button>
     <span id="screen-unsupported-msg" class="show" style="display:none">Screen share not supported in this browser</span>
     <a id="recordings-link" class="pill" href="/recordings.html" target="_blank" style="text-decoration:none">📁 Library</a>
   </div>
@@ -531,6 +608,60 @@
     </div>
   </div>
 
+  <!-- D5: Collaborative document panel (Yjs CRDT over LiveKit data lane) ──────
+       Publishes/consumes {lane:"doc", update:<base64 Uint8Array>} over the
+       existing data-channel router.  Yjs Y.Text is bound to the <textarea> below.
+       On local change: Y.Doc emits an "update" event → publishLane({lane:"doc",
+         update: btoa(String.fromCharCode(...Uint8Array))}).
+       On receive: Y.applyUpdate(doc, Uint8Array(atob(msg.update))).
+       The textarea is kept in sync via Y.Text.observe → .toString().
+
+       Agent co-author shape (for agent-side hook-in — TODO):
+         Inbound:  {lane:"doc", update:<base64>}   — same envelope; agent applies to
+                   its own Y.Doc mirror and can then push writes back.
+         Outbound: {lane:"doc", update:<base64>}   — agent pushes Yjs update to room.
+         Suggestions channel (chat lane):
+                   {lane:"chat", from:"lumina", text:"💡 Suggestion: …", ts, ref:"doc"}
+                   — agent suggestions ride the chat lane with a "ref":"doc" tag.
+
+       TODO (rich editor):  Replace <textarea> with TipTap or ProseMirror + y-prosemirror
+                            for block formatting, marks, inline images. The CDN approach
+                            is straightforward (tiptap/core + tiptap/starter-kit via
+                            unpkg), but adds ~250KB; defer until basic collab is validated.
+       TODO (agent write-back): Wire the agent's skchat MCP / advocate_engine to
+                            subscribe to {lane:"doc"} updates, maintain a Y.Doc mirror
+                            server-side, and push Yjs updates back for agent edits.
+       TODO (history/persist): Snapshot Y.encodeStateAsUpdate(doc) to skmem-pg docs
+                            table on session end (or on a debounced timer via a /livekit/doc
+                            endpoint).  Room FQID = natural key.
+  ──────────────────────────────────────────────────────────────────────────── -->
+  <div id="doc-panel" class="sk-panel collapsed" style="display:none">
+    <div id="doc-panel-header" class="sk-panel-header">
+      📝 Collaborative Doc
+      <span id="doc-status-pill" class="pill" style="font-size:10px;margin-left:4px">idle</span>
+      <span class="toggle-icon" id="doc-chevron">▼</span>
+    </div>
+    <div id="doc-editor-wrap">
+      <!-- Presence bar: shows who is currently editing -->
+      <div id="doc-presence-bar">
+        <!-- peer pills injected by JS -->
+      </div>
+      <!-- Agent co-author affordance -->
+      <div id="doc-agent-note">
+        <span class="dot"></span>
+        Lumina can co-author this document — agent write-back is a future hook (TODO)
+      </div>
+      <!-- MVP editor: Y.Text bound to textarea.
+           TODO: upgrade to TipTap/ProseMirror for rich editing -->
+      <textarea id="doc-textarea" placeholder="Start typing… changes sync to everyone in the room via Yjs CRDT over the data channel."></textarea>
+    </div>
+    <div id="doc-footer">
+      <span id="doc-sync-status">not connected</span>
+      <span id="doc-word-count">0 words</span>
+      <button id="doc-clear-btn" class="danger" title="Clear the shared document for everyone">Clear</button>
+    </div>
+  </div>
+
   <details id="log-wrap"><summary>Diagnostics</summary><pre id="log"></pre></details>
 </main>
 
@@ -573,6 +704,7 @@ function routeDataMessage(raw, participant) {
   if      (lane === 'chat')       onChatReceived(msg, participant);
   else if (lane === 'whiteboard') onWhiteboardReceived(msg);
   else if (lane === 'watch')      onWatchReceived(msg, participant);
+  else if (lane === 'doc')        onDocReceived(msg, participant);
   else {
     // lane === 'speak' or legacy agent control messages
     log('data [speak]', JSON.stringify(msg).slice(0, 120));
@@ -993,6 +1125,249 @@ function setupWatchVideoListeners() {
   });
 }
 
+// ── D5: Collaborative document (Yjs CRDT over data lane) ─────────────────────
+//
+// Data-lane envelope shape:
+//   { lane:"doc", update:<base64-encoded Uint8Array — Yjs incremental update> }
+//   { lane:"doc", update:"<base64>", from:"<identity>" }   (from field optional/informational)
+//
+// Protocol:
+//   - Every peer (and agent) maintains a Y.Doc mirror.
+//   - On local Y.Text change: Yjs fires "update" → we base64-encode the delta and
+//     publishLane({lane:"doc", update:<base64>, from:<identity>}).
+//   - On receive: base64-decode → Y.applyUpdate(ydoc, Uint8Array) to merge into
+//     our local doc.  Y.Text.observe fires, we update the textarea.
+//   - Yjs CRDTs are commutative + idempotent; no ordering guarantees needed.
+//   - The textarea value is READ from Y.Text (observe); user edits UPDATE Y.Text
+//     via ytext.insert/delete driven by the 'input' event delta.
+//
+// Presence:
+//   - On doc panel open, broadcast {lane:"doc", action:"join", from:<identity>}
+//   - On disconnect / cleanup, presence pills are cleared.
+//
+// Agent co-author TODO:
+//   - Server-side: subscribe to {lane:"doc"} in the LiveKit room listener;
+//     maintain a Y.Doc mirror; push writes back via publishData (or via the
+//     skchat MCP tool set once there is a /livekit/doc endpoint).
+//   - Suggestions / comments ride the {lane:"chat"} with ref:"doc".
+//
+// TODO (rich editor): Replace textarea with TipTap + y-prosemirror via CDN.
+// TODO (history persist): Snapshot Y.encodeStateAsUpdate to skmem-pg on call end.
+
+let docOpen = false;
+let ydoc = null;        // Y.Doc — single shared document for the room
+let ytext = null;       // Y.Text — the document body; bound to #doc-textarea
+let docIgnoreInput = false;   // suppress textarea 'input' events when we apply remote updates
+const DOC_UPDATE_DEBOUNCE_MS = 120;    // ms — local changes are batched at this interval
+let docUpdateTimer = null;
+let docPendingUpdate = null;  // Uint8Array accumulator for outbound batching
+const docPresence = new Set(); // identities currently in the doc
+
+function initYDoc() {
+  // Guard: only init once; if Yjs CDN didn't load, degrade gracefully.
+  if (ydoc) return true;
+  if (!window.Y) {
+    log('doc: Yjs CDN not available — collaborative sync disabled');
+    setDocStatus('Yjs CDN unavailable');
+    return false;
+  }
+  ydoc = new window.Y.Doc();
+  ytext = ydoc.getText('body');
+
+  // Apply local Y.Text changes → textarea
+  ytext.observe(() => {
+    const textarea = $('#doc-textarea');
+    if (!textarea) return;
+    const newVal = ytext.toString();
+    if (textarea.value !== newVal) {
+      const sel = { start: textarea.selectionStart, end: textarea.selectionEnd };
+      docIgnoreInput = true;
+      textarea.value = newVal;
+      docIgnoreInput = false;
+      // Best-effort cursor restore
+      try { textarea.setSelectionRange(sel.start, sel.end); } catch (_) {}
+    }
+    updateDocWordCount(newVal);
+  });
+
+  // Capture Yjs update events → debounce → publishLane
+  ydoc.on('update', (update, origin) => {
+    if (origin === 'remote') return;   // don't echo back received updates
+    if (!room) return;
+    // Accumulate updates for batching
+    if (docPendingUpdate) {
+      docPendingUpdate = window.Y.mergeUpdates([docPendingUpdate, update]);
+    } else {
+      docPendingUpdate = update;
+    }
+    clearTimeout(docUpdateTimer);
+    docUpdateTimer = setTimeout(() => {
+      if (!docPendingUpdate || !room) { docPendingUpdate = null; return; }
+      const b64 = uint8ToBase64(docPendingUpdate);
+      docPendingUpdate = null;
+      const from = room?.localParticipant?.identity || 'me';
+      publishLane({ lane: 'doc', update: b64, from })
+        .catch(e => log('doc publish failed:', e.message));
+      setDocStatus('synced');
+    }, DOC_UPDATE_DEBOUNCE_MS);
+  });
+
+  log('doc: Yjs Y.Doc initialized');
+  return true;
+}
+
+// base64 helpers — Uint8Array <-> base64 string (native btoa/atob, no deps)
+function uint8ToBase64(u8) {
+  let binary = '';
+  for (let i = 0; i < u8.byteLength; i++) binary += String.fromCharCode(u8[i]);
+  return btoa(binary);
+}
+function base64ToUint8(b64) {
+  const binary = atob(b64);
+  const u8 = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) u8[i] = binary.charCodeAt(i);
+  return u8;
+}
+
+function setDocStatus(text) {
+  const pill = $('#doc-status-pill');
+  if (pill) pill.textContent = text;
+  const s = $('#doc-sync-status');
+  if (s) s.textContent = text;
+}
+
+function updateDocWordCount(text) {
+  const wc = $('#doc-word-count');
+  if (!wc) return;
+  const words = (text || '').trim() === '' ? 0 : (text || '').trim().split(/\s+/).length;
+  wc.textContent = `${words} word${words === 1 ? '' : 's'}`;
+}
+
+function setDocPresence(identity, active) {
+  if (active) { docPresence.add(identity); } else { docPresence.delete(identity); }
+  renderDocPresence();
+}
+
+function renderDocPresence() {
+  const bar = $('#doc-presence-bar');
+  if (!bar) return;
+  bar.innerHTML = '';
+  const self = room?.localParticipant?.identity || '';
+  for (const id of docPresence) {
+    const pill = document.createElement('span');
+    pill.className = 'doc-peer-pill' + (id === self ? ' active' : '');
+    pill.textContent = (id === self ? '✎ ' : '👤 ') + id;
+    bar.appendChild(pill);
+  }
+  // Show an extra placeholder when no peers are in the doc
+  if (docPresence.size === 0) {
+    const p = document.createElement('span');
+    p.className = 'doc-peer-pill'; p.style.opacity = '.45';
+    p.textContent = 'no collaborators yet';
+    bar.appendChild(p);
+  }
+}
+
+function setDocOpen(open) {
+  docOpen = open;
+  const panel = $('#doc-panel');
+  if (open) {
+    panel.classList.remove('collapsed');
+    $('#doc-chevron').textContent = '▲';
+    const btn = $('#doc-toggle-btn');
+    btn.classList.remove('off'); btn.classList.add('on');
+    // Lazy-init Yjs
+    if (initYDoc()) {
+      setDocStatus('ready');
+      // Announce presence to the room
+      const self = room?.localParticipant?.identity;
+      if (self) {
+        setDocPresence(self, true);
+        publishLane({ lane: 'doc', action: 'join', from: self })
+          .catch(e => log('doc join announce failed:', e.message));
+      }
+    }
+    // Wire textarea 'input' event if not already done
+    const ta = $('#doc-textarea');
+    if (ta && !ta._docBound) {
+      ta._docBound = true;
+      ta.addEventListener('input', onDocTextareaInput);
+    }
+  } else {
+    panel.classList.add('collapsed');
+    $('#doc-chevron').textContent = '▼';
+    const btn = $('#doc-toggle-btn');
+    btn.classList.remove('on'); btn.classList.add('off');
+  }
+}
+
+// Translate textarea 'input' events into Yjs Y.Text operations (insert/delete).
+// This is a simple last-wins diff approach: compute the minimal insert/delete
+// from old value vs new value.  Good enough for MVP; a full OT cursor-tracking
+// approach requires y-prosemirror.
+function onDocTextareaInput() {
+  if (docIgnoreInput || !ytext) return;
+  const ta = $('#doc-textarea');
+  const newVal = ta.value;
+  const oldVal = ytext.toString();
+  if (newVal === oldVal) return;
+  // Find the first differing position
+  let start = 0;
+  while (start < oldVal.length && start < newVal.length && oldVal[start] === newVal[start]) start++;
+  // Find the last differing position from the end
+  let oldEnd = oldVal.length, newEnd = newVal.length;
+  while (oldEnd > start && newEnd > start && oldVal[oldEnd - 1] === newVal[newEnd - 1]) {
+    oldEnd--; newEnd--;
+  }
+  // Apply as a single transaction: delete the differing slice, insert new content
+  ydoc.transact(() => {
+    if (oldEnd > start) ytext.delete(start, oldEnd - start);
+    if (newEnd > start) ytext.insert(start, newVal.slice(start, newEnd));
+  }, 'local');
+}
+
+function onDocReceived(msg, participant) {
+  const sender = participant?.identity || msg.from || 'unknown';
+
+  // Presence join/leave announcements
+  if (msg.action === 'join') {
+    setDocPresence(sender, true);
+    log(`data [doc] ${sender} joined the document`);
+    // If we have a Y.Doc already, send our full state so the newcomer can sync
+    if (ydoc && room) {
+      const state = window.Y.encodeStateAsUpdate(ydoc);
+      const b64   = uint8ToBase64(state);
+      const from  = room.localParticipant.identity || 'me';
+      publishLane({ lane: 'doc', update: b64, from })
+        .catch(e => log('doc full-state send failed:', e.message));
+    }
+    return;
+  }
+  if (msg.action === 'leave') {
+    setDocPresence(sender, false);
+    log(`data [doc] ${sender} left the document`);
+    return;
+  }
+
+  // CRDT update
+  if (!msg.update) return;
+  if (!ydoc) {
+    // Panel not open yet — init doc silently so we have state when it opens
+    initYDoc();
+    if (!ydoc) return;
+  }
+  try {
+    const update = base64ToUint8(msg.update);
+    window.Y.applyUpdate(ydoc, update, 'remote');
+    setDocStatus('synced');
+    log(`data [doc] applied update from ${sender} (${update.byteLength} bytes)`);
+    // Mark the sender as present in the doc
+    setDocPresence(sender, true);
+  } catch (e) {
+    log('doc applyUpdate failed:', e.message);
+  }
+}
+
 // ── Pre-flight: secure context check ─────────────────────────────────────────
 function preflight() {
   const host = $('#banner-host');
@@ -1260,10 +1635,11 @@ async function connect() {
     $('#speak-row').classList.remove('hidden');
     startMetadataPolling();
 
-    // D2/D3/D4: reveal panels (collapsed) after connect
+    // D2/D3/D4/D5: reveal panels (collapsed) after connect
     $('#chat-panel').style.display  = 'flex';
     $('#wb-panel').style.display    = 'block';
     $('#watch-panel').style.display = 'flex';
+    $('#doc-panel').style.display   = 'flex';
 
     await toggleMic(true);
     await toggleCam(true);
@@ -1319,6 +1695,27 @@ function cleanup() {
   $('#watch-placeholder').style.display = '';
   $('#watch-host-label').style.display = 'none';
   $('#watch-time-display').textContent = '';
+
+  // D5: reset collaborative doc
+  $('#doc-panel').style.display = 'none';
+  $('#doc-panel').classList.add('collapsed');
+  docOpen = false;
+  $('#doc-toggle-btn').classList.remove('on'); $('#doc-toggle-btn').classList.add('off');
+  $('#doc-chevron').textContent = '▼';
+  docPresence.clear();
+  renderDocPresence();
+  setDocStatus('not connected');
+  // Destroy Y.Doc so next call starts fresh.
+  // TODO: persist Y.encodeStateAsUpdate(ydoc) to skmem-pg before destroying.
+  if (ydoc) {
+    try { ydoc.destroy(); } catch (_) {}
+    ydoc = null; ytext = null;
+  }
+  docPendingUpdate = null;
+  clearTimeout(docUpdateTimer);
+  const ta = $('#doc-textarea');
+  if (ta) { ta.value = ''; ta._docBound = false; }
+  updateDocWordCount('');
 }
 
 async function speakAsLumina() {
@@ -1420,6 +1817,19 @@ $('#watch-play-btn').addEventListener('click',  watchPlay);
 $('#watch-pause-btn').addEventListener('click', watchPause);
 $('#watch-sync-btn').addEventListener('click',  watchSync);
 $('#watch-url').addEventListener('keydown', e => { if (e.key === 'Enter') watchLoadAndShare(); });
+
+// D5: collaborative doc
+$('#doc-toggle-btn').addEventListener('click', () => {
+  setDocOpen(!docOpen);
+  if (docOpen && room) $('#doc-panel').style.display = 'flex';
+});
+$('#doc-panel-header').addEventListener('click', () => setDocOpen(!docOpen));
+$('#doc-clear-btn').addEventListener('click', () => {
+  if (!ytext || !ydoc) return;
+  if (!confirm('Clear the shared document for all collaborators?')) return;
+  ydoc.transact(() => { ytext.delete(0, ytext.length); }, 'local');
+  log('doc: cleared by', room?.localParticipant?.identity || 'local');
+});
 
 // ── Recording controls ────────────────────────────────────────────────────────
 let recordingActive = false;
