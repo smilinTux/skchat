@@ -18,14 +18,23 @@ class Recorder:
         self._key = api_key
         self._secret = api_secret
         self._eg = _egress
+        self._client = None  # the LiveKitAPI instance (built lazily) to aclose()
 
     def _egress(self):
         if self._eg is not None:
             return self._eg
         from livekit import api
-        self._eg = api.LiveKitAPI(_http_url(self._ws_url), self._key,
-                                  self._secret).egress
+        self._client = api.LiveKitAPI(_http_url(self._ws_url), self._key,
+                                      self._secret)
+        self._eg = self._client.egress
         return self._eg
+
+    async def aclose(self) -> None:
+        """Close the cached LiveKit client, if one was built/injected. Safe to
+        call when never built (no-op). Callers should invoke this on shutdown."""
+        client = self._client if self._client is not None else self._eg
+        if client is not None and hasattr(client, "aclose"):
+            await client.aclose()
 
     async def start(self, room: str, filepath: str) -> str:
         """Start an audio-only room-composite recording; return the egress id."""

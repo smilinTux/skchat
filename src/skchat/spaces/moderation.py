@@ -82,35 +82,57 @@ class Moderator:
         self._key = api_key
         self._secret = api_secret
         self._svc = _room_service
+        self._client = None  # the LiveKitAPI instance (built lazily) to aclose()
         self._locks: dict[tuple[str, str], "asyncio.Lock"] = {}
+        # refcount of in-flight + waiting users per lock key, so we only evict a
+        # lock when nobody else still needs it (bounded-growth cleanup).
+        self._lock_users: dict[tuple[str, str], int] = {}
 
     def _service(self):
         if self._svc is not None:
             return self._svc
         from livekit import api
-        self._svc = api.LiveKitAPI(_http_url(self._ws_url), self._key,
-                                   self._secret).room
+        self._client = api.LiveKitAPI(_http_url(self._ws_url), self._key,
+                                      self._secret)
+        self._svc = self._client.room
         return self._svc
+
+    async def aclose(self) -> None:
+        """Close the cached LiveKit client, if one was built/injected. Safe to
+        call when never built (no-op). Callers should invoke this on shutdown."""
+        client = self._client if self._client is not None else self._svc
+        if client is not None and hasattr(client, "aclose"):
+            await client.aclose()
 
     async def stage_action(self, room: str, identity: str, action: str) -> bool:
         """Read current metadata, apply the consent action, push the new metadata
         + can_publish permission. Serialized per (room, identity) so concurrent
         raise_hand + invite cannot lose an update."""
         from livekit import api
-        lock = self._locks.setdefault((room, identity), asyncio.Lock())
-        async with lock:
-            svc = self._service()
-            current = await svc.get_participant(
-                api.RoomParticipantIdentity(room=room, identity=identity))
-            state = parse_meta(getattr(current, "metadata", "") or "")
-            new_state, can_publish = apply_action(state, action)
-            await svc.update_participant(api.UpdateParticipantRequest(
-                room=room, identity=identity, metadata=dump_meta(new_state),
-                permission=api.ParticipantPermission(
-                    can_publish=can_publish, can_subscribe=True,
-                    can_publish_data=True),
-            ))
-            return can_publish
+        key = (room, identity)
+        lock = self._locks.setdefault(key, asyncio.Lock())
+        self._lock_users[key] = self._lock_users.get(key, 0) + 1
+        try:
+            async with lock:
+                svc = self._service()
+                current = await svc.get_participant(
+                    api.RoomParticipantIdentity(room=room, identity=identity))
+                state = parse_meta(getattr(current, "metadata", "") or "")
+                new_state, can_publish = apply_action(state, action)
+                await svc.update_participant(api.UpdateParticipantRequest(
+                    room=room, identity=identity, metadata=dump_meta(new_state),
+                    permission=api.ParticipantPermission(
+                        can_publish=can_publish, can_subscribe=True,
+                        can_publish_data=True),
+                ))
+                return can_publish
+        finally:
+            # evict the lock once nobody else is holding or waiting for it, so the
+            # dict does not grow unbounded across many distinct identities.
+            self._lock_users[key] -= 1
+            if self._lock_users[key] <= 0:
+                self._lock_users.pop(key, None)
+                self._locks.pop(key, None)
 
     async def kick(self, room: str, identity: str) -> None:
         from livekit import api

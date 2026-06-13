@@ -107,3 +107,51 @@ async def test_concurrent_raise_and_invite_converge(mod, fake, monkeypatch):
     final = json.loads(fake.updates[-1].metadata)
     assert final["hand_raised"] is True
     assert final["invited_to_stage"] is True   # neither write clobbered the other
+
+
+@pytest.mark.asyncio
+async def test_lock_dict_does_not_grow_unbounded(mod, fake):
+    # many distinct identities, each fully serialized → the per-identity lock must
+    # be evicted once released (uncontended), so the dict stays bounded.
+    for i in range(200):
+        await mod.stage_action("space-x", f"user-{i}", "raise_hand")
+    assert len(mod._locks) == 0
+
+
+@pytest.mark.asyncio
+async def test_contended_lock_is_retained_then_evicted(mod, fake, monkeypatch):
+    # a contended lock must survive the first waiter's release (the second waiter
+    # still holds it), and be gone once both finish.
+    orig_get = fake.get_participant
+
+    async def slow_get(req):
+        await asyncio.sleep(0)
+        return await orig_get(req)
+
+    monkeypatch.setattr(fake, "get_participant", slow_get)
+    fake.set_participant("alice", "")
+    await asyncio.gather(
+        mod.stage_action("space-x", "alice", "raise_hand"),
+        mod.stage_action("space-x", "alice", "invite"),
+    )
+    assert ("space-x", "alice") not in mod._locks  # cleaned up after both done
+
+
+@pytest.mark.asyncio
+async def test_aclose_noop_when_client_never_built():
+    m = Moderator("ws://test:7880", "k", "s")  # no injected service, never used
+    await m.aclose()  # must not raise
+
+
+@pytest.mark.asyncio
+async def test_aclose_closes_injected_client():
+    closed = []
+
+    class FakeClient:
+        async def aclose(self):
+            closed.append(True)
+
+    fc = FakeClient()
+    m = Moderator("ws://test:7880", "k", "s", _room_service=fc)
+    await m.aclose()
+    assert closed == [True]

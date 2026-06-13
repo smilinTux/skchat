@@ -42,3 +42,22 @@ async def test_start_returns_egress_id_and_is_audio_only(rec, fake):
 async def test_stop_calls_stop_egress(rec, fake):
     await rec.stop("EG_test123")
     assert fake.stopped == ["EG_test123"]
+
+
+@pytest.mark.asyncio
+async def test_aclose_noop_when_client_never_built():
+    r = Recorder("ws://test:7880", "k", "s")  # no injected egress, never used
+    await r.aclose()  # must not raise
+
+
+@pytest.mark.asyncio
+async def test_aclose_closes_injected_client():
+    closed = []
+
+    class FakeClient:
+        async def aclose(self):
+            closed.append(True)
+
+    r = Recorder("ws://test:7880", "k", "s", _egress=FakeClient())
+    await r.aclose()
+    assert closed == [True]
