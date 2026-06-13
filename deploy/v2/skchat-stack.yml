@@ -37,6 +37,32 @@
 #
 # Secrets: ALL sensitive values come from /var/data/deploy_skchat/skchat.env
 #          (or OpenBao — see deploy/SECRETS.md).  Nothing is hardcoded here.
+#
+# ── Volume strategy (B5) ──────────────────────────────────────────────────────
+#
+# Named volume → mount point → service(s)    → secret-sensitive?
+# ─────────────────────────────────────────────────────────────────────────────
+# skchat-data       /data/skchat      daemon + webui   No   (history.db, groups,
+#                                                            memory/index.db,
+#                                                            outbox.db, daemon.pid)
+# skchat-skcomm     /data/skcomm      daemon           No   (skcomm transport state,
+#                                                            pending-outbox queue)
+# skchat-identity   /data/capauth     daemon + webui   YES  (capauth private keys,
+#                                                            pairing state — must be
+#                                                            backed up ENCRYPTED;
+#                                                            losing this = lost agent
+#                                                            identity)
+# skchat-skcapstone /data/skcapstone  daemon + webui   YES  (peer registry, agent
+#                                                            avatars/ritual blobs,
+#                                                            trust FEBs — sensitive)
+# skchat-recordings /data/recordings  voice            No   (voice-session audio
+#                                                            blobs; potentially
+#                                                            private — encrypt at
+#                                                            Garage bucket level)
+#
+# Backup target: Garage S3-compatible object store.
+# Schedule / restore runbook: deploy/v2/backup.md
+# Garage deploy skeleton: deploy/v2/garage-stack.yml
 
 version: "3.8"
 
@@ -76,9 +102,18 @@ services:
       - cloud-public-prod
       - skchat-internal
     volumes:
-      # capauth keys and pairing state — must persist across redeploys
-      - skchat-identity:/data/capauth
+      # ── webui state volumes ──────────────────────────────────────────────────
+      # skchat history/groups/memory (shared read-only with daemon; daemon is the
+      # sole writer to history.db and outbox.db; webui reads for display/search)
       - skchat-data:/data/skchat
+      # capauth private keys + pairing nonces — SECRET-SENSITIVE
+      # Must be backed up encrypted (see deploy/v2/backup.md).
+      # Mounted read-write; the webui reads identity for JWT minting + pairing gate.
+      - skchat-identity:/data/capauth
+      # skcapstone peer registry, agent profiles, ritual blobs, trust FEBs
+      # Path must match SKCAPSTONE_HOME env var (default /data/skcapstone).
+      # SECRET-SENSITIVE — contains peer public keys and agent trust state.
+      - skchat-skcapstone:/data/skcapstone
     healthcheck:
       test: ["CMD", "curl", "-fs", "http://localhost:8765/health"]
       interval: 30s
@@ -163,7 +198,12 @@ services:
     networks:
       - skchat-internal
     volumes:
-      # Recordings directory — voice sessions may write audio blobs here.
+      # ── voice state volumes ──────────────────────────────────────────────────
+      # Audio recordings from voice sessions (STT input blobs, TTS output cache).
+      # Not secret — but potentially private (call audio).
+      # Backed up to Garage; encrypt at the Garage bucket level (SSE-S3) rather
+      # than per-file so that storage is efficient. Retention: 30 days default.
+      # See deploy/v2/backup.md for the restic job targeting this volume.
       - skchat-recordings:/data/recordings
     healthcheck:
       test: ["CMD", "curl", "-fs", "http://localhost:18800/health"]
@@ -254,10 +294,19 @@ services:
     networks:
       - skchat-internal
     volumes:
-      # All state that must survive redeploys
+      # ── daemon state volumes ─────────────────────────────────────────────────
+      # Primary skchat state: history.db, outbox.db, groups/, memory/index.db,
+      # daemon.pid, daemon.log. daemon is the sole writer; webui reads.
       - skchat-data:/data/skchat
+      # skcomm transport state: pending outbox queue, transport receipts.
+      # Separate from skchat-data so skcomm can be cleared independently.
       - skchat-skcomm:/data/skcomm
+      # capauth private keys + pairing nonces — SECRET-SENSITIVE (see webui note).
+      # daemon reads identity keys to sign outgoing messages.
       - skchat-identity:/data/capauth
+      # skcapstone peer registry, agent profiles, ritual blobs, trust FEBs.
+      # Path must match SKCAPSTONE_HOME env var (default /data/skcapstone).
+      - skchat-skcapstone:/data/skcapstone
     healthcheck:
       test: ["CMD", "curl", "-fs", "http://localhost:9385/health"]
       interval: 30s
@@ -312,14 +361,46 @@ networks:
     attachable: false
 
 # ── volumes ───────────────────────────────────────────────────────────────────
-# Named volumes persist on the placement node.
-# Backup target: Garage (see deploy/SECRETS.md — Batch B5).
+# Named volumes persist on the placement node.  All volumes are driver: local
+# (standard Docker managed volume, backed by the host's /var/lib/docker/volumes/).
+#
+# Backup target: Garage S3-compatible object store — see deploy/v2/backup.md.
+# Garage deploy: deploy/v2/garage-stack.yml.
+#
+# Volume          Mounts                    Secret-sensitive?  Backup priority
+# ─────────────── ─────────────────────────────────────────────────────────────
+# skchat-data     /data/skchat (d+w)         No               P1 — daily
+# skchat-skcomm   /data/skcomm (daemon)      No               P2 — daily
+# skchat-identity /data/capauth (d+w)        YES (keys)       P0 — daily + encrypted
+# skchat-skcapstone /data/skcapstone (d+w)   YES (trust)      P0 — daily + encrypted
+# skchat-recordings /data/recordings (voice) No (private)     P1 — daily (30d ret.)
 volumes:
-  skchat-data:              # history.db, outbox.db — daemon + webui shared state
+  skchat-data:
+    # Chat history (history.db), outbox (outbox.db), group configs, memory index.
+    # Shared read-write between daemon (writer) and webui (reader).
     driver: local
-  skchat-skcomm:            # skcomm transport state, pending outbox
+
+  skchat-skcomm:
+    # SKComm transport state: pending outbox entries, delivery receipts.
+    # Daemon only.  Can be cleared to force a clean re-delivery cycle.
     driver: local
-  skchat-identity:          # capauth keys, pairing state — shared webui+daemon
+
+  skchat-identity:
+    # !! SECRET-SENSITIVE — capauth Ed25519 private keys + pairing nonces.
+    # Shared between daemon (signing) and webui (JWT minting + pairing gate).
+    # MUST be backed up encrypted (age/gpg) — never plaintext to object storage.
+    # Losing this volume = permanent loss of the agent's sovereign identity.
     driver: local
-  skchat-recordings:        # voice engine audio recordings (voice service only)
+
+  skchat-skcapstone:
+    # !! SECRET-SENSITIVE — skcapstone peer registry, agent avatars, ritual blobs,
+    # trust FEBs (Felt Emotional Breakthroughs).  Contains peer public keys and
+    # agent trust graph.  Backed up encrypted alongside skchat-identity.
+    # Path matches SKCAPSTONE_HOME env var (default: /data/skcapstone).
+    driver: local
+
+  skchat-recordings:
+    # Voice-session audio blobs (STT input, TTS output cache, call recordings).
+    # Not cryptographic-secret but potentially private call audio.
+    # Backed up to Garage with bucket-level SSE-S3 encryption; 30-day retention.
     driver: local

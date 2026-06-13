@@ -1,0 +1,220 @@
+# Garage v1 — sovereign S3-compatible object store — Docker Swarm stack
+#
+# Garage is the skchat backup target (B5).  This is a minimal 3-replica layout
+# for a sovereign, self-hosted object store on the SKWorld Tailscale cluster.
+# Reference: https://garagehq.deuxfleurs.fr/documentation/quick-start/
+#
+# Deploy:
+#   docker stack deploy \
+#     --env-file /var/data/deploy_garage/garage.env \
+#     -c deploy/v2/garage-stack.yml \
+#     skchat-garage
+#
+# ── Bootstrap (host-level steps, run ONCE after first deploy) ─────────────────
+#
+# 1. Generate a cluster layout (run on any Garage node):
+#
+#   # List nodes and their IDs
+#   docker exec $(docker ps -qf name=skchat-garage_garage) \
+#     garage status
+#
+#   # Assign each node a zone and capacity (GB).  A 3-node cluster with
+#   # zone diversity gives replication factor 3 (default in garage.toml).
+#   # Replace <NODE_ID_*> with the hex IDs from `garage status`.
+#   docker exec $(docker ps -qf name=skchat-garage_garage) \
+#     garage layout assign <NODE_ID_1> -z dc1 -c 100G -t noroc2027
+#   docker exec $(docker ps -qf name=skchat-garage_garage) \
+#     garage layout assign <NODE_ID_2> -z dc2 -c 100G -t chiap04
+#   docker exec $(docker ps -qf name=skchat-garage_garage) \
+#     garage layout assign <NODE_ID_3> -z dc3 -c 100G -t skstack01
+#
+#   # Show the proposed layout, then apply
+#   docker exec $(docker ps -qf name=skchat-garage_garage) \
+#     garage layout show
+#   docker exec $(docker ps -qf name=skchat-garage_garage) \
+#     garage layout apply --version 1
+#
+# 2. Create the backup bucket and key (run once per bucket needed):
+#
+#   docker exec $(docker ps -qf name=skchat-garage_garage) \
+#     garage bucket create skchat-backup
+#   docker exec $(docker ps -qf name=skchat-garage_garage) \
+#     garage key create skchat-backup-key
+#   docker exec $(docker ps -qf name=skchat-garage_garage) \
+#     garage bucket allow skchat-backup --read --write --key skchat-backup-key
+#   # Print key credentials → add to /var/data/deploy_skchat/backup.env
+#   docker exec $(docker ps -qf name=skchat-garage_garage) \
+#     garage key info skchat-backup-key
+#
+# ── Reachability ──────────────────────────────────────────────────────────────
+# S3 API:     http://<node-tailnet-ip>:3900  (or via service name inside overlay)
+# Admin API:  http://localhost:3903  (admin port — NOT exposed externally)
+# RPC (inter-node): port 3901 on the skchat-garage overlay
+#
+# For restic/rclone running on the backup host, use the tailnet IP of any
+# Garage node as the S3 endpoint (Garage load-balances internally).
+#
+# Tailscale serve is NOT configured for Garage — the object store is accessed
+# only from within the tailnet (backup jobs + skchat stack on the same cluster).
+#
+# ── garage.toml ───────────────────────────────────────────────────────────────
+# Garage reads its config from /etc/garage/garage.toml, supplied as a Swarm
+# config object (no secrets in the file).  Key tunables:
+#
+#   [storage]
+#   metadata_dir = "/var/lib/garage/meta"
+#   data_dir     = "/var/lib/garage/data"
+#
+#   [rpc]
+#   bootstrap_peers = []            # peers discover each other via gossip
+#   rpc_secret      = "<hex32>"     # must match GARAGE_RPC_SECRET — set in garage.env
+#
+#   [s3_api]
+#   api_bind_addr = "0.0.0.0:3900"
+#   s3_region     = "garage"
+#   root_domain   = ".s3.garage"    # virtual-hosted style (optional)
+#
+#   [admin]
+#   api_bind_addr = "0.0.0.0:3903"
+#
+# Create the Swarm config object:
+#   docker config create garage_config /var/data/deploy_garage/garage.toml
+# On update: create garage_config_v2, update this file, redeploy.
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Networks:
+#   skchat-garage-net — internal overlay for inter-node RPC + S3 API access by
+#                       other skchat stacks on the same Swarm cluster
+#
+# Secrets: ALL sensitive values come from /var/data/deploy_garage/garage.env
+#          (specifically: GARAGE_RPC_SECRET).  Nothing is hardcoded here.
+
+version: "3.8"
+
+services:
+
+  # ── garage ───────────────────────────────────────────────────────────────────
+  # Garage object-store node.  Deployed as `mode: global` so that exactly one
+  # Garage process runs on each node labelled `garage=true`.  Each process joins
+  # the same cluster via RPC gossip; the layout assignment step (see bootstrap
+  # above) tells Garage which zone/capacity each node has.
+  #
+  # For a 3-node cluster: label 3 worker nodes with `garage=true`.
+  # For a single-node (dev/test): label 1 node; replication factor is
+  # automatically reduced to 1 — NOT recommended for production.
+  #
+  # IMPORTANT: mode: global means one replica per matching node.  Adding a
+  # fourth node with the `garage=true` label will automatically expand the
+  # cluster (run `garage layout assign` + `garage layout apply` for it).
+  garage:
+    image: dxflrs/garage:v1.0.1
+    # Garage reads config from /etc/garage/garage.toml (Swarm config object).
+    # The RPC secret is injected via environment variable (overrides toml).
+    environment:
+      # !! SECRET — must match across ALL nodes in the cluster.
+      # If GARAGE_RPC_SECRET is set, it overrides the rpc_secret field in
+      # garage.toml.  Generate once: openssl rand -hex 32
+      GARAGE_RPC_SECRET: "${GARAGE_RPC_SECRET}"
+      # Admin token for the admin API (port 3903).
+      # Generate: openssl rand -base64 32
+      GARAGE_ADMIN_TOKEN: "${GARAGE_ADMIN_TOKEN}"
+    configs:
+      - source: garage_config
+        target: /etc/garage/garage.toml
+        mode: 0440
+    networks:
+      - skchat-garage-net
+    ports:
+      # S3 API — accessible inside the overlay and via host/tailnet.
+      - target: 3900
+        published: 3900
+        protocol: tcp
+        mode: host        # host mode so the backup client can reach the node
+                          # directly on the tailnet IP; Swarm DNAT is bypassed.
+      # RPC inter-node — only needed inside the overlay; not exposed publicly.
+      - target: 3901
+        published: 3901
+        protocol: tcp
+        mode: host
+    volumes:
+      # Per-node storage.  Garage metadata and data live here.
+      # Use a dedicated volume or a bind mount to a large disk.
+      # The data_dir in garage.toml must point to /var/lib/garage/data.
+      - garage-data:/var/lib/garage
+    healthcheck:
+      # Garage exposes a /health endpoint on the S3 API port.
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3900/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    deploy:
+      mode: global        # one per node with label garage=true
+      placement:
+        constraints:
+          # Label each storage node:
+          #   docker node update --label-add garage=true <node-id>
+          - node.labels.garage == true
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+        max_attempts: 5
+        window: 120s
+      update_config:
+        parallelism: 1
+        delay: 30s              # give the cluster time to rebalance between nodes
+        failure_action: rollback
+        monitor: 30s
+        max_failure_ratio: 0
+        order: stop-first       # stop-first: avoid two versions of Garage on same data
+      rollback_config:
+        parallelism: 1
+        delay: 0s
+        failure_action: pause
+        monitor: 30s
+        max_failure_ratio: 0
+        order: stop-first
+      resources:
+        limits:
+          memory: 512M          # Garage is lightweight; bump if handling large objects
+        reservations:
+          memory: 128M
+      labels:
+        traefik.enable: "false"  # object store is tailnet-internal; no public exposure
+
+# ── networks ──────────────────────────────────────────────────────────────────
+networks:
+  skchat-garage-net:
+    driver: overlay
+    # attachable: true so that backup jobs run in standalone containers can join.
+    # In prod, scope to trusted services only (Swarm ingress mesh is separate).
+    attachable: true
+    internal: false   # not internal: backup clients on the tailnet reach :3900
+                      # via host-mode ports; the overlay is for inter-node RPC.
+
+# ── configs ───────────────────────────────────────────────────────────────────
+# garage.toml — non-secret Garage configuration (RPC secret comes from env var).
+# Create / update:
+#   docker config create garage_config /var/data/deploy_garage/garage.toml
+#   docker config create garage_config_v2 /var/data/deploy_garage/garage.toml
+#   # then update this file to reference garage_config_v2 and redeploy.
+configs:
+  garage_config:
+    external: true
+
+# ── volumes ───────────────────────────────────────────────────────────────────
+# Per-node local storage.  In a multi-node deployment each node has its own
+# garage-data volume (Docker volume names are node-scoped in global mode).
+# For production, bind-mount to a dedicated disk instead of a named volume:
+#
+#   volumes:
+#     garage-data:
+#       driver: local
+#       driver_opts:
+#         type: none
+#         o: bind
+#         device: /mnt/garage-disk
+#
+volumes:
+  garage-data:
+    driver: local
