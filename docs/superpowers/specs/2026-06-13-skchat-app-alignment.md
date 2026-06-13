@@ -60,6 +60,22 @@ SDK on .41 (or a build host) so there's an `analyze`/`build`/`test` loop — edi
 19k-LOC app blind (no build) is not safe. First concrete step is tooling + a
 `flutter analyze` baseline, then G1.
 
+## 4b. Client-surface decision (2026-06-13)
+
+**Consolidate phone + desktop into the ONE Flutter app** — Flutter is inherently
+one codebase → all targets, and `skchat-app` already builds all six. No separate
+phone app; the UI adapts per form factor (phone bottom-nav/single-pane ↔ desktop
+sidebar/multi-pane via responsive breakpoints / master-detail). Batch G targets
+this single consolidated app.
+
+**Keep the lightweight HTML (`livekit.html`) as the web/guest surface.** "Send a
+friend a link → it just works" needs an *instant* zero-install page; Flutter Web
+bundles are heavy (slow first paint), which hurts the magic-link guest join. So:
+- **Members, native (iOS/Android/Linux/macOS/Windows)** → the consolidated Flutter app.
+- **Guests / zero-install browser** → the light HTML page.
+Both share the same LiveKit rooms + skcomms identity underneath. (All-Flutter-incl-web
+is possible for a single codebase, trading guest-link lightness — not recommended.)
+
 ## 5. Verdict
 A genuinely solid, substantial native client that's ~3 months behind the architecture.
 The bones (identity, messaging, groups, coord, pairing, P2P calls, 6 platforms) are
