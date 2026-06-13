@@ -87,6 +87,11 @@ try:
     _register_call_routes(app)
 except ImportError as _e:
     logger.warning("call routes not registered: %s", _e)
+try:
+    from .spaces.routes import register_spaces_routes as _register_spaces_routes
+    _register_spaces_routes(app)
+except ImportError as _e:
+    logger.warning("spaces routes not registered: %s", _e)
 
 
 @app.get("/health")
