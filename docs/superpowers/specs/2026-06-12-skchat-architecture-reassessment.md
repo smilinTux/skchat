@@ -88,9 +88,14 @@ agent team (Lumina + Opus)**, reachable directly (sovereign) or by a link (guest
 - **Whiteboard — Excalidraw, sovereign.** Embed `@excalidraw/excalidraw` and sync
   scene diffs **over the same LiveKit data channel** — no separate excalidraw-room
   server. The board rides the call; agents can read/annotate it as another channel.
+- **Screen share + video streaming.** Screen share is a native LiveKit track
+  (`getDisplayMedia` → `SCREEN_SHARE` source) — just a UI button + tile. "Stream a
+  video" = either screen-share a playing video, or **watch-together** (sync URL +
+  play/pause/seek over the data channel; no re-encode). Same room, more lanes.
 - **Agent team as participants.** Lumina + Opus join the same room (today's
   roundtable), hear everyone, and answer — addressing discipline + loop-cap already
-  built. Guests interact with the agents naturally.
+  built. Guests interact with the agents naturally. *(Future: agents can read a
+  shared screen via a vision model — "Lumina, what's this chart?" — same track.)*
 
 This is all **one LiveKit room** carrying multiple data lanes (audio, video, chat,
 whiteboard, agent control) — minimal moving parts, fully self-hostable.
@@ -180,9 +185,14 @@ skcomms channel-adapter pattern should absorb.
   in the call UI, persisted to skchat history under the room FQID.
 - **D3** **Excalidraw whiteboard** — embed `@excalidraw/excalidraw`, sync scene
   diffs over the LiveKit data channel (no excalidraw-room server); agents can read it.
-- **D4** Connectivity polish: surface tier (tailnet/LAN/Netbird/relay) in the UI;
+- **D4** **Screen share** — publish `getDisplayMedia` as a `SCREEN_SHARE` track +
+  render tile; "Share" button in the call UI.
+- **D5** **Video streaming / watch-together** — share a playing video (screen) or
+  sync URL + play/pause/seek over the data channel for lockstep playback.
+- **D6** Connectivity polish: surface tier (tailnet/LAN/Netbird/relay) in the UI;
   Netbird as a first-class mesh option alongside Tailscale.
-- **D5** Platform reach adapters (NC-Talk, Teams) — after the core session UX.
+- **D7** Platform reach adapters (NC-Talk, Teams) — after the core session UX.
+- **D8** *(future)* agent vision on shared screens (frames → vision model).
 
 ### Batch E — Multi-agent + hardening
 - **E1** Promote today's roundtable to durable `skchat-agent@<name>` stack
