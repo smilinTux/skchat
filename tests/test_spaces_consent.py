@@ -1,5 +1,3 @@
-import json
-
 import pytest
 
 from skchat.spaces.moderation import StageState, apply_action, dump_meta, parse_meta

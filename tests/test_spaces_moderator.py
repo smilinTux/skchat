@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from skchat.spaces.moderation import Moderator, StageState
+from skchat.spaces.moderation import Moderator
 
 
 class FakeParticipant:
