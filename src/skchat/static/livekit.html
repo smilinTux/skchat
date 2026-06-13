@@ -4,6 +4,13 @@
 <meta charset="utf-8" />
 <title>SKChat · LiveKit</title>
 <meta name="viewport" content="width=device-width,initial-scale=1" />
+<!-- D3: Excalidraw CDN deps — React 18 + ReactDOM + Excalidraw UMD bundle.
+     Excalidraw requires React in scope as window.React / window.ReactDOM before
+     its UMD bundle loads. We use the latest 0.17.x release pinned to avoid
+     breaking changes; bump deliberately. -->
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@excalidraw/excalidraw@0.17.6/dist/excalidraw.production.min.js" crossorigin></script>
 <style>
   :root { color-scheme: dark; --accent:#5a8dee; --good:#7ee0b9; --bad:#f08a8a; --warn:#f0c987; }
   * { box-sizing: border-box; }
@@ -79,12 +86,75 @@
   details#log-wrap { margin-top:14px; }
   details#log-wrap summary { font-size:12px; color:#8b94a7; cursor:pointer; padding:4px 0; }
   pre#log { font-size:11px; color:#7a8294; max-height:200px; overflow:auto; background:#0e1118; border:1px solid #1f2330; border-radius:8px; padding:8px; margin:6px 0 0; white-space:pre-wrap; word-break:break-word; }
+
+  /* ── D2: In-call chat panel ──────────────────────────────────────────────── */
+  #chat-panel {
+    display: flex; flex-direction: column;
+    border: 1px solid #2a2f3a; border-radius: 10px;
+    background: #0e1118; margin-top: 14px; overflow: hidden;
+    transition: height 0.2s ease;
+  }
+  #chat-panel.collapsed { height: 40px; }
+  #chat-panel-header {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 12px; cursor: pointer; user-select: none;
+    border-bottom: 1px solid #2a2f3a; background: #11141b;
+    font-size: 13px; font-weight: 600; flex-shrink: 0;
+  }
+  #chat-panel.collapsed #chat-panel-header { border-bottom: none; }
+  #chat-panel-header .chat-toggle-icon { margin-left: auto; font-size: 11px; color: #8b94a7; }
+  #chat-unread-badge {
+    background: var(--accent); color: #fff; border-radius: 99px;
+    font-size: 10px; padding: 1px 6px; display: none;
+  }
+  #chat-unread-badge.show { display: inline-block; }
+  #chat-messages {
+    flex: 1; overflow-y: auto; padding: 10px 12px;
+    display: flex; flex-direction: column; gap: 6px;
+    min-height: 160px; max-height: 260px;
+  }
+  .chat-msg {
+    font-size: 13px; line-height: 1.45;
+    padding: 6px 10px; border-radius: 8px; max-width: 85%; word-break: break-word;
+  }
+  .chat-msg.mine { background: #1a2e4a; color: #c3d9f5; align-self: flex-end; }
+  .chat-msg.theirs { background: #181b22; color: #e4e7ee; align-self: flex-start; }
+  .chat-msg .chat-meta { font-size: 10px; color: #5a627a; margin-bottom: 2px; }
+  #chat-input-row {
+    display: flex; gap: 6px; padding: 8px 10px;
+    border-top: 1px solid #1f2330; flex-shrink: 0;
+  }
+  #chat-input { flex: 1; min-width: 0; }
+  #chat-send { padding: 7px 14px; }
+
+  /* ── D3: Excalidraw whiteboard panel ─────────────────────────────────────── */
+  #wb-panel {
+    border: 1px solid #2a2f3a; border-radius: 10px;
+    background: #0e1118; margin-top: 14px; overflow: hidden;
+    transition: height 0.2s ease;
+  }
+  #wb-panel.collapsed { height: 40px; }
+  #wb-panel-header {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 12px; cursor: pointer; user-select: none;
+    border-bottom: 1px solid #2a2f3a; background: #11141b;
+    font-size: 13px; font-weight: 600; flex-shrink: 0;
+  }
+  #wb-panel.collapsed #wb-panel-header { border-bottom: none; }
+  #wb-panel-header .wb-toggle-icon { margin-left: auto; font-size: 11px; color: #8b94a7; }
+  #wb-container {
+    width: 100%; height: 500px; background: #fff;
+    /* Excalidraw renders its own dark mode; height tunable */
+  }
+  #wb-status { font-size: 11px; color: #8b94a7; padding: 4px 12px; flex-shrink: 0; }
+
   @media (max-width: 640px) {
     header { padding: 8px 10px; gap:6px; }
     header h1 { font-size:13px; }
     .field label { display:none; }
     main { padding: 8px; }
     #status { width:100%; margin-left:0; order:99; font-size:11px; }
+    #wb-container { height: 300px; }
   }
 </style>
 </head>
@@ -114,10 +184,38 @@
     <input id="speak-text" placeholder="Make Lumina say…" style="flex:1;min-width:200px" />
     <button id="speak-send">🤖 Speak</button>
     <button id="record-toggle">🎙️ Record</button>
+    <button id="chat-toggle-btn" class="toggle off" title="Toggle in-call chat panel">💬 Chat</button>
+    <button id="wb-toggle-btn" class="toggle off" title="Toggle whiteboard panel">📋 Board</button>
     <a id="recordings-link" class="pill" href="/recordings.html" target="_blank" style="text-decoration:none">📁 Library</a>
   </div>
 
   <div id="grid"></div>
+
+  <!-- D2: In-call chat panel (collapsed by default until Connect) -->
+  <div id="chat-panel" class="collapsed" style="display:none">
+    <div id="chat-panel-header">
+      💬 In-call Chat
+      <span id="chat-unread-badge"></span>
+      <span class="chat-toggle-icon" id="chat-chevron">▼</span>
+    </div>
+    <div id="chat-messages"></div>
+    <div id="chat-input-row">
+      <input id="chat-input" placeholder="Message everyone in this call…" autocomplete="off" />
+      <button id="chat-send" class="primary">Send</button>
+    </div>
+  </div>
+
+  <!-- D3: Excalidraw whiteboard panel (collapsed by default until Connect) -->
+  <div id="wb-panel" class="collapsed" style="display:none">
+    <div id="wb-panel-header">
+      📋 Whiteboard
+      <span id="wb-status-pill" class="pill" style="font-size:10px;margin-left:4px">idle</span>
+      <span class="wb-toggle-icon" id="wb-chevron">▼</span>
+    </div>
+    <div id="wb-container">
+      <!-- Excalidraw mounts here via React.createElement + ReactDOM.createRoot -->
+    </div>
+  </div>
 
   <details id="log-wrap"><summary>Diagnostics</summary><pre id="log"></pre></details>
 </main>
@@ -140,6 +238,221 @@ const tiles = new Map();
 let micTrack = null, camTrack = null;
 // Query-param values hoisted to module scope so connect() can read them.
 let qpIdentity = null, qpToken = null;
+
+// ── D2/D3: Data-lane envelope ────────────────────────────────────────────────
+// All data-channel messages use the envelope: { lane, ...payload }
+// Lanes: "chat"  → {from, text, ts}
+//        "whiteboard" → {elements, appState}
+//        "speak" → (existing) {action} or {action, text, …}
+// Legacy un-laned messages (e.g. {action:"worship_done"}) are treated as
+// lane "speak" for backwards compatibility with older agent builds.
+function publishLane(lanePayload) {
+  if (!room || !room.localParticipant) return;
+  const bytes = new TextEncoder().encode(JSON.stringify(lanePayload));
+  return room.localParticipant.publishData(bytes, { reliable: true });
+}
+
+function routeDataMessage(raw, participant) {
+  let msg;
+  try { msg = JSON.parse(new TextDecoder().decode(raw)); } catch (e) { return; }
+  const lane = msg.lane || 'speak';  // legacy: no lane → treat as speak
+  if (lane === 'chat') {
+    onChatReceived(msg, participant);
+  } else if (lane === 'whiteboard') {
+    onWhiteboardReceived(msg);
+  } else {
+    // lane === 'speak' or legacy agent control messages — existing behaviour:
+    // nothing to render here; agent-side consumers handle these.
+    log('data [speak]', JSON.stringify(msg).slice(0, 120));
+  }
+}
+
+// ── D2: Chat panel state ─────────────────────────────────────────────────────
+let chatOpen = false;
+let chatUnread = 0;
+
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function setChatOpen(open) {
+  chatOpen = open;
+  const panel = $('#chat-panel');
+  if (open) {
+    panel.classList.remove('collapsed');
+    // Clear unread badge when opened
+    chatUnread = 0;
+    const badge = $('#chat-unread-badge');
+    badge.textContent = '';
+    badge.classList.remove('show');
+    $('#chat-chevron').textContent = '▲';
+    const btn = $('#chat-toggle-btn');
+    btn.classList.remove('off'); btn.classList.add('on');
+    // Scroll to bottom
+    const msgs = $('#chat-messages');
+    msgs.scrollTop = msgs.scrollHeight;
+  } else {
+    panel.classList.add('collapsed');
+    $('#chat-chevron').textContent = '▼';
+    const btn = $('#chat-toggle-btn');
+    btn.classList.remove('on'); btn.classList.add('off');
+  }
+}
+
+function appendChatMessage(from, text, ts, mine) {
+  const msgs = $('#chat-messages');
+  const div = document.createElement('div');
+  div.className = 'chat-msg ' + (mine ? 'mine' : 'theirs');
+  const time = new Date(ts).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+  div.innerHTML = `<div class="chat-meta">${escapeHtml(from)} · ${escapeHtml(time)}</div>${escapeHtml(text)}`;
+  msgs.appendChild(div);
+  msgs.scrollTop = msgs.scrollHeight;
+}
+
+function onChatReceived(msg, participant) {
+  const from = msg.from || (participant ? participant.identity : 'unknown');
+  const text = msg.text || '';
+  const ts = msg.ts || Date.now();
+  const myIdentity = room?.localParticipant?.identity || '';
+  const mine = from === myIdentity;
+  appendChatMessage(from, text, ts, mine);
+  if (!chatOpen) {
+    chatUnread++;
+    const badge = $('#chat-unread-badge');
+    badge.textContent = chatUnread;
+    badge.classList.add('show');
+  }
+  log(`data [chat] ${from}: ${text.slice(0, 60)}`);
+  // TODO: persist to skchat history under room FQID (Batch D2 follow-up)
+}
+
+async function sendChatMessage() {
+  const input = $('#chat-input');
+  const text = input.value.trim();
+  if (!text || !room) return;
+  const from = room.localParticipant.identity || 'me';
+  const ts = Date.now();
+  const msg = { lane: 'chat', from, text, ts };
+  try {
+    await publishLane(msg);
+    appendChatMessage(from, text, ts, true);
+    input.value = '';
+  } catch (e) {
+    log('chat send failed:', e.message);
+  }
+}
+
+// ── D3: Excalidraw whiteboard state ──────────────────────────────────────────
+let wbOpen = false;
+let excalidrawAPI = null;  // set when the component mounts via ref callback
+let wbDebounceTimer = null;
+const WB_DEBOUNCE_MS = 400;  // debounce scene-change → data-channel publish
+let wbIgnoreNextUpdate = false;  // suppresses echo when we apply a remote scene
+
+function setWbOpen(open) {
+  wbOpen = open;
+  const panel = $('#wb-panel');
+  if (open) {
+    panel.classList.remove('collapsed');
+    $('#wb-chevron').textContent = '▲';
+    const btn = $('#wb-toggle-btn');
+    btn.classList.remove('off'); btn.classList.add('on');
+    // Mount Excalidraw if not yet mounted
+    if (!excalidrawAPI) mountExcalidraw();
+  } else {
+    panel.classList.add('collapsed');
+    $('#wb-chevron').textContent = '▼';
+    const btn = $('#wb-toggle-btn');
+    btn.classList.remove('on'); btn.classList.add('off');
+  }
+}
+
+function setWbStatus(text) {
+  const pill = $('#wb-status-pill');
+  if (pill) pill.textContent = text;
+}
+
+function mountExcalidraw() {
+  // Guard: require the globals loaded by the CDN scripts.
+  // window.ExcalidrawLib is the UMD export of @excalidraw/excalidraw.
+  if (!window.React || !window.ReactDOM || !window.ExcalidrawLib) {
+    setWbStatus('CDN not loaded');
+    log('wb: Excalidraw CDN not ready — React/ReactDOM/ExcalidrawLib missing');
+    return;
+  }
+  const container = $('#wb-container');
+  if (!container) return;
+
+  const { Excalidraw } = window.ExcalidrawLib;
+
+  // Wrap in a tiny React component so we can capture the API via the
+  // excalidrawAPI prop callback.
+  function WhiteboardApp() {
+    return React.createElement(Excalidraw, {
+      // Capture the API ref so we can call updateScene() for remote events.
+      excalidrawAPI: (api) => { excalidrawAPI = api; setWbStatus('ready'); },
+      theme: 'dark',
+      // onChange fires on every local scene mutation (element add/move/style).
+      onChange: (_elements, _appState, _files) => {
+        if (wbIgnoreNextUpdate) { wbIgnoreNextUpdate = false; return; }
+        if (!room) return;
+        clearTimeout(wbDebounceTimer);
+        wbDebounceTimer = setTimeout(() => {
+          if (!excalidrawAPI) return;
+          const elements = excalidrawAPI.getSceneElements();
+          const appState = excalidrawAPI.getAppState();
+          // Publish a minimal snapshot — only element data + viewport.
+          // appState can be large; strip non-essential fields for the wire.
+          const wireAppState = {
+            viewBackgroundColor: appState.viewBackgroundColor,
+            zoom: appState.zoom,
+            scrollX: appState.scrollX,
+            scrollY: appState.scrollY,
+          };
+          publishLane({ lane: 'whiteboard', elements, appState: wireAppState })
+            .catch(e => log('wb publish failed:', e.message));
+          setWbStatus('synced');
+        }, WB_DEBOUNCE_MS);
+      },
+    });
+  }
+
+  try {
+    const root = ReactDOM.createRoot(container);
+    root.render(React.createElement(WhiteboardApp));
+    setWbStatus('mounting…');
+    log('wb: Excalidraw mounted');
+  } catch (e) {
+    setWbStatus('mount error');
+    log('wb mount error:', e.message);
+  }
+  // TODO: tune Excalidraw collab — consider:
+  //   • Yjs CRDT lane (D6b) for true OT instead of last-write-wins
+  //   • File/image sync over the data channel (large binary → chunk protocol)
+  //   • Agent write-back (D9): Lumina pushes elements via publishLane
+  //   • Pointer broadcast for presence cursors
+}
+
+function onWhiteboardReceived(msg) {
+  if (!excalidrawAPI) return;
+  // Suppress our own onChange handler while we apply the remote scene so we
+  // don't immediately echo it back to everyone.
+  wbIgnoreNextUpdate = true;
+  try {
+    excalidrawAPI.updateScene({
+      elements: msg.elements || [],
+      appState: msg.appState || {},
+    });
+    setWbStatus('synced');
+  } catch (e) {
+    log('wb updateScene failed:', e.message);
+  }
+}
 
 // ── Pre-flight: secure context check ─────────────────────────────────────────
 function preflight() {
@@ -227,8 +540,8 @@ function makeTile(participant) {
     ev.stopPropagation();
     if (!room || !room.localParticipant) return;
     try {
-      const enc = new TextEncoder().encode(JSON.stringify({action: 'worship_done'}));
-      await room.localParticipant.publishData(enc, {reliable: true});
+      // lane:"speak" wraps existing agent-control messages
+      await publishLane({ lane: 'speak', action: 'worship_done' });
       doneBtn.classList.remove('show');
       doneBtn.textContent = '💕 saved';
     } catch (err) {
@@ -399,7 +712,9 @@ async function connect() {
       .on(RoomEvent.TrackMuted, (pub, p) => { const m = document.querySelector(`.mic-state[data-sid="${p.sid}"]`); if (m && pub.kind === 'audio') m.textContent = '🔇'; })
       .on(RoomEvent.TrackUnmuted, (pub, p) => { const m = document.querySelector(`.mic-state[data-sid="${p.sid}"]`); if (m && pub.kind === 'audio') m.textContent = '🎤'; })
       .on(RoomEvent.ParticipantMetadataChanged, (_prev, p) => { updateAgentState(p); })
-      .on(RoomEvent.Disconnected, reason => { log('disconnected:', reason); cleanup(); });
+      .on(RoomEvent.Disconnected, reason => { log('disconnected:', reason); cleanup(); })
+      // D2/D3: route data-channel messages through the lane dispatcher
+      .on(RoomEvent.DataReceived, (payload, participant) => routeDataMessage(payload, participant));
 
     await room.connect(livekitUrl, livekitToken);
     setStatus('connected', `${identity} in ${roomName}`);
@@ -415,6 +730,10 @@ async function connect() {
     $('#controls').classList.remove('hidden');
     $('#speak-row').classList.remove('hidden');
     startMetadataPolling();
+
+    // D2/D3: reveal panels (collapsed) after connect so buttons are accessible
+    $('#chat-panel').style.display = 'flex';
+    $('#wb-panel').style.display = 'block';
 
     // Auto-enable mic + cam — user explicitly clicked Connect, this is the consent moment.
     await toggleMic(true);
@@ -435,6 +754,19 @@ function cleanup() {
   $('#speak-row').classList.add('hidden');
   setMicUI(false); setCamUI(false);
   setStatus('', 'disconnected');
+  // D2/D3: hide panels + reset toggle state
+  $('#chat-panel').style.display = 'none';
+  $('#chat-panel').classList.add('collapsed');
+  $('#wb-panel').style.display = 'none';
+  $('#wb-panel').classList.add('collapsed');
+  chatOpen = false; wbOpen = false;
+  chatUnread = 0;
+  const chatBadge = $('#chat-unread-badge');
+  chatBadge.textContent = ''; chatBadge.classList.remove('show');
+  $('#chat-toggle-btn').classList.remove('on'); $('#chat-toggle-btn').classList.add('off');
+  $('#wb-toggle-btn').classList.remove('on'); $('#wb-toggle-btn').classList.add('off');
+  $('#chat-chevron').textContent = '▼';
+  $('#wb-chevron').textContent = '▼';
 }
 
 async function speakAsLumina() {
@@ -512,6 +844,16 @@ $('#mic-select').addEventListener('change', () => { if (room?.localParticipant.i
 $('#cam-select').addEventListener('change', () => { if (room?.localParticipant.isCameraEnabled) toggleCam(true); });
 $('#speak-send').addEventListener('click', speakAsLumina);
 $('#speak-text').addEventListener('keydown', e => { if (e.key === 'Enter') speakAsLumina(); });
+
+// D2: chat panel listeners
+$('#chat-toggle-btn').addEventListener('click', () => setChatOpen(!chatOpen));
+$('#chat-panel-header').addEventListener('click', () => setChatOpen(!chatOpen));
+$('#chat-send').addEventListener('click', sendChatMessage);
+$('#chat-input').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChatMessage(); } });
+
+// D3: whiteboard panel listeners
+$('#wb-toggle-btn').addEventListener('click', () => setWbOpen(!wbOpen));
+$('#wb-panel-header').addEventListener('click', () => setWbOpen(!wbOpen));
 
 let recordingActive = false;
 async function refreshRecordingState() {
