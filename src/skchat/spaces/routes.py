@@ -275,6 +275,30 @@ def register_spaces_routes(app: FastAPI, *, registry: SpaceRegistry | None = Non
         reg.set_recording(space_id, False, "")
         return JSONResponse({"ok": True})
 
+    @app.post("/sfu/get")
+    async def sfu_get(request: Request) -> JSONResponse:
+        """sk-lk-authd: verify a capauth-signed FQID assertion (the {claim, sig}
+        body), apply the local trust policy, and mint a LiveKit token for THIS
+        host's SFU. The authorize() logic + crypto seams are unit-tested in
+        test_fed_authd.py; this route is thin (parse + 400/403 mapping)."""
+        from skchat.spaces.federation.assertion import (
+            AssertionError as FedAssertionError,
+        )
+        from skchat.spaces.federation.authd import AuthDenied, authorize
+        try:
+            signed = await request.json()
+        except Exception as exc:  # malformed / non-JSON body
+            raise HTTPException(400, "malformed body: expected JSON") from exc
+        if not isinstance(signed, dict) or "claim" not in signed or "sig" not in signed:
+            raise HTTPException(400, "body must be {claim, sig}")
+        try:
+            out = authorize(signed, sfu_ws_url=_url())
+        except AuthDenied as exc:
+            raise HTTPException(403, str(exc)) from exc
+        except FedAssertionError as exc:
+            raise HTTPException(403, f"assertion rejected: {exc}") from exc
+        return JSONResponse(out)
+
     @app.get("/spaces/live", response_class=HTMLResponse)
     async def spaces_directory() -> HTMLResponse:
         static = Path(__file__).resolve().parent.parent / "static" / "spaces.html"
