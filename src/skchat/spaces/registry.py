@@ -64,5 +64,19 @@ class SpaceRegistry:
             s.egress_id = egress_id
             self._save()
 
+    def add_speaker(self, space_id: str, identity: str) -> None:
+        """Mark an identity as on-stage (authoritative). Idempotent."""
+        s = self._spaces.get(space_id)
+        if s is not None and identity not in s.speakers:
+            s.speakers.append(identity)
+            self._save()
+
+    def remove_speaker(self, space_id: str, identity: str) -> None:
+        """Remove an identity from the on-stage set (authoritative). Idempotent."""
+        s = self._spaces.get(space_id)
+        if s is not None and identity in s.speakers:
+            s.speakers.remove(identity)
+            self._save()
+
     def live(self) -> list[Space]:
         return [s for s in self._spaces.values() if s.status != SpaceStatus.ENDED]

@@ -83,6 +83,9 @@ def register_spaces_routes(app: FastAPI, *, registry: SpaceRegistry | None = Non
         slug = (body.get("slug") or "").strip()
         if not (host and title and slug):
             raise HTTPException(400, "host_fqid, title, slug required")
+        # C1 defense-in-depth: cap title length to blunt a stored-XSS payload.
+        if len(title) > 120:
+            raise HTTPException(400, "title too long (max 120 chars)")
         sid = derive_space_id(host, slug)
         space = Space(space_id=sid, host_fqid=host, title=title, slug=slug,
                       created_at=time.time())
@@ -140,6 +143,15 @@ def register_spaces_routes(app: FastAPI, *, registry: SpaceRegistry | None = Non
         reg.end(space_id)
         return JSONResponse({"ok": True, "space_id": space_id})
 
+    async def _on_promoted(space: Space, space_id: str, identity: str) -> None:
+        """After a stage_action reports on_stage/can_publish, make the on-stage set
+        server-authoritative. I3: if recording is active and the speaker has NOT
+        consented, revert the promotion and 409 rather than capture them silently."""
+        if space.recording and not led.has(space_id, identity):
+            await _moderator().stage_action(space.room, identity, "remove")
+            raise HTTPException(409, "consent required to speak while recording is active")
+        reg.add_speaker(space_id, identity)
+
     @app.post("/spaces/{space_id}/raise-hand")
     async def raise_hand(space_id: str, request: Request) -> JSONResponse:
         space = reg.get(space_id)
@@ -150,6 +162,8 @@ def register_spaces_routes(app: FastAPI, *, registry: SpaceRegistry | None = Non
         if not identity:
             raise HTTPException(400, "identity required")
         on_stage = await _moderator().stage_action(space.room, identity, "raise_hand")
+        if on_stage:
+            await _on_promoted(space, space_id, identity)
         return JSONResponse({"ok": True, "on_stage": on_stage})
 
     @app.post("/spaces/{space_id}/invite")
@@ -163,6 +177,8 @@ def register_spaces_routes(app: FastAPI, *, registry: SpaceRegistry | None = Non
         if not identity:
             raise HTTPException(400, "identity required")
         on_stage = await _moderator().stage_action(space.room, identity, "invite")
+        if on_stage:
+            await _on_promoted(space, space_id, identity)
         return JSONResponse({"ok": True, "on_stage": on_stage})
 
     @app.post("/spaces/{space_id}/remove-from-stage")
@@ -177,6 +193,7 @@ def register_spaces_routes(app: FastAPI, *, registry: SpaceRegistry | None = Non
         if requester != space.host_fqid and requester != identity:
             raise HTTPException(403, "host-or-self only")
         await _moderator().stage_action(space.room, identity, "remove")
+        reg.remove_speaker(space_id, identity)
         return JSONResponse({"ok": True})
 
     @app.post("/spaces/{space_id}/mute")
@@ -221,8 +238,9 @@ def register_spaces_routes(app: FastAPI, *, registry: SpaceRegistry | None = Non
             raise HTTPException(404, "space not found")
         body = await request.json()
         _require_host(space, (body.get("requester") or "").strip())
-        speakers = body.get("speakers") or []
-        ok, missing = can_record(speakers, space_id, led)
+        # I1/I2: gate on the server-authoritative on-stage set, NOT the request
+        # body (a client could omit/forge `speakers` to bypass consent).
+        ok, missing = can_record(space.speakers, space_id, led)
         if not ok:
             return JSONResponse({"ok": False, "missing_consent": missing},
                                 status_code=409)

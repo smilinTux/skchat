@@ -30,6 +30,9 @@
 <header>🎙️ SK Spaces — Live Now</header>
 <main id="list"><div class="empty">Loading…</div></main>
 <script>
+  // C1: escape attacker-settable fields before interpolating into innerHTML.
+  const esc = (s) => String(s).replace(/[&<>"']/g, c => (
+    {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   async function load() {
     const res = await fetch("/spaces");
     const { spaces } = await res.json();
@@ -41,8 +44,8 @@
       const speakers = (s.speakers || []).length;
       card.innerHTML = `
         <div class="meta">
-          <h3>${s.title}</h3>
-          <div class="sub">${s.host_fqid} · <span class="live">● LIVE</span>
+          <h3>${esc(s.title)}</h3>
+          <div class="sub">${esc(s.host_fqid)} · <span class="live">● LIVE</span>
             ${s.recording ? '<span class="rec">● REC</span>' : ''}
             · ${speakers} on stage</div>
         </div>

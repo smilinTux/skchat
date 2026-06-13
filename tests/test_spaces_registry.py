@@ -33,3 +33,19 @@ def test_persists_across_instances(tmp_path):
 
 def test_get_unknown_returns_none(tmp_path):
     assert SpaceRegistry(path=tmp_path / "spaces.json").get("nope") is None
+
+
+def test_add_remove_speaker_authoritative_and_idempotent(tmp_path):
+    p = tmp_path / "spaces.json"
+    reg = SpaceRegistry(path=p)
+    s = _space()
+    reg.add(s)
+    reg.add_speaker(s.space_id, "alice@x.y")
+    reg.add_speaker(s.space_id, "alice@x.y")  # idempotent — no dupes
+    reg.add_speaker(s.space_id, "bob@x.y")
+    assert reg.get(s.space_id).speakers == ["alice@x.y", "bob@x.y"]
+    # persisted
+    assert SpaceRegistry(path=p).get(s.space_id).speakers == ["alice@x.y", "bob@x.y"]
+    reg.remove_speaker(s.space_id, "alice@x.y")
+    reg.remove_speaker(s.space_id, "alice@x.y")  # idempotent — no error
+    assert reg.get(s.space_id).speakers == ["bob@x.y"]

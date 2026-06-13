@@ -38,6 +38,17 @@ def test_create_returns_host_token_and_registers(client):
     assert any(s["space_id"] == body["space_id"] for s in live)
 
 
+def test_create_rejects_overlong_title(client):
+    """C1 defense-in-depth: cap title length server-side (cheap XSS-blast guard)."""
+    r = client.post("/spaces/create", json={
+        "host_fqid": "lumina@chef.skworld", "title": "x" * 121, "slug": "long"})
+    assert r.status_code == 400
+    # a 120-char title is still accepted
+    ok = client.post("/spaces/create", json={
+        "host_fqid": "lumina@chef.skworld", "title": "x" * 120, "slug": "ok"})
+    assert ok.status_code == 200
+
+
 def test_member_join_gets_listener_token(client):
     sid = client.post("/spaces/create", json={
         "host_fqid": "lumina@chef.skworld", "title": "T", "slug": "s"}).json()["space_id"]
