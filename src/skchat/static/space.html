@@ -56,13 +56,14 @@
 <script>
   const LK = window.LivekitClient;
   const qs = new URLSearchParams(location.search);
-  const spaceId = location.pathname.split("/").pop();
+  // strip any stray chars copied into the URL (e.g. a trailing backtick from markdown)
+  const spaceId = (location.pathname.split("/").pop() || "").replace(/[^a-z0-9-]/gi, "");
   const step = (t) => document.getElementById("step").textContent = t;
   let room;
 
   async function getToken() {
     // ?host=<fqid> → join as host (publish + controls); else join as a listener.
-    const host = qs.get("host");
+    const host = (qs.get("host") || "").replace(/[^a-z0-9@._-]/gi, "");
     if (host) {
       const res = await fetch(`/spaces/${spaceId}/join-host`, {
         method:"POST", headers:{"content-type":"application/json"},
@@ -168,7 +169,7 @@
     step("✋ hand raised — waiting for the host.");
   };
 
-  const hostFqid = qs.get("host");          // present → host controls enabled
+  const hostFqid = (qs.get("host") || "").replace(/[^a-z0-9@._-]/gi, "") || null;  // host controls
   async function hostAction(path, identity, extra = {}) {
     await fetch(`/spaces/${spaceId}/${path}`, {
       method:"POST", headers:{"content-type":"application/json"},
