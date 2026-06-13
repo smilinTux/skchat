@@ -34,9 +34,12 @@ def _have_creds() -> bool:
 
 
 def register_spaces_routes(app: FastAPI, *, registry: SpaceRegistry | None = None,
-                           moderator=None) -> None:
+                           moderator=None, consent=None, recorder=None) -> None:
     reg = registry or SpaceRegistry()
     _mod_holder = {"mod": moderator}
+    from skchat.spaces.consent import ConsentLedger
+    led = consent or ConsentLedger()
+    _rec_holder = {"rec": recorder}
 
     def _moderator():
         if _mod_holder["mod"] is None:
@@ -45,6 +48,14 @@ def register_spaces_routes(app: FastAPI, *, registry: SpaceRegistry | None = Non
                 _url(), os.getenv("SKCHAT_LIVEKIT_API_KEY", ""),
                 os.getenv("SKCHAT_LIVEKIT_API_SECRET", ""))
         return _mod_holder["mod"]
+
+    def _recorder():
+        if _rec_holder["rec"] is None:
+            from skchat.spaces.recording import Recorder
+            _rec_holder["rec"] = Recorder(
+                _url(), os.getenv("SKCHAT_LIVEKIT_API_KEY", ""),
+                os.getenv("SKCHAT_LIVEKIT_API_SECRET", ""))
+        return _rec_holder["rec"]
 
     def _require_host(space, requester: str) -> None:
         if requester != space.host_fqid:
@@ -114,7 +125,8 @@ def register_spaces_routes(app: FastAPI, *, registry: SpaceRegistry | None = Non
     async def list_spaces() -> JSONResponse:
         return JSONResponse({"spaces": [
             {"space_id": s.space_id, "title": s.title, "host_fqid": s.host_fqid,
-             "status": s.status.value, "speakers": s.speakers}
+             "status": s.status.value, "speakers": s.speakers,
+             "recording": s.recording}
             for s in reg.live()
         ]})
 
@@ -186,6 +198,51 @@ def register_spaces_routes(app: FastAPI, *, registry: SpaceRegistry | None = Non
         body = await request.json()
         _require_host(space, (body.get("requester") or "").strip())
         await _moderator().kick(space.room, (body.get("identity") or "").strip())
+        return JSONResponse({"ok": True})
+
+    @app.post("/spaces/{space_id}/consent")
+    async def record_consent(space_id: str, request: Request) -> JSONResponse:
+        if reg.get(space_id) is None:
+            raise HTTPException(404, "space not found")
+        body = await request.json()
+        identity = (body.get("identity") or "").strip()
+        if not identity:
+            raise HTTPException(400, "identity required")
+        led.add(space_id, identity)
+        return JSONResponse({"ok": True})
+
+    @app.post("/spaces/{space_id}/record/start")
+    async def record_start(space_id: str, request: Request) -> JSONResponse:
+        from pathlib import Path as _P
+
+        from skchat.spaces.consent import can_record
+        space = reg.get(space_id)
+        if space is None:
+            raise HTTPException(404, "space not found")
+        body = await request.json()
+        _require_host(space, (body.get("requester") or "").strip())
+        speakers = body.get("speakers") or []
+        ok, missing = can_record(speakers, space_id, led)
+        if not ok:
+            return JSONResponse({"ok": False, "missing_consent": missing},
+                                status_code=409)
+        rec_dir = _P.home() / ".skchat" / "spaces-recordings"
+        rec_dir.mkdir(parents=True, exist_ok=True)
+        filepath = str(rec_dir / f"{space_id}.ogg")
+        egress_id = await _recorder().start(space.room, filepath)
+        reg.set_recording(space_id, True, egress_id)
+        return JSONResponse({"ok": True, "egress_id": egress_id, "path": filepath})
+
+    @app.post("/spaces/{space_id}/record/stop")
+    async def record_stop(space_id: str, request: Request) -> JSONResponse:
+        space = reg.get(space_id)
+        if space is None:
+            raise HTTPException(404, "space not found")
+        body = await request.json()
+        _require_host(space, (body.get("requester") or "").strip())
+        if space.egress_id:
+            await _recorder().stop(space.egress_id)
+        reg.set_recording(space_id, False, "")
         return JSONResponse({"ok": True})
 
     @app.get("/space/{space_id}", response_class=HTMLResponse)

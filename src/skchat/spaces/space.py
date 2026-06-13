@@ -35,6 +35,8 @@ class Space:
     speaker_cap: int = 10
     created_at: float = 0.0
     speakers: list[str] = field(default_factory=list)
+    recording: bool = False
+    egress_id: str = ""
 
     @property
     def room(self) -> str:

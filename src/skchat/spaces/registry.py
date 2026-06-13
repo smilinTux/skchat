@@ -57,5 +57,12 @@ class SpaceRegistry:
             s.status = SpaceStatus.ENDED
             self._save()
 
+    def set_recording(self, space_id: str, recording: bool, egress_id: str = "") -> None:
+        s = self._spaces.get(space_id)
+        if s is not None:
+            s.recording = recording
+            s.egress_id = egress_id
+            self._save()
+
     def live(self) -> list[Space]:
         return [s for s in self._spaces.values() if s.status != SpaceStatus.ENDED]
