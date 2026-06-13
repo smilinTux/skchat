@@ -25,6 +25,7 @@ class TrustPolicy:
         self.path = Path(path) if path else _DEFAULT_PATH
         self._full: set[str] = set()
         self._default = AccessLevel.DENY
+        self._remote_max_role = "speaker"
         self._load()
 
     def _load(self) -> None:
@@ -39,6 +40,12 @@ class TrustPolicy:
             self._default = AccessLevel(d.get("default", "deny"))
         except ValueError:
             self._default = AccessLevel.DENY
+        rmr = d.get("remote_max_role", "speaker")
+        self._remote_max_role = rmr if rmr in ("speaker", "listener") else "speaker"
+
+    @property
+    def remote_max_role(self) -> str:
+        return self._remote_max_role
 
     def access_for(self, fqid: str) -> AccessLevel:
         host = fqid.split("@", 1)[1] if "@" in fqid else fqid
