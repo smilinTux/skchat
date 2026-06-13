@@ -133,6 +133,16 @@
     } catch (e) { step("Error: " + e.message); }
   };
 
+  async function pollRec() {
+    try {
+      const { spaces } = await (await fetch("/spaces")).json();
+      const me = spaces.find(s => s.space_id === spaceId);
+      document.getElementById("rec").style.display =
+        (me && me.recording) ? "inline" : "none";
+    } catch (_) {}
+  }
+  setInterval(pollRec, 4000);
+
   document.getElementById("hand").onclick = async () => {
     const identity = room?.localParticipant?.identity;
     if (!identity) return;

@@ -1,0 +1,28 @@
+# LiveKit Egress — audio-only recording for SK Spaces.
+# Pairs with livekit-stack.yml; needs Redis to coordinate with the SFU.
+version: "3.8"
+
+services:
+  egress:
+    image: livekit/egress:v1.8
+    network_mode: host          # egress uses the host network like the SFU
+    environment:
+      EGRESS_CONFIG_BODY: |
+        redis:
+          address: 127.0.0.1:6379
+        api_key: ${LIVEKIT_API_KEY}
+        api_secret: ${LIVEKIT_API_SECRET}
+        ws_url: ws://127.0.0.1:7880
+        insecure: true
+    volumes:
+      - spaces-recordings:/out/spaces-recordings
+    cap_add:
+      - SYS_ADMIN            # required by egress (chrome sandbox for composite)
+    deploy:
+      placement:
+        constraints:
+          - node.labels.livekit == true
+    restart: unless-stopped
+
+volumes:
+  spaces-recordings:
