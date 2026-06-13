@@ -66,6 +66,7 @@ dev = [
 [project.scripts]
 skchat = "skchat.cli:main"
 skchat-mcp = "skchat.mcp_server:main"
+skchat-voice = "skchat.transports.serve_ws:main"
 
 [project.urls]
 Homepage = "https://skchat.io"

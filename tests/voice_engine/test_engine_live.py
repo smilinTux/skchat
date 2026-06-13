@@ -9,7 +9,7 @@ Run:
 
 import pytest
 
-from skchat.voice_engine import MemoryBridge, PersonaBuilder
+from skchat.voice_engine import MemoryBridge, PersonaBuilder, VoiceConfig, VoiceEngine
 
 
 @pytest.mark.live
@@ -42,3 +42,18 @@ def test_live_persona_loads_active_soul(monkeypatch):
 
     g = pb.build("lumina", mode="group")
     assert "professional" in g.lower()
+
+
+@pytest.mark.live
+@pytest.mark.asyncio
+async def test_live_voice_engine_respond(monkeypatch):
+    """VoiceEngine.respond with real LLM endpoint returns a non-empty string."""
+    monkeypatch.setenv("SKAGENT", "lumina")
+    monkeypatch.setenv("SKCAPSTONE_AGENT", "lumina")
+    cfg = VoiceConfig.from_env()
+    eng = VoiceEngine(cfg, "lumina")
+    reply = await eng.respond(
+        "say hi in three words", [], mode="sacred", speaker_id="chef", is_operator=True
+    )
+    assert reply and "trouble connecting" not in reply.lower()
+    assert len(reply) > 0
