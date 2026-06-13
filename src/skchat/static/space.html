@@ -79,7 +79,22 @@
     let listeners = 0;
     for (const p of parts) {
       const canSpeak = p.permissions?.canPublish;
-      if (!canSpeak) { listeners++; continue; }
+      if (!canSpeak) {
+        listeners++;
+        try {
+          const meta = JSON.parse(p.metadata || "{}");
+          if (meta.hand_raised && hostFqid) {
+            const wrap = document.createElement("div"); wrap.className = "speaker";
+            const ring = document.createElement("div");
+            ring.className = "ring"; ring.id = "ring-" + p.identity;
+            ring.textContent = "✋"; ring.style.borderColor = "var(--accent)";
+            const name = document.createElement("div"); name.className = "name";
+            name.textContent = p.name || p.identity;
+            wrap.append(ring, name); el.append(wrap);
+          }
+        } catch (_) {}
+        continue;
+      }
       const wrap = document.createElement("div"); wrap.className = "speaker";
       const ring = document.createElement("div");
       ring.className = "ring" + (p.isSpeaking ? " speaking" : "");
@@ -103,6 +118,13 @@
       room.on(LK.RoomEvent.TrackSubscribed, (track) => {
         if (track.kind === "audio") track.attach();  // play speaker audio
       });
+      room.on(LK.RoomEvent.ParticipantPermissionsChanged, async (prev, p) => {
+        if (p === room.localParticipant && p.permissions?.canPublish) {
+          await room.localParticipant.setMicrophoneEnabled(true);  // promoted → talk
+          step("You're on stage — mic live.");
+        }
+        renderSpeakers();
+      });
       await room.connect(url, token);
       renderSpeakers();
       document.getElementById("join").style.display = "none";
@@ -111,8 +133,41 @@
     } catch (e) { step("Error: " + e.message); }
   };
 
+  document.getElementById("hand").onclick = async () => {
+    const identity = room?.localParticipant?.identity;
+    if (!identity) return;
+    await fetch(`/spaces/${spaceId}/raise-hand`, {
+      method:"POST", headers:{"content-type":"application/json"},
+      body: JSON.stringify({ identity })
+    });
+    step("✋ hand raised — waiting for the host.");
+  };
+
+  const hostFqid = qs.get("host");          // present → host controls enabled
+  async function hostAction(path, identity, extra = {}) {
+    await fetch(`/spaces/${spaceId}/${path}`, {
+      method:"POST", headers:{"content-type":"application/json"},
+      body: JSON.stringify({ requester: hostFqid, identity, ...extra })
+    });
+  }
+  // host control endpoints wired in the page (delegated ring click → action):
+  //   /spaces/{id}/invite · /spaces/{id}/remove-from-stage · /spaces/{id}/kick
+  const HOST_ACTIONS = ["invite", "remove-from-stage", "kick"];
+  document.getElementById("speakers").addEventListener("click", async (e) => {
+    if (!hostFqid) return;
+    const ring = e.target.closest(".ring"); if (!ring) return;
+    const identity = ring.id.replace("ring-", "");
+    const act = prompt(`Action for ${identity}: ${HOST_ACTIONS.join(" / ")}`);
+    if (!act || !HOST_ACTIONS.includes(act.trim())) return;
+    await hostAction(act.trim(), identity);
+    step(`${act} → ${identity}`);
+  });
+
   document.getElementById("end").onclick = async () => {
-    await fetch(`/spaces/${spaceId}/end`, { method:"POST" });
+    await fetch(`/spaces/${spaceId}/end`, {
+      method:"POST", headers:{"content-type":"application/json"},
+      body: JSON.stringify({ requester: hostFqid })
+    });
     if (room) room.disconnect();
     step("Space ended.");
   };
