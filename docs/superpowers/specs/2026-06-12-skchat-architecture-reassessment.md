@@ -94,8 +94,14 @@ agent team (Lumina + Opus)**, reachable directly (sovereign) or by a link (guest
   play/pause/seek over the data channel; no re-encode). Same room, more lanes.
 - **Agent team as participants.** Lumina + Opus join the same room (today's
   roundtable), hear everyone, and answer — addressing discipline + loop-cap already
-  built. Guests interact with the agents naturally. *(Future: agents can read a
-  shared screen via a vision model — "Lumina, what's this chart?" — same track.)*
+  built. Guests interact with the agents naturally.
+- **★ FUTURE REQUIREMENT — agents as visual co-creators.** Because the whiteboard +
+  screen are lanes in the same room, agents can both **read** them (vision model on
+  screen frames / Excalidraw scene) AND **write** them in real time: Lumina draws on
+  the whiteboard (pushes Excalidraw elements over the data channel), generates a
+  diagram/image (ComfyUI) onto the shared canvas, or annotates a screen-share
+  region. "Lumina, sketch this architecture" → it appears on the board live. Flagged
+  as a headline future capability (Chef, 2026-06-13).
 
 This is all **one LiveKit room** carrying multiple data lanes (audio, video, chat,
 whiteboard, agent control) — minimal moving parts, fully self-hostable.
@@ -192,7 +198,9 @@ skcomms channel-adapter pattern should absorb.
 - **D6** Connectivity polish: surface tier (tailnet/LAN/Netbird/relay) in the UI;
   Netbird as a first-class mesh option alongside Tailscale.
 - **D7** Platform reach adapters (NC-Talk, Teams) — after the core session UX.
-- **D8** *(future)* agent vision on shared screens (frames → vision model).
+- **D8** *(★ future requirement)* **agents as visual co-creators** — read (vision on
+  screen/board) AND write (push Excalidraw elements, generate diagrams/images onto
+  the shared canvas, annotate screen regions) in real time, over the same data channel.
 
 ### Batch E — Multi-agent + hardening
 - **E1** Promote today's roundtable to durable `skchat-agent@<name>` stack
