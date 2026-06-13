@@ -120,6 +120,31 @@ already supports it (groups + threads + DMs; `list_groups`/`list_threads`/
 `get_thread`) — this is the client UX layer over it. A "conversation" can be
 text-only or carry a live session (the collaborative room above).
 
+## 2.6 skreach — sovereign remote control (a terminal lane)
+
+Owned under skchat (decision 2026-06-13): the remote-control plane is **another
+data-lane in the collaborative session**, not a separate transport. Reconciles the
+research (coord `d8df240d`) + Lumina's pass (`a47c6c64`) → decision `3196673d`.
+
+- **skreachd** — a per-node/agent daemon: run command + stream stdout, file ops,
+  status. The "drive my CLI from my phone" piece.
+- **Terminal = a lane.** skreachd streams over skcomms' WebRTC data channel as a
+  `{lane:"term",...}` envelope, right alongside chat/whiteboard/doc/screen. One
+  session can carry voice + whiteboard + a **live deploy terminal** at once.
+- **Pluggable transport underlay** — tsnet (Tailscale, no inbound ports) / NetBird
+  (WG + SSO) / Cloudflare Tunnel; the same connectivity ladder skchat uses.
+- **capauth/skos-signed commands** — every remote action is signed + authorized via
+  the same signature gate as the WebRTC call ring. Sovereign vs raw SSH.
+- **Build on existing primitives** — deployment ops wrap skcapstone `trustee_*` /
+  `run_ansible_playbook` / `deploy_status` / `coord_*` / `itil_*` (declarative
+  day-2); skreach adds interactive drive + audited raw exec. Don't reinvent.
+- **★ Security is gating** — RBAC tiers (read-only/operator), per-command authz,
+  full ITIL audit, confirm-on-destructive, Tailscale-only default. The skreachd
+  exec sandbox + audit is the riskiest component; **spec it before any exec ships**
+  (reuses the P0 identity/roles work). Folds in the parked operator-drop-in
+  (`e8651a65`). Surfaces: skchat Control Room pane + standalone PWA + MCP tool
+  (agent-drives-agent).
+
 ## 3. Current state (what exists, 2026-06-12)
 
 **Built & running (systemd, this box):**
@@ -227,6 +252,18 @@ skcomms channel-adapter pattern should absorb.
   services (replace hand-run `run-agent.sh`).
 - **E2** Observability (skmon/Loki), live signaling-broker deploy, P2P fallback as
   a v2 component.
+
+### Batch F — skreach (sovereign remote control, owned under skchat)
+*Security-first. See §2.6 + decision `3196673d`.*
+- **F1** **Security/RBAC/audit spec FIRST** — RBAC tiers, per-command authz, ITIL
+  audit, confirm-on-destructive, capauth signature gate; reuse the P0 identity work.
+  Gates everything below.
+- **F2** **skreachd MVP** — per-node daemon: run + stream stdout, file ops, status;
+  signed commands; pluggable transport underlay (tsnet/NetBird/Cloudflared).
+- **F3** **skchat terminal lane** — `{lane:"term"}` pane in the call/session UI
+  (rides the existing data channel, like chat/whiteboard).
+- **F4** **trustee wrap** — deployment ops delegate to `trustee_*`/`run_ansible`;
+  skreach adds interactive drive + audited exec. Plus MCP tool (agent-drives-agent).
 
 ## 6. Recommended sequence
 
