@@ -495,6 +495,114 @@
   #doc-word-count  { color: #4b5263; }
   #doc-clear-btn   { font-size: 11px; padding: 3px 10px; }
 
+  /* ── F3: skreach terminal lane ──────────────────────────────────────────────
+     Operator-only control surface. Exec is DISABLED by default server-side
+     (skreachd RBAC gate). The UI sends {lane:"term"} envelopes and renders
+     streamed output + denied/confirm responses. Flat-with-depth; NO glass.
+  ──────────────────────────────────────────────────────────────────────────── */
+  #term-panel { display: flex; flex-direction: column; }
+
+  /* Operator badge on panel header */
+  #term-operator-badge {
+    font-size: 10px; padding: 2px 7px;
+    border-radius: 99px;
+    background: rgba(251,191,36,.10);
+    border: 1px solid rgba(251,191,36,.30);
+    color: var(--warn);
+    font-weight: 600;
+    letter-spacing: .04em;
+  }
+
+  /* exec-gated banner — always visible inside the panel */
+  #term-gated-banner {
+    display: flex; align-items: center; gap: 8px;
+    padding: 7px 12px;
+    border-bottom: 1px solid var(--border-sub);
+    background: #16180e;
+    font-size: 11px; color: #9a8f5a;
+    font-family: var(--font-mono);
+    flex-shrink: 0;
+    user-select: none;
+  }
+  #term-gated-banner .gated-dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--warn); opacity: .7; flex-shrink: 0;
+  }
+
+  /* Output area — near-black, monospace, teal scrollbar thumb */
+  #term-output {
+    flex: 1;
+    font-family: var(--font-mono); font-size: 12px; line-height: 1.6;
+    color: #c8d8c8;
+    background: #0b0f0b;
+    border: none;
+    padding: 10px 12px;
+    min-height: 200px; max-height: 360px;
+    overflow-y: auto;
+    white-space: pre-wrap; word-break: break-all;
+    display: flex; flex-direction: column; gap: 0;
+  }
+  #term-output::-webkit-scrollbar { width: 6px; }
+  #term-output::-webkit-scrollbar-track { background: #0b0f0b; }
+  #term-output::-webkit-scrollbar-thumb { background: var(--accent-dim); border-radius: 3px; }
+
+  /* Individual output lines */
+  .term-line { display: block; }
+  .term-line.term-stdout  { color: #c8d8c8; }
+  .term-line.term-stderr  { color: #e8a0a0; }
+  .term-line.term-system  { color: #6b7280; font-style: italic; }
+  .term-line.term-prompt  { color: var(--accent); font-weight: 600; }
+  .term-line.term-denied  {
+    color: var(--bad); background: rgba(248,113,113,.07);
+    padding: 3px 6px; border-left: 2px solid var(--bad);
+    margin: 2px 0; border-radius: 0 var(--r-sm) var(--r-sm) 0;
+  }
+  .term-line.term-confirm {
+    color: var(--warn); background: rgba(251,191,36,.07);
+    padding: 3px 6px; border-left: 2px solid var(--warn);
+    margin: 2px 0; border-radius: 0 var(--r-sm) var(--r-sm) 0;
+  }
+  .term-line.term-exit-ok   { color: var(--good); }
+  .term-line.term-exit-fail { color: var(--bad);  }
+
+  /* Confirm action row (shown when skreachd returns confirm_required) */
+  #term-confirm-row {
+    display: none;
+    gap: 8px; align-items: center;
+    padding: 7px 10px;
+    background: #1c1a0d;
+    border-top: 1px solid rgba(251,191,36,.20);
+    flex-shrink: 0;
+    font-size: 12px;
+  }
+  #term-confirm-row.show { display: flex; }
+  #term-confirm-summary {
+    flex: 1; font-family: var(--font-mono); font-size: 11px; color: #c8b466;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+
+  /* Input row */
+  #term-input-row {
+    display: flex; gap: 6px; padding: 8px 10px;
+    border-top: 1px solid var(--border-sub); flex-shrink: 0;
+    background: var(--surface-3);
+  }
+  #term-prompt-label {
+    font-family: var(--font-mono); font-size: 13px;
+    color: var(--accent); align-self: center; user-select: none;
+    white-space: nowrap;
+  }
+  #term-input {
+    flex: 1; min-width: 0;
+    font-family: var(--font-mono); font-size: 13px;
+    background: #0b0f0b;
+    border: 1px solid var(--border-mid);
+    color: #d4d9e8;
+  }
+  #term-input:focus { border-color: var(--accent); background: #0d130d; }
+  #term-input::placeholder { color: #3a4a3a; }
+  #term-run-btn { padding: 6px 14px; font-family: var(--font-mono); }
+
   /* ── Responsive ──────────────────────────────────────────────────────────── */
   @media (max-width: 640px) {
     header { padding: 8px 10px; gap: 6px; }
@@ -505,6 +613,7 @@
     #wb-container { height: 300px; }
     #watch-video { max-height: 240px; }
     #doc-textarea { min-height: 140px; }
+    #term-output { min-height: 140px; max-height: 220px; }
   }
 </style>
 </head>
@@ -540,6 +649,7 @@
     <button id="screen-share-btn"  class="toggle off" title="Share your screen">🖥️ Screen</button>
     <button id="watch-toggle-btn"  class="toggle off" title="Watch-together panel">📺 Watch</button>
     <button id="doc-toggle-btn"    class="toggle off" title="Collaborative document panel (Yjs CRDT)">📝 Doc</button>
+    <button id="term-toggle-btn"   class="toggle off" title="skreach terminal lane (operator-only · exec gated)">⌨️ Term</button>
     <span id="screen-unsupported-msg" class="show" style="display:none">Screen share not supported in this browser</span>
     <a id="recordings-link" class="pill" href="/recordings.html" target="_blank" style="text-decoration:none">📁 Library</a>
   </div>
@@ -662,6 +772,64 @@
     </div>
   </div>
 
+  <!-- F3: skreach terminal lane (sovereign remote control) ─────────────────────
+       Publishes/consumes {lane:"term",...} envelopes over the LiveKit data channel.
+       Exec is DISABLED by default server-side (skreachd RBAC + allowlist gate).
+       This panel sends run requests and renders streamed output + denied/confirm
+       responses that skreachd returns even before exec is enabled.
+
+       Outbound envelope shapes:
+         Run:     {lane:"term", action:"run", cmd:<string>, id:<uuid4>}
+         Confirm: {lane:"term", action:"confirm", cmd_id:<original id>, id:<new uuid4>}
+         Cancel:  {lane:"term", action:"cancel",  cmd_id:<original id>}
+
+       Inbound envelope shapes (from skreachd):
+         Output:          {lane:"term", action:"output",   id, chunk:<string>, stream:"stdout"|"stderr"}
+         Exit:            {lane:"term", action:"exit",     id, code:<int>}
+         Denied:          {lane:"term", action:"denied",   id, reason:<string>}
+         Exec disabled:   {lane:"term", action:"exec_disabled", id, reason:<string>}
+         Confirm required:{lane:"term", action:"confirm_required", id, cmd_id:<string>, summary:<string>, expires_at:<unix>}
+
+       TODOs:
+         - Real skreachd wiring (F2 daemon) — currently the server side is not
+           implemented; the UI handles all response types for when F2 ships.
+         - Confirm-on-destructive UX: the confirm row is shown and sends a signed
+           second envelope; the actual signing uses capauth (not yet wired here —
+           the bare envelope is sent and the server must validate the signature gate).
+         - Scrollback limit: currently unbounded; add a MAX_TERM_LINES cap (~2000)
+           with trim-from-top to prevent DOM bloat on long-running streams.
+         - Command history (↑/↓ arrow): maintain a local ringbuffer, no server dep.
+         - Terminal resize / ANSI colour stripping for xterm.js upgrade path.
+  ─────────────────────────────────────────────────────────────────────────── -->
+  <div id="term-panel" class="sk-panel collapsed" style="display:none">
+    <div id="term-panel-header" class="sk-panel-header">
+      ⌨️ skreach Terminal
+      <span id="term-operator-badge">operator-only · exec gated</span>
+      <span id="term-status-pill" class="pill" style="font-size:10px;margin-left:4px">idle</span>
+      <span class="toggle-icon" id="term-chevron">▼</span>
+    </div>
+    <!-- Always-visible exec-gated banner -->
+    <div id="term-gated-banner">
+      <span class="gated-dot"></span>
+      skreach control surface — commands are signed + RBAC-verified by skreachd · exec disabled by default
+    </div>
+    <!-- Output area -->
+    <div id="term-output" aria-live="polite" aria-label="Terminal output"></div>
+    <!-- Confirm row — shown only when skreachd returns confirm_required -->
+    <div id="term-confirm-row">
+      <span style="color:var(--warn);font-size:13px;flex-shrink:0">⚠</span>
+      <span id="term-confirm-summary">Confirm required</span>
+      <button id="term-confirm-yes-btn" class="danger" style="padding:4px 12px;font-family:var(--font-mono);font-size:12px">Confirm</button>
+      <button id="term-confirm-no-btn"  style="padding:4px 12px;font-family:var(--font-mono);font-size:12px">Cancel</button>
+    </div>
+    <!-- Input row -->
+    <div id="term-input-row">
+      <span id="term-prompt-label">▶</span>
+      <input id="term-input" placeholder="command… (e.g. skcapstone doctor)" autocomplete="off" spellcheck="false" />
+      <button id="term-run-btn" class="primary">Run</button>
+    </div>
+  </div>
+
   <details id="log-wrap"><summary>Diagnostics</summary><pre id="log"></pre></details>
 </main>
 
@@ -705,6 +873,7 @@ function routeDataMessage(raw, participant) {
   else if (lane === 'whiteboard') onWhiteboardReceived(msg);
   else if (lane === 'watch')      onWatchReceived(msg, participant);
   else if (lane === 'doc')        onDocReceived(msg, participant);
+  else if (lane === 'term')       onTermReceived(msg, participant);
   else {
     // lane === 'speak' or legacy agent control messages
     log('data [speak]', JSON.stringify(msg).slice(0, 120));
@@ -1368,6 +1537,221 @@ function onDocReceived(msg, participant) {
   }
 }
 
+// ── F3: skreach terminal lane ─────────────────────────────────────────────────
+//
+// Data-lane envelope shapes (outbound — sent by this UI):
+//   Run:     {lane:"term", action:"run",     cmd:<string>, id:<uuid4>}
+//   Confirm: {lane:"term", action:"confirm", cmd_id:<orig-id>, id:<new-uuid4>}
+//   Cancel:  {lane:"term", action:"cancel",  cmd_id:<orig-id>}
+//
+// Data-lane envelope shapes (inbound — from skreachd):
+//   Output:           {lane:"term", action:"output",           id, chunk, stream:"stdout"|"stderr"}
+//   Exit:             {lane:"term", action:"exit",             id, code}
+//   Denied:           {lane:"term", action:"denied",           id, reason}
+//   Exec disabled:    {lane:"term", action:"exec_disabled",    id, reason}
+//   Confirm required: {lane:"term", action:"confirm_required", id, cmd_id, summary, expires_at}
+//
+// Security note: the UI sends bare lane envelopes over the LiveKit data channel.
+// skreachd wraps them in a capauth-signed command envelope server-side before any
+// exec decision. The UI itself never signs; signing is the server gateway's job.
+// "exec gated" means skreachd's RBAC + allowlist + sandbox are the trust boundary.
+//
+// TODOs:
+//   1. Real skreachd wiring (F2 daemon) — server side not yet implemented.
+//   2. Confirm-on-destructive: the confirm envelope must be PGP-signed by the
+//      issuer's capauth key (§3.3 of skreach-security spec). Currently the bare
+//      envelope is sent; the signing gateway (F2) must enforce this before exec.
+//   3. Scrollback limit: add MAX_TERM_LINES (~2000) with trim-from-top to
+//      prevent DOM bloat during long streaming runs.
+//   4. Command history (↑/↓): maintain a local ringbuffer (no server dep).
+//   5. ANSI colour stripping / xterm.js upgrade for rich terminal output.
+
+let termOpen = false;
+
+// Track in-flight commands: id → { cmd, startTs } (for exit-code display)
+const termJobs = new Map();
+// Track a pending confirm: { cmd_id, summary, expires_at } | null
+let termPendingConfirm = null;
+
+// Simple UUID-like ID generator (no crypto dep, not security-sensitive —
+// the server assigns a real ID on the signed envelope).
+function termGenId() {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+    const r = (Math.random() * 16) | 0;
+    return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16);
+  });
+}
+
+function setTermOpen(open) {
+  termOpen = open;
+  const panel = $('#term-panel');
+  if (open) {
+    panel.classList.remove('collapsed');
+    $('#term-chevron').textContent = '▲';
+    const btn = $('#term-toggle-btn');
+    btn.classList.remove('off'); btn.classList.add('on');
+    // Auto-focus input on open
+    const inp = $('#term-input');
+    if (inp) setTimeout(() => inp.focus(), 60);
+  } else {
+    panel.classList.add('collapsed');
+    $('#term-chevron').textContent = '▼';
+    const btn = $('#term-toggle-btn');
+    btn.classList.remove('on'); btn.classList.add('off');
+  }
+}
+
+function setTermStatus(text) {
+  const pill = $('#term-status-pill');
+  if (pill) pill.textContent = text;
+}
+
+// Append a line to the output area with a given CSS class.
+function termAppendLine(text, cls) {
+  const out = $('#term-output');
+  if (!out) return;
+  const span = document.createElement('span');
+  span.className = 'term-line ' + cls;
+  span.textContent = text;
+  out.appendChild(span);
+  out.scrollTop = out.scrollHeight;
+  // TODO(scrollback): if (out.children.length > 2000) out.removeChild(out.firstChild);
+}
+
+// Show / hide the confirm row.
+function termShowConfirm(summary, cmdId, expiresAt) {
+  termPendingConfirm = { cmd_id: cmdId, summary, expires_at: expiresAt };
+  const row = $('#term-confirm-row');
+  const sumEl = $('#term-confirm-summary');
+  if (sumEl) sumEl.textContent = summary;
+  if (row) row.classList.add('show');
+}
+
+function termHideConfirm() {
+  termPendingConfirm = null;
+  const row = $('#term-confirm-row');
+  if (row) row.classList.remove('show');
+}
+
+// Send a run request over the data lane.
+async function termRunCommand() {
+  const inp = $('#term-input');
+  const cmd = inp ? inp.value.trim() : '';
+  if (!cmd || !room) return;
+  if (inp) inp.value = '';
+
+  const id = termGenId();
+  termJobs.set(id, { cmd, startTs: Date.now() });
+
+  // Render the prompt + command in the output area
+  termAppendLine(`▶ ${cmd}`, 'term-line term-prompt');
+
+  try {
+    await publishLane({ lane: 'term', action: 'run', cmd, id });
+    setTermStatus('running…');
+    log(`data [term] run cmd="${cmd.slice(0,60)}" id=${id}`);
+  } catch (e) {
+    termAppendLine(`[send failed: ${e.message}]`, 'term-line term-system');
+    log('term run send failed:', e.message);
+    termJobs.delete(id);
+    setTermStatus('send error');
+  }
+}
+
+// Handle inbound {lane:"term"} messages from skreachd.
+function onTermReceived(msg, participant) {
+  const sender = participant?.identity || 'skreachd';
+  const { action, id, chunk, stream, code, reason, summary, cmd_id, expires_at } = msg;
+
+  switch (action) {
+    case 'output': {
+      // Streamed stdout/stderr chunk keyed by id
+      const cls = stream === 'stderr' ? 'term-line term-stderr' : 'term-line term-stdout';
+      // chunk may contain embedded newlines — split + emit each line
+      const lines = (chunk || '').split('\n');
+      for (let i = 0; i < lines.length; i++) {
+        // Skip the trailing empty string produced by a trailing newline
+        if (i === lines.length - 1 && lines[i] === '') continue;
+        termAppendLine(lines[i], cls);
+      }
+      setTermStatus('streaming…');
+      log(`data [term] output id=${id} ${stream} +${(chunk||'').length}ch`);
+      break;
+    }
+
+    case 'exit': {
+      const job = termJobs.get(id);
+      const elapsed = job ? `${((Date.now() - job.startTs) / 1000).toFixed(1)}s` : '';
+      const ok = code === 0;
+      termAppendLine(
+        `[exit ${code}${elapsed ? ' · ' + elapsed : ''}]`,
+        ok ? 'term-line term-exit-ok' : 'term-line term-exit-fail',
+      );
+      termJobs.delete(id);
+      setTermStatus(ok ? 'done' : `exit ${code}`);
+      log(`data [term] exit id=${id} code=${code}`);
+      break;
+    }
+
+    case 'denied':
+    case 'exec_disabled': {
+      // EXPECTED default state — exec is off server-side; surface this clearly.
+      const label = action === 'exec_disabled' ? '[exec disabled]' : '[denied]';
+      termAppendLine(`${label} ${reason || ''}`, 'term-line term-denied');
+      termJobs.delete(id);
+      setTermStatus('denied');
+      log(`data [term] ${action} id=${id} reason=${reason}`);
+      break;
+    }
+
+    case 'confirm_required': {
+      // skreachd requires a second signed confirmation before executing a
+      // destructive command. Show the confirm row so the operator can decide.
+      termAppendLine(`[confirm required] ${summary || ''}`, 'term-line term-confirm');
+      termShowConfirm(summary || `confirm: ${cmd_id}`, cmd_id, expires_at);
+      setTermStatus('confirm required');
+      log(`data [term] confirm_required cmd_id=${cmd_id} summary="${(summary||'').slice(0,60)}"`);
+      break;
+    }
+
+    default:
+      log(`data [term] unknown action="${action}" from ${sender}`);
+  }
+}
+
+// Send a confirm or cancel back to skreachd.
+async function termSendConfirm(accept) {
+  if (!termPendingConfirm || !room) { termHideConfirm(); return; }
+  const { cmd_id } = termPendingConfirm;
+  termHideConfirm();
+
+  if (accept) {
+    const confirmId = termGenId();
+    // TODO(F2 wiring): this bare envelope will be wrapped + PGP-signed by the
+    // skreachd gateway before any exec decision. Until F2 is live this send is
+    // a no-op at the server (which will return exec_disabled or denied).
+    try {
+      await publishLane({ lane: 'term', action: 'confirm', cmd_id, id: confirmId });
+      termAppendLine(`[confirm sent · id=${confirmId.slice(0,8)}]`, 'term-line term-system');
+      setTermStatus('confirming…');
+      log(`data [term] confirm sent cmd_id=${cmd_id} confirm_id=${confirmId}`);
+    } catch (e) {
+      termAppendLine(`[confirm send failed: ${e.message}]`, 'term-line term-system');
+      log('term confirm send failed:', e.message);
+    }
+  } else {
+    try {
+      await publishLane({ lane: 'term', action: 'cancel', cmd_id });
+      termAppendLine(`[cancelled]`, 'term-line term-system');
+      setTermStatus('cancelled');
+      log(`data [term] cancel sent cmd_id=${cmd_id}`);
+    } catch (e) {
+      termAppendLine(`[cancel send failed: ${e.message}]`, 'term-line term-system');
+      log('term cancel send failed:', e.message);
+    }
+  }
+}
+
 // ── Pre-flight: secure context check ─────────────────────────────────────────
 function preflight() {
   const host = $('#banner-host');
@@ -1635,11 +2019,12 @@ async function connect() {
     $('#speak-row').classList.remove('hidden');
     startMetadataPolling();
 
-    // D2/D3/D4/D5: reveal panels (collapsed) after connect
+    // D2/D3/D4/D5/F3: reveal panels (collapsed) after connect
     $('#chat-panel').style.display  = 'flex';
     $('#wb-panel').style.display    = 'block';
     $('#watch-panel').style.display = 'flex';
     $('#doc-panel').style.display   = 'flex';
+    $('#term-panel').style.display  = 'flex';   // F3: skreach terminal (collapsed)
 
     await toggleMic(true);
     await toggleCam(true);
@@ -1716,6 +2101,20 @@ function cleanup() {
   const ta = $('#doc-textarea');
   if (ta) { ta.value = ''; ta._docBound = false; }
   updateDocWordCount('');
+
+  // F3: reset skreach terminal
+  $('#term-panel').style.display = 'none';
+  $('#term-panel').classList.add('collapsed');
+  termOpen = false;
+  $('#term-toggle-btn').classList.remove('on'); $('#term-toggle-btn').classList.add('off');
+  $('#term-chevron').textContent = '▼';
+  termJobs.clear();
+  termHideConfirm();
+  setTermStatus('idle');
+  const termOut = $('#term-output');
+  if (termOut) termOut.innerHTML = '';
+  const termInp = $('#term-input');
+  if (termInp) termInp.value = '';
 }
 
 async function speakAsLumina() {
@@ -1830,6 +2229,19 @@ $('#doc-clear-btn').addEventListener('click', () => {
   ydoc.transact(() => { ytext.delete(0, ytext.length); }, 'local');
   log('doc: cleared by', room?.localParticipant?.identity || 'local');
 });
+
+// F3: skreach terminal lane
+$('#term-toggle-btn').addEventListener('click', () => {
+  setTermOpen(!termOpen);
+  if (termOpen && room) $('#term-panel').style.display = 'flex';
+});
+$('#term-panel-header').addEventListener('click', () => setTermOpen(!termOpen));
+$('#term-run-btn').addEventListener('click', termRunCommand);
+$('#term-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter') { e.preventDefault(); termRunCommand(); }
+});
+$('#term-confirm-yes-btn').addEventListener('click', () => termSendConfirm(true));
+$('#term-confirm-no-btn').addEventListener('click',  () => termSendConfirm(false));
 
 // ── Recording controls ────────────────────────────────────────────────────────
 let recordingActive = false;
