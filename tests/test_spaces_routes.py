@@ -79,3 +79,16 @@ def test_non_host_cannot_end(client):
         "host_fqid": "lumina@chef.skworld", "title": "T", "slug": "s"}).json()["space_id"]
     assert client.post(f"/spaces/{sid}/end",
                        json={"requester": "rando@x.y"}).status_code == 403
+
+
+def test_join_host_mints_host_token_for_host_only(client):
+    sid = client.post("/spaces/create", json={
+        "host_fqid": "lumina@chef.skworld", "title": "T", "slug": "s"}).json()["space_id"]
+    # host gets a host token (roomAdmin + publish)
+    r = client.post(f"/spaces/{sid}/join-host", json={"requester": "lumina@chef.skworld"})
+    assert r.status_code == 200
+    assert r.json()["role"] == "host"
+    assert _video(r.json()["token"])["roomAdmin"] is True
+    # non-host is rejected
+    bad = client.post(f"/spaces/{sid}/join-host", json={"requester": "rando@x.y"})
+    assert bad.status_code == 403

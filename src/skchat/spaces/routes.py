@@ -104,6 +104,18 @@ def register_spaces_routes(app: FastAPI, *, registry: SpaceRegistry | None = Non
         name = body.get("name") or identity.split("@")[0]
         return JSONResponse(_token_response(identity, name, Role.LISTENER, space))
 
+    @app.post("/spaces/{space_id}/join-host")
+    async def join_space_host(space_id: str, request: Request) -> JSONResponse:
+        """Mint a HOST token (publish + roomAdmin) — only for the Space's host."""
+        space = reg.get(space_id)
+        if space is None or space.status.value == "ended":
+            raise HTTPException(404, "space not found or ended")
+        body = await request.json()
+        requester = (body.get("requester") or "").strip()
+        _require_host(space, requester)
+        return JSONResponse(_token_response(requester, requester.split("@")[0],
+                                            Role.HOST, space))
+
     @app.post("/spaces/{space_id}/join-guest")
     async def join_space_guest(space_id: str, request: Request) -> JSONResponse:
         """Guest-link listener: verify a guest.py invite, then mint a LISTENER token."""
