@@ -240,3 +240,57 @@ skcomms channel-adapter pattern should absorb.
 - **D/E**: reach + hardening.
 
 Each batch gets its own spec → plan before build (superpowers flow).
+
+## 7. Cross-cutting requirements & completeness (prioritized)
+
+These thread through the batches rather than forming one batch. Priority:
+**P0** = required before this scales (do not ship guests/multi-surface without it);
+**P1** = required near-term; **P2** = standard; **P3** = future.
+
+### P0 — required before scale
+- **Unified agent memory across every surface.** One Lumina/Opus identity → one
+  memory + context whether reached by voice, text chat, a bridged platform, or
+  Hermes. Tonight's DR-Chiro drift (voice-Lumina vs Hermes-Lumina, separate stores)
+  is the failure mode to design out: a single skmem-pg of record, agent-scoped,
+  written by ALL surfaces, with recency-aware retrieval (shipped 2026-06-12). Lands
+  in: skcomms hub (Batch C) + the voice_engine MemoryBridge (Batch A).
+- **Identity, roles & access control.** Formalize member/admin/**guest** identity
+  (capauth/FQID + a guest token), per-room permissions (join/invite/share/record/
+  whiteboard-edit), and what an agent may do per room (the Chef-only/sacred gate is
+  the seed). Required the moment a Funnel link lets outsiders in. Lands in: skcomms
+  identity + the pairing gate (Batch B/D).
+
+### P1 — required near-term
+- **E2EE / privacy posture.** Define what's encrypted at rest (encrypted_store) and
+  in transit (LiveKit insertable-streams E2EE for media; signed+encrypted envelopes
+  for chat); key custody via capauth + OpenBao. Lands in: skcomms + media (B/C).
+- **Multi-device + history/read-state sync.** One identity on iOS + this box;
+  conversations, read-state, drafts sync (source of truth = skmem-pg / a sync
+  service). Lands in: client + hub (B/D).
+- **Persistence, retention & backup.** Where docs/recordings/history/keys live,
+  retention policy, **Garage** backup + export. Lands in: Batch B (volumes) + ops.
+- **Session recording → auto-notes.** Record a call (opt-in, consent-gated by the
+  access model), agent produces transcript + **summary + action items** into the
+  collab doc. Pairs with collaborative docs. Lands in: Batch D + voice_engine.
+- **Notifications.** Push on message/call/@mention via **sk-alert**; wire to the
+  client. Lands in: Batch D.
+
+### P2 — standard
+- **File sharing / attachments** — mostly built (`send_file`/transfers); surface in
+  the client. **Search** — across messages, docs, transcripts (skmem-pg BM25+vector
+  already powers this). **Scheduling** — book calls/meetings via gog calendar.
+  **Agent availability + capacity** — presence (online/busy) + GPU/STT/LLM/TTS
+  concurrency limits + queueing (the agents share endpoints). **Observability/SLOs**
+  — call-quality metrics, health (call_observability is the seed) → skmon.
+  **Moderation/safety** — for public guest rooms.
+
+### P3 — future
+- **Real-time translation** — agents bridge languages for international guests live.
+- **Agents as visual co-creators** (★ flagged, §2.5 / D9) — read + write whiteboard,
+  screen, and docs in real time.
+
+### Sequencing note
+P0 items are **gating** and should be designed into A/B/C as they're built (not
+bolted on): unified memory rides Batch A's MemoryBridge + Batch C's hub; identity/
+roles rides Batch B's secrets + Batch D's guest join. P1 items get their own
+specs as their host batch comes up.
