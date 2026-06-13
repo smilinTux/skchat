@@ -1,0 +1,204 @@
+# LiveKit SFU v2 Docker Swarm stack — Tailscale-native
+#
+# Part of the shared media plane (B4).  Deploy AFTER the overlay network
+# `cloud-public-prod` exists and the host-level `tailscale serve` rule is in
+# place (see tailscale-serve note below).
+#
+# Deploy:
+#   docker stack deploy \
+#     --env-file /var/data/deploy_livekit/livekit.env \
+#     -c deploy/v2/livekit-stack.yml \
+#     livekit
+#
+# ── tailscale serve (host-level, NOT in this stack) ──────────────────────────
+# LiveKit's WebSocket signalling and WHIP/WHEP endpoints are served over the
+# tailnet via `tailscale serve`.  Add to the host's `tailscale serve` config:
+#
+#   tailscale serve --bg https+insecure://localhost:7880   # WebSocket + HTTP API
+#   # This makes the SFU reachable at:
+#   #   wss://noroc2027.tail204f0c.ts.net          (default tailnet HTTPS, port 443)
+#   #   https://noroc2027.tail204f0c.ts.net         (same host, LiveKit HTTP API)
+#   # and additionally, if you want a stable public port for the WebSocket:
+#   tailscale serve --bg --https 8443 https+insecure://localhost:7880
+#   # → wss://noroc2027.tail204f0c.ts.net:8443  (the URL skchat currently uses)
+#
+# The container binds :7880 (HTTP/WS) and :7881 (TURN/TCP) on the host network
+# so that Tailscale's userspace socket can proxy them.
+# RTC media UDP is on the host network directly (host ports 7882–7900 range).
+# Public UDP access to those ports is NOT required for tailnet-only calls.
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Image:  livekit/livekit-server — pinned to a minor release tag.
+#         Verify the latest stable at https://hub.docker.com/r/livekit/livekit-server
+#         At time of writing: v1.7 series.  Pin to a digest in prod.
+#
+# Networks:
+#   cloud-public-prod — external Traefik overlay (not used here; present for
+#                       opt-in future exposure if a public API endpoint is needed)
+#   livekit-internal  — internal overlay; livekit + redis (if multi-node)
+#
+# Secrets: ALL sensitive values come from /var/data/deploy_livekit/livekit.env
+#          Nothing is hardcoded here.  See deploy/SECRETS.md §Media plane.
+
+version: "3.8"
+
+services:
+
+  # ── livekit-server ────────────────────────────────────────────────────────
+  # The SFU itself.  Single-node for now; add Redis + second replica to scale.
+  # Reachable inside the tailnet at wss://noroc2027.tail204f0c.ts.net:8443
+  # (via tailscale serve → localhost:7880 — see note above).
+  livekit:
+    image: livekit/livekit-server:v1.7
+    # LiveKit reads its full config from a YAML file OR from env vars.
+    # We use env vars for key material (no config file baked into the image)
+    # and a minimal /etc/livekit.yaml for non-secret tuning (bind address, ports,
+    # logging, RTC port range).  The config file is bind-mounted from the host.
+    command: >
+      --config /etc/livekit/livekit.yaml
+    environment:
+      # ── API key / secret (SECRET — from livekit.env / OpenBao) ─────────────
+      # LiveKit picks these up as LIVEKIT_KEYS="<key>: <secret>" format, OR
+      # you can set them in livekit.yaml under `keys:`.  We use env so the secret
+      # never touches the config file on disk.
+      # See: https://docs.livekit.io/home/self-hosting/local/#set-your-api-key
+      LIVEKIT_KEYS: "${LIVEKIT_KEYS}"           # format: "apiKey: apiSecret"
+      # ── Redis (optional — enables multi-node room distribution) ─────────────
+      # Leave blank for single-node; set to redis://livekit-redis:6379/0 to enable.
+      LIVEKIT_REDIS_ADDRESS: "${LIVEKIT_REDIS_ADDRESS:-}"
+    # The config file provides non-secret tuning (bind port, RTC port range, log
+    # level, TURN settings if LiveKit's built-in TURN is desired — but we use
+    # coturn as the standalone TURN relay, so LiveKit TURN is disabled here).
+    # Place the file at /var/data/deploy_livekit/livekit.yaml on the host.
+    configs:
+      - source: livekit_config
+        target: /etc/livekit/livekit.yaml
+        mode: 0440
+    # Host networking gives LiveKit direct access to the host's UDP stack for
+    # RTC media — required for low-latency peer media.  Tailscale serve proxies
+    # the TCP/WS ports; UDP media ports are exposed directly on the host.
+    # NOTE: host networking means Swarm port mapping is bypassed; the ports
+    # listed below are informational only.
+    network_mode: host
+    # No overlay network needed when using host networking — the tailnet provides
+    # the encrypted mesh; UDP ports are local to the host.
+    ports:
+      # Informational only (host networking — not actually mapped by Swarm).
+      - target: 7880
+        protocol: tcp
+        mode: host         # HTTP/WS API — Tailscale serve proxies this
+      - target: 7881
+        protocol: tcp
+        mode: host         # TURN/TCP (built-in, disabled; kept for future)
+      # RTC media UDP range.  Adjust in livekit.yaml under rtc.port_range_start/end.
+      - target: 7882
+        protocol: udp
+        mode: host
+      # ... through 7900 — configured via livekit.yaml, not listed individually.
+    volumes:
+      # Recordings (if enabled in livekit.yaml).  Keep on same node as the SFU.
+      - livekit-recordings:/var/livekit/recordings
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          # Pin to the node that has the `tailscale serve` rule configured.
+          # Label this host: docker node update --label-add livekit=true <node>
+          - node.labels.livekit == true
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 5
+        window: 120s
+      update_config:
+        parallelism: 1
+        delay: 10s
+        failure_action: rollback
+        monitor: 30s
+        max_failure_ratio: 0
+        order: stop-first      # stop-first: only one SFU at a time (host networking)
+      rollback_config:
+        parallelism: 1
+        delay: 0s
+        failure_action: pause
+        monitor: 30s
+        max_failure_ratio: 0
+        order: stop-first
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 256M
+      labels:
+        # LiveKit is tailnet-only; no Traefik exposure by default.
+        traefik.enable: "false"
+    healthcheck:
+      # LiveKit exposes a /healthz endpoint on the HTTP port.
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:7880/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  # ── livekit-redis ─────────────────────────────────────────────────────────
+  # Optional Redis for multi-node LiveKit room distribution.
+  # Single-node deployments can disable this service; set LIVEKIT_REDIS_ADDRESS
+  # to empty string and scale this to 0 replicas.
+  # If enabled, update livekit.yaml with:
+  #   redis:
+  #     address: livekit-redis:6379
+  livekit-redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    networks:
+      - livekit-internal
+    deploy:
+      mode: replicated
+      replicas: 0              # set to 1 when scaling to multi-node LiveKit
+      placement:
+        constraints:
+          - node.role == worker
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 5
+        window: 60s
+      resources:
+        limits:
+          memory: 128M
+        reservations:
+          memory: 32M
+      labels:
+        traefik.enable: "false"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+# ── networks ─────────────────────────────────────────────────────────────────
+# livekit uses host networking for the SFU container itself; this overlay is
+# used by livekit-redis only.
+networks:
+  livekit-internal:
+    driver: overlay
+    internal: true
+    attachable: false
+  cloud-public-prod:
+    external: true             # shared Traefik overlay — must exist before deploy
+
+# ── configs ──────────────────────────────────────────────────────────────────
+# The config file is a Swarm config object so it can be updated without
+# rebuilding the image.  Create with:
+#   docker config create livekit_config /var/data/deploy_livekit/livekit.yaml
+# On update: create livekit_config_v2, update this file to reference it, redeploy.
+configs:
+  livekit_config:
+    external: true
+
+# ── volumes ───────────────────────────────────────────────────────────────────
+volumes:
+  livekit-recordings:
+    driver: local

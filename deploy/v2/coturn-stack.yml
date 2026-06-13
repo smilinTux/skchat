@@ -1,0 +1,179 @@
+# coturn TURN relay v2 Docker Swarm stack — Tailscale-native
+#
+# Part of the shared media plane (B4).  coturn is tier-3 of the ICE ladder:
+#   Tier 1: Tailscale (both peers on tailnet — no relay)
+#   Tier 2: LAN / same-subnet
+#   Tier 3: coturn TURN relay  ← this stack
+#   Tier 4: skmesh / Netbird   (future)
+#
+# coturn is only exercised when a peer is off the tailnet (e.g. a guest joining
+# via a Funnel/Cloudflare public link, a mobile client on a carrier NAT).
+# All tailnet peers use tier-1/2 and never touch coturn.
+#
+# Deploy:
+#   docker stack deploy \
+#     --env-file /var/data/deploy_coturn/coturn.env \
+#     -c deploy/v2/coturn-stack.yml \
+#     coturn
+#
+# ── Host firewall requirements ────────────────────────────────────────────────
+# coturn needs host-level UDP/TCP reachability for off-tailnet guests.
+# Open on the deployment host (and in any upstream firewall/CF rules):
+#
+#   Port 3478  — UDP + TCP  — STUN/TURN control plane
+#   Port 5349  — UDP + TCP  — TURN over TLS (optional; see SKCHAT_TURN_TLS note)
+#   Ports 49152–65535 — UDP — media relay range (TURN relay allocation pool)
+#
+# The relay port range MUST be advertised to coturn via COTURN_MIN_PORT /
+# COTURN_MAX_PORT env vars (see media-plane.env.example).  Narrow the range
+# for resource-constrained hosts (e.g. 49152–50000 = 848 concurrent relays).
+#
+# Tailscale peers do NOT reach coturn through the tailnet — they connect via
+# the host's public IP (or Cloudflare-proxied domain if fronted).
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Image:  coturn/coturn — pinned to a minor release tag.
+#         At time of writing: 4.6 series.  Pin to a digest in prod.
+#         See https://hub.docker.com/r/coturn/coturn
+#
+# Auth mode: use-auth-secret (REST API).
+#   - skchat derives short-lived HMAC-SHA1 credentials from SKCHAT_TURN_SECRET
+#     (see src/skchat/connectivity.py::_turn_credentials).
+#   - The static secret is NEVER sent to the browser.
+#   - Rotate: update coturn.env + OpenBao + redeploy (skchat redeploy simultaneous).
+#
+# Networks:
+#   coturn uses host networking so that it can allocate relay ports from the
+#   full host UDP range.  No overlay network is needed or used.
+#
+# Secrets: ALL sensitive values come from /var/data/deploy_coturn/coturn.env
+#          Nothing is hardcoded here.  See deploy/SECRETS.md §Media plane.
+
+version: "3.8"
+
+services:
+
+  # ── coturn ────────────────────────────────────────────────────────────────
+  # Standalone TURN/STUN relay.  Single-node; one instance is plenty for a
+  # sovereign deployment where TURN is only used by off-tailnet guests.
+  coturn:
+    image: coturn/coturn:4.6
+    # coturn is configured entirely via command-line flags or a turnserver.conf.
+    # We pass flags here so that env-var substitution works from the .env file
+    # without needing a separate config file templating step.
+    command: >
+      -n
+      --log-file=stdout
+      --realm=${SKCHAT_TURN_REALM}
+      --use-auth-secret
+      --static-auth-secret=${SKCHAT_TURN_SECRET}
+      --listening-port=3478
+      --min-port=${COTURN_MIN_PORT:-49152}
+      --max-port=${COTURN_MAX_PORT:-65535}
+      --no-multicast-peers
+      --denied-peer-ip=0.0.0.0-0.255.255.255
+      --denied-peer-ip=10.0.0.0-10.255.255.255
+      --denied-peer-ip=100.64.0.0-100.127.255.255
+      --denied-peer-ip=127.0.0.0-127.255.255.255
+      --denied-peer-ip=169.254.0.0-169.254.255.255
+      --denied-peer-ip=172.16.0.0-172.31.255.255
+      --denied-peer-ip=192.168.0.0-192.168.255.255
+      --denied-peer-ip=::1
+      --denied-peer-ip=fd00::/8
+      --cipher-list="HIGH"
+      --no-tlsv1
+      --no-tlsv1_1
+      --fingerprint
+      --stale-nonce=0
+    # NOTE on denied-peer-ip: blocking RFC-1918 + loopback + link-local + Tailscale
+    # CGNAT (100.64/10) prevents SSRF-style relay abuse.  If the deployment has
+    # legitimate LAN peers that need TURN (unusual — LAN → tier-2, no relay), remove
+    # the 192.168/172.16/10 rules.
+    #
+    # NOTE on TLS (port 5349): to enable TURN/TLS (TURNS:// URIs), add:
+    #   --tls-listening-port=5349
+    #   --cert=/etc/coturn/tls/fullchain.pem
+    #   --pkey=/etc/coturn/tls/privkey.pem
+    # and bind-mount a cert from a Tailscale ACME / Certbot-managed path.
+    # For tailnet-first deployments, plain TURN (:3478) is sufficient because
+    # the tailnet itself is encrypted (WireGuard).
+    environment:
+      # These are already in the command line above; also exported as env for any
+      # tooling or health-check scripts that read them.
+      SKCHAT_TURN_SECRET: "${SKCHAT_TURN_SECRET}"
+      SKCHAT_TURN_REALM: "${SKCHAT_TURN_REALM}"
+      COTURN_MIN_PORT: "${COTURN_MIN_PORT:-49152}"
+      COTURN_MAX_PORT: "${COTURN_MAX_PORT:-65535}"
+    # Host networking: coturn must bind the relay port range on the host directly.
+    # Swarm port mapping cannot proxy a 16K-port UDP range efficiently.
+    network_mode: host
+    # Informational port listing (not mapped by Swarm under host networking).
+    # Firewall rules must be applied at the host/cloud level.
+    ports:
+      - target: 3478
+        protocol: udp
+        mode: host         # STUN/TURN control (UDP)
+      - target: 3478
+        protocol: tcp
+        mode: host         # STUN/TURN control (TCP fallback)
+      # Relay allocation range: documented here; actual binding is via
+      # --min-port/--max-port flags above.  Open this range in host firewall.
+    volumes:
+      # Optional: bind-mount TLS certs for TURNS (port 5349).
+      # Leave empty if using plain TURN only.
+      - coturn-data:/var/lib/coturn
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          # Pin to the node with the firewall rules open for the relay range.
+          # Label: docker node update --label-add coturn=true <node>
+          - node.labels.coturn == true
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 5
+        window: 120s
+      update_config:
+        parallelism: 1
+        delay: 10s
+        failure_action: rollback
+        monitor: 30s
+        max_failure_ratio: 0
+        order: stop-first      # stop-first: only one coturn on the host at a time
+      rollback_config:
+        parallelism: 1
+        delay: 0s
+        failure_action: pause
+        monitor: 30s
+        max_failure_ratio: 0
+        order: stop-first
+      resources:
+        limits:
+          memory: 256M         # each relay port uses ~8KB; 1K concurrent = ~8MB
+        reservations:
+          memory: 64M
+      labels:
+        traefik.enable: "false"   # TURN is UDP; Traefik is not in the path
+    healthcheck:
+      # coturn exposes a trivial STUN binding check.  Use turnutils_stunclient if
+      # available; otherwise a TCP connect to :3478 confirms the process is up.
+      test: ["CMD-SHELL", "nc -z -w3 127.0.0.1 3478 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+# ── networks ─────────────────────────────────────────────────────────────────
+# coturn uses host networking.  No overlay is defined or needed for this stack.
+# cloud-public-prod is referenced only to satisfy Docker Swarm's requirement that
+# all networks in the compose file exist — it is not attached to coturn.
+networks:
+  cloud-public-prod:
+    external: true
+
+# ── volumes ───────────────────────────────────────────────────────────────────
+volumes:
+  coturn-data:
+    driver: local              # TLS certs or coturn state (minimal; mostly stateless)

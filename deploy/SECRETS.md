@@ -132,3 +132,90 @@ inject-at-deploy approach is acceptable.
 - Unrotated secrets after a container image leak or host compromise
 
 For the full rotation + incident response runbook see `security/runbooks/secret-rotation.md`.
+
+---
+
+## Media plane (LiveKit + coturn)
+
+*Added Batch B4.  These stacks are deployed independently from skchat but share two
+secrets with it (`SKCHAT_LIVEKIT_API_SECRET`, `SKCHAT_TURN_SECRET`) — rotate them
+together.*
+
+### Host env file locations
+
+| Stack | File | Permissions |
+|---|---|---|
+| LiveKit | `/var/data/deploy_livekit/livekit.env` | `chmod 600` |
+| coturn | `/var/data/deploy_coturn/coturn.env` | `chmod 600` |
+
+Sanitized template (variable names, no values): `deploy/v2/media-plane.env.example`.
+
+### Secret inventory
+
+| Variable | Stack | Purpose | Tier |
+|---|---|---|---|
+| `LIVEKIT_KEYS` | livekit | API key + secret pair (`"key: secret"`) consumed by `livekit/livekit-server` | P0 — required |
+| `SKCHAT_LIVEKIT_API_KEY` | skchat | Same API key, split out for skchat JWT minting | P0 — required (in skchat.env) |
+| `SKCHAT_LIVEKIT_API_SECRET` | skchat | Same API secret, split out for skchat JWT minting | P0 — required (in skchat.env) |
+| `SKCHAT_TURN_SECRET` | coturn + skchat | `use-auth-secret` static secret; shared between coturn and skchat for HMAC-SHA1 REST credential derivation | P0 — required in BOTH env files |
+
+### What is NOT a secret (safe in stack YAML or public config)
+
+- `SKCHAT_TURN_REALM` — the TURN server hostname/domain (no credentials)
+- `COTURN_MIN_PORT` / `COTURN_MAX_PORT` — relay port range bounds
+- `LIVEKIT_REDIS_ADDRESS` — Redis address for multi-node (no credentials; add password if Redis is auth-enabled)
+- LiveKit `livekit.yaml` config (non-secret tuning: bind port, RTC range, log level, region, TURN disabled)
+
+### OpenBao path mapping
+
+```
+secret/data/media/<env>/<key>
+```
+
+| Secret | OpenBao path |
+|---|---|
+| `LIVEKIT_KEYS` | `secret/data/media/prod/livekit_keys` |
+| `SKCHAT_TURN_SECRET` | `secret/data/media/prod/turn_secret` |
+
+*`SKCHAT_LIVEKIT_API_KEY` and `SKCHAT_LIVEKIT_API_SECRET` are the same values as
+`LIVEKIT_KEYS` split for the skchat consumer — store once under the media path,
+reference from `secret/data/skchat/prod/livekit_api_key` (or deduplicate via an
+OpenBao alias).*
+
+### Shared-secret rule
+
+`SKCHAT_TURN_SECRET` **must be identical** in `coturn.env` and `skchat.env`.
+Rotation steps:
+
+1. `openssl rand -hex 32` → new value
+2. Write to OpenBao: `bao kv put secret/media/prod/turn_secret value=<new>`
+3. Update both host `.env` files (`coturn.env` and `skchat.env`) — or wait for the
+   OpenBao agent sidecar to refresh them
+4. Redeploy both stacks simultaneously:
+   `docker stack deploy --env-file /var/data/deploy_coturn/coturn.env -c deploy/v2/coturn-stack.yml coturn`
+   `docker service update --force skchat_webui skchat_daemon`
+5. Verify: TURN credential test from an off-tailnet client
+
+### LiveKit API key rotation
+
+1. Generate a new keypair (`livekit-cli generate-keys` or `openssl rand -hex 32`)
+2. Update `LIVEKIT_KEYS` in `livekit.env` and `SKCHAT_LIVEKIT_API_KEY`/`_SECRET` in `skchat.env`
+3. Write to OpenBao: `bao kv put secret/media/prod/livekit_keys value="<key>: <secret>"`
+4. Redeploy LiveKit stack + rolling skchat update:
+   `docker stack deploy --env-file /var/data/deploy_livekit/livekit.env -c deploy/v2/livekit-stack.yml livekit`
+   `docker service update --force skchat_webui`
+5. Verify: mint a test token from the webui `/livekit/token` endpoint
+
+### Assumptions & version pins
+
+- **LiveKit:** `livekit/livekit-server:v1.7` (stable at time of writing; pin to a digest in prod).
+  Single-node (Redis disabled, `replicas: 0` on `livekit-redis`).  Scale to multi-node by setting
+  `LIVEKIT_REDIS_ADDRESS` + `livekit-redis` replicas to 1.
+- **coturn:** `coturn/coturn:4.6`.  `use-auth-secret` mode only (no per-user accounts).
+  TLS (`:5349`) disabled by default; enable by adding cert mount + flags to `coturn-stack.yml`.
+- **Host networking:** both stacks use `network_mode: host` so that Tailscale serve can proxy
+  LiveKit's WS port and coturn can bind the full relay UDP range.  A Swarm worker node label
+  (`livekit=true`, `coturn=true`) pins each service to the correct node.
+- **Tailscale serve** must be configured on the host before deploying LiveKit (see the note block
+  at the top of `livekit-stack.yml`).  coturn is reachable by its host public IP / domain only
+  (off-tailnet guests); tailnet peers never hit coturn.
