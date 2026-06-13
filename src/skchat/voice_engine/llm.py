@@ -204,10 +204,6 @@ class LLMClient:
         non-error, return it VERBATIM (no summarize round).
         Otherwise loop up to 4 rounds total.
         """
-        # Store tools on self so _http_chat_raw can include them without changing
-        # the injected-fake interface (fakes only accept tool_choice keyword).
-        self._active_tools = tools
-
         # Build working message list (passed by value so we don't mutate caller's)
         msgs = list(messages)
         text = ""
@@ -221,6 +217,10 @@ class LLMClient:
                     else {"type": "function", "function": {"name": force_tool}}
                 )
 
+            # _active_tools is scoped to the single call so _http_chat_raw can
+            # include the tool schemas without changing the injected-fake
+            # interface; cleared in finally so it never leaks past the call.
+            self._active_tools = tools
             try:
                 result = await self._chat_raw(
                     self.cfg.llm_url,
@@ -231,6 +231,8 @@ class LLMClient:
             except Exception as exc:
                 log.error("LLM (tool round %d) failed: %s", tool_round, exc)
                 break
+            finally:
+                self._active_tools = None
 
             text = result.get("content") or ""
             tool_calls = result.get("tool_calls") or []

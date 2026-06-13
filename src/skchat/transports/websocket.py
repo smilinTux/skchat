@@ -25,14 +25,9 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
 log = logging.getLogger("skchat.transports.websocket")
 
-# Per-connection histories and buffered group context (module-level so they
-# survive reconnects to the same process, mirroring skvoice behaviour).
-_histories: dict[str, list[dict]] = {}
-_pending_group_context: dict[str, list[dict]] = {}
-
 
 # ---------------------------------------------------------------------------
-# Group-chat helpers (ported verbatim from skvoice/service.py)
+# Group-chat helpers (ported from skvoice/service.py)
 # ---------------------------------------------------------------------------
 
 
@@ -49,19 +44,6 @@ def _build_group_suffix(agent_name: str, peers: list[str]) -> str:
         "Acknowledge them naturally when relevant, but speak as yourself — do "
         "not impersonate them, do not narrate their lines."
     )
-
-
-def _drain_group_context(conn_id: str) -> str:
-    buffered = _pending_group_context.pop(conn_id, None)
-    if not buffered:
-        return ""
-    lines = []
-    for entry in buffered:
-        sender = entry.get("from", "peer")
-        text = (entry.get("text") or "").strip()
-        if text:
-            lines.append(f"[from {sender}]: {text}")
-    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -255,12 +237,9 @@ async def _process_speech(
         except Exception as exc:
             log.warning("STT failed: %s", exc)
     else:
-        # Direct skchat STT path (skvoice compat)
-        try:
-            from skchat.voice import transcribe  # noqa: PLC0415
-            transcript = await transcribe(wav_data)
-        except Exception:
-            pass
+        # No STT configured on the engine — the binary/voice path can't run.
+        # (Text path is unaffected.) Surface it instead of failing silently.
+        log.warning("no STT client on engine — dropping voice utterance")
 
     if not transcript:
         await ws.send_json({"type": "status", "state": "listening"})
@@ -339,20 +318,15 @@ async def _process_text(
 
 async def _synthesize(engine, text: str, agent_name: str) -> bytes:
     tts_client = getattr(engine, "tts", None)
-    if tts_client is not None:
-        try:
-            return await tts_client.synthesize(text)
-        except Exception as exc:
-            log.warning("TTS (engine) failed: %s", exc)
-            return b""
-    # Fallback to skvoice synthesize (skvoice compat shim)
+    if tts_client is None:
+        log.warning("no TTS client on engine — no audio for this turn")
+        return b""
+    cfg = getattr(engine, "cfg", None)
+    voice = getattr(cfg, "tts_voice", agent_name) if cfg else agent_name
     try:
-        from skchat.voice import synthesize  # noqa: PLC0415
-        cfg = getattr(engine, "cfg", None)
-        voice = getattr(cfg, "tts_voice", agent_name) if cfg else agent_name
-        return await synthesize(text, voice=voice)
+        return await tts_client.synthesize(text, voice=voice)
     except Exception as exc:
-        log.warning("TTS fallback failed: %s", exc)
+        log.warning("TTS failed: %s", exc)
         return b""
 
 
