@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>SK Space</title>
+<script src="https://cdn.jsdelivr.net/npm/livekit-client/dist/livekit-client.umd.min.js"></script>
+<style>
+  :root {
+    --bg:#0b0d10; --surface:#13161b; --line:#222831; --text:#e6e9ee;
+    --muted:#8b94a3; --accent:#2dd4bf; --accent-2:#14b8a6; --self:#3b82f6;
+    --radius:14px; --gap:14px;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text);
+    font-family:Inter,system-ui,sans-serif; }
+  header { padding:18px 20px; border-bottom:1px solid var(--line);
+    display:flex; align-items:center; gap:12px; }
+  header h1 { font-size:17px; margin:0; font-weight:600; }
+  #rec { display:none; color:#ef4444; font-size:12px; font-weight:600; }
+  main { padding:20px; max-width:920px; margin:0 auto; }
+  .speakers { display:flex; flex-wrap:wrap; gap:var(--gap); }
+  .speaker { display:flex; flex-direction:column; align-items:center; gap:8px;
+    width:96px; }
+  .ring { width:72px; height:72px; border-radius:50%; background:var(--surface);
+    border:2px solid var(--line); display:grid; place-items:center;
+    font-size:22px; transition:box-shadow .18s, border-color .18s; }
+  .ring.speaking { border-color:var(--accent);
+    box-shadow:0 0 0 4px rgba(45,212,191,.18); animation:pulse 1s infinite; }
+  @keyframes pulse { 50% { box-shadow:0 0 0 7px rgba(45,212,191,.10); } }
+  .name { font-size:12px; color:var(--muted); }
+  .bar { display:flex; gap:10px; align-items:center; margin-top:24px; }
+  button { background:var(--accent); color:#04201c; border:0; border-radius:11px;
+    padding:10px 16px; font-weight:600; cursor:pointer; }
+  button.ghost { background:transparent; color:var(--text);
+    border:1px solid var(--line); }
+  .count { color:var(--muted); font-size:13px; margin-left:auto; }
+  .step { color:var(--muted); font-size:13px; min-height:18px; margin-top:12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title">SK Space</h1>
+  <span id="rec">● REC</span>
+</header>
+<main>
+  <div class="speakers" id="speakers"></div>
+  <div class="bar">
+    <button id="join">Join</button>
+    <button class="ghost" id="hand" disabled>✋ Raise hand</button>
+    <button class="ghost" id="end" style="display:none">End</button>
+    <span class="count" id="count">—</span>
+  </div>
+  <div class="step" id="step"></div>
+</main>
+<script>
+  const LK = window.LivekitClient;
+  const qs = new URLSearchParams(location.search);
+  const spaceId = location.pathname.split("/").pop();
+  const step = (t) => document.getElementById("step").textContent = t;
+  let room;
+
+  async function getToken() {
+    // identity provided via ?identity= (member) or minted by the caller; here we
+    // join as a listener using the /spaces/{id}/join path with a chosen name.
+    const identity = qs.get("identity") || ("listener-" + Math.random().toString(36).slice(2,8));
+    const res = await fetch(`/spaces/${spaceId}/join`, {
+      method:"POST", headers:{"content-type":"application/json"},
+      body: JSON.stringify({ identity, name: qs.get("name") || identity })
+    });
+    if (!res.ok) throw new Error("join failed: " + res.status);
+    return res.json();
+  }
+
+  function renderSpeakers() {
+    const el = document.getElementById("speakers");
+    el.innerHTML = "";
+    const parts = [room.localParticipant, ...room.remoteParticipants.values()];
+    let listeners = 0;
+    for (const p of parts) {
+      const canSpeak = p.permissions?.canPublish;
+      if (!canSpeak) { listeners++; continue; }
+      const wrap = document.createElement("div"); wrap.className = "speaker";
+      const ring = document.createElement("div");
+      ring.className = "ring" + (p.isSpeaking ? " speaking" : "");
+      ring.id = "ring-" + p.identity; ring.textContent = "🎙️";
+      const name = document.createElement("div"); name.className = "name";
+      name.textContent = p.name || p.identity;
+      wrap.append(ring, name); el.append(wrap);
+    }
+    document.getElementById("count").textContent = `${listeners} listening`;
+  }
+
+  document.getElementById("join").onclick = async () => {
+    try {
+      step("Connecting…");
+      const { url, token, title } = await getToken();
+      document.getElementById("title").textContent = title || "SK Space";
+      room = new LK.Room({ adaptiveStream:true });
+      room.on(LK.RoomEvent.ActiveSpeakersChanged, renderSpeakers);
+      room.on(LK.RoomEvent.ParticipantConnected, renderSpeakers);
+      room.on(LK.RoomEvent.ParticipantDisconnected, renderSpeakers);
+      room.on(LK.RoomEvent.TrackSubscribed, (track) => {
+        if (track.kind === "audio") track.attach();  // play speaker audio
+      });
+      await room.connect(url, token);
+      renderSpeakers();
+      document.getElementById("join").style.display = "none";
+      document.getElementById("hand").disabled = false;
+      step("Connected — listening.");
+    } catch (e) { step("Error: " + e.message); }
+  };
+
+  document.getElementById("end").onclick = async () => {
+    await fetch(`/spaces/${spaceId}/end`, { method:"POST" });
+    if (room) room.disconnect();
+    step("Space ended.");
+  };
+</script>
+</body>
+</html>

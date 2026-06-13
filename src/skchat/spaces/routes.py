@@ -9,9 +9,10 @@ from __future__ import annotations
 import logging
 import os
 import time
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
 from skchat.spaces.registry import SpaceRegistry
 from skchat.spaces.roles import Role
@@ -105,3 +106,10 @@ def register_spaces_routes(app: FastAPI, *, registry: SpaceRegistry | None = Non
             raise HTTPException(404, "space not found")
         reg.end(space_id)
         return JSONResponse({"ok": True, "space_id": space_id})
+
+    @app.get("/space/{space_id}", response_class=HTMLResponse)
+    async def space_page(space_id: str) -> HTMLResponse:  # noqa: ARG001
+        static = Path(__file__).resolve().parent.parent / "static" / "space.html"
+        if static.exists():
+            return FileResponse(static, media_type="text/html")
+        return HTMLResponse("space.html missing", status_code=500)
