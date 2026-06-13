@@ -22,3 +22,7 @@ def test_host_controls_present():
     # host control endpoints wired in the page
     assert "/invite" in html
     assert "/kick" in html
+
+
+def test_metadata_changed_drives_render():
+    assert "ParticipantMetadataChanged" in _html()

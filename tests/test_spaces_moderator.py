@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 import pytest
@@ -84,3 +85,25 @@ async def test_kick_removes_participant(mod, fake):
 async def test_mute_mutes_track(mod, fake):
     await mod.mute("space-x", "loud", "TR_abc")
     assert fake.muted == [("loud", "TR_abc", True)]
+
+
+@pytest.mark.asyncio
+async def test_concurrent_raise_and_invite_converge(mod, fake, monkeypatch):
+    # force a scheduler yield between read and write so an unlocked impl would
+    # interleave and lose a flag; the per-identity lock must serialize them.
+    orig_get = fake.get_participant
+
+    async def slow_get(req):
+        await asyncio.sleep(0)
+        return await orig_get(req)
+
+    monkeypatch.setattr(fake, "get_participant", slow_get)
+    fake.set_participant("alice", "")  # starts off-stage
+
+    await asyncio.gather(
+        mod.stage_action("space-x", "alice", "raise_hand"),
+        mod.stage_action("space-x", "alice", "invite"),
+    )
+    final = json.loads(fake.updates[-1].metadata)
+    assert final["hand_raised"] is True
+    assert final["invited_to_stage"] is True   # neither write clobbered the other

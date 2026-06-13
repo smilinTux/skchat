@@ -7,6 +7,7 @@ invited them AND they raised their hand. `apply_action` is pure; `Moderator`
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass
 
@@ -81,6 +82,7 @@ class Moderator:
         self._key = api_key
         self._secret = api_secret
         self._svc = _room_service
+        self._locks: dict[tuple[str, str], "asyncio.Lock"] = {}
 
     def _service(self):
         if self._svc is not None:
@@ -91,20 +93,24 @@ class Moderator:
         return self._svc
 
     async def stage_action(self, room: str, identity: str, action: str) -> bool:
-        """Read current metadata, apply the consent action, push the new
-        metadata + can_publish permission. Returns the resulting can_publish."""
+        """Read current metadata, apply the consent action, push the new metadata
+        + can_publish permission. Serialized per (room, identity) so concurrent
+        raise_hand + invite cannot lose an update."""
         from livekit import api
-        svc = self._service()
-        current = await svc.get_participant(
-            api.RoomParticipantIdentity(room=room, identity=identity))
-        state = parse_meta(getattr(current, "metadata", "") or "")
-        new_state, can_publish = apply_action(state, action)
-        await svc.update_participant(api.UpdateParticipantRequest(
-            room=room, identity=identity, metadata=dump_meta(new_state),
-            permission=api.ParticipantPermission(
-                can_publish=can_publish, can_subscribe=True, can_publish_data=True),
-        ))
-        return can_publish
+        lock = self._locks.setdefault((room, identity), asyncio.Lock())
+        async with lock:
+            svc = self._service()
+            current = await svc.get_participant(
+                api.RoomParticipantIdentity(room=room, identity=identity))
+            state = parse_meta(getattr(current, "metadata", "") or "")
+            new_state, can_publish = apply_action(state, action)
+            await svc.update_participant(api.UpdateParticipantRequest(
+                room=room, identity=identity, metadata=dump_meta(new_state),
+                permission=api.ParticipantPermission(
+                    can_publish=can_publish, can_subscribe=True,
+                    can_publish_data=True),
+            ))
+            return can_publish
 
     async def kick(self, room: str, identity: str) -> None:
         from livekit import api

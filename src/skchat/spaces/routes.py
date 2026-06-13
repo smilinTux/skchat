@@ -58,7 +58,7 @@ def register_spaces_routes(app: FastAPI, *, registry: SpaceRegistry | None = Non
         return _rec_holder["rec"]
 
     def _require_host(space, requester: str) -> None:
-        if requester != space.host_fqid:
+        if not space.host_fqid.strip() or requester != space.host_fqid:
             raise HTTPException(403, "host-only action")
 
     def _token_response(identity: str, name: str, role: Role, space: Space) -> dict:
