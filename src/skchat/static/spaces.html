@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>SK Spaces — Live</title>
+<style>
+  :root { --bg:#0b0d10; --surface:#13161b; --line:#222831; --text:#e6e9ee;
+    --muted:#8b94a3; --accent:#2dd4bf; --radius:14px; }
+  body { margin:0; background:var(--bg); color:var(--text);
+    font-family:Inter,system-ui,sans-serif; }
+  header { padding:18px 20px; border-bottom:1px solid var(--line);
+    font-weight:600; font-size:17px; }
+  main { padding:20px; max-width:720px; margin:0 auto;
+    display:flex; flex-direction:column; gap:14px; }
+  .card { background:var(--surface); border:1px solid var(--line);
+    border-radius:var(--radius); padding:16px 18px; display:flex;
+    align-items:center; gap:14px; }
+  .card .meta { flex:1; }
+  .card h3 { margin:0 0 4px; font-size:15px; }
+  .card .sub { color:var(--muted); font-size:13px; }
+  .live { color:var(--accent); font-size:12px; font-weight:600; }
+  .rec { color:#ef4444; font-size:12px; font-weight:600; margin-left:8px; }
+  a.join { background:var(--accent); color:#04201c; text-decoration:none;
+    border-radius:11px; padding:8px 14px; font-weight:600; font-size:13px; }
+  .empty { color:var(--muted); text-align:center; padding:40px; }
+</style>
+</head>
+<body>
+<header>🎙️ SK Spaces — Live Now</header>
+<main id="list"><div class="empty">Loading…</div></main>
+<script>
+  async function load() {
+    const res = await fetch("/spaces");
+    const { spaces } = await res.json();
+    const list = document.getElementById("list");
+    if (!spaces.length) { list.innerHTML = '<div class="empty">No live Spaces right now.</div>'; return; }
+    list.innerHTML = "";
+    for (const s of spaces) {
+      const card = document.createElement("div"); card.className = "card";
+      const speakers = (s.speakers || []).length;
+      card.innerHTML = `
+        <div class="meta">
+          <h3>${s.title}</h3>
+          <div class="sub">${s.host_fqid} · <span class="live">● LIVE</span>
+            ${s.recording ? '<span class="rec">● REC</span>' : ''}
+            · ${speakers} on stage</div>
+        </div>
+        <a class="join" href="/space/${s.space_id}">Join</a>`;
+      list.append(card);
+    }
+  }
+  load(); setInterval(load, 5000);
+</script>
+</body>
+</html>

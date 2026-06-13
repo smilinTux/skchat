@@ -245,6 +245,13 @@ def register_spaces_routes(app: FastAPI, *, registry: SpaceRegistry | None = Non
         reg.set_recording(space_id, False, "")
         return JSONResponse({"ok": True})
 
+    @app.get("/spaces/live", response_class=HTMLResponse)
+    async def spaces_directory() -> HTMLResponse:
+        static = Path(__file__).resolve().parent.parent / "static" / "spaces.html"
+        if static.exists():
+            return FileResponse(static, media_type="text/html")
+        return HTMLResponse("spaces.html missing", status_code=500)
+
     @app.get("/space/{space_id}", response_class=HTMLResponse)
     async def space_page(space_id: str) -> HTMLResponse:  # noqa: ARG001
         static = Path(__file__).resolve().parent.parent / "static" / "space.html"
