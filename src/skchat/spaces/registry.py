@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict
+from dataclasses import asdict, fields
 from pathlib import Path
 
 from skchat.spaces.space import Space, SpaceStatus
@@ -24,10 +24,16 @@ class SpaceRegistry:
             raw = json.loads(self.path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             return
+        known = {f.name for f in fields(Space)}
         for d in raw.get("spaces", []):
-            d = dict(d)
+            d = {k: v for k, v in d.items() if k in known}
+            if "space_id" not in d:
+                continue
             d["status"] = SpaceStatus(d.get("status", "open"))
-            self._spaces[d["space_id"]] = Space(**d)
+            try:
+                self._spaces[d["space_id"]] = Space(**d)
+            except (TypeError, ValueError):
+                continue  # skip malformed record, keep the rest
 
     def _save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)

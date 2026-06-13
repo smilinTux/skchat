@@ -60,6 +60,10 @@ def register_spaces_routes(app: FastAPI, *, registry: SpaceRegistry | None = Non
 
     @app.post("/spaces/create")
     async def create_space(request: Request) -> JSONResponse:
+        # SECURITY: S1/S2 trust the tailnet — host_fqid is asserted, not proven, so
+        # this endpoint mints a roomAdmin token for whoever asks. Tailnet-only until
+        # S5 sk-lk-authd verifies a capauth-signed operator assertion. Do NOT expose
+        # this route publicly before that hardening lands.
         if not _have_creds():
             raise HTTPException(503, "livekit not configured")
         body = await request.json()
@@ -115,9 +119,12 @@ def register_spaces_routes(app: FastAPI, *, registry: SpaceRegistry | None = Non
         ]})
 
     @app.post("/spaces/{space_id}/end")
-    async def end_space(space_id: str) -> JSONResponse:
-        if reg.get(space_id) is None:
+    async def end_space(space_id: str, request: Request) -> JSONResponse:
+        space = reg.get(space_id)
+        if space is None:
             raise HTTPException(404, "space not found")
+        body = await request.json()
+        _require_host(space, (body.get("requester") or "").strip())
         reg.end(space_id)
         return JSONResponse({"ok": True, "space_id": space_id})
 

@@ -57,6 +57,14 @@ def test_join_unknown_space_404(client):
 def test_end_marks_not_live(client):
     sid = client.post("/spaces/create", json={
         "host_fqid": "lumina@chef.skworld", "title": "T", "slug": "s"}).json()["space_id"]
-    assert client.post(f"/spaces/{sid}/end").status_code == 200
+    assert client.post(f"/spaces/{sid}/end",
+                       json={"requester": "lumina@chef.skworld"}).status_code == 200
     live = client.get("/spaces").json()["spaces"]
     assert all(s["space_id"] != sid for s in live)
+
+
+def test_non_host_cannot_end(client):
+    sid = client.post("/spaces/create", json={
+        "host_fqid": "lumina@chef.skworld", "title": "T", "slug": "s"}).json()["space_id"]
+    assert client.post(f"/spaces/{sid}/end",
+                       json={"requester": "rando@x.y"}).status_code == 403
