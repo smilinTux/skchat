@@ -90,4 +90,11 @@ class FederationNostr:
         filters = {"kinds": [MEMBERSHIP_KIND],
                    "#a": [f"{SPACE_KIND}:{space_id}"]}
         events = self._query(filters)
-        return [parse_membership(ev) for ev in events]
+        # M2: a single hostile/malformed event must not kill the whole batch.
+        out: list[Membership] = []
+        for ev in events:
+            try:
+                out.append(parse_membership(ev))
+            except Exception:
+                continue
+        return out

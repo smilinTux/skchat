@@ -31,6 +31,27 @@ def test_membership_roundtrip_carries_foci_preferred():
     assert m.issued_at == 123
 
 
+def test_parse_membership_tolerates_none_tags():
+    m = parse_membership({"tags": None})
+    assert m.fqid == ""
+    assert m.foci_preferred == ""
+    assert m.issued_at == 0
+
+
+def test_parse_membership_skips_non_list_tag_entries():
+    m = parse_membership({"tags": [123, "x", ["fqid", "a@h"]]})
+    assert m.fqid == "a@h"
+
+
+def test_parse_membership_coerces_bad_created_at():
+    m = parse_membership({"created_at": "notint", "tags": []})
+    assert m.issued_at == 0
+
+
+def test_parse_focus_descriptor_tolerates_bad_json():
+    assert parse_focus_descriptor({"content": "not json"}) == {}
+
+
 def test_space_state_has_kind_and_title():
     ev = build_space_state(space_id="space-x", title="Town Hall",
                            host_fqid="lumina@chef.skworld", status="live")

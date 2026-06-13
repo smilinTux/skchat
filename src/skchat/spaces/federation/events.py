@@ -26,7 +26,11 @@ def build_focus_descriptor(*, host_fqid: str, auth_url: str, sfu_ws_url: str) ->
 
 
 def parse_focus_descriptor(ev: dict) -> dict:
-    return json.loads(ev.get("content") or "{}")
+    # M2: a hostile relay may serve non-JSON content; never let it crash parse.
+    try:
+        return json.loads(ev.get("content") or "{}")
+    except (ValueError, TypeError):
+        return {}
 
 
 def build_space_state(*, space_id: str, title: str, host_fqid: str,
@@ -51,7 +55,15 @@ def build_membership(*, fqid: str, space_id: str, foci_preferred: str,
 
 
 def parse_membership(ev: dict) -> Membership:
-    tags = {t[0]: t[1] for t in ev.get("tags", []) if len(t) >= 2}
+    # M2: harden against hostile/malformed relay events — tags may be None or
+    # contain non-list / short entries, and created_at may be non-numeric.
+    raw_tags = ev.get("tags") or []
+    tags = {t[0]: t[1] for t in raw_tags
+            if isinstance(t, list) and len(t) >= 2}
+    try:
+        issued_at = int(ev.get("created_at", 0))
+    except (ValueError, TypeError):
+        issued_at = 0
     return Membership(fqid=tags.get("fqid", ""),
                       foci_preferred=tags.get("foci_preferred", ""),
-                      issued_at=int(ev.get("created_at", 0)))
+                      issued_at=issued_at)

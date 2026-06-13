@@ -49,6 +49,19 @@ def test_publish_membership_uses_membership_kind():
     assert rec.published[0]["kind"] == MEMBERSHIP_KIND
 
 
+def test_query_memberships_drops_unparseable_events():
+    good = build_membership(fqid="a@h", space_id="space-x",
+                            foci_preferred="sfu-a", issued_at=100)
+    # a hostile/malformed event (not even a dict) that crashes a naive parse
+    bad = "this is not an event"
+    rec = _Recorder(query_result=[bad, good])
+    fn = FederationNostr(publish=rec.publish, query=rec.query)
+    members = fn.query_memberships("space-x")
+    # one bad event must not kill the batch; only the valid one survives
+    assert len(members) == 1
+    assert members[0].fqid == "a@h"
+
+
 def test_query_memberships_filters_kind_and_space_and_parses():
     ev1 = build_membership(fqid="a@h", space_id="space-x",
                            foci_preferred="sfu-a", issued_at=100)
