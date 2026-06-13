@@ -60,3 +60,58 @@ def apply_action(state: StageState, action: str) -> tuple[StageState, bool]:
         s.invited_to_stage = False
     # "noop" leaves state unchanged
     return s, s.on_stage
+
+
+# --- LiveKit moderation wrapper ---------------------------------------------
+
+def _http_url(ws_url: str) -> str:
+    return ws_url.replace("ws://", "http://").replace("wss://", "https://")
+
+
+class Moderator:
+    """Applies stage transitions + mute/kick via LiveKit's room service.
+
+    `_room_service` is injectable for tests; in production it's built lazily from
+    `api.LiveKitAPI(...).room`.
+    """
+
+    def __init__(self, ws_url: str, api_key: str, api_secret: str,
+                 *, _room_service=None) -> None:
+        self._ws_url = ws_url
+        self._key = api_key
+        self._secret = api_secret
+        self._svc = _room_service
+
+    def _service(self):
+        if self._svc is not None:
+            return self._svc
+        from livekit import api
+        self._svc = api.LiveKitAPI(_http_url(self._ws_url), self._key,
+                                   self._secret).room
+        return self._svc
+
+    async def stage_action(self, room: str, identity: str, action: str) -> bool:
+        """Read current metadata, apply the consent action, push the new
+        metadata + can_publish permission. Returns the resulting can_publish."""
+        from livekit import api
+        svc = self._service()
+        current = await svc.get_participant(
+            api.RoomParticipantIdentity(room=room, identity=identity))
+        state = parse_meta(getattr(current, "metadata", "") or "")
+        new_state, can_publish = apply_action(state, action)
+        await svc.update_participant(api.UpdateParticipantRequest(
+            room=room, identity=identity, metadata=dump_meta(new_state),
+            permission=api.ParticipantPermission(
+                can_publish=can_publish, can_subscribe=True, can_publish_data=True),
+        ))
+        return can_publish
+
+    async def kick(self, room: str, identity: str) -> None:
+        from livekit import api
+        await self._service().remove_participant(
+            api.RoomParticipantIdentity(room=room, identity=identity))
+
+    async def mute(self, room: str, identity: str, track_sid: str) -> None:
+        from livekit import api
+        await self._service().mute_published_track(api.MuteRoomTrackRequest(
+            room=room, identity=identity, track_sid=track_sid, muted=True))
