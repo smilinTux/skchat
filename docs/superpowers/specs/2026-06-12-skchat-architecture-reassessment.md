@@ -95,6 +95,13 @@ agent team (Lumina + Opus)**, reachable directly (sovereign) or by a link (guest
 - **Agent team as participants.** Lumina + Opus join the same room (today's
   roundtable), hear everyone, and answer — addressing discipline + loop-cap already
   built. Guests interact with the agents naturally.
+- **Collaborative documents (agent as co-author).** Real-time multi-user doc
+  editing — a **CRDT lane (Yjs) over the data channel** (same pattern as the
+  whiteboard) — where Lumina is an *active co-author*: people edit + drop
+  suggestions/comments live, and she applies updates in real time (exactly the
+  DR-Chiro "master updated, .docx rebuilt" flow, but in-session and multi-user).
+  Editor via TipTap/ProseMirror+Yjs; optional bridge to Nextcloud Office for
+  storage/export. Suggestions/feedback ride the chat lane.
 - **★ FUTURE REQUIREMENT — agents as visual co-creators.** Because the whiteboard +
   screen are lanes in the same room, agents can both **read** them (vision model on
   screen frames / Excalidraw scene) AND **write** them in real time: Lumina draws on
@@ -204,6 +211,9 @@ skcomms channel-adapter pattern should absorb.
   sync URL + play/pause/seek over the data channel for lockstep playback.
 - **D6** Connectivity polish: surface tier (tailnet/LAN/Netbird/relay) in the UI;
   Netbird as a first-class mesh option alongside Tailscale.
+- **D6b** **Collaborative documents** — Yjs CRDT doc lane over the data channel;
+  agent as active co-author taking live suggestions/feedback; TipTap/ProseMirror
+  editor, optional Nextcloud Office bridge for storage/export.
 - **D7** **Multi-conversation client** — conversation list (DMs/groups/call rooms) +
   switcher, multiple live threads, unread/presence; over the existing groups/threads
   backend. A conversation can be text-only or host a live collaborative session.
