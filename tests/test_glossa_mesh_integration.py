@@ -1,11 +1,11 @@
 import asyncio
 
 import pytest
-
 from skcomms.glossa import codec
 from skcomms.glossa.codebook import default_codebook
 from skcomms.glossa.handshake import CapabilityDescriptor
 from skcomms.glossa.message import Message
+
 from skchat.glossa_mesh.bus import FakeBus, FakeBusMedium
 from skchat.glossa_mesh.node import GlossaMeshNode
 

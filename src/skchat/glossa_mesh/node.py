@@ -13,6 +13,7 @@ from skcomms.glossa import codec, gloss
 from skcomms.glossa.codebook import Codebook
 from skcomms.glossa.handshake import CapabilityDescriptor, negotiate
 from skcomms.glossa.message import Message
+
 from skchat.glossa_mesh import protocol
 from skchat.glossa_mesh.bus import MeshBus
 

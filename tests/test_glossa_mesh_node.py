@@ -1,11 +1,11 @@
 import asyncio
 
 import pytest
-
 from skcomms.glossa import codec
 from skcomms.glossa.codebook import default_codebook
 from skcomms.glossa.handshake import CapabilityDescriptor
 from skcomms.glossa.message import Message
+
 from skchat.glossa_mesh.bus import FakeBus, FakeBusMedium
 from skchat.glossa_mesh.node import GlossaMeshNode
 
@@ -27,8 +27,10 @@ async def test_two_nodes_announce_handshake_and_exchange():
     a, b = _node("a@x.y", medium), _node("b@x.y", medium)
     inbox = []
     b.on_message(lambda fqid, m: inbox.append((fqid, m)))
-    await a.start(); await b.start()
-    await a.announce(); await b.announce()
+    await a.start()
+    await b.start()
+    await a.announce()
+    await b.announce()
     await asyncio.sleep(0.02)
     assert a.group_level == codec.L2_CODEBOOK  # both strong → L2
 

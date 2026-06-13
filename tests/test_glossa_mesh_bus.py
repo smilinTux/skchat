@@ -12,7 +12,9 @@ async def test_broadcast_reaches_all_other_members():
     got_b, got_c = [], []
     b.on_receive(lambda data, src: got_b.append((data, src)))
     c.on_receive(lambda data, src: got_c.append((data, src)))
-    await a.start(); await b.start(); await c.start()
+    await a.start()
+    await b.start()
+    await c.start()
     await a.broadcast(b"hi-mesh")
     await asyncio.sleep(0.01)
     assert got_b == [(b"hi-mesh", "a")]

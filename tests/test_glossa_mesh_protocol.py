@@ -1,5 +1,6 @@
-from skchat.glossa_mesh import protocol
 from skcomms.glossa.handshake import CapabilityDescriptor
+
+from skchat.glossa_mesh import protocol
 
 
 def test_announce_frame_roundtrip():
