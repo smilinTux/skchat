@@ -291,8 +291,11 @@ def register_spaces_routes(app: FastAPI, *, registry: SpaceRegistry | None = Non
             raise HTTPException(400, "malformed body: expected JSON") from exc
         if not isinstance(signed, dict) or "claim" not in signed or "sig" not in signed:
             raise HTTPException(400, "body must be {claim, sig}")
+        def _space_live(sid: str) -> bool:
+            s = reg.get(sid)
+            return s is not None and s.status.value != "ended"
         try:
-            out = authorize(signed, sfu_ws_url=_url())
+            out = authorize(signed, sfu_ws_url=_url(), _space_live=_space_live)
         except AuthDenied as exc:
             raise HTTPException(403, str(exc)) from exc
         except FedAssertionError as exc:
