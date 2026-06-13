@@ -50,6 +50,8 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
     CMD curl -fs http://localhost:9385/health || exit 1
 
 # ── entrypoint ────────────────────────────────────────────────────────────────
-# Run in the foreground; systemd supervision is replaced by Docker Swarm's
-# restart_policy. Never use `skchat daemon start` (background fork) here.
-ENTRYPOINT ["skchat", "daemon", "run", "--interval", "5"]
+# Run in the foreground so Docker Swarm can supervise the process directly.
+# `skchat daemon start --foreground` calls run_daemon() which blocks.
+# `skchat daemon run` does NOT exist — the correct foreground mode is --foreground.
+# The interval is overridden by the stack command: [..., "--interval", "${SKCHAT_DAEMON_INTERVAL:-5}"]
+ENTRYPOINT ["skchat", "daemon", "start", "--foreground", "--interval", "5"]

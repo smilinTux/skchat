@@ -39,10 +39,11 @@ RUN pip install --no-cache-dir \
 
 # ── runtime config defaults ───────────────────────────────────────────────────
 # STT/TTS/LLM endpoints, model name, and voice persona are all injected at
-# runtime via skchat.env.  The SKVOICE_* vars are read by
-# skchat.voice_engine.config.VoiceConfig.from_env().
-ENV SKVOICE_PORT=18800 \
-    SKVOICE_HOST=0.0.0.0
+# runtime via skchat.env.
+# • SKCHAT_VOICE_HOST / SKCHAT_VOICE_PORT — bind address (serve_ws.py)
+# • SKVOICE_* — consumed by VoiceConfig.from_env() (voice_engine/config.py)
+ENV SKCHAT_VOICE_PORT=18800 \
+    SKCHAT_VOICE_HOST=0.0.0.0
 
 # ── ownership ────────────────────────────────────────────────────────────────
 RUN chown -R skchat:skchat /app
@@ -57,7 +58,7 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
     CMD curl -fs http://localhost:18800/health || exit 1
 
 # ── entrypoint ────────────────────────────────────────────────────────────────
-# voice-engine subcommand is the consolidated skvoice replacement (Phase 2+).
-# Until that CLI subcommand lands (Batch A2), wire directly to the WS server
-# module. Adjust once `skchat voice-engine` exists.
-ENTRYPOINT ["python", "-m", "skchat.voice_stream", "--host", "0.0.0.0", "--port", "18800"]
+# Phase-2 console script: skchat-voice → skchat.transports.serve_ws:main
+# Reads SKCHAT_VOICE_HOST / SKCHAT_VOICE_PORT for the bind address;
+# reads SKVOICE_* for VoiceConfig (LLM, STT, TTS, model).
+ENTRYPOINT ["skchat-voice"]

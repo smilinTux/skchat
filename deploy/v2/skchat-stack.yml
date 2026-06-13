@@ -1,23 +1,35 @@
 # skchat v2 Docker Swarm stack — Tailscale-native
 #
 # Deploy:
+#   set -a && source /var/data/deploy_skchat/skchat.env && set +a
 #   docker stack deploy \
 #     --env-file /var/data/deploy_skchat/skchat.env \
 #     -c deploy/v2/skchat-stack.yml \
 #     skchat
 #
+# Full setup guide: deploy/v2/README.md
+#
 # Reachability model (tailnet-first):
 #   • Default: all three services are reachable inside the tailnet via the
-#     node's tailscale name (e.g. noroc2027.tailnet-xyz.ts.net) or a
-#     `tailscale serve` proxy.  No public ingress is needed for the system
-#     to work.
+#     node's Tailscale hostname (e.g. noroc2027.tail204f0c.ts.net) using
+#     `tailscale serve` to proxy each service port:
+#
+#       tailscale serve --bg https+insecure://localhost:8765   # webui
+#       tailscale serve --bg https+insecure://localhost:9385   # daemon health
+#       tailscale serve --bg https+insecure://localhost:18800  # voice (internal)
+#
+#     voice and daemon are internal-only and normally NOT served via Tailscale;
+#     the serve rule above is only needed if a peer agent needs to reach the
+#     daemon health endpoint directly over the tailnet.  webui is the normal
+#     entry point for all external access.
+#
 #   • Opt-in public: the webui router gets a Traefik label set so that
 #     the Traefik edge (cloud-public-prod overlay) can expose
 #     skchat.skstack01.douno.it — gated by the existing pairing-gate + TLS.
-#     Disable by removing the traefik.enable label on the webui service.
+#     Disable by removing or setting traefik.enable=false on the webui service.
 #   • voice and daemon services are NOT exposed via Traefik; they are
-#     internal to the tailnet and must be reached through webui or directly
-#     on the tailnet by peer services.
+#     internal to the skchat-internal overlay and must be reached through
+#     webui or directly on the tailnet by trusted peer services.
 #
 # Networks:
 #   cloud-public-prod — external Traefik overlay (opt-in public routes only)
@@ -67,6 +79,12 @@ services:
       # capauth keys and pairing state — must persist across redeploys
       - skchat-identity:/data/capauth
       - skchat-data:/data/skchat
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:8765/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 20s
+      retries: 3
     deploy:
       mode: replicated
       replicas: 1
@@ -119,11 +137,19 @@ services:
   # WebSocket voice service (ex-skvoice): STT → LLM → TTS pipeline.
   # Internal only — reached by webui at ws://voice:18800/ws/voice.
   # NOT exposed via Traefik.
+  #
+  # Entrypoint: `skchat-voice` (Phase-2 console script → skchat.transports.serve_ws:main)
+  # Env vars: SKCHAT_VOICE_HOST / SKCHAT_VOICE_PORT control the bind address;
+  #           SKVOICE_* vars are read by VoiceConfig.from_env() for LLM/STT/TTS.
   voice:
     image: ${SKCHAT_IMAGE_REGISTRY:-skchat-voice}:${SKCHAT_VERSION:-latest}
+    # Override the Dockerfile's legacy python -m stub; use the Phase-2 console script.
+    command: ["skchat-voice"]
     environment:
-      SKVOICE_HOST: "0.0.0.0"
-      SKVOICE_PORT: "18800"
+      # Bind address for the WebSocket server (skchat.transports.serve_ws)
+      SKCHAT_VOICE_HOST: "0.0.0.0"
+      SKCHAT_VOICE_PORT: "18800"
+      # VoiceConfig.from_env() reads SKVOICE_* keys
       SKVOICE_AGENT: "${SKAGENT:-lumina}"
       SKVOICE_LLM_URL: "${SKCHAT_LLM_URL}"
       SKVOICE_MODEL: "${SKCHAT_LLM_MODEL}"
@@ -136,6 +162,15 @@ services:
       SKVOICE_STT_MIN_RMS: "${SKVOICE_STT_MIN_RMS:-800}"
     networks:
       - skchat-internal
+    volumes:
+      # Recordings directory — voice sessions may write audio blobs here.
+      - skchat-recordings:/data/recordings
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:18800/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
     deploy:
       mode: replicated
       replicas: 1
@@ -173,16 +208,42 @@ services:
   # SKComm receive loop, history (SQLite), advocacy engine, outbox retry.
   # Internal only — health reachable on the tailnet at :9385.
   # NOT exposed via Traefik.
+  #
+  # Entrypoint: `skchat daemon start --foreground --interval N`
+  #   ("daemon run" does not exist; "daemon start" with --foreground keeps the
+  #    process in the foreground so Docker Swarm can supervise it directly.
+  #    The internal singleton lock in run_daemon() prevents double-polling if
+  #    Swarm ever starts a second task before the first fully exits.)
+  #
+  # IMPORTANT: replicas MUST stay at 1.  Two daemon instances would both poll
+  # the same SKComm inbox and create duplicate deliveries / split outbox state.
+  # The mode: global-job alternative is not used here because we need the
+  # restart_policy; instead the singleton is enforced via the lock in daemon.py
+  # AND the Swarm placement constraint below.
   daemon:
     image: ${SKCHAT_IMAGE_REGISTRY:-skchat-daemon}:${SKCHAT_VERSION:-latest}
+    # Override Dockerfile.daemon's default `skchat daemon run` (which doesn't exist).
+    # --foreground keeps the process attached so Swarm can detect exit + restart.
+    # The interval is read from SKCHAT_DAEMON_INTERVAL env var AND passed as a flag;
+    # the static "5" default here is overridden if the env var is set at deploy time.
+    # Note: Docker Swarm expands ${VAR} in the command array from --env-file, so
+    # passing the env var through is correct; the literal "5" is a fallback for the
+    # flag itself (the env var on the container is the primary control knob).
+    command:
+      - "skchat"
+      - "daemon"
+      - "start"
+      - "--foreground"
+      - "--interval"
+      - "5"
     environment:
       SKAGENT: "${SKAGENT:-lumina}"
       SKCHAT_DAEMON_INTERVAL: "${SKCHAT_DAEMON_INTERVAL:-5}"
       SKCHAT_DAEMON_QUIET: "${SKCHAT_DAEMON_QUIET:-false}"
       SKCHAT_HOME: "/data/skchat"
       SKCOMM_HOME: "/data/skcomm"
-      # Identity
-      SKCHAT_IDENTITY: "${SKCHAT_IDENTITY}"
+      # Identity (optional override — resolved from SKAGENT if blank)
+      SKCHAT_IDENTITY: "${SKCHAT_IDENTITY:-}"
       SKCAPSTONE_HOME: "${SKCAPSTONE_HOME:-/data/skcapstone}"
       # skmem-pg (memory backend)
       SKMEMORY_PG_HOST: "${SKMEMORY_PG_HOST}"
@@ -197,12 +258,23 @@ services:
       - skchat-data:/data/skchat
       - skchat-skcomm:/data/skcomm
       - skchat-identity:/data/capauth
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:9385/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 20s
+      retries: 3
     deploy:
       mode: replicated
-      replicas: 1
+      replicas: 1             # MUST stay 1 — see singleton note above
       placement:
         constraints:
           - node.role == worker
+          # Pin daemon to one specific node to guarantee the singleton.
+          # Label the target node:
+          #   docker node update --label-add skchat.daemon=true <node-id>
+          # then uncomment:
+          # - node.labels.skchat.daemon == true
       restart_policy:
         condition: on-failure
         delay: 5s
@@ -243,9 +315,11 @@ networks:
 # Named volumes persist on the placement node.
 # Backup target: Garage (see deploy/SECRETS.md — Batch B5).
 volumes:
-  skchat-data:              # history.db, outbox.db, recordings
+  skchat-data:              # history.db, outbox.db — daemon + webui shared state
     driver: local
   skchat-skcomm:            # skcomm transport state, pending outbox
     driver: local
   skchat-identity:          # capauth keys, pairing state — shared webui+daemon
+    driver: local
+  skchat-recordings:        # voice engine audio recordings (voice service only)
     driver: local
