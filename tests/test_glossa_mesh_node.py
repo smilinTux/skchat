@@ -58,3 +58,42 @@ async def test_weakest_peer_caps_group_level():
     await asyncio.sleep(0.02)
     assert inbox_b == [Message(intent="ack")]   # the weak peer still decodes
     assert inbox_c == [Message(intent="ack")]
+
+
+@pytest.mark.asyncio
+async def test_forget_peer_uncaps_group_level():
+    medium = FakeBusMedium()
+    a = _node("a@x.y", medium, max_level=codec.L2_CODEBOOK)
+    b = _node("b@x.y", medium, max_level=codec.L0_ENGLISH)  # weak
+    c = _node("c@x.y", medium, max_level=codec.L2_CODEBOOK)
+    for n in (a, b, c):
+        await n.start()
+    for n in (a, b, c):
+        await n.announce()
+    await asyncio.sleep(0.03)
+    assert a.group_level == codec.L0_ENGLISH  # capped to the weak peer
+    a.forget_peer("b@x.y")                     # weak peer left
+    assert a.group_level == codec.L2_CODEBOOK  # un-capped by remaining strong peers
+
+
+@pytest.mark.asyncio
+async def test_forget_unknown_peer_is_noop():
+    medium = FakeBusMedium()
+    a = _node("a@x.y", medium)
+    a.forget_peer("nobody@x.y")  # must not raise
+
+
+@pytest.mark.asyncio
+async def test_on_leave_callback_uncaps_via_simulated_leave():
+    medium = FakeBusMedium()
+    a = _node("a@x.y", medium, max_level=codec.L2_CODEBOOK)
+    b = _node("b@x.y", medium, max_level=codec.L0_ENGLISH)  # weak
+    for n in (a, b):
+        await n.start()
+    for n in (a, b):
+        await n.announce()
+    await asyncio.sleep(0.02)
+    assert a.group_level == codec.L0_ENGLISH
+    # the weak peer leaves the room → other members' on_leave fires
+    await medium.simulate_leave("b@x.y")
+    assert a.group_level == codec.L2_CODEBOOK

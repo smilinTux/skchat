@@ -30,9 +30,15 @@ class GlossaMeshNode:
         self._on_message: MessageCb | None = None
         self.audit_log: list[str] = []
         bus.on_receive(self._on_frame)
+        bus.on_leave(self.forget_peer)
 
     def on_message(self, cb: MessageCb) -> None:
         self._on_message = cb
+
+    def forget_peer(self, src: str) -> None:
+        """Drop a departed peer. group_level is a recomputed property, so removing
+        the weakest peer un-caps the room instantly. Unknown src is a no-op."""
+        self._peers.pop(src, None)
 
     async def start(self) -> None:
         await self.bus.start()

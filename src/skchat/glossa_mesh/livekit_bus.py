@@ -22,6 +22,8 @@ class LiveKitBus(MeshBus):
         from livekit import rtc  # lazy
         self._room = rtc.Room()
 
+        # TODO(live): wire on_leave to room 'participant_disconnected'; verify
+        # announce/message src via capauth signature (anti-spoof) before trusting it
         @self._room.on("data_received")
         def _on_data(packet) -> None:  # rtc.DataPacket
             if getattr(packet, "topic", self.topic) != self.topic:
