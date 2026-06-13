@@ -10,21 +10,61 @@
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
+/* ── 2027 Design System tokens ──────────────────────────────────────────────
+   Flat-with-depth (NEVER glass/blur). One teal accent. Blue = self only.
+   Near-black #0b0d10 canvas. Inter + JetBrains Mono.
+   Motion: rise 220ms / expand 180ms / pulse 1s.
+   ──────────────────────────────────────────────────────────────────────── */
 :root {
-  --bg: #000000;
-  --surface-raised: #0A0A0F;
-  --surface-glass: rgba(255,255,255,0.06);
-  --surface-glass-border: rgba(255,255,255,0.08);
-  --text-primary: #E8E8F0;
-  --text-secondary: #808098;
-  --text-tertiary: #505068;
-  --accent-encrypt: #10B981;
-  --accent-danger: #EF4444;
-  --soul-color: #BB86FC;
-  --soul-color-18: rgba(187,134,252,0.18);
-  --soul-color-30: rgba(187,134,252,0.30);
-  --font-primary: 'Inter', system-ui, -apple-system, sans-serif;
-  --font-mono: 'JetBrains Mono', monospace;
+  color-scheme: dark;
+  /* Canvas + surface layers */
+  --canvas:      #0b0d10;
+  --surface-1:   #111318;
+  --surface-2:   #16191f;
+  --surface-3:   #1d2029;
+  /* Borders (hairline) */
+  --border-sub:  #1c1f26;
+  --border-mid:  #252a35;
+  --border-hi:   #343a4a;
+  /* Accent: ONE teal */
+  --accent:      #2dd4bf;
+  --accent-dim:  #14b8a6;
+  --accent-mute: #0d7a6e22;
+  /* Blue = self / local only */
+  --self-blue:   #3b82f6;
+  --self-bubble: #142140;
+  /* Semantic */
+  --good:   #34d399;
+  --bad:    #f87171;
+  --warn:   #fbbf24;
+  /* Typography */
+  --font-sans: 'Inter', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+  /* Elevation (flat-with-depth — soft shadow, no blur) */
+  --shadow-card:  0 2px 8px rgba(0,0,0,.45), 0 0 0 1px var(--border-sub);
+  --shadow-panel: 0 4px 16px rgba(0,0,0,.5),  0 0 0 1px var(--border-mid);
+  /* Motion */
+  --t-rise:   220ms;
+  --t-expand: 180ms;
+  --t-pulse:  1s;
+  /* Radius */
+  --r-sm:  8px;
+  --r-md:  11px;
+  --r-lg:  13px;
+  --r-xl:  14px;
+
+  /* --- Legacy aliases (used by JS soul-color runtime; structural CSS uses tokens above) --- */
+  --bg: var(--canvas);
+  --surface-raised: var(--surface-1);
+  --text-primary: #d4d9e8;
+  --text-secondary: #6b7280;
+  --text-tertiary: #4b5263;
+  --accent-encrypt: var(--good);
+  --accent-danger: var(--bad);
+  --soul-color: var(--accent);            /* default; JS overrides per agent */
+  --soul-color-18: #0d7a6e22;
+  --soul-color-30: #0d7a6e48;
+  --font-primary: var(--font-sans);
 }
 
 html, body {
@@ -33,14 +73,15 @@ html, body {
 }
 
 body {
-  background: var(--bg);
+  background: var(--canvas);
   color: var(--text-primary);
-  font-family: var(--font-primary);
+  font-family: var(--font-sans);
   display: flex;
   flex-direction: column;
   height: 100dvh;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  /* NO backdrop-filter anywhere — flat-with-depth discipline */
 }
 
 /* ─── Header ─── */
@@ -49,10 +90,11 @@ body {
   display: flex;
   align-items: center;
   gap: 10px;
-  background: var(--surface-raised);
-  border-bottom: 1px solid var(--surface-glass-border);
+  background: var(--surface-1);
+  border-bottom: 1px solid var(--border-sub);
   flex-shrink: 0;
   z-index: 10;
+  box-shadow: 0 1px 0 var(--border-sub), 0 2px 8px rgba(0,0,0,.35);
 }
 
 .agent-avatar-header {
@@ -101,20 +143,20 @@ body {
   font-size: 11px;
   font-weight: 500;
   padding: 3px 10px;
-  border-radius: 12px;
-  background: var(--surface-glass);
-  border: 1px solid var(--surface-glass-border);
+  border-radius: var(--r-lg);
+  background: var(--surface-2);
+  border: 1px solid var(--border-mid);
   color: var(--text-tertiary);
-  transition: all 0.3s ease;
+  transition: border-color var(--t-expand) ease, color var(--t-expand) ease;
   white-space: nowrap;
 }
 
-#status-badge.connected { border-color: var(--accent-encrypt); color: var(--accent-encrypt); }
-#status-badge.listening { border-color: #F59E0B; color: #F59E0B; animation: pulse 1s infinite; }
-#status-badge.processing { border-color: #60A5FA; color: #60A5FA; }
-#status-badge.thinking { border-color: var(--soul-color); color: var(--soul-color); animation: pulse 1.5s infinite; }
-#status-badge.speaking { border-color: var(--soul-color); color: var(--soul-color); animation: pulse 0.8s infinite; }
-#status-badge.error { border-color: var(--accent-danger); color: var(--accent-danger); }
+#status-badge.connected  { border-color: var(--good);   color: var(--good); }
+#status-badge.listening  { border-color: var(--warn);   color: var(--warn);   animation: pulse var(--t-pulse) infinite; }
+#status-badge.processing { border-color: var(--accent); color: var(--accent); }
+#status-badge.thinking   { border-color: var(--accent); color: var(--accent); animation: pulse calc(var(--t-pulse) * 1.5) infinite; }
+#status-badge.speaking   { border-color: var(--accent); color: var(--accent); animation: pulse calc(var(--t-pulse) * 0.8) infinite; }
+#status-badge.error      { border-color: var(--bad);    color: var(--bad); }
 
 .header-actions {
   display: flex;
@@ -125,28 +167,28 @@ body {
 .btn-icon {
   width: 36px;
   height: 36px;
-  border-radius: 10px;
-  border: 1px solid var(--surface-glass-border);
-  background: var(--surface-glass);
+  border-radius: var(--r-sm);
+  border: 1px solid var(--border-mid);
+  background: var(--surface-2);
   color: var(--text-secondary);
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: all 0.2s ease;
+  transition: border-color var(--t-expand) ease, background var(--t-expand) ease;
   font-size: 16px;
 }
 
 .btn-icon:hover {
-  background: rgba(255,255,255,0.10);
+  border-color: var(--border-hi);
   color: var(--text-primary);
 }
 
 .btn-icon.voice-active {
-  background: rgba(239,68,68,0.15);
-  border-color: rgba(239,68,68,0.4);
-  color: var(--accent-danger);
-  animation: pulse-ring 1.5s infinite;
+  background: rgba(248,113,113,0.12);
+  border-color: var(--bad);
+  color: var(--bad);
+  animation: pulse-ring calc(var(--t-pulse) * 1.5) infinite;
 }
 
 @keyframes pulse {
@@ -168,9 +210,9 @@ body {
   align-items: center;
   justify-content: center;
   gap: 2px;
-  background: var(--surface-raised);
-  border-bottom: 1px solid var(--surface-glass-border);
-  transition: height 0.3s ease;
+  background: var(--surface-1);
+  border-bottom: 1px solid var(--border-sub);
+  transition: height var(--t-expand) ease;
   flex-shrink: 0;
 }
 
@@ -181,7 +223,7 @@ body {
 
 .viz-bar {
   width: 3px;
-  background: var(--soul-color);
+  background: var(--accent);
   border-radius: 2px;
   transition: height 0.05s ease;
   height: 4px;
@@ -210,7 +252,7 @@ body {
 }
 
 #chat-area::-webkit-scrollbar-thumb {
-  background: rgba(255,255,255,0.1);
+  background: var(--border-mid);
   border-radius: 2px;
 }
 
@@ -269,15 +311,15 @@ body {
 }
 
 .msg-bubble.user {
-  background: var(--soul-color-18);
-  border: 1px solid var(--soul-color-30);
+  background: var(--self-bubble);
+  border: 1px solid color-mix(in srgb, var(--self-blue) 30%, transparent);
   border-radius: 16px 16px 4px 16px;
   color: var(--text-primary);
 }
 
 .msg-bubble.assistant {
-  background: var(--surface-glass);
-  border: 1px solid var(--surface-glass-border);
+  background: var(--surface-1);
+  border: 1px solid var(--border-sub);
   border-left: 3px solid var(--soul-color);
   border-radius: 16px 16px 16px 4px;
   color: var(--text-primary);
@@ -339,31 +381,30 @@ body {
 .input-area {
   padding: 8px 12px;
   padding-bottom: max(8px, env(safe-area-inset-bottom));
-  background: rgba(10,10,15,0.85);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  border-top: 1px solid var(--surface-glass-border);
+  background: var(--surface-1);
+  border-top: 1px solid var(--border-sub);
   display: flex;
   align-items: flex-end;
   gap: 8px;
   flex-shrink: 0;
   z-index: 10;
+  /* NO backdrop-filter — flat-with-depth */
 }
 
 .input-wrapper {
   flex: 1;
   display: flex;
   align-items: flex-end;
-  background: var(--surface-glass);
-  border: 1px solid var(--surface-glass-border);
-  border-radius: 20px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-mid);
+  border-radius: var(--r-xl);
   padding: 4px 4px 4px 14px;
-  transition: border-color 0.2s ease;
+  transition: border-color var(--t-expand) ease;
   min-height: 40px;
 }
 
 .input-wrapper:focus-within {
-  border-color: rgba(255,255,255,0.15);
+  border-color: var(--accent);
 }
 
 #text-input {
@@ -389,55 +430,53 @@ body {
   height: 32px;
   border-radius: 50%;
   border: none;
-  background: var(--soul-color);
-  color: #000;
+  background: var(--accent-dim);
+  color: #0b0d10;
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  transition: all 0.2s ease;
+  transition: background var(--t-expand) ease;
   font-size: 14px;
+  font-weight: 600;
 }
 
-.btn-send:hover {
-  transform: scale(1.05);
-  filter: brightness(1.1);
+.btn-send:hover:not(:disabled) {
+  background: var(--accent);
 }
 
 .btn-send:disabled {
-  background: var(--text-tertiary);
+  background: var(--border-mid);
   cursor: default;
-  transform: none;
-  filter: none;
 }
 
 .btn-voice-input {
   width: 40px;
   height: 40px;
   border-radius: 50%;
-  border: 2px solid var(--surface-glass-border);
-  background: var(--surface-glass);
+  border: 2px solid var(--border-mid);
+  background: var(--surface-2);
   color: var(--text-secondary);
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  transition: all 0.2s ease;
+  transition: border-color var(--t-expand) ease, color var(--t-expand) ease;
   font-size: 18px;
 }
 
 .btn-voice-input:hover {
-  border-color: var(--soul-color);
-  color: var(--soul-color);
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 .btn-voice-input.active {
-  border-color: var(--accent-danger);
-  color: var(--accent-danger);
-  background: rgba(239,68,68,0.12);
-  animation: pulse-ring 1.5s infinite;
+  border-color: var(--bad);
+  color: var(--bad);
+  background: rgba(248,113,113,0.10);
+  animation: pulse-ring calc(var(--t-pulse) * 1.5) infinite;
 }
 
 /* ─── Empty State ─── */
@@ -483,11 +522,11 @@ body {
 .agent-panel-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0,0,0,0.5);
+  background: rgba(0,0,0,0.6);
   z-index: 100;
   opacity: 0;
   visibility: hidden;
-  transition: opacity 0.3s ease, visibility 0.3s ease;
+  transition: opacity var(--t-expand) ease, visibility var(--t-expand) ease;
 }
 
 .agent-panel-overlay.open {
@@ -502,16 +541,16 @@ body {
   bottom: 0;
   width: 280px;
   max-width: 85vw;
-  background: rgba(10,10,15,0.92);
-  backdrop-filter: blur(24px);
-  -webkit-backdrop-filter: blur(24px);
-  border-right: 1px solid var(--surface-glass-border);
+  background: var(--surface-1);
+  border-right: 1px solid var(--border-mid);
+  box-shadow: var(--shadow-panel);
   z-index: 101;
   transform: translateX(-100%);
-  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: transform var(--t-rise) cubic-bezier(0.4, 0, 0.2, 1);
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  /* NO backdrop-filter — flat-with-depth */
 }
 
 .agent-panel.open {
@@ -523,7 +562,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  border-bottom: 1px solid var(--surface-glass-border);
+  border-bottom: 1px solid var(--border-sub);
   flex-shrink: 0;
 }
 
@@ -536,20 +575,20 @@ body {
 .agent-panel-close {
   width: 32px;
   height: 32px;
-  border-radius: 8px;
-  border: 1px solid var(--surface-glass-border);
-  background: var(--surface-glass);
+  border-radius: var(--r-sm);
+  border: 1px solid var(--border-mid);
+  background: var(--surface-2);
   color: var(--text-secondary);
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
   font-size: 18px;
-  transition: all 0.2s ease;
+  transition: border-color var(--t-expand) ease;
 }
 
 .agent-panel-close:hover {
-  background: rgba(255,255,255,0.10);
+  border-color: var(--border-hi);
   color: var(--text-primary);
 }
 
@@ -564,19 +603,19 @@ body {
   align-items: center;
   gap: 12px;
   padding: 10px 12px;
-  border-radius: 12px;
+  border-radius: var(--r-md);
   cursor: pointer;
-  transition: background 0.2s ease;
+  transition: background var(--t-expand) ease;
   text-decoration: none;
   color: inherit;
 }
 
 .agent-panel-item:hover {
-  background: rgba(255,255,255,0.06);
+  background: var(--surface-2);
 }
 
 .agent-panel-item.active {
-  background: rgba(255,255,255,0.08);
+  background: var(--surface-3);
 }
 
 .agent-panel-avatar {
@@ -588,12 +627,12 @@ body {
   justify-content: center;
   font-weight: 700;
   font-size: 15px;
-  color: #000;
+  color: #0b0d10;
   flex-shrink: 0;
 }
 
 .agent-panel-avatar.group-icon {
-  background: linear-gradient(135deg, #BB86FC, #00E5FF, #10B981, #FFC107);
+  background: linear-gradient(135deg, var(--accent) 0%, var(--good) 100%);
   font-size: 16px;
 }
 
@@ -608,9 +647,10 @@ body {
   font-size: 10px;
   font-weight: 600;
   padding: 2px 8px;
-  border-radius: 8px;
-  background: rgba(16,185,129,0.15);
-  color: var(--accent-encrypt);
+  border-radius: var(--r-sm);
+  background: var(--accent-mute);
+  color: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
@@ -633,18 +673,18 @@ body {
     width: 10px;
     height: 10px;
     border-radius: 50%;
-    background: var(--surface-glass);
-    border: 1px solid var(--surface-glass-border);
+    background: var(--surface-2);
+    border: 1px solid var(--border-mid);
     flex-shrink: 0;
   }
-  #status-badge.connected { background: var(--accent-encrypt); border-color: var(--accent-encrypt); }
-  #status-badge.listening { background: #F59E0B; border-color: #F59E0B; }
+  #status-badge.connected  { background: var(--good);   border-color: var(--good); }
+  #status-badge.listening  { background: var(--warn);   border-color: var(--warn); }
   #status-badge.thinking,
   #status-badge.speaking,
-  #status-badge.processing { background: var(--soul-color); border-color: var(--soul-color); }
-  #status-badge.error { background: var(--accent-danger); border-color: var(--accent-danger); }
+  #status-badge.processing { background: var(--accent); border-color: var(--accent); }
+  #status-badge.error      { background: var(--bad);    border-color: var(--bad); }
   .header-actions { gap: 6px; }
-  .btn-icon { width: 34px; height: 34px; border-radius: 8px; }
+  .btn-icon { width: 34px; height: 34px; }
   .input-area {
     padding: 6px 8px;
     gap: 6px;
@@ -653,7 +693,6 @@ body {
   .input-wrapper {
     padding: 4px 4px 4px 12px;
     min-height: 38px;
-    border-radius: 19px;
   }
   #text-input { font-size: 15px; padding: 5px 0; }
   .btn-send { width: 30px; height: 30px; }
@@ -673,8 +712,8 @@ body {
   body {
     max-width: 800px;
     margin: 0 auto;
-    border-left: 1px solid var(--surface-glass-border);
-    border-right: 1px solid var(--surface-glass-border);
+    border-left: 1px solid var(--border-sub);
+    border-right: 1px solid var(--border-sub);
   }
 }
 </style>
@@ -828,7 +867,7 @@ body {
 
     // Divider
     const divider = document.createElement('div');
-    divider.style.cssText = 'height:1px;background:var(--surface-glass-border);margin:4px 12px;';
+    divider.style.cssText = 'height:1px;background:var(--border-sub);margin:4px 12px;';
     list.appendChild(divider);
 
     // Agent items
@@ -1202,8 +1241,8 @@ body {
       '<p style="color:var(--text-secondary);margin-bottom:4px;">' + cached.length + ' messages from previous session' + (timeStr ? '<br><span style="font-size:11px;color:var(--text-tertiary);">' + timeStr + '</span>' : '') + '</p>' +
       '<p style="color:var(--text-tertiary);font-style:italic;margin-bottom:12px;">"' + escapeHtml(preview) + '"</p>' +
       '<div style="display:flex;gap:8px;">' +
-        '<button onclick="resumeSession()" style="padding:8px 20px;border-radius:12px;border:1px solid var(--soul-color);background:var(--soul-color-18);color:var(--soul-color);font-family:var(--font-primary);font-size:13px;font-weight:600;cursor:pointer;">Resume</button>' +
-        '<button onclick="newSession()" style="padding:8px 20px;border-radius:12px;border:1px solid var(--surface-glass-border);background:var(--surface-glass);color:var(--text-secondary);font-family:var(--font-primary);font-size:13px;cursor:pointer;">New Session</button>' +
+        '<button onclick="resumeSession()" style="padding:8px 20px;border-radius:var(--r-md);border:1px solid var(--accent);background:var(--accent-mute);color:var(--accent);font-family:var(--font-sans);font-size:13px;font-weight:600;cursor:pointer;">Resume</button>' +
+        '<button onclick="newSession()" style="padding:8px 20px;border-radius:var(--r-md);border:1px solid var(--border-mid);background:var(--surface-2);color:var(--text-secondary);font-family:var(--font-sans);font-size:13px;cursor:pointer;">New Session</button>' +
       '</div>';
     chatArea.appendChild(prompt);
   }
