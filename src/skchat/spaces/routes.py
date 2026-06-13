@@ -33,8 +33,22 @@ def _have_creds() -> bool:
                 os.getenv("SKCHAT_LIVEKIT_API_SECRET"))
 
 
-def register_spaces_routes(app: FastAPI, *, registry: SpaceRegistry | None = None) -> None:
+def register_spaces_routes(app: FastAPI, *, registry: SpaceRegistry | None = None,
+                           moderator=None) -> None:
     reg = registry or SpaceRegistry()
+    _mod_holder = {"mod": moderator}
+
+    def _moderator():
+        if _mod_holder["mod"] is None:
+            from skchat.spaces.moderation import Moderator
+            _mod_holder["mod"] = Moderator(
+                _url(), os.getenv("SKCHAT_LIVEKIT_API_KEY", ""),
+                os.getenv("SKCHAT_LIVEKIT_API_SECRET", ""))
+        return _mod_holder["mod"]
+
+    def _require_host(space, requester: str) -> None:
+        if requester != space.host_fqid:
+            raise HTTPException(403, "host-only action")
 
     def _token_response(identity: str, name: str, role: Role, space: Space) -> dict:
         token = mint_space_token(identity, name, role, space.space_id, _DEFAULT_TTL)
@@ -106,6 +120,66 @@ def register_spaces_routes(app: FastAPI, *, registry: SpaceRegistry | None = Non
             raise HTTPException(404, "space not found")
         reg.end(space_id)
         return JSONResponse({"ok": True, "space_id": space_id})
+
+    @app.post("/spaces/{space_id}/raise-hand")
+    async def raise_hand(space_id: str, request: Request) -> JSONResponse:
+        space = reg.get(space_id)
+        if space is None:
+            raise HTTPException(404, "space not found")
+        body = await request.json()
+        identity = (body.get("identity") or "").strip()
+        if not identity:
+            raise HTTPException(400, "identity required")
+        on_stage = await _moderator().stage_action(space.room, identity, "raise_hand")
+        return JSONResponse({"ok": True, "on_stage": on_stage})
+
+    @app.post("/spaces/{space_id}/invite")
+    async def invite(space_id: str, request: Request) -> JSONResponse:
+        space = reg.get(space_id)
+        if space is None:
+            raise HTTPException(404, "space not found")
+        body = await request.json()
+        _require_host(space, (body.get("requester") or "").strip())
+        identity = (body.get("identity") or "").strip()
+        if not identity:
+            raise HTTPException(400, "identity required")
+        on_stage = await _moderator().stage_action(space.room, identity, "invite")
+        return JSONResponse({"ok": True, "on_stage": on_stage})
+
+    @app.post("/spaces/{space_id}/remove-from-stage")
+    async def remove_from_stage(space_id: str, request: Request) -> JSONResponse:
+        space = reg.get(space_id)
+        if space is None:
+            raise HTTPException(404, "space not found")
+        body = await request.json()
+        requester = (body.get("requester") or "").strip()
+        identity = (body.get("identity") or "").strip()
+        # host OR self may remove from stage
+        if requester != space.host_fqid and requester != identity:
+            raise HTTPException(403, "host-or-self only")
+        await _moderator().stage_action(space.room, identity, "remove")
+        return JSONResponse({"ok": True})
+
+    @app.post("/spaces/{space_id}/mute")
+    async def mute(space_id: str, request: Request) -> JSONResponse:
+        space = reg.get(space_id)
+        if space is None:
+            raise HTTPException(404, "space not found")
+        body = await request.json()
+        _require_host(space, (body.get("requester") or "").strip())
+        await _moderator().mute(space.room, (body.get("identity") or "").strip(),
+                                (body.get("track_sid") or "").strip())
+        return JSONResponse({"ok": True})
+
+    @app.post("/spaces/{space_id}/kick")
+    async def kick(space_id: str, request: Request) -> JSONResponse:
+        space = reg.get(space_id)
+        if space is None:
+            raise HTTPException(404, "space not found")
+        body = await request.json()
+        _require_host(space, (body.get("requester") or "").strip())
+        await _moderator().kick(space.room, (body.get("identity") or "").strip())
+        return JSONResponse({"ok": True})
 
     @app.get("/space/{space_id}", response_class=HTMLResponse)
     async def space_page(space_id: str) -> HTMLResponse:  # noqa: ARG001
