@@ -76,9 +76,11 @@ pre-auth invite landing, CDN/caching. `livekit.html` stays as a fallback/dev sur
 (restyled to the 2027 tokens in the interim). Full decision +
 mitigations: `2026-06-13-sk-design-system-2027.md` §4.
 
-**Design language:** every skchat surface uses the **SK "2027" design system** (OLED
-black, frosted-glass cards, purple `#A855F7` accent, Inter/JetBrains Mono, per-agent
-soul colors) — spec `2026-06-13-sk-design-system-2027.md`. Add it to every UI task's DoD.
+**Design language:** every skchat surface uses the **SK 2027 design system** —
+*flat-with-depth (never glass)*, near-black `#0b0d10`, ONE teal accent `#2dd4bf`
+(blue = self only), Inter/JetBrains Mono, the rise/expand/pulse motion. Canonical:
+`skstacks-2027-design-system.md` (smilinTux/skstacks `5b190a2`) + skchat notes in
+`2026-06-13-sk-design-system-2027.md`. Add it to every UI task's DoD.
 
 ## 5. Verdict
 A genuinely solid, substantial native client that's ~3 months behind the architecture.
