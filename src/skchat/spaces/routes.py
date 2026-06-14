@@ -14,6 +14,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
+from skchat.spaces.lanes import KNOWN_LANES, LaneDispatcher, LaneStore
 from skchat.spaces.registry import SpaceRegistry
 from skchat.spaces.roles import Role
 from skchat.spaces.space import Space, derive_space_id
@@ -34,12 +35,15 @@ def _have_creds() -> bool:
 
 
 def register_spaces_routes(app: FastAPI, *, registry: SpaceRegistry | None = None,
-                           moderator=None, consent=None, recorder=None) -> None:
+                           moderator=None, consent=None, recorder=None,
+                           lane_store: "LaneStore | None" = None) -> None:
     reg = registry or SpaceRegistry()
     _mod_holder = {"mod": moderator}
     from skchat.spaces.consent import ConsentLedger
     led = consent or ConsentLedger()
     _rec_holder = {"rec": recorder}
+    _lane_store = lane_store or LaneStore(db_path=Path.home() / ".skchat" / "lanes.db")
+    _lane_dispatch = LaneDispatcher(store=_lane_store)
 
     def _moderator():
         if _mod_holder["mod"] is None:
@@ -239,6 +243,21 @@ def register_spaces_routes(app: FastAPI, *, registry: SpaceRegistry | None = Non
             raise HTTPException(400, "identity required")
         led.add(space_id, identity)
         return JSONResponse({"ok": True})
+
+    @app.post("/spaces/{space_id}/lanes/event")
+    async def lanes_event(space_id: str, request: Request) -> JSONResponse:
+        body = await request.json()
+        try:
+            _lane_dispatch.dispatch(space_id, body)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        return JSONResponse({"ok": True})
+
+    @app.get("/spaces/{space_id}/lanes/{lane}/state")
+    async def lanes_state(space_id: str, lane: str) -> JSONResponse:
+        if lane not in KNOWN_LANES:
+            return JSONResponse({"error": f"unknown lane {lane!r}"}, status_code=400)
+        return JSONResponse({"events": _lane_store.replay(space_id, lane)})
 
     @app.post("/spaces/{space_id}/record/start")
     async def record_start(space_id: str, request: Request) -> JSONResponse:
