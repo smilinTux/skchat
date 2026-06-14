@@ -1004,3 +1004,23 @@ setUp). Pre-existing on the branch before any QA changes.
 
 ---
 
+
+## CI
+
+GitHub Actions runs the CI-able QA suites automatically:
+
+- **Workflow:** `.github/workflows/qa.yml` (job `qa`).
+- **Triggers:** push to `main`, every pull request, and version tags (`v*`).
+- **Matrix:** Python 3.10 / 3.11 / 3.12. Installs `pip install -e ".[dev]"`
+  (fallback `pip install -e .` + `pytest`).
+- **What runs:** `python -m pytest tests/ -q -m "not integration and not e2e_live and not e2e_3way"`.
+  The default pyproject `addopts` already excludes the `live` marker (live model
+  endpoints); CI additionally deselects `integration`, `e2e_live`, and `e2e_3way`
+  because they require a running stack / network / daemon and cannot run headless.
+
+The **LIVE legs** of the QA suite — the lane/spaces harness on `:8765`,
+two-party (two-agent) cross-party check, and the two-browser call test — need a
+running stack and **cannot run in GitHub CI**. They stay local: run them via
+`scripts/qa_suite.sh` against a running stack (see the LIVE sections above).
+Flutter app tests likewise run locally on .41
+(`ssh 192.168.0.41 '~/flutter/bin/flutter test'` in `skchat-app`).
