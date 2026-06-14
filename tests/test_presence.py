@@ -378,3 +378,68 @@ class TestPresenceCacheStatus:
         pc = PresenceCache(cache_file=tmp_path / "presence_cache.json")
         self._seed(pc, "capauth:a@skworld.io", 5, PresenceState.OFFLINE)
         assert pc.get_status("capauth:a@skworld.io") == "offline"
+
+
+# ---------------------------------------------------------------------------
+# QA additions — PresenceCache disk persistence (the cross-process contract)
+# ---------------------------------------------------------------------------
+
+
+class TestPresenceCachePersistence:
+    """PresenceCache is the bridge between the daemon and out-of-process CLI/MCP.
+    Records written by one instance must be visible to a fresh instance."""
+
+    def test_record_persists_across_instances(self, tmp_path: Path) -> None:
+        path = tmp_path / "presence_cache.json"
+        PresenceCache(cache_file=path).record(
+            "capauth:lumina@skworld.io", PresenceState.ONLINE
+        )
+        # A brand-new instance (simulating the CLI process) reads it back.
+        fresh = PresenceCache(cache_file=path)
+        entry = fresh.get_entry("capauth:lumina@skworld.io")
+        assert entry is not None
+        assert entry["state"] == "online"
+
+    def test_get_all_returns_copy(self, tmp_path: Path) -> None:
+        pc = PresenceCache(cache_file=tmp_path / "presence_cache.json")
+        pc.record("capauth:a@skworld.io", PresenceState.ONLINE)
+        snap = pc.get_all()
+        snap.clear()
+        # Mutating the returned dict must not wipe the cache.
+        assert pc.get_entry("capauth:a@skworld.io") is not None
+
+    def test_get_online_filters_by_age(self, tmp_path: Path) -> None:
+        pc = PresenceCache(cache_file=tmp_path / "presence_cache.json")
+        recent = datetime.now(timezone.utc) - timedelta(seconds=10)
+        old = datetime.now(timezone.utc) - timedelta(seconds=999)
+        pc.record("capauth:fresh@skworld.io", PresenceState.ONLINE, timestamp=recent)
+        pc.record("capauth:stale@skworld.io", PresenceState.ONLINE, timestamp=old)
+        online = pc.get_online(max_age=300)
+        assert "capauth:fresh@skworld.io" in online
+        assert "capauth:stale@skworld.io" not in online
+
+    def test_get_online_excludes_offline_state(self, tmp_path: Path) -> None:
+        pc = PresenceCache(cache_file=tmp_path / "presence_cache.json")
+        recent = datetime.now(timezone.utc) - timedelta(seconds=5)
+        pc.record("capauth:gone@skworld.io", PresenceState.OFFLINE, timestamp=recent)
+        assert "capauth:gone@skworld.io" not in pc.get_online()
+
+    def test_corrupt_cache_file_degrades_gracefully(self, tmp_path: Path) -> None:
+        """A garbage cache file must not crash the loader — it resets to empty."""
+        path = tmp_path / "presence_cache.json"
+        path.write_text("{not valid json", encoding="utf-8")
+        pc = PresenceCache(cache_file=path)
+        assert pc.get_all() == {}
+        # And it can still record cleanly afterward.
+        pc.record("capauth:a@skworld.io", PresenceState.ONLINE)
+        assert pc.get_entry("capauth:a@skworld.io") is not None
+
+    def test_get_status_handles_corrupt_timestamp(self, tmp_path: Path) -> None:
+        """A record with a non-ISO timestamp falls back to 'offline'."""
+        path = tmp_path / "presence_cache.json"
+        path.write_text(
+            '{"capauth:a@skworld.io": {"state": "online", "timestamp": "garbage"}}',
+            encoding="utf-8",
+        )
+        pc = PresenceCache(cache_file=path)
+        assert pc.get_status("capauth:a@skworld.io") == "offline"

@@ -2,7 +2,10 @@ from pathlib import Path
 
 
 def _html():
-    p = Path("src/skchat/static/space.html")
+    # Resolve relative to this test file, not the CWD — the repo convention is
+    # to run pytest from ~ (avoids the skmemory namespace collision), where a
+    # bare "src/..." relative path does not resolve.
+    p = Path(__file__).resolve().parent.parent / "src" / "skchat" / "static" / "space.html"
     return p.read_text(encoding="utf-8")
 
 

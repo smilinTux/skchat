@@ -141,6 +141,88 @@ class TestChatCrypto:
 
         assert ChatCrypto.verify_signature(signed, bob_pub) is False
 
+    # ── QA Area 3: tamper / forgery cases ────────────────────────────────────
+
+    def test_tampered_content_fails_verification(
+        self,
+        alice_keys: tuple[str, str],
+        sample_message: ChatMessage,
+    ) -> None:
+        """Signing then mutating the content invalidates the signature."""
+        alice_priv, alice_pub = alice_keys
+        crypto = ChatCrypto(alice_priv, PASSPHRASE)
+        signed = crypto.sign_message(sample_message)
+        # attacker swaps the plaintext but keeps the original signature
+        tampered = signed.model_copy(update={"content": "ATTACKER REWROTE THIS"})
+        assert ChatCrypto.verify_signature(tampered, alice_pub) is False
+
+    def test_verify_with_garbage_key_armor_returns_false(
+        self,
+        alice_keys: tuple[str, str],
+        sample_message: ChatMessage,
+    ) -> None:
+        """A non-parseable sender key armor degrades to False, never raises."""
+        alice_priv, _ = alice_keys
+        crypto = ChatCrypto(alice_priv, PASSPHRASE)
+        signed = crypto.sign_message(sample_message)
+        assert ChatCrypto.verify_signature(signed, "-----NOT A KEY-----") is False
+
+    def test_verify_with_garbage_signature_returns_false(
+        self,
+        alice_keys: tuple[str, str],
+        sample_message: ChatMessage,
+    ) -> None:
+        """A malformed signature blob fails verification gracefully."""
+        _, alice_pub = alice_keys
+        bad = sample_message.model_copy(update={"signature": "not-a-pgp-sig"})
+        assert ChatCrypto.verify_signature(bad, alice_pub) is False
+
+    def test_tampered_ciphertext_fails_decrypt(
+        self,
+        alice_keys: tuple[str, str],
+        bob_keys: tuple[str, str],
+    ) -> None:
+        """Mutating the encrypted body makes decryption raise DecryptionError."""
+        from skchat.crypto import DecryptionError
+
+        alice_priv, _ = alice_keys
+        bob_priv, bob_pub = bob_keys
+        msg = ChatMessage(
+            sender="capauth:alice@skworld.io",
+            recipient="capauth:bob@skworld.io",
+            content="secret payload",
+        )
+        sender = ChatCrypto(alice_priv, PASSPHRASE)
+        encrypted = sender.encrypt_message(msg, bob_pub)
+        # corrupt the armored ciphertext in the middle
+        body = encrypted.content
+        corrupted = body[: len(body) // 2] + "X" + body[len(body) // 2 + 1 :]
+        broken = encrypted.model_copy(update={"content": corrupted})
+        receiver = ChatCrypto(bob_priv, PASSPHRASE)
+        with pytest.raises(DecryptionError):
+            receiver.decrypt_message(broken)
+
+    def test_decrypt_with_wrong_recipient_key_fails(
+        self,
+        alice_keys: tuple[str, str],
+        bob_keys: tuple[str, str],
+    ) -> None:
+        """A third party (wrong private key) cannot decrypt the message."""
+        from skchat.crypto import DecryptionError
+
+        alice_priv, _ = alice_keys
+        _, bob_pub = bob_keys
+        msg = ChatMessage(
+            sender="capauth:alice@skworld.io",
+            recipient="capauth:bob@skworld.io",
+            content="for bob only",
+        )
+        sender = ChatCrypto(alice_priv, PASSPHRASE)
+        encrypted = sender.encrypt_message(msg, bob_pub)
+        # Alice (the sender, not bob) tries to decrypt with her own key → fails
+        with pytest.raises(DecryptionError):
+            ChatCrypto(alice_priv, PASSPHRASE).decrypt_message(encrypted)
+
     def test_fingerprint_from_armor(
         self,
         alice_keys: tuple[str, str],

@@ -409,3 +409,104 @@ class TestLoopback:
 
         assert "@" not in fp  # slug sanitizes @ → _at_
         assert fp  # non-empty
+
+
+# ---------------------------------------------------------------------------
+# QA additions
+# ---------------------------------------------------------------------------
+
+
+class TestExtractPayload:
+    """_extract_payload normalises both object envelopes and raw dicts."""
+
+    def test_object_envelope_with_payload(self):
+        env = MagicMock()
+        env.payload.content = "hello"
+        assert ChatTransport._extract_payload(env) == "hello"
+
+    def test_dict_envelope(self):
+        env = {"payload": {"content": "from dict"}}
+        assert ChatTransport._extract_payload(env) == "from dict"
+
+    def test_dict_envelope_non_dict_payload(self):
+        env = {"payload": "raw string"}
+        assert ChatTransport._extract_payload(env) == "raw string"
+
+    def test_none_when_no_payload(self):
+        # A plain object with no payload attribute and not a dict → None.
+        assert ChatTransport._extract_payload(object()) is None
+
+
+class TestSendTypingIndicator:
+    def test_typing_indicator_sent_as_heartbeat(self, transport, mock_skcomms):
+        transport.send_typing_indicator("capauth:lumina@skworld", thread_id="t1")
+        mock_skcomms.send.assert_called_once()
+        kwargs = mock_skcomms.send.call_args.kwargs
+        assert kwargs["recipient"] == "capauth:lumina@skworld"
+
+    def test_typing_indicator_swallows_errors(self, transport, mock_skcomms):
+        """A failed typing send must never raise (it's best-effort)."""
+        mock_skcomms.send.side_effect = ConnectionError("down")
+        # No exception should escape.
+        transport.send_typing_indicator("capauth:lumina@skworld")
+
+
+class TestHandleHeartbeat:
+    def test_no_presence_cache_is_noop(self, mock_skcomms, mock_history):
+        ct = ChatTransport(skcomms=mock_skcomms, history=mock_history,
+                           identity="capauth:me@x")  # no presence_cache
+        # Should silently return without error.
+        ct._handle_heartbeat(MagicMock())
+
+    def test_typing_heartbeat_records_typing(self, mock_skcomms, mock_history):
+        from skchat.presence import PresenceCache, PresenceIndicator, PresenceState
+
+        cache = MagicMock(spec=PresenceCache)
+        ct = ChatTransport(skcomms=mock_skcomms, history=mock_history,
+                           identity="capauth:me@x", presence_cache=cache)
+        ind = PresenceIndicator(identity_uri="capauth:peer@x",
+                                state=PresenceState.TYPING)
+        env = MagicMock()
+        env.payload.content = ind.model_dump_json()
+        ct._handle_heartbeat(env)
+        cache.set_typing.assert_called_once_with("capauth:peer@x", True)
+
+    def test_non_typing_heartbeat_clears_typing(self, mock_skcomms, mock_history):
+        from skchat.presence import PresenceCache, PresenceIndicator, PresenceState
+
+        cache = MagicMock(spec=PresenceCache)
+        ct = ChatTransport(skcomms=mock_skcomms, history=mock_history,
+                           identity="capauth:me@x", presence_cache=cache)
+        ind = PresenceIndicator(identity_uri="capauth:peer@x",
+                                state=PresenceState.ONLINE)
+        env = MagicMock()
+        env.payload.content = ind.model_dump_json()
+        ct._handle_heartbeat(env)
+        cache.set_typing.assert_called_once_with("capauth:peer@x", False)
+
+
+class TestFromConfig:
+    def test_from_config_builds_transport(self, mock_skcomms, mock_history):
+        ct = ChatTransport.from_config(
+            skcomms=mock_skcomms, history=mock_history, identity="capauth:x@y"
+        )
+        assert isinstance(ct, ChatTransport)
+        assert ct.identity == "capauth:x@y"
+
+
+class TestFileInboxRawFallback:
+    def test_raw_chatmessage_json_without_envelope(self, tmp_path):
+        """A file that is a bare ChatMessage JSON (no envelope wrapper) is read."""
+        ct, _, mock_history = _make_transport(tmp_path)
+        ct._get_own_fingerprint = lambda: "TESTFP"  # type: ignore[method-assign]
+        inbox = ct._file_inbox_root / "TESTFP"  # type: ignore[attr-defined]
+        inbox.mkdir(parents=True)
+
+        msg = ChatMessage(sender="capauth:peer@skworld.io",
+                          recipient="capauth:test@skchat", content="raw bare msg")
+        # Write the ChatMessage JSON directly (no {"payload": ...} wrapper).
+        (inbox / "raw.skc.json").write_text(msg.model_dump_json(), encoding="utf-8")
+
+        messages = ct._poll_file_inbox()
+        assert len(messages) == 1
+        assert messages[0].content == "raw bare msg"

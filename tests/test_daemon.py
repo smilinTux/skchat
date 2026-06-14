@@ -21,6 +21,9 @@ from skchat.daemon import (
     run_daemon,
     start_daemon,
     stop_daemon,
+    turn_secret_present,
+    webrtc_signaling_health,
+    webrtc_turn_warning,
 )
 from skchat.models import ChatMessage, DeliveryStatus
 
@@ -658,3 +661,119 @@ class TestSingletonLock:
         monkeypatch.setattr(daemon_mod, "_live_daemon_pids", lambda: [4242])
         with pytest.raises(RuntimeError, match="4242"):
             start_daemon(background=True)
+
+
+# ---------------------------------------------------------------------------
+# QA additions — pure WebRTC/TURN classifiers (no live signaling/TURN needed)
+# ---------------------------------------------------------------------------
+
+
+class TestWebrtcSignalingHealth:
+    def test_down_when_transport_inactive(self):
+        # Even a stale "connected" flag can't make it ok if transport is dead.
+        assert webrtc_signaling_health(webrtc_active=False, signaling_connected=True) == "down"
+
+    def test_degraded_when_active_but_signaling_off(self):
+        assert webrtc_signaling_health(webrtc_active=True, signaling_connected=False) == "degraded"
+
+    def test_ok_when_active_and_connected(self):
+        assert webrtc_signaling_health(webrtc_active=True, signaling_connected=True) == "ok"
+
+
+class TestTurnSecret:
+    def test_present_when_set(self):
+        assert turn_secret_present({"SKCOMMS_TURN_SECRET": "s3cr3t"}) is True
+
+    def test_absent_when_blank(self):
+        assert turn_secret_present({"SKCOMMS_TURN_SECRET": "   "}) is False
+
+    def test_absent_when_missing(self):
+        assert turn_secret_present({}) is False
+
+    def test_warning_none_when_present(self):
+        assert webrtc_turn_warning({"SKCOMMS_TURN_SECRET": "x"}) is None
+
+    def test_warning_string_when_missing(self):
+        warn = webrtc_turn_warning({})
+        assert warn is not None
+        assert "SKCOMMS_TURN_SECRET" in warn
+
+
+# ---------------------------------------------------------------------------
+# QA additions — _route_file_message dispatch + init-helper non-fatal behaviour
+# ---------------------------------------------------------------------------
+
+
+class TestRouteFileMessage:
+    def test_no_file_service_returns_false(self):
+        from skchat.models import ChatMessage
+
+        daemon = ChatDaemon(interval=5, quiet=True)
+        daemon._file_service = None
+        msg = ChatMessage(sender="a", recipient="b",
+                          content='{"type": "FILE_TRANSFER_INIT"}')
+        assert daemon._route_file_message(msg) is False
+
+    def test_plain_chat_message_not_routed(self):
+        from skchat.models import ChatMessage
+
+        daemon = ChatDaemon(interval=5, quiet=True)
+        daemon._file_service = MagicMock()
+        msg = ChatMessage(sender="a", recipient="b", content="just a normal message")
+        assert daemon._route_file_message(msg) is False
+        daemon._file_service.store_incoming_chunk.assert_not_called()
+
+    def test_file_transfer_init_routed_to_service(self):
+        from skchat.models import ChatMessage
+
+        daemon = ChatDaemon(interval=5, quiet=True)
+        fs = MagicMock()
+        daemon._file_service = fs
+        msg = ChatMessage(
+            sender="capauth:peer@x", recipient="capauth:me@x",
+            content='{"type": "FILE_TRANSFER_INIT", "transfer_id": "t1"}',
+        )
+        assert daemon._route_file_message(msg) is True
+        fs.store_incoming_chunk.assert_called_once()
+        # The envelope sender is carried through for attribution.
+        payload = fs.store_incoming_chunk.call_args[0][0]
+        assert payload["sender"] == "capauth:peer@x"
+
+    def test_marker_present_but_wrong_type_not_routed(self):
+        """Content mentions FILE_CHUNK but JSON type is unknown → not routed."""
+        from skchat.models import ChatMessage
+
+        daemon = ChatDaemon(interval=5, quiet=True)
+        fs = MagicMock()
+        daemon._file_service = fs
+        msg = ChatMessage(sender="a", recipient="b",
+                          content='{"type": "SOMETHING_ELSE", "note": "FILE_CHUNK"}')
+        assert daemon._route_file_message(msg) is False
+        fs.store_incoming_chunk.assert_not_called()
+
+    def test_service_exception_still_consumes_message(self):
+        """A store_incoming_chunk failure is swallowed but the msg is consumed."""
+        from skchat.models import ChatMessage
+
+        daemon = ChatDaemon(interval=5, quiet=True)
+        fs = MagicMock()
+        fs.store_incoming_chunk.side_effect = RuntimeError("disk full")
+        daemon._file_service = fs
+        msg = ChatMessage(sender="a", recipient="b",
+                          content='{"type": "FILE_CHUNK", "seq": 1}')
+        # Returns True (recognised + handed off) even though the store raised.
+        assert daemon._route_file_message(msg) is True
+
+
+class TestInitHelpersNonFatal:
+    def test_init_reaper_non_fatal(self):
+        """A reaper init failure returns None, not an exception."""
+        daemon = ChatDaemon(interval=5, quiet=True)
+        bad_history = MagicMock()
+        with patch("skchat.ephemeral.MessageReaper", side_effect=RuntimeError("boom")):
+            assert daemon._init_reaper(bad_history) is None
+
+    def test_init_memory_bridge_non_fatal(self):
+        daemon = ChatDaemon(interval=5, quiet=True)
+        with patch("skchat.memory_bridge.MemoryBridge", side_effect=RuntimeError("boom")):
+            assert daemon._init_memory_bridge(MagicMock()) is None

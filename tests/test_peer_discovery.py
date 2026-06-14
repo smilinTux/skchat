@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from skchat.peer_discovery import PeerDiscovery
+from skchat.peer_discovery import PeerDiscovery, default_peers_dir
 
 # ─────────────────────────────────────────────────────────────
 # Fixtures
@@ -271,3 +271,103 @@ class TestToTabCompletions:
         (d / "nohandle.json").write_text(json.dumps(peer))
         disc = PeerDiscovery(peers_dir=d)
         assert disc.to_tab_completions() == ["lumina"]
+
+
+# ─────────────────────────────────────────────────────────────
+# QA additions
+# ─────────────────────────────────────────────────────────────
+
+
+class TestDefaultPeersDir:
+    def test_env_override_honored(self, tmp_path: Path, monkeypatch) -> None:
+        """SKCHAT_PEERS_DIR overrides the canonical ~/.skcapstone/peers."""
+        monkeypatch.setenv("SKCHAT_PEERS_DIR", str(tmp_path / "custom"))
+        assert default_peers_dir() == tmp_path / "custom"
+
+    def test_default_when_unset(self, monkeypatch) -> None:
+        """Without the override the canonical location is used."""
+        monkeypatch.delenv("SKCHAT_PEERS_DIR", raising=False)
+        assert default_peers_dir().name == "peers"
+
+    def test_discovery_uses_env_override_when_no_arg(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """PeerDiscovery() with no peers_dir picks up the env override."""
+        d = tmp_path / "envpeers"
+        d.mkdir()
+        (d / "lumina.json").write_text(json.dumps(LUMINA_DATA))
+        monkeypatch.setenv("SKCHAT_PEERS_DIR", str(d))
+        disc = PeerDiscovery()
+        assert disc.get_peer("lumina") is not None
+
+
+class TestGetPeerAdvancedMatching:
+    def test_match_by_bare_fingerprint(self, disc: PeerDiscovery) -> None:
+        """A bare full fingerprint hex resolves to the peer."""
+        peer = disc.get_peer("AABB1122CCDD3344EEFF5566AABB1122CCDD3344")
+        assert peer is not None
+        assert peer["name"] == "Lumina"
+
+    def test_match_by_fingerprint_short_prefix(self, disc: PeerDiscovery) -> None:
+        """An 8+-char fingerprint prefix (envelope short id) resolves."""
+        peer = disc.get_peer("AABB1122")
+        assert peer is not None
+        assert peer["name"] == "Lumina"
+
+    def test_short_prefix_under_8_chars_no_match(self, disc: PeerDiscovery) -> None:
+        """A too-short prefix must NOT match (avoids accidental collisions)."""
+        # "AABB" is only 4 chars — below the 8-char floor.
+        assert disc.get_peer("AABB") is None
+
+    def test_match_by_email_local_part(self, disc: PeerDiscovery) -> None:
+        """The local part of the email field matches."""
+        peer = disc.get_peer("alice")
+        assert peer is not None
+        assert peer["name"] == "Alice"
+
+    def test_match_by_identity_field(self, tmp_path: Path) -> None:
+        """A peer with an `identity` field (no contact_uris hit) matches by it."""
+        d = tmp_path / "peers"
+        d.mkdir()
+        peer = {
+            "name": "Solo",
+            "identity": "capauth:solo@skworld.io",
+            "contact_uris": [],
+        }
+        (d / "solo.json").write_text(json.dumps(peer))
+        disc = PeerDiscovery(peers_dir=d)
+        # URI-body match: "solo@skworld.io" after stripping the scheme
+        found = disc.get_peer("solo@skworld.io")
+        assert found is not None
+        assert found["name"] == "Solo"
+
+
+class TestResolveIdentityConstruction:
+    def test_constructs_from_handle_when_no_capauth_uri(self, tmp_path: Path) -> None:
+        """A peer with only a handle (no capauth: URI) → capauth:<handle>."""
+        d = tmp_path / "peers"
+        d.mkdir()
+        peer = {
+            "name": "Handly",
+            "handle": "handly@skworld.io",
+            "contact_uris": ["mailto:handly@skworld.io"],
+        }
+        (d / "handly.json").write_text(json.dumps(peer))
+        disc = PeerDiscovery(peers_dir=d)
+        assert disc.resolve_identity("handly") == "capauth:handly@skworld.io"
+
+    def test_list_peers_skips_unreadable_file(self, tmp_path: Path) -> None:
+        """An OSError on one file is swallowed; valid peers still load."""
+        d = tmp_path / "peers"
+        d.mkdir()
+        (d / "good.json").write_text(json.dumps(ALICE_DATA))
+        bad = d / "bad.json"
+        bad.write_text(json.dumps(LUMINA_DATA))
+        bad.chmod(0o000)
+        try:
+            disc = PeerDiscovery(peers_dir=d)
+            peers = disc.list_peers()
+            names = {p["name"] for p in peers}
+            assert "Alice" in names
+        finally:
+            bad.chmod(0o644)

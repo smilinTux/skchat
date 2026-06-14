@@ -173,3 +173,69 @@ class TestStats:
         assert len(top) == 1
         assert top[0][0] == "popular"
         assert top[0][1] == 5
+
+
+# ---------------------------------------------------------------------------
+# QA additions — event edge cases, backward-compat aliases, isolation
+# ---------------------------------------------------------------------------
+
+
+class TestApplyEventEdges:
+    def test_apply_remove_event(self, manager: ReactionManager) -> None:
+        """A remote 'remove' event removes an existing local reaction."""
+        manager.add_reaction("m1", "star", "capauth:peer@test")
+        ev = ReactionEvent(message_id="m1", emoji="star",
+                           sender="capauth:peer@test", action="remove")
+        assert manager.apply_event(ev) is True
+        assert not manager.has_reaction("m1", "star", "capauth:peer@test")
+
+    def test_apply_unknown_action_returns_false(self, manager: ReactionManager) -> None:
+        """An event with an unrecognised action is a no-op returning False."""
+        ev = ReactionEvent(message_id="m1", emoji="x",
+                           sender="capauth:peer@test", action="frobnicate")
+        assert manager.apply_event(ev) is False
+        assert manager.total_reactions() == 0
+
+
+class TestBackwardCompatAliases:
+    """cli.py imports ReactionStore and uses the pre-rename method names."""
+
+    def test_reaction_store_is_manager(self) -> None:
+        from skchat.reactions import ReactionStore
+        assert ReactionStore is ReactionManager
+
+    def test_add_alias(self, manager: ReactionManager) -> None:
+        assert manager.add("m1", "fire", "alice") is True
+        assert manager.total_reactions() == 1
+
+    def test_get_alias(self, manager: ReactionManager) -> None:
+        manager.add("m1", "fire", "alice")
+        got = manager.get("m1")
+        assert len(got) == 1
+        assert got[0].emoji == "fire"
+
+    def test_get_summary_alias(self, manager: ReactionManager) -> None:
+        manager.add("m1", "fire", "alice")
+        summary = manager.get_summary("m1")
+        assert summary.total_count == 1
+
+
+class TestStateIsolationAndCounts:
+    def test_get_reactions_returns_copy(self, manager: ReactionManager) -> None:
+        """Mutating the returned list must not corrupt internal state."""
+        manager.add_reaction("m1", "fire", "alice")
+        out = manager.get_reactions("m1")
+        out.clear()
+        # Internal state is untouched.
+        assert manager.total_reactions() == 1
+
+    def test_message_count_after_full_removal(self, manager: ReactionManager) -> None:
+        """A message whose only reaction is removed no longer counts."""
+        manager.add_reaction("m1", "fire", "alice")
+        manager.remove_reaction("m1", "fire", "alice")
+        assert manager.message_count() == 0
+
+    def test_top_reacted_respects_limit(self, manager: ReactionManager) -> None:
+        for mid in ("a", "b", "c"):
+            manager.add_reaction(mid, "x", "alice")
+        assert len(manager.top_reacted(limit=2)) == 2

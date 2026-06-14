@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -226,3 +226,96 @@ class TestPromptConstruction:
             content="@claude help",
         )
         assert "Opus" in prompt or "sovereign" in prompt.lower()
+
+
+# ---------------------------------------------------------------------------
+# QA additions — token-boundary edges, inject_context, memory-context wiring
+# ---------------------------------------------------------------------------
+
+
+class TestShouldAdvocateBoundaries:
+    def test_trigger_followed_by_comma(self):
+        """@opus, ... is a valid trigger (comma is a boundary)."""
+        assert should_advocate("@opus, are you there") is True
+
+    def test_trigger_followed_by_colon(self):
+        """@lumina: ... is a valid trigger (colon is a boundary)."""
+        assert should_advocate("@lumina: hello") is True
+
+    def test_trigger_followed_by_digit_is_boundary(self):
+        """@ai2 — a digit is non-alpha, so this still triggers per current rules."""
+        assert should_advocate("@ai2 go") is True
+
+    def test_multiple_triggers_one_match_enough(self):
+        assert should_advocate("hey @opus and @lumina") is True
+
+    def test_email_address_does_not_falsely_trigger(self):
+        """An @-mention embedded in a word ("@claudette") must not trigger."""
+        assert should_advocate("contact claudette@x.com") is False
+
+
+class TestInjectContext:
+    def test_inject_context_updates_identity(self):
+        engine = AdvocacyEngine(identity="capauth:opus@skworld.io")
+        engine.inject_context("capauth:lumina@skworld.io")
+        assert engine.identity == "capauth:lumina@skworld.io"
+
+
+class TestMemoryContext:
+    """_get_memory_context shells out to skcapstone-mcp via subprocess.run."""
+
+    def _mcp_result(self, returncode=0, stdout=""):
+        return MagicMock(returncode=returncode, stdout=stdout)
+
+    def test_memory_context_parses_snippets(self):
+        engine = AdvocacyEngine()
+        import json as _json
+
+        mem_blocks = _json.dumps([{"content": "Chef likes brevity"},
+                                  {"text": "release v1.2 shipped"}])
+        rpc = _json.dumps({"result": {"content": [{"type": "text", "text": mem_blocks}]}})
+
+        with patch("skchat.advocacy.subprocess.run",
+                   return_value=self._mcp_result(0, rpc)):
+            ctx = engine._get_memory_context("release status")
+
+        assert "Relevant context:" in ctx
+        assert "Chef likes brevity" in ctx
+        assert "release v1.2 shipped" in ctx
+
+    def test_memory_context_returns_empty_on_nonzero_exit(self):
+        engine = AdvocacyEngine()
+        with patch("skchat.advocacy.subprocess.run",
+                   return_value=self._mcp_result(returncode=1, stdout="")):
+            assert engine._get_memory_context("q") == ""
+
+    def test_memory_context_returns_empty_on_subprocess_error(self):
+        engine = AdvocacyEngine()
+        with patch("skchat.advocacy.subprocess.run",
+                   side_effect=FileNotFoundError("skcapstone-mcp not found")):
+            assert engine._get_memory_context("q") == ""
+
+    def test_memory_context_empty_when_no_memories(self):
+        engine = AdvocacyEngine()
+        import json as _json
+
+        rpc = _json.dumps({"result": {"content": [{"type": "text", "text": "[]"}]}})
+        with patch("skchat.advocacy.subprocess.run",
+                   return_value=self._mcp_result(0, rpc)):
+            assert engine._get_memory_context("q") == ""
+
+    def test_process_message_prepends_memory_context(self):
+        """When memory context is found, it is woven into the prompt before send."""
+        engine = AdvocacyEngine()
+        msg = _msg(content="@opus what shipped?")
+        captured: list[str] = []
+
+        with patch.object(engine, "_get_memory_context",
+                          return_value="Relevant context:\n- v1.2 shipped"):
+            with patch("skchat.advocacy._call_consciousness",
+                       side_effect=lambda p: captured.append(p) or "ok"):
+                engine.process_message(msg)
+
+        assert captured
+        assert "v1.2 shipped" in captured[-1]
+        assert "@opus what shipped?" in captured[-1]

@@ -51,3 +51,43 @@ def test_invite_body_roundtrip():
 def test_parse_invite_rejects_non_invite():
     with pytest.raises(ValueError):
         parse_invite_body('{"type":"SOMETHING_ELSE"}')
+
+
+# ── QA Area 3: call_session edge cases ───────────────────────────────────────
+
+
+def test_parse_invite_rejects_non_json():
+    with pytest.raises(ValueError, match="invalid JSON"):
+        parse_invite_body("{not json at all")
+
+
+def test_parse_invite_rejects_missing_type():
+    # a JSON object with no "type" key is not a CALL_INVITE
+    with pytest.raises(ValueError, match="not a CALL_INVITE"):
+        parse_invite_body('{"from_fqid":"a@b","room":"call-x"}')
+
+
+def test_each_invite_gets_a_unique_nonce():
+    b1 = build_invite_body(from_fqid="a@b", to_fqid="c@d", room="call-x",
+                           livekit_url="wss://h")
+    b2 = build_invite_body(from_fqid="a@b", to_fqid="c@d", room="call-x",
+                           livekit_url="wss://h")
+    assert parse_invite_body(b1)["nonce"] != parse_invite_body(b2)["nonce"]
+
+
+def test_invite_carries_topic_when_supplied():
+    body = build_invite_body(from_fqid="a@b", to_fqid="c@d", room="call-x",
+                             livekit_url="wss://h", topic="ingest debugging")
+    assert parse_invite_body(body)["topic"] == "ingest debugging"
+
+
+def test_invite_topic_defaults_empty():
+    body = build_invite_body(from_fqid="a@b", to_fqid="c@d", room="call-x",
+                             livekit_url="wss://h")
+    assert parse_invite_body(body)["topic"] == ""
+
+
+def test_self_pair_room_is_deterministic():
+    # degenerate self-call: deterministic + well-formed (no crash)
+    room = derive_room("solo@chef.skworld", "solo@chef.skworld")
+    assert room.startswith("call-") and len(room[len("call-"):]) == 16

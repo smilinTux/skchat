@@ -298,3 +298,127 @@ class TestInbox:
         findings_only = messenger.get_inbox(message_type="finding")
         assert len(findings_only) == 1
         assert findings_only[0]["message_type"] == "finding"
+
+
+# ---------------------------------------------------------------------------
+# QA additions
+# ---------------------------------------------------------------------------
+
+
+class TestSendMetadata:
+    def test_send_with_ttl_and_payload_and_reply(self):
+        history = _mock_history()
+        messenger = AgentMessenger(identity="capauth:jarvis@skworld.io", history=history)
+        messenger.send(
+            recipient="capauth:lumina@skworld.io",
+            content="hi",
+            ttl=60,
+            payload={"k": "v"},
+            reply_to="parent-1",
+        )
+        stored = history.store_message.call_args[0][0]
+        assert stored.ttl == 60
+        assert stored.metadata["payload"] == {"k": "v"}
+        assert stored.metadata["reply_to"] == "parent-1"
+        assert stored.reply_to_id == "parent-1"
+        assert stored.metadata["sender_agent"] == "capauth:jarvis@skworld.io"
+
+    def test_send_no_team_thread_id_none(self):
+        """Without a team, thread_id stays None unless passed explicitly."""
+        history = _mock_history()
+        messenger = AgentMessenger(identity="capauth:jarvis@skworld.io", history=history)
+        messenger.send(recipient="capauth:lumina@skworld.io", content="x")
+        stored = history.store_message.call_args[0][0]
+        assert stored.thread_id is None
+
+
+class TestReceiveAndTeamMessages:
+    def test_receive_polls_transport_then_returns_inbox(self):
+        history = _mock_history()
+        transport = MagicMock()
+        messenger = AgentMessenger(
+            identity="capauth:jarvis@skworld.io", history=history, transport=transport
+        )
+        result = messenger.receive()
+        transport.poll_inbox.assert_called_once()
+        assert result == []
+
+    def test_receive_swallows_transport_error(self):
+        history = _mock_history()
+        transport = MagicMock()
+        transport.poll_inbox.side_effect = ConnectionError("down")
+        messenger = AgentMessenger(
+            identity="capauth:jarvis@skworld.io", history=history, transport=transport
+        )
+        # Must not raise — degrades to returning the (empty) local inbox.
+        assert messenger.receive() == []
+
+    def test_get_team_messages_no_team_returns_empty(self):
+        history = _mock_history()
+        messenger = AgentMessenger(identity="capauth:jarvis@skworld.io", history=history)
+        assert messenger.get_team_messages() == []
+
+    def test_get_team_messages_delegates_to_history(self):
+        history = _mock_history()
+        history.get_thread_messages.return_value = [{"content": "team msg"}]
+        messenger = AgentMessenger(
+            identity="capauth:jarvis@skworld.io", history=history, team_id="dev-team"
+        )
+        msgs = messenger.get_team_messages()
+        history.get_thread_messages.assert_called_once_with("dev-team", limit=50)
+        assert msgs == [{"content": "team msg"}]
+
+
+class TestBroadcastCounting:
+    def test_broadcast_skips_self_with_transport_delivery(self):
+        history = _mock_history()
+        transport = MagicMock()
+        transport.send_message.return_value = {"delivered": True, "transport": "file"}
+        messenger = AgentMessenger(
+            identity="capauth:jarvis@skworld.io", history=history, transport=transport
+        )
+        results = messenger.broadcast_team(
+            content="ping",
+            team_uris=[
+                "capauth:jarvis@skworld.io",  # self → skipped
+                "capauth:lumina@skworld.io",
+                "capauth:opus@skworld.io",
+            ],
+        )
+        assert len(results) == 2
+        assert all(r["delivered"] for r in results)
+
+
+class TestGetInboxFiltering:
+    def test_get_inbox_skips_non_agent_comm_memory(self):
+        history = _mock_history()
+        plain = MagicMock()
+        plain.id = "m-plain"
+        plain.content = "regular chat"
+        plain.created_at = "2026-02-27T09:00:00"
+        plain.tags = ["skchat:message"]
+        plain.metadata = {"sender": "capauth:human@x"}  # no agent_comm flag
+        history._store.list_memories.return_value = [plain]
+        messenger = AgentMessenger(identity="capauth:jarvis@skworld.io", history=history)
+        assert messenger.get_inbox() == []
+
+    def test_get_inbox_sorted_newest_first(self):
+        history = _mock_history()
+
+        def _m(mid, ts, content):
+            mem = MagicMock()
+            mem.id = mid
+            mem.content = content
+            mem.created_at = ts
+            mem.tags = ["skchat:message"]
+            mem.metadata = {"agent_comm": True, "message_type": "text",
+                            "sender": "capauth:peer@x"}
+            return mem
+
+        history._store.list_memories.return_value = [
+            _m("a", "2026-02-27T10:00:00", "older"),
+            _m("b", "2026-02-27T12:00:00", "newer"),
+        ]
+        messenger = AgentMessenger(identity="capauth:jarvis@skworld.io", history=history)
+        inbox = messenger.get_inbox()
+        assert [m["content"] for m in inbox] == ["newer", "older"]

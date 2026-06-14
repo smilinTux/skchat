@@ -368,3 +368,133 @@ class TestChatHistoryGetUnread:
         cursor = datetime(2026, 2, 25, 10, 0, 0, tzinfo=timezone.utc)
         # strictly-after semantics: a message AT the cursor is already read
         assert hist.get_unread(last_read=cursor) == []
+
+
+# ---------------------------------------------------------------------------
+# QA additions — JSONL save/load round-trip + store-backed retrieval helpers
+# ---------------------------------------------------------------------------
+
+
+class TestJsonlSaveLoad:
+    def test_save_then_load_round_trip(self, jsonl_history) -> None:
+        hist, _ = jsonl_history
+        msg = hist.add_message("capauth:a@x", "capauth:b@x", "hello jsonl")
+        loaded = hist.load()
+        assert len(loaded) == 1
+        assert loaded[0].id == msg.id
+        assert loaded[0].content == "hello jsonl"
+
+    def test_load_peer_filter(self, jsonl_history) -> None:
+        hist, hist_dir = jsonl_history
+        _write_msg(hist_dir, "alice", "me", "from alice", "2026-02-25T10:00:00+00:00")
+        _write_msg(hist_dir, "bob", "me", "from bob", "2026-02-25T11:00:00+00:00")
+        assert [m.content for m in hist.load(peer="alice")] == ["from alice"]
+
+    def test_load_respects_limit(self, jsonl_history) -> None:
+        hist, hist_dir = jsonl_history
+        for i in range(5):
+            _write_msg(hist_dir, "a", "b", f"m{i}", f"2026-02-2{i}T10:00:00+00:00")
+        assert len(hist.load(limit=2)) == 2
+
+    def test_load_skips_malformed_lines(self, jsonl_history) -> None:
+        hist, hist_dir = jsonl_history
+        path = hist_dir / "2026-02-25.jsonl"
+        good = _write_msg(hist_dir, "a", "b", "good", "2026-02-25T10:00:00+00:00")
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write("not json at all\n")
+        loaded = hist.load()
+        assert [m.id for m in loaded] == [good.id]
+
+    def test_add_message_returns_and_persists(self, jsonl_history) -> None:
+        hist, _ = jsonl_history
+        msg = hist.add_message("a", "b", "c")
+        assert isinstance(msg, ChatMessage)
+        assert len(hist.load()) == 1
+
+    def test_get_messages_dict_shape(self, jsonl_history) -> None:
+        hist, hist_dir = jsonl_history
+        _write_msg(hist_dir, "alice", "me", "yo", "2026-02-25T10:00:00+00:00")
+        out = hist.get_messages(peer="alice")
+        assert out[0]["sender"] == "alice"
+        assert out[0]["content"] == "yo"
+        assert isinstance(out[0]["timestamp"], str)  # ISO string
+
+    def test_get_thread_jsonl_oldest_first(self, jsonl_history) -> None:
+        """get_thread scans JSONL, filters by thread, returns oldest-first."""
+        hist, hist_dir = jsonl_history
+        for i, c in enumerate(["first", "second"]):
+            ts = datetime.fromisoformat(f"2026-02-25T1{i}:00:00+00:00")
+            m = ChatMessage(sender="a", recipient="b", content=c,
+                            thread_id="t-thread", timestamp=ts)
+            path = hist_dir / f"{ts.strftime('%Y-%m-%d')}.jsonl"
+            with path.open("a", encoding="utf-8") as fh:
+                fh.write(m.model_dump_json() + "\n")
+        # An off-thread message that must be excluded.
+        _write_msg(hist_dir, "a", "b", "other", "2026-02-25T12:00:00+00:00")
+        thread = hist.get_thread("t-thread")
+        assert [m.content for m in thread] == ["first", "second"]
+
+
+class TestStoreBackedRetrieval:
+    """Helpers that go through the SKMemory store, using the FakeMemoryStore."""
+
+    def test_store_message_tags(self, history: ChatHistory, fake_store) -> None:
+        msg = ChatMessage(sender="capauth:alice@x", recipient="capauth:bob@x",
+                          content="tagged", thread_id="t1")
+        history.store_message(msg)
+        mem = fake_store._memories[0]
+        assert "skchat" in mem.tags
+        assert "skchat:message" in mem.tags
+        assert "skchat:thread:t1" in mem.tags
+        assert "skchat:sender:capauth:alice@x" in mem.tags
+        assert "skchat:recipient:capauth:bob@x" in mem.tags
+        assert mem.metadata["chat_message_id"] == msg.id
+
+    def test_get_conversation_merges_both_directions(self, history: ChatHistory) -> None:
+        a, b = "capauth:alice@x", "capauth:bob@x"
+        history.store_message(ChatMessage(sender=a, recipient=b, content="a→b"))
+        history.store_message(ChatMessage(sender=b, recipient=a, content="b→a"))
+        # An unrelated message that must not appear.
+        history.store_message(
+            ChatMessage(sender=a, recipient="capauth:carol@x", content="a→c")
+        )
+        convo = history.get_conversation(a, b)
+        contents = {m["content"] for m in convo}
+        assert contents == {"a→b", "b→a"}
+
+    def test_store_thread_metadata(self, history: ChatHistory, fake_store) -> None:
+        thread = Thread(title="Topic", participants=["capauth:a@x", "capauth:b@x"])
+        history.store_thread(thread)
+        mem = fake_store._memories[0]
+        assert mem.metadata["thread_id"] == thread.id
+        assert mem.metadata["participants"] == ["capauth:a@x", "capauth:b@x"]
+        assert "skchat:thread_meta" in mem.tags
+
+    def test_get_thread_meta_found_and_missing(self, history: ChatHistory) -> None:
+        thread = Thread(title="Topic", participants=["capauth:a@x"])
+        history.store_thread(thread)
+        meta = history.get_thread_meta(thread.id)
+        assert meta is not None
+        assert meta["title"] == "Topic"
+        assert history.get_thread_meta("no-such-thread") is None
+
+    def test_get_messages_since_store_none(self) -> None:
+        """get_messages_since returns [] when there is no store at all."""
+        from skchat.history import ChatHistory as CH
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            hist = CH(store=None, history_dir=d)
+            hist._store = None  # force the no-store branch
+            assert hist.get_messages_since(minutes=60) == []
+
+    def test_get_messages_since_recipient_filter(self, history: ChatHistory) -> None:
+        history.store_message(
+            ChatMessage(sender="capauth:a@x", recipient="capauth:me@x", content="mine")
+        )
+        history.store_message(
+            ChatMessage(sender="capauth:a@x", recipient="capauth:other@x", content="theirs")
+        )
+        # minutes=0 → no time filter (FakeMemory.created_at is a fixed past date).
+        out = history.get_messages_since(minutes=0, recipient="capauth:me@x")
+        assert [m["content"] for m in out] == ["mine"]

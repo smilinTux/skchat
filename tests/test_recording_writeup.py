@@ -12,6 +12,7 @@ from skchat.spaces.recording_writeup import (
     RecordingWriteup,
     Summarizer,
     Transcriber,
+    _fallback_writeup,
 )
 
 
@@ -119,3 +120,118 @@ def test_poster_default_is_overridable_via_constructor() -> None:
     )
     assert len(poster.calls) == 1
     assert poster.calls[0] == ("space-ctor", out)
+
+
+# ---------------------------------------------------------------------------
+# QA Area 2 — additional write-up pipeline coverage
+# ---------------------------------------------------------------------------
+
+
+def test_whitespace_only_transcript_is_treated_as_empty() -> None:
+    """A transcript of only whitespace must NOT reach the summarizer."""
+    summarizer = FakeSummarizer()
+    poster = _RecordingPoster()
+    out = RecordingWriteup().process(
+        "space-ws",
+        "/tmp/ws.ogg",
+        title="Whitespace",
+        transcriber=FakeTranscriber("   \n\t  "),
+        summarizer=summarizer,
+        poster=poster,
+    )
+    assert summarizer.seen_transcript is None
+    assert "no" in out.lower()
+    assert len(poster.calls) == 1
+
+
+def test_transcriber_exception_does_not_crash_pipeline() -> None:
+    """If the transcriber raises, the pipeline degrades to the no-transcript note
+    rather than propagating the error."""
+
+    class _BoomTranscriber:
+        def transcribe(self, audio_path: str):  # noqa: ARG002
+            raise RuntimeError("whisper exploded")
+
+    poster = _RecordingPoster()
+    out = RecordingWriteup().process(
+        "space-boom",
+        "/tmp/boom.ogg",
+        title="Crashy",
+        transcriber=_BoomTranscriber(),
+        summarizer=FakeSummarizer(),
+        poster=poster,
+    )
+    # No exception; honest note posted once.
+    assert len(poster.calls) == 1
+    assert "no" in out.lower()
+
+
+def test_poster_failure_does_not_lose_the_writeup() -> None:
+    """A poster that raises must not prevent process() from returning the text."""
+
+    def _failing_poster(space_id: str, text: str) -> None:  # noqa: ARG001
+        raise ConnectionError("spaces server down")
+
+    out = RecordingWriteup().process(
+        "space-fail",
+        "/tmp/f.ogg",
+        title="Resilient",
+        transcriber=FakeTranscriber("words were said here"),
+        summarizer=FakeSummarizer(),
+        poster=_failing_poster,
+    )
+    # The write-up is still returned to the caller despite the post failing.
+    assert "## Summary" in out
+    assert "## Action Items" in out
+
+
+def test_transcript_is_stripped_before_summarizing() -> None:
+    """Leading/trailing whitespace is stripped before the summarizer sees it."""
+    summarizer = FakeSummarizer()
+    RecordingWriteup().process(
+        "space-strip",
+        "/tmp/s.ogg",
+        title="Strip",
+        transcriber=FakeTranscriber("  padded transcript  "),
+        summarizer=summarizer,
+        poster=_RecordingPoster(),
+    )
+    assert summarizer.seen_transcript == "padded transcript"
+
+
+def test_per_call_seam_overrides_instance_default() -> None:
+    """A per-call summarizer overrides one set on the instance."""
+    instance_sm = FakeSummarizer()
+    call_sm = FakeSummarizer()
+    wu = RecordingWriteup(summarizer=instance_sm)
+    wu.process(
+        "space-ovr",
+        "/tmp/o.ogg",
+        title="Override",
+        transcriber=FakeTranscriber("hello"),
+        summarizer=call_sm,
+        poster=_RecordingPoster(),
+    )
+    # The per-call summarizer ran; the instance one did not.
+    assert call_sm.seen_transcript == "hello"
+    assert instance_sm.seen_transcript is None
+
+
+def test_fallback_writeup_has_required_sections_and_excerpt() -> None:
+    """The no-LLM fallback always emits the three required markdown sections."""
+    out = _fallback_writeup("a short transcript", title="Fallback Meeting")
+    assert out.startswith("# Fallback Meeting")
+    assert "## Summary" in out
+    assert "## Key Points" in out
+    assert "## Action Items" in out
+    assert "a short transcript" in out
+
+
+def test_fallback_writeup_truncates_long_transcript() -> None:
+    """A very long transcript is truncated in the fallback excerpt (with ellipsis)."""
+    long_text = "Z" * 2000
+    out = _fallback_writeup(long_text, title="Long")
+    assert "…" in out
+    # The excerpt is truncated: far fewer than the 2000 input chars survive.
+    assert out.count("Z") <= 800
+    assert out.count("Z") < len(long_text)

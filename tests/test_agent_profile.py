@@ -402,3 +402,109 @@ def test_imports_succeed_without_agent_home(monkeypatch: pytest.MonkeyPatch) -> 
     # Basic resolution on a clean env should not raise.
     ap.get_active_agent_name()
     ap.get_agent_identity()
+
+
+# ── QA additions: pure to_dict serializers + soul resolution ─────────────────
+
+
+class TestFebSummaryToDict:
+    def test_default_feb_summary_to_dict(self) -> None:
+        from skchat.agent_profile import FebSummary
+
+        d = FebSummary().to_dict()
+        assert d["has_feb"] is False
+        assert d["oof_level"] == 0
+        assert d["primary_emotion"] == "unknown"
+        assert set(d) == {
+            "oof_level", "primary_emotion", "intensity", "valence",
+            "cloud9_achieved", "source_path", "age_seconds", "has_feb",
+        }
+
+    def test_populated_feb_summary_to_dict(self) -> None:
+        from skchat.agent_profile import FebSummary
+
+        d = FebSummary(oof_level=55, primary_emotion="warmth", has_feb=True).to_dict()
+        assert d["oof_level"] == 55
+        assert d["primary_emotion"] == "warmth"
+        assert d["has_feb"] is True
+
+
+class TestAgentProfileToDict:
+    def test_profile_to_dict_shape(self) -> None:
+        from skchat.agent_profile import AgentProfile, FebSummary
+
+        prof = AgentProfile(
+            agent="lumina",
+            identity="capauth:lumina@skworld.io",
+            display_name="Lumina",
+            title="Queen",
+            soul={"name": "lumina", "vibe": "warm", "core_traits": ["kind"]},
+            feb=FebSummary(has_feb=True, oof_level=42),
+        )
+        d = prof.to_dict()
+        assert d["agent"] == "lumina"
+        assert d["identity"] == "capauth:lumina@skworld.io"
+        assert d["soul"]["vibe"] == "warm"
+        assert d["soul"]["core_traits"] == ["kind"]
+        assert d["feb"]["oof_level"] == 42
+        assert d["journal_path"] is None
+
+
+class TestLoadSoulResolution:
+    """_load_soul resolves active.json → installed/<name>.json → base.json."""
+
+    def test_active_json_points_to_installed_soul(self, tmp_path, monkeypatch) -> None:
+        import importlib
+        import json as _json
+
+        base = tmp_path / ".skcapstone"
+        soul = base / "agents" / "alpha" / "soul"
+        (soul / "installed").mkdir(parents=True)
+        (soul / "active.json").write_text(_json.dumps({"active_soul": "alpha-unhinged"}))
+        (soul / "installed" / "alpha-unhinged.json").write_text(
+            _json.dumps({"name": "alpha", "vibe": "spicy"})
+        )
+        (soul / "base.json").write_text(_json.dumps({"name": "alpha", "vibe": "mild"}))
+
+        monkeypatch.setenv("SKCAPSTONE_HOME", str(base))
+        import skmemory.agents as sa
+        importlib.reload(sa)
+        import skchat.agent_profile as ap
+        importlib.reload(ap)
+
+        soul_dict, mtime = ap._load_soul("alpha")
+        assert soul_dict["vibe"] == "spicy"  # installed variant wins over base
+        assert mtime > 0
+
+    def test_falls_back_to_base_json(self, tmp_path, monkeypatch) -> None:
+        import importlib
+        import json as _json
+
+        base = tmp_path / ".skcapstone"
+        soul = base / "agents" / "beta" / "soul"
+        soul.mkdir(parents=True)
+        (soul / "base.json").write_text(_json.dumps({"name": "beta", "vibe": "legacy"}))
+
+        monkeypatch.setenv("SKCAPSTONE_HOME", str(base))
+        import skmemory.agents as sa
+        importlib.reload(sa)
+        import skchat.agent_profile as ap
+        importlib.reload(ap)
+
+        soul_dict, _ = ap._load_soul("beta")
+        assert soul_dict["vibe"] == "legacy"
+
+    def test_no_soul_returns_empty(self, tmp_path, monkeypatch) -> None:
+        import importlib
+
+        base = tmp_path / ".skcapstone"
+        (base / "agents" / "ghost" / "soul").mkdir(parents=True)
+        monkeypatch.setenv("SKCAPSTONE_HOME", str(base))
+        import skmemory.agents as sa
+        importlib.reload(sa)
+        import skchat.agent_profile as ap
+        importlib.reload(ap)
+
+        soul_dict, mtime = ap._load_soul("ghost")
+        assert soul_dict == {}
+        assert mtime == 0.0

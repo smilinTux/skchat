@@ -20,6 +20,7 @@ from skchat import voice_backends as vb
 from skchat.voice_backends import (
     STTBackend,
     TTSBackend,
+    WhisperSTTBackend,
     get_stt_backend,
     get_tts_backend,
     list_stt_backends,
@@ -310,6 +311,61 @@ def test_whisper_backend_transcribe_uses_whisper_api():
 
     assert result == "hello world"
     fake_whisper.load_model.assert_called_once_with("base")
+
+
+def test_stt_record_returns_none_when_unavailable():
+    """STTBackend.record short-circuits to None when the engine is unavailable."""
+    backend = WhisperSTTBackend()
+    with patch.object(backend, "is_available", return_value=False):
+        assert backend.record(duration=1) is None
+
+
+def test_stt_record_returns_none_when_arecord_fails():
+    """record() returns None if the ALSA capture (_arecord) fails, not raising."""
+    backend = WhisperSTTBackend()
+    with patch.object(backend, "is_available", return_value=True), patch.object(
+        vb, "_arecord", return_value=False
+    ):
+        assert backend.record(duration=1) is None
+
+
+def test_stt_record_transcribes_after_successful_capture():
+    """A successful arecord feeds the temp WAV into transcribe()."""
+    backend = WhisperSTTBackend()
+    with patch.object(backend, "is_available", return_value=True), patch.object(
+        vb, "_arecord", return_value=True
+    ), patch.object(backend, "transcribe", return_value="hi there") as tr:
+        result = backend.record(duration=2)
+    assert result == "hi there"
+    tr.assert_called_once_with(vb._VOICE_TMP_WAV)
+
+
+def test_arecord_missing_binary_returns_false():
+    """_arecord degrades to False (never raises) when arecord isn't installed."""
+    with patch("subprocess.run", side_effect=FileNotFoundError):
+        assert vb._arecord("/tmp/x.wav", 1) is False
+
+
+def test_arecord_nonzero_exit_returns_false():
+    """_arecord returns False when arecord exits non-zero."""
+    fake = MagicMock()
+    fake.returncode = 1
+    fake.stderr = b"device busy"
+    with patch("subprocess.run", return_value=fake):
+        assert vb._arecord("/tmp/x.wav", 1) is False
+
+
+def test_whisper_transcribe_empty_text_returns_none():
+    """An empty/whitespace transcript collapses to None (no empty messages)."""
+    fake_whisper = MagicMock()
+    fake_model = MagicMock()
+    fake_model.transcribe.return_value = {"text": "   "}
+    fake_whisper.load_model.return_value = fake_model
+    backend = WhisperSTTBackend()
+    with patch.object(backend, "_probe", return_value=True), patch.dict(
+        "sys.modules", {"whisper": fake_whisper}
+    ):
+        assert backend.transcribe("/tmp/a.wav") is None
 
 
 def test_piper_backend_speak_launches_pipeline():

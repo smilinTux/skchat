@@ -263,6 +263,88 @@ class TestFileReceiver:
         assert result["verified"] is True
         assert output.read_bytes() == original.read_bytes()
 
+    # ── QA Area 3: file-transfer tamper / integrity cases ────────────────────
+
+    def test_tampered_chunk_ciphertext_fails_to_assemble(self, tmp_path: Path) -> None:
+        """A flipped byte in an encrypted chunk fails the AES-GCM auth tag."""
+        from cryptography.exceptions import InvalidTag
+
+        original = _create_test_file(tmp_path, "tamper.bin", 800)
+        sender = FileSender()
+        transfer = sender.prepare(original)
+        chunks = sender.chunks(transfer, original)
+
+        # corrupt one byte of the first chunk's base64 ciphertext
+        import base64
+
+        raw = bytearray(base64.b64decode(chunks[0].data))
+        raw[20] ^= 0xFF
+        chunks[0] = chunks[0].model_copy(
+            update={"data": base64.b64encode(bytes(raw)).decode("ascii")}
+        )
+
+        receiver = FileReceiver()
+        receiver.register_transfer(transfer)
+        for chunk in chunks:
+            receiver.receive_chunk(chunk)
+
+        output = tmp_path / "tamper_out.bin"
+        with pytest.raises(InvalidTag):
+            receiver.assemble(transfer.transfer_id, output,
+                              transfer_key_hex=transfer.transfer_key)
+
+    def test_wrong_transfer_key_fails_to_decrypt(self, tmp_path: Path) -> None:
+        """Assembling with the wrong AES key fails the GCM auth tag."""
+        from cryptography.exceptions import InvalidTag
+
+        original = _create_test_file(tmp_path, "wrongkey.bin", 600)
+        sender = FileSender()
+        transfer = sender.prepare(original)
+        chunks = sender.chunks(transfer, original)
+
+        receiver = FileReceiver()
+        receiver.register_transfer(transfer)
+        for chunk in chunks:
+            receiver.receive_chunk(chunk)
+
+        wrong_key = os.urandom(32).hex()
+        with pytest.raises(InvalidTag):
+            receiver.assemble(transfer.transfer_id, tmp_path / "out.bin",
+                              transfer_key_hex=wrong_key)
+
+    def test_sha256_mismatch_reports_unverified(self, tmp_path: Path) -> None:
+        """If the declared sha256 doesn't match the assembled bytes, verified=False."""
+        original = _create_test_file(tmp_path, "shamismatch.bin", 400)
+        sender = FileSender()
+        transfer = sender.prepare(original)
+        chunks = sender.chunks(transfer, original)
+        # attacker/registry claims a different hash than the real content
+        transfer.sha256 = "0" * 64
+
+        receiver = FileReceiver()
+        receiver.register_transfer(transfer)
+        for chunk in chunks:
+            receiver.receive_chunk(chunk)
+
+        result = receiver.assemble(transfer.transfer_id, tmp_path / "out.bin",
+                                   transfer_key_hex=transfer.transfer_key)
+        assert result["verified"] is False
+
+    def test_assemble_missing_chunks_raises(self, tmp_path: Path) -> None:
+        """Assembling before all chunks arrive raises ValueError."""
+        original = _create_test_file(tmp_path, "partial.bin", CHUNK_SIZE * 2)
+        sender = FileSender()
+        transfer = sender.prepare(original)
+        chunks = sender.chunks(transfer, original)
+
+        receiver = FileReceiver()
+        receiver.register_transfer(transfer)
+        receiver.receive_chunk(chunks[0])  # only one of several
+
+        with pytest.raises(ValueError, match="Missing chunks"):
+            receiver.assemble(transfer.transfer_id, tmp_path / "out.bin",
+                              transfer_key_hex=transfer.transfer_key)
+
 
 class TestFileChunkSerialization:
     """Tests for chunk JSON serialization."""

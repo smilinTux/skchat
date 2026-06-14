@@ -232,3 +232,95 @@ def test_old_message_json_without_attachments_loads():
             "content": "hi"}
     msg = ChatMessage(**data)
     assert msg.attachments == []
+
+
+# ---------------------------------------------------------------------------
+# QA additions — reply alias, summary truncation, round-trip, edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestReplyAlias:
+    """The reply_to / reply_to_id alias is load-bearing for the MCP tool API."""
+
+    def test_reply_to_alias_accepted_on_construction(self) -> None:
+        """A message can be built with the `reply_to` alias (MCP tools use it)."""
+        msg = ChatMessage(
+            sender="capauth:a@test",
+            recipient="capauth:b@test",
+            content="re",
+            reply_to="parent-123",
+        )
+        assert msg.reply_to_id == "parent-123"
+        assert msg.reply_to == "parent-123"
+
+    def test_reply_to_id_canonical_field(self) -> None:
+        """The canonical field name also works and the property mirrors it."""
+        msg = ChatMessage(
+            sender="capauth:a@test",
+            recipient="capauth:b@test",
+            content="re",
+            reply_to_id="parent-456",
+        )
+        assert msg.reply_to == "parent-456"
+
+    def test_reply_to_none_by_default(self) -> None:
+        """No parent → reply_to is None."""
+        msg = ChatMessage(sender="capauth:a@test", recipient="capauth:b@test", content="x")
+        assert msg.reply_to is None
+
+
+class TestSummaryTruncation:
+    """to_summary() previews at most 80 chars of content."""
+
+    def test_summary_truncates_long_content(self) -> None:
+        long = "x" * 200
+        msg = ChatMessage(sender="capauth:a@test", recipient="capauth:b@test", content=long)
+        summary = msg.to_summary()
+        # 80-char preview + "sender: " prefix — the body must be exactly 80 chars.
+        body = summary.split(": ", 1)[1]
+        assert len(body) == 80
+
+    def test_summary_short_content_intact(self) -> None:
+        msg = ChatMessage(sender="capauth:a@test", recipient="capauth:b@test", content="short")
+        assert msg.to_summary().endswith("short")
+
+
+class TestRoundTrip:
+    """A ChatMessage must survive JSON serialize → deserialize unchanged."""
+
+    def test_full_message_round_trip(self) -> None:
+        msg = ChatMessage(
+            sender="capauth:alice@skworld.io",
+            recipient="capauth:bob@skworld.io",
+            content="round trip",
+            content_type=ContentType.MARKDOWN,
+            thread_id="t-1",
+            reply_to_id="r-1",
+            ttl=60,
+            metadata={"k": "v"},
+            delivery_status=DeliveryStatus.SENT,
+        )
+        msg.add_reaction("fire", "capauth:bob@skworld.io")
+        restored = ChatMessage.model_validate_json(msg.model_dump_json())
+        assert restored.id == msg.id
+        assert restored.content == "round trip"
+        assert restored.thread_id == "t-1"
+        assert restored.reply_to_id == "r-1"
+        assert restored.ttl == 60
+        assert restored.metadata == {"k": "v"}
+        assert restored.delivery_status == DeliveryStatus.SENT
+        assert len(restored.reactions) == 1
+        assert restored.reactions[0].emoji == "fire"
+
+
+def test_thread_parent_id_round_trip() -> None:
+    """A nested thread carries its parent_thread_id through serialization."""
+    child = Thread(title="child", parent_thread_id="parent-thread")
+    restored = Thread.model_validate_json(child.model_dump_json())
+    assert restored.parent_thread_id == "parent-thread"
+
+
+def test_whitespace_only_recipient_rejected() -> None:
+    """A whitespace-only recipient is rejected just like sender."""
+    with pytest.raises(ValueError, match="Identity URI cannot be empty"):
+        ChatMessage(sender="capauth:a@test", recipient="   ", content="hi")

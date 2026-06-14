@@ -321,3 +321,221 @@ def _lane_store(tmp_path):
     from skchat.spaces.lanes import LaneStore
 
     return LaneStore(db_path=tmp_path / "lanes.db")
+
+
+# ===========================================================================
+# QA Area 2 — additional adversarial / edge coverage
+# ===========================================================================
+
+
+def test_newline_injection_never_spawns_second_command(tmp_path):
+    """A newline-separated `ls\\nrm -rf /` must not run rm.
+
+    shlex treats the newline as whitespace, so the string collapses to the argv
+    ['ls', 'rm', '-rf', '/']. 'ls' is allowlisted; 'rm'/'-rf'/'/' are passed as
+    *literal arguments to ls*, never spawned as a separate command.
+    """
+    runner = FakeRunner()
+    ex = _executor(tmp_path, runner=runner)
+
+    events = ex.run("ls\nrm -rf /", identity=OPERATOR, cmd_id="nl")
+
+    assert runner.calls == [["ls", "rm", "-rf", "/"]]  # one argv, rm is an arg
+    assert [e["action"] for e in events][-1] == "exit"
+
+
+def test_absolute_path_binary_is_not_allowlisted(tmp_path):
+    """`/bin/ls` must be denied — the allowlist matches the bare token 'ls'."""
+    runner = FakeRunner()
+    ex = _executor(tmp_path, runner=runner)
+
+    events = ex.run("/bin/ls", identity=OPERATOR, cmd_id="abs")
+
+    assert len(events) == 1
+    assert events[0]["action"] == "denied"
+    assert runner.calls == []
+
+
+def test_prefix_lookalike_binary_is_denied(tmp_path):
+    """`lsblk` must NOT slip past the 'ls' allowlist entry.
+
+    Allowlisting is token-equality on leading argv tokens, not string-prefix, so
+    'lsblk' (a single token) does not equal 'ls'.
+    """
+    runner = FakeRunner()
+    ex = _executor(tmp_path, runner=runner)
+
+    events = ex.run("lsblk", identity=OPERATOR, cmd_id="lb")
+
+    assert events[0]["action"] == "denied"
+    assert runner.calls == []
+
+
+def test_backtick_and_redirect_metachars_are_literal(tmp_path):
+    """Backticks and redirects stay literal argv tokens — no shell ever sees them."""
+    runner = FakeRunner()
+    ex = _executor(tmp_path, runner=runner)
+
+    # `echo` is allowlisted; the metachars become plain arguments to it.
+    ex.run("echo `whoami` > /etc/passwd", identity=OPERATOR, cmd_id="meta")
+
+    assert runner.calls == [["echo", "`whoami`", ">", "/etc/passwd"]]
+
+
+def test_path_traversal_arg_reaches_runner_but_cwd_is_scoped(tmp_path):
+    """Documents the containment model: a `..` traversal *argument* is NOT blocked
+    at the allowlist layer (cat is allowlisted); containment is the scoped cwd +
+    scrubbed env, which the executor always passes to the runner.
+    """
+    runner = FakeRunner()
+    sandbox = tmp_path / "sandbox"
+    policy = SandboxPolicy(
+        enabled=True, operators=frozenset({OPERATOR}), cwd=sandbox
+    )
+    ex = SkreachExecutor(policy, runner=runner)
+
+    ex.run("cat ../../etc/passwd", identity=OPERATOR, cmd_id="trav")
+
+    # The traversal token is passed through as an arg AND the runner was handed
+    # the scoped sandbox cwd (the actual containment boundary).
+    assert runner.calls == [["cat", "../../etc/passwd"]]
+    # cwd is the scoped sandbox, created by the executor.
+    assert sandbox.exists()
+
+
+def test_unbalanced_quote_is_denied_not_crashed(tmp_path):
+    """An unparseable command (dangling quote) is denied with a parse reason."""
+    ex = _executor(tmp_path)
+    events = ex.run('echo "unterminated', identity=OPERATOR, cmd_id="q")
+    assert len(events) == 1
+    assert events[0]["action"] == "denied"
+    assert "parse" in events[0]["reason"].lower()
+
+
+def test_whitespace_only_command_is_denied(tmp_path):
+    """A blank/whitespace command parses to an empty argv → denied as empty."""
+    runner = FakeRunner()
+    ex = _executor(tmp_path, runner=runner)
+    events = ex.run("   \t  ", identity=OPERATOR, cmd_id="blank")
+    assert events[0]["action"] == "denied"
+    assert "empty" in events[0]["reason"].lower()
+    assert runner.calls == []
+
+
+def test_destructive_token_as_argument_is_allowed(tmp_path):
+    """A destructive WORD appearing only as an argument is harmless.
+
+    `grep rm somefile` must run grep (with 'rm' as a search pattern) — the
+    FakeRunner only aborts when a destructive token is argv[0].
+    """
+    runner = FakeRunner()
+    ex = _executor(tmp_path, runner=runner)
+    events = ex.run("grep rm somefile", identity=OPERATOR, cmd_id="ga")
+    assert runner.calls == [["grep", "rm", "somefile"]]
+    assert [e["action"] for e in events][-1] == "exit"
+
+
+def test_real_runner_truncates_output_to_cap():
+    """The real subprocess runner caps each stream to max_bytes."""
+    import skchat.spaces.skreachd as mod
+
+    class _Big:
+        returncode = 0
+        stdout = b"A" * 1000
+        stderr = b"B" * 1000
+
+    orig = mod.subprocess.run
+    mod.subprocess.run = lambda argv, **kw: _Big()
+    try:
+        res = mod.subprocess_runner(["echo"], "/tmp", 5.0, 10)
+    finally:
+        mod.subprocess.run = orig
+    assert len(res.stdout) == 10
+    assert len(res.stderr) == 10
+
+
+def test_real_runner_handles_timeout():
+    """A TimeoutExpired yields exit 124, timed_out=True, and a timeout message."""
+    import subprocess
+
+    import skchat.spaces.skreachd as mod
+
+    def _timeout(argv, **kw):
+        raise subprocess.TimeoutExpired(
+            cmd=argv, timeout=kw.get("timeout"), output=b"partial", stderr=b""
+        )
+
+    orig = mod.subprocess.run
+    mod.subprocess.run = _timeout
+    try:
+        res = mod.subprocess_runner(["sleep", "99"], "/tmp", 1.0, 1024)
+    finally:
+        mod.subprocess.run = orig
+    assert res.timed_out is True
+    assert res.exit_code == 124
+    assert res.stdout == "partial"
+    assert "timed out" in res.stderr
+
+
+def test_real_runner_handles_missing_binary():
+    """An OSError (binary not found) yields exit 127 with the error as stderr."""
+    import skchat.spaces.skreachd as mod
+
+    def _oserr(argv, **kw):
+        raise FileNotFoundError("no such file")
+
+    orig = mod.subprocess.run
+    mod.subprocess.run = _oserr
+    try:
+        res = mod.subprocess_runner(["nope"], "/tmp", 1.0, 1024)
+    finally:
+        mod.subprocess.run = orig
+    assert res.exit_code == 127
+    assert "no such file" in res.stderr
+
+
+def test_route_lanes_event_term_does_not_execute(tmp_path):
+    """SAFETY BOUNDARY: posting a term run-request to the generic lanes/event
+    route must only PERSIST it (append to the log) — never execute it. Execution
+    happens ONLY via the explicit lanes/term/run route.
+    """
+    runner = FakeRunner()
+    ex = _executor(tmp_path, runner=runner)
+    store = _lane_store(tmp_path)
+    app = FastAPI()
+    register_spaces_routes(
+        app,
+        registry=SpaceRegistry(path=tmp_path / "spaces.json"),
+        lane_store=store,
+        skreach_executor=ex,
+    )
+    c = TestClient(app)
+
+    r = c.post(
+        "/spaces/sp/lanes/event",
+        json={"lane": "term", "action": "run", "cmd": "ls", "from": OPERATOR},
+    )
+    assert r.status_code == 200
+    # Nothing was executed.
+    assert runner.calls == []
+    # But it WAS persisted to the term log lane for replay.
+    state = c.get("/spaces/sp/lanes/term/state").json()
+    assert state["events"][-1]["cmd"] == "ls"
+
+
+def test_route_non_string_cmd_is_400(tmp_path):
+    """A non-string `cmd` (e.g. a list) on the run route is a 400, not a 500."""
+    ex = _executor(tmp_path)
+    app = FastAPI()
+    register_spaces_routes(
+        app,
+        registry=SpaceRegistry(path=tmp_path / "spaces.json"),
+        lane_store=_lane_store(tmp_path),
+        skreach_executor=ex,
+    )
+    c = TestClient(app)
+    r = c.post(
+        "/spaces/sp/lanes/term/run",
+        json={"cmd": ["ls", "-la"], "id": "r5", "from": OPERATOR},
+    )
+    assert r.status_code == 400

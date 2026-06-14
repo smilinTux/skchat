@@ -254,3 +254,101 @@ def test_pending_count_excludes_delivered(queue: OutboxQueue):
     queue.enqueue("capauth:bob@example.org", b"x")
     queue.drain(lambda _c, _r: True)
     assert queue.pending_count() == 0
+
+
+# ---------------------------------------------------------------------------
+# QA additions — deliver_pending / process_pending via AgentMessenger
+# ---------------------------------------------------------------------------
+
+
+class _FakeMessenger:
+    """Minimal AgentMessenger stand-in: .send(recipient, content, thread_id)."""
+
+    def __init__(self, delivered: bool = True, raise_exc: bool = False) -> None:
+        self.delivered = delivered
+        self.raise_exc = raise_exc
+        self.calls: list[dict] = []
+
+    def send(self, recipient: str, content, thread_id=None) -> dict:
+        self.calls.append(
+            {"recipient": recipient, "content": content, "thread_id": thread_id}
+        )
+        if self.raise_exc:
+            raise RuntimeError("messenger offline")
+        return {"delivered": self.delivered}
+
+
+def test_deliver_pending_success(queue: OutboxQueue):
+    queue.enqueue("capauth:bob@example.org", "hello", thread_id="t-1")
+    m = _FakeMessenger(delivered=True)
+    delivered, failed = queue.deliver_pending(m)
+    assert (delivered, failed) == (1, 0)
+    assert queue.pending_count() == 0
+    # thread_id is carried through to the messenger.
+    assert m.calls[0]["thread_id"] == "t-1"
+
+
+def test_deliver_pending_failure_increments(queue: OutboxQueue):
+    queue.enqueue("capauth:bob@example.org", "hello")
+    m = _FakeMessenger(delivered=False)
+    delivered, failed = queue.deliver_pending(m)
+    assert (delivered, failed) == (0, 1)
+    assert queue.pending_count() == 1
+
+
+def test_deliver_pending_messenger_exception_is_failure(queue: OutboxQueue):
+    queue.enqueue("capauth:bob@example.org", "hello")
+    m = _FakeMessenger(raise_exc=True)
+    delivered, failed = queue.deliver_pending(m)
+    assert (delivered, failed) == (0, 1)
+    assert queue.pending_count() == 1
+
+
+def test_process_pending_none_messenger_noop(queue: OutboxQueue):
+    """process_pending(None) returns (0,0) without touching the queue."""
+    queue.enqueue("capauth:bob@example.org", "hello")
+    assert queue.process_pending(None) == (0, 0)
+    assert queue.pending_count() == 1
+
+
+def test_process_pending_delegates_to_deliver(queue: OutboxQueue):
+    queue.enqueue("capauth:bob@example.org", "hi")
+    m = _FakeMessenger(delivered=True)
+    assert queue.process_pending(m) == (1, 0)
+
+
+# ---------------------------------------------------------------------------
+# QA additions — persistence across reopen, str content, mark_delivered
+# ---------------------------------------------------------------------------
+
+
+def test_enqueue_accepts_str_content(queue: OutboxQueue):
+    """A plain str payload is accepted and delivered via drain (str→bytes)."""
+    captured: list[bytes] = []
+    queue.enqueue("capauth:bob@example.org", "plain string body")
+    queue.drain(lambda content, _rec: captured.append(content) or True)
+    assert captured[0] == b"plain string body"
+
+
+def test_queue_survives_reopen(tmp_path):
+    """A pending message persists when the DB is closed and reopened."""
+    db = tmp_path / "outbox.db"
+    q1 = OutboxQueue(db_path=db)
+    q1.enqueue("capauth:bob@example.org", b"persist me")
+    q1.close()
+
+    q2 = OutboxQueue(db_path=db)
+    try:
+        assert q2.pending_count() == 1
+        delivered, _ = q2.drain(lambda _c, _r: True)
+        assert delivered == 1
+    finally:
+        q2.close()
+
+
+def test_mark_delivered_directly(queue: OutboxQueue):
+    """mark_delivered(id) removes the message from the pending count."""
+    msg_id = queue.enqueue("capauth:bob@example.org", b"x")
+    assert queue.pending_count() == 1
+    queue.mark_delivered(msg_id)
+    assert queue.pending_count() == 0

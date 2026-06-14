@@ -6,7 +6,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from skchat.notifications import DesktopNotifier, NotificationLevel
+from skchat.notifications import (
+    DesktopNotifier,
+    NotificationLevel,
+    desktop_notifications_enabled,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -168,3 +172,67 @@ def test_notification_level_values():
     assert NotificationLevel.LOW.value == "low"
     assert NotificationLevel.NORMAL.value == "normal"
     assert NotificationLevel.CRITICAL.value == "critical"
+
+
+# ---------------------------------------------------------------------------
+# QA additions — the SK_DESKTOP_NOTIFY gate + lumina notification
+# ---------------------------------------------------------------------------
+
+
+class TestDesktopNotificationsEnabled:
+    """The env gate that conftest uses to silence the whole suite."""
+
+    def test_unset_defaults_enabled(self, monkeypatch):
+        monkeypatch.delenv("SK_DESKTOP_NOTIFY", raising=False)
+        assert desktop_notifications_enabled() is True
+
+    def test_explicit_one_enabled(self, monkeypatch):
+        monkeypatch.setenv("SK_DESKTOP_NOTIFY", "1")
+        assert desktop_notifications_enabled() is True
+
+    def test_falsey_values_disabled(self, monkeypatch):
+        for val in ("0", "false", "no", "off", "", "  OFF  "):
+            monkeypatch.setenv("SK_DESKTOP_NOTIFY", val)
+            assert desktop_notifications_enabled() is False, val
+
+
+def test_notify_suppressed_when_gate_off_even_if_available(monkeypatch):
+    """Even with notify-send present, a falsey SK_DESKTOP_NOTIFY suppresses dispatch."""
+    monkeypatch.setenv("SK_DESKTOP_NOTIFY", "1")
+    with patch("skchat.notifications.subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(returncode=0)
+        n = DesktopNotifier()
+        assert n.available is True
+        mock_run.reset_mock()
+        # Now flip the gate off and confirm notify() short-circuits.
+        monkeypatch.setenv("SK_DESKTOP_NOTIFY", "0")
+        result = n.notify("title", "body")
+    assert result is False
+    mock_run.assert_not_called()
+
+
+def test_check_available_false_when_gate_off(monkeypatch):
+    """A disabled gate makes the notifier report unavailable without probing PATH."""
+    monkeypatch.setenv("SK_DESKTOP_NOTIFY", "0")
+    with patch("skchat.notifications.subprocess.run") as mock_run:
+        n = DesktopNotifier()
+    assert n.available is False
+    mock_run.assert_not_called()
+
+
+def test_notify_lumina_title_has_marker(notifier_available):
+    """notify_lumina uses the purple-heart Lumina title."""
+    n, mock_run = notifier_available
+    mock_run.reset_mock()
+    mock_run.return_value = MagicMock(returncode=0)
+    n.notify_lumina("hi")
+    cmd = mock_run.call_args[0][0]
+    assert any("Lumina" in str(arg) for arg in cmd)
+
+
+def test_custom_app_name_stored():
+    """A custom app_name is retained on the notifier."""
+    with patch("skchat.notifications.subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(returncode=0)
+        n = DesktopNotifier(app_name="MyApp")
+    assert n.app_name == "MyApp"

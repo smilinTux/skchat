@@ -365,3 +365,47 @@ class TestFallbackTransport:
 
         assert result["delivered"] is False
         assert "error" in result
+
+
+# ---------------------------------------------------------------------------
+# QA additions — _trigger_reconnect resilience + ChatWatchdog alias
+# ---------------------------------------------------------------------------
+
+
+class TestTriggerReconnectResilience:
+    def test_reconnect_none_transport_is_noop(self):
+        """A watchdog with transport=None reaching threshold must not crash."""
+        wd = TransportWatchdog(transport=None, failure_threshold=2)
+        with patch("httpx.get", side_effect=ConnectionError("down")):
+            for _ in range(2):
+                wd.check()  # second check hits threshold → _trigger_reconnect(None)
+        assert wd.transport_status == "unreachable"
+
+    def test_reconnect_missing_method_is_noop(self):
+        """A transport without a reconnect() method is skipped, not crashed."""
+
+        class _NoReconnect:
+            pass
+
+        wd = TransportWatchdog(transport=_NoReconnect(), failure_threshold=2)
+        with patch("httpx.get", side_effect=ConnectionError("down")):
+            for _ in range(2):
+                wd.check()
+        # No exception, streak counted.
+        assert wd.consecutive_failures >= 2
+
+    def test_reconnect_exception_swallowed(self):
+        """If reconnect() itself raises, the watchdog swallows it and survives."""
+        bad = MagicMock()
+        bad.reconnect.side_effect = RuntimeError("reconnect failed")
+        wd = TransportWatchdog(transport=bad, failure_threshold=2)
+        with patch("httpx.get", side_effect=ConnectionError("down")):
+            for _ in range(2):
+                wd.check()
+        bad.reconnect.assert_called_once()
+
+
+def test_chatwatchdog_alias_is_transport_watchdog():
+    from skchat.watchdog import ChatWatchdog
+
+    assert ChatWatchdog is TransportWatchdog

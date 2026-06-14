@@ -918,3 +918,34 @@ class TestCallPeer:
         assert out["peer_fqid"] == "lumina@chef.skworld"
         assert len(sent) == 1
         assert set(out) == {"room", "token", "livekit_url", "peer_fqid", "identity"}
+
+    # ── QA Area 3: call_peer error / no-double-ring cases ────────────────────
+
+    def test_call_peer_does_not_ring_when_prepare_fails(self, monkeypatch):
+        """If call setup fails, the peer is never rung (no half-open invite)."""
+        import skchat.mcp_server as m
+
+        def _boom(peer):
+            raise ValueError("call setup failed (404): peer not paired")
+
+        monkeypatch.setattr(m, "_prepare_call_for", _boom)
+        sent = []
+        monkeypatch.setattr(m, "_ring_peer", lambda **kw: sent.append(kw))
+        with pytest.raises(ValueError, match="not paired"):
+            m.call_peer("stranger")
+        assert sent == []
+
+    def test_prepare_call_for_translates_httpexception(self, monkeypatch):
+        """HTTPException from the route layer surfaces as a plain ValueError."""
+        import skchat.mcp_server as m
+        from fastapi import HTTPException
+
+        def _raise(peer):
+            raise HTTPException(status_code=404, detail="peer not paired: stranger")
+
+        monkeypatch.setattr(m, "_prepare_call", _raise, raising=False)
+        # patch the imported symbol inside _prepare_call_for via call_routes
+        import skchat.call_routes as cr
+        monkeypatch.setattr(cr, "_prepare_call", _raise)
+        with pytest.raises(ValueError, match="404"):
+            m._prepare_call_for("stranger")
