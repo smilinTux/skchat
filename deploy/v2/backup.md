@@ -13,7 +13,7 @@ Env template: `deploy/v2/skchat-prod.env.example` (Garage / backup section).
 | Docker volume `skchat_skchat-identity` | capauth Ed25519 private keys, pairing nonces | **YES — encrypt before upload** | P0 — daily |
 | Docker volume `skchat_skchat-skcapstone` | skcapstone peer registry, trust FEBs, ritual blobs | **YES — encrypt before upload** | P0 — daily |
 | Docker volume `skchat_skchat-data` | history.db, outbox.db, group configs, memory/index.db | No | P1 — daily |
-| Docker volume `skchat_skchat-skcomm` | SKComm transport state, pending outbox | No | P2 — daily |
+| Docker volume `skchat_skchat-skcomms` | SKComms transport state, pending outbox | No | P2 — daily |
 | Docker volume `skchat_skchat-recordings` | Voice-session audio blobs | No (private call audio) | P1 — daily, 30-day retention |
 | skmem-pg dump | PostgreSQL memories + docs tables (agent memory) | No (data-sensitive) | P0 — daily |
 
@@ -97,7 +97,7 @@ for VOLNAME in skchat-identity skchat-skcapstone; do
 done
 
 # ── 2. NON-SECRET volumes — restic snapshots (restic repo is also encrypted) ──
-for VOLNAME in skchat-data skchat-skcomm; do
+for VOLNAME in skchat-data skchat-skcomms; do
     VOL="${STACK}_${VOLNAME}"
     echo "  Snapshotting volume: ${VOL}"
     docker run --rm \
@@ -291,7 +291,7 @@ garage bucket website skchat-backup   # (adjust per Garage version CLI)
 | Data | Daily | Weekly | Monthly | Max age |
 |------|-------|--------|---------|---------|
 | skchat-data | 7 | 4 | 3 | ~3 months |
-| skchat-skcomm | 7 | 4 | 3 | ~3 months |
+| skchat-skcomms | 7 | 4 | 3 | ~3 months |
 | skchat-identity (age-encrypted) | kept in Garage with date prefix | — | — | 3 months (delete old dates manually) |
 | skchat-skcapstone (age-encrypted) | kept in Garage with date prefix | — | — | 3 months |
 | skchat-recordings | 30 days | — | — | 30 days |

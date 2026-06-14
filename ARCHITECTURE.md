@@ -4,7 +4,7 @@
 
 1. **AI-first, not AI-bolted** — AI is a participant, not a feature
 2. **Local-first** — all processing happens on-device unless user opts out
-3. **Transport-agnostic** — SKComm handles routing; SKChat handles experience
+3. **Transport-agnostic** — SKComms handles routing; SKChat handles experience
 4. **Sovereign identity** — CapAuth controls access, not a server admin
 5. **Platform-native** — same core, different shells (desktop/mobile/web/CLI)
 
@@ -29,7 +29,7 @@
 │ Layer 3: Identity & Auth (CapAuth)                       │
 │   PGPKeyring │ CapabilityTokens │ SovereignProfile │ACL │
 ├─────────────────────────────────────────────────────────┤
-│ Layer 2: Transport (SKComm)                              │
+│ Layer 2: Transport (SKComms)                              │
 │   17 modules │ Routing │ Failover │ Deduplication       │
 ├─────────────────────────────────────────────────────────┤
 │ Layer 1: Trust & Continuity (Cloud 9)                    │
@@ -116,7 +116,7 @@ class ChatMessage:
     Core message structure for text chat.
 
     All messages are PGP-encrypted before leaving this module.
-    The envelope wraps the encrypted payload for SKComm transport.
+    The envelope wraps the encrypted payload for SKComms transport.
     """
 
     id: str                    # UUID v4
@@ -167,10 +167,10 @@ class VoiceManager:
 ```python
 class FileShareManager:
     """
-    Encrypted file sharing via SKComm.
+    Encrypted file sharing via SKComms.
 
     Files are chunked, encrypted per-chunk, and transferred
-    via the best available SKComm transport. Supports resume.
+    via the best available SKComms transport. Supports resume.
     """
 
     CHUNK_SIZE = 256 * 1024  # 256KB chunks
@@ -278,18 +278,18 @@ class AdvocateEngine:
 ```python
 class MessageProcessor:
     """
-    Transforms chat messages into encrypted SKComm envelopes.
+    Transforms chat messages into encrypted SKComms envelopes.
 
     Pipeline: serialize → compress → encrypt → sign → envelope.
     """
 
-    async def prepare_outbound(self, message: ChatMessage) -> SKCommEnvelope:
+    async def prepare_outbound(self, message: ChatMessage) -> SKCommsEnvelope:
         serialized = msgpack.packb(asdict(message))
         compressed = zstd.compress(serialized)
         encrypted = self.pgp.encrypt(compressed, message.recipient)
         signed = self.pgp.sign(encrypted, self.identity.key)
 
-        return SKCommEnvelope(
+        return SKCommsEnvelope(
             payload=signed,
             sender=self.identity.uri,
             recipient=message.recipient,
@@ -298,7 +298,7 @@ class MessageProcessor:
             ttl=message.ttl
         )
 
-    async def process_inbound(self, envelope: SKCommEnvelope) -> ChatMessage:
+    async def process_inbound(self, envelope: SKCommsEnvelope) -> ChatMessage:
         verified = self.pgp.verify(envelope.payload, envelope.sender)
         decrypted = self.pgp.decrypt(verified, self.identity.key)
         decompressed = zstd.decompress(decrypted)
@@ -365,28 +365,28 @@ class SKChatIdentity:
 
 ---
 
-### Layer 2: Transport (SKComm Integration)
+### Layer 2: Transport (SKComms Integration)
 
-SKChat uses SKComm as a pure transport layer. All 17 transports are
+SKChat uses SKComms as a pure transport layer. All 17 transports are
 available for message delivery.
 
 ```python
 class SKChatTransport:
     """
-    Transport abstraction over SKComm.
+    Transport abstraction over SKComms.
 
     SKChat doesn't know or care which transport carries the message.
-    SKComm handles routing, failover, and deduplication.
+    SKComms handles routing, failover, and deduplication.
     """
 
-    def __init__(self, skcomm_config: Path):
-        self.skcomm = SKCommClient(skcomm_config)
+    def __init__(self, skcomms_config: Path):
+        self.skcomms = SKCommsClient(skcomms_config)
 
-    async def send(self, envelope: SKCommEnvelope) -> DeliveryResult:
-        return await self.skcomm.send(envelope)
+    async def send(self, envelope: SKCommsEnvelope) -> DeliveryResult:
+        return await self.skcomms.send(envelope)
 
-    async def receive(self) -> AsyncIterator[SKCommEnvelope]:
-        async for envelope in self.skcomm.listen():
+    async def receive(self) -> AsyncIterator[SKCommsEnvelope]:
+        async for envelope in self.skcomms.listen():
             yield envelope
 ```
 
@@ -436,7 +436,7 @@ SKChat feature set as native tools.
 
 | Tool | Description |
 |------|-------------|
-| `send_message` | Send a text message to a peer via SKComm |
+| `send_message` | Send a text message to a peer via SKComms |
 | `get_inbox` | Read locally-stored incoming messages |
 | `get_history` | Conversation history with a specific peer |
 | `search_messages` | Full-text search across message history |
@@ -455,7 +455,7 @@ Claude Code / Cursor
 skchat/mcp_server.py  _handle_initiate_call()
      │
      ▼
-SKComm WebRTC transport  _schedule_offer("lumina")
+SKComms WebRTC transport  _schedule_offer("lumina")
      │ (async, background asyncio loop)
      ▼
 WebRTC signaling broker  → SDP offer → Lumina
@@ -464,13 +464,13 @@ WebRTC signaling broker  → SDP offer → Lumina
 P2P data channel open
      │
      ▼
-MCP tool: webrtc_status → {peer: "lumina", connected: true, channel: "skcomm"}
+MCP tool: webrtc_status → {peer: "lumina", connected: true, channel: "skcomms"}
 ```
 
 ### Daemon WebRTC Init
 
-On `skchat daemon start`, the daemon calls `_init_webrtc(skcomm, identity)` which:
-1. Finds the `"webrtc"` transport in the SKComm router
+On `skchat daemon start`, the daemon calls `_init_webrtc(skcomms, identity)` which:
+1. Finds the `"webrtc"` transport in the SKComms router
 2. Calls `.start()` on it if not already running (starts background asyncio loop)
 3. Sets `self._webrtc_active = True` for subsystem reporting
 
@@ -513,14 +513,14 @@ whisper:
     min_silence_ms: 500
 ```
 
-### WebRTC Signaling via SKComm Broker
+### WebRTC Signaling via SKComms Broker
 
-SKChat uses the **SKComm signaling broker** (`WS /webrtc/ws`) for SDP and ICE exchange.
+SKChat uses the **SKComms signaling broker** (`WS /webrtc/ws`) for SDP and ICE exchange.
 Each peer authenticates with a CapAuth PGP bearer token; the broker uses the fingerprint
 from the token as the peer_id (client-claimed values are ignored — anti-spoofing).
 
 ```
-Alice                  SKComm Signaling Broker        Bob
+Alice                  SKComms Signaling Broker        Bob
   │  wss://.../webrtc/ws?room=R&peer=FP_A              │
   │─── connect (Bearer CapAuth token) ──────────────→  │  ← WS upgrade validated
   │←── welcome {peers:[]}                              │
@@ -546,7 +546,7 @@ DTLS fingerprint is embedded in the SDP and covered by the PGP signature —
 a compromised signaling relay **cannot** substitute its own DTLS fingerprint.
 
 **Sovereign deployment options**:
-1. `skcomm serve` (in-process broker) exposed via Tailscale Funnel
+1. `skcomms serve` (in-process broker) exposed via Tailscale Funnel
 2. `weblink-signaling/` Cloudflare Worker + Durable Objects (no VPS, free tier)
 
 **ICE infrastructure**:
@@ -556,7 +556,7 @@ a compromised signaling relay **cannot** substitute its own DTLS fingerprint.
   DERP becomes the relay; no coturn config needed for tailnet agents
 
 After the signaling handshake, media and data flow directly P2P.
-SKComm is not in the media path — only the initial signaling exchange.
+SKComms is not in the media path — only the initial signaling exchange.
 
 ---
 
@@ -598,7 +598,7 @@ Group keys are distributed via PGP:
 
 1. Creator generates AES-256 group key
 2. Key encrypted to each member's PGP public key
-3. Distributed via SKComm to each member
+3. Distributed via SKComms to each member
 4. Rotated when members leave (forward secrecy)
 
 ---
@@ -637,7 +637,7 @@ CREATE TABLE messages (
     ttl INTEGER,                  -- NULL = permanent
     advocate_flags TEXT,          -- JSON array of flags
     delivery_status TEXT DEFAULT 'pending',
-    transport_used TEXT,          -- Which SKComm transport delivered
+    transport_used TEXT,          -- Which SKComms transport delivered
     created_at INTEGER,
     expires_at INTEGER            -- Based on TTL
 );
@@ -759,7 +759,7 @@ nextcloud:
 
 - [ ] `skchat-core` Python library
 - [ ] CLI interface with text messaging
-- [ ] SKComm integration for transport
+- [ ] SKComms integration for transport
 - [ ] CapAuth integration for identity
 - [ ] Basic PGP encryption
 - [ ] SQLite message storage
@@ -776,8 +776,8 @@ nextcloud:
 
 - [ ] Piper TTS integration
 - [ ] Whisper STT integration
-- [x] WebRTC P2P data channels (SKComm WebRTC transport — aiortc)
-- [x] Sovereign signaling broker (SKComm API `/webrtc/ws`)
+- [x] WebRTC P2P data channels (SKComms WebRTC transport — aiortc)
+- [x] Sovereign signaling broker (SKComms API `/webrtc/ws`)
 - [x] Sovereign TURN server (coturn at `turn.skworld.io`)
 - [x] Tailscale P2P transport (direct TCP over mesh IPs)
 - [x] MCP tools: `webrtc_status`, `initiate_call`, `accept_call`, `send_file_p2p`

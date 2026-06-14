@@ -2,14 +2,14 @@
 
 ## Task 68f17961: SKChat receive daemon
 
-This task requires the SKComm daemon API to be completed by transport-builder first.
+This task requires the SKComms daemon API to be completed by transport-builder first.
 
 ### Current Status
 
 **Task b5fcf55d (Identity Bridge) - COMPLETED:**
 - ✅ Automatic CapAuth identity resolution from `~/.skcapstone/identity/`
 - ✅ Peer name resolver for friendly names (e.g., "lumina" → "capauth:lumina@capauth.local")
-- ✅ Looks up peers in `~/.skcapstone/peers/` or `~/.skcomm/peers/`
+- ✅ Looks up peers in `~/.skcapstone/peers/` or `~/.skcomms/peers/`
 - ✅ CLI commands support both full URIs and friendly names
 - ✅ All tests passing (176 tests)
 
@@ -17,16 +17,16 @@ This task requires the SKComm daemon API to be completed by transport-builder fi
 
 The receive daemon needs:
 
-1. **SKComm Daemon API** (transport-builder task)
+1. **SKComms Daemon API** (transport-builder task)
    - HTTP REST API server for message polling
    - Background service for continuous polling
-   - Configuration in `~/.skcomm/config.yml`
+   - Configuration in `~/.skcomms/config.yml`
 
 2. **SKChat Daemon Integration** (this task, blocked)
-   - When SKComm daemon is ready, integrate via:
+   - When SKComms daemon is ready, integrate via:
      - HTTP client to poll daemon API
      - Store incoming messages in SKChat history
-     - Optional: Register as SKComm daemon plugin
+     - Optional: Register as SKComms daemon plugin
 
 3. **Alternative: Simple Background Loop**
    - For MVP, could use `skchat watch` (already implemented)
@@ -60,7 +60,7 @@ Users can run `skchat watch` in a tmux/screen session for continuous receiving:
 skchat watch --interval 5
 ```
 
-This provides the receive daemon functionality until the SKComm HTTP API is ready.
+This provides the receive daemon functionality until the SKComms HTTP API is ready.
 
 ### Files Modified for b5fcf55d
 

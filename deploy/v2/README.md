@@ -93,7 +93,7 @@ curl https://noroc2027.tail204f0c.ts.net/health
 ```bash
 docker stack rm skchat
 # Named volumes persist by default — remove manually only if wiping state:
-# docker volume rm skchat_skchat-data skchat_skchat-skcomm skchat_skchat-identity skchat_skchat-recordings
+# docker volume rm skchat_skchat-data skchat_skchat-skcomms skchat_skchat-identity skchat_skchat-recordings
 ```
 
 ## Reachability summary
@@ -110,7 +110,7 @@ To make fully private (tailnet-only, no Cloudflare ingress): remove or set
 ## Singleton daemon constraint
 
 The daemon MUST run as a single replica.  Two daemon instances polling the same
-SKComm inbox cause duplicate message deliveries.  The `run_daemon()` function
+SKComms inbox cause duplicate message deliveries.  The `run_daemon()` function
 holds a process-level lock, but the real enforcement is Swarm's `replicas: 1`.
 For hard pinning to a single node, add a node label and uncomment the constraint
 in `skchat-stack.yml`:

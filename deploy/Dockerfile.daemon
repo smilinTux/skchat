@@ -1,5 +1,5 @@
-# skchat-daemon — SKComm receive loop, history store, advocacy engine (:9385)
-# Polls SKComm transports; manages outbox retry; drives the advocacy engine.
+# skchat-daemon — SKComms receive loop, history store, advocacy engine (:9385)
+# Polls SKComms transports; manages outbox retry; drives the advocacy engine.
 # Non-root user; /health endpoint at :9385.
 #
 # Build context: repo root
@@ -29,12 +29,12 @@ RUN pip install --no-cache-dir \
 # ── persistent state directories ─────────────────────────────────────────────
 # History DB, outbox, and capauth keys live here; mount as a named volume so
 # state survives container recreation.
-RUN mkdir -p /data/skchat /data/skcomm /data/capauth \
+RUN mkdir -p /data/skchat /data/skcomms /data/capauth \
  && chown -R skchat:skchat /data
 
 # ── runtime config defaults ───────────────────────────────────────────────────
 ENV SKCHAT_HOME=/data/skchat \
-    SKCOMM_HOME=/data/skcomm \
+    SKCOMMS_HOME=/data/skcomms \
     SKCHAT_DAEMON_INTERVAL=5 \
     SKCHAT_DAEMON_QUIET=false
 
@@ -42,7 +42,7 @@ ENV SKCHAT_HOME=/data/skchat \
 RUN chown -R skchat:skchat /app
 USER skchat
 
-# 9385 = daemon health/API; 9384 = skcomm transport health (served by daemon)
+# 9385 = daemon health/API; 9384 = skcomms transport health (served by daemon)
 EXPOSE 9385 9384
 
 # ── health ────────────────────────────────────────────────────────────────────

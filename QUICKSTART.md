@@ -172,7 +172,7 @@ Any message containing `@opus`, `@claude`, or `@ai` routes through the
 | `ImportError: MemoryStore` | You're not in `~`. Run `cd ~` first. |
 | Daemon won't start, stale PID | `rm ~/.skchat/daemon.pid && skchat daemon start` |
 | `/health` returns nothing | `cat ~/.skchat/daemon.log` — check for identity errors |
-| Messages stuck | `ls ~/.skcomm/outbox/` — inspect pending queue |
+| Messages stuck | `ls ~/.skcomms/outbox/` — inspect pending queue |
 | MCP not visible in Claude | `bash scripts/mcp-config-inject.sh` then restart Claude |
 
 See `CLAUDE.md` in this repo for the full module map, MCP tool list, and

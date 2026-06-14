@@ -45,7 +45,7 @@
 # skchat-data       /data/skchat      daemon + webui   No   (history.db, groups,
 #                                                            memory/index.db,
 #                                                            outbox.db, daemon.pid)
-# skchat-skcomm     /data/skcomm      daemon           No   (skcomm transport state,
+# skchat-skcomms     /data/skcomms      daemon           No   (skcomms transport state,
 #                                                            pending-outbox queue)
 # skchat-identity   /data/capauth     daemon + webui   YES  (capauth private keys,
 #                                                            pairing state — must be
@@ -245,7 +245,7 @@ services:
         traefik.enable: "false"
 
   # ── daemon ───────────────────────────────────────────────────────────────────
-  # SKComm receive loop, history (SQLite), advocacy engine, outbox retry.
+  # SKComms receive loop, history (SQLite), advocacy engine, outbox retry.
   # Internal only — health reachable on the tailnet at :9385.
   # NOT exposed via Traefik.
   #
@@ -256,7 +256,7 @@ services:
   #    Swarm ever starts a second task before the first fully exits.)
   #
   # IMPORTANT: replicas MUST stay at 1.  Two daemon instances would both poll
-  # the same SKComm inbox and create duplicate deliveries / split outbox state.
+  # the same SKComms inbox and create duplicate deliveries / split outbox state.
   # The mode: global-job alternative is not used here because we need the
   # restart_policy; instead the singleton is enforced via the lock in daemon.py
   # AND the Swarm placement constraint below.
@@ -281,7 +281,7 @@ services:
       SKCHAT_DAEMON_INTERVAL: "${SKCHAT_DAEMON_INTERVAL:-5}"
       SKCHAT_DAEMON_QUIET: "${SKCHAT_DAEMON_QUIET:-false}"
       SKCHAT_HOME: "/data/skchat"
-      SKCOMM_HOME: "/data/skcomm"
+      SKCOMMS_HOME: "/data/skcomms"
       # Identity (optional override — resolved from SKAGENT if blank)
       SKCHAT_IDENTITY: "${SKCHAT_IDENTITY:-}"
       SKCAPSTONE_HOME: "${SKCAPSTONE_HOME:-/data/skcapstone}"
@@ -298,9 +298,9 @@ services:
       # Primary skchat state: history.db, outbox.db, groups/, memory/index.db,
       # daemon.pid, daemon.log. daemon is the sole writer; webui reads.
       - skchat-data:/data/skchat
-      # skcomm transport state: pending outbox queue, transport receipts.
-      # Separate from skchat-data so skcomm can be cleared independently.
-      - skchat-skcomm:/data/skcomm
+      # skcomms transport state: pending outbox queue, transport receipts.
+      # Separate from skchat-data so skcomms can be cleared independently.
+      - skchat-skcomms:/data/skcomms
       # capauth private keys + pairing nonces — SECRET-SENSITIVE (see webui note).
       # daemon reads identity keys to sign outgoing messages.
       - skchat-identity:/data/capauth
@@ -370,7 +370,7 @@ networks:
 # Volume          Mounts                    Secret-sensitive?  Backup priority
 # ─────────────── ─────────────────────────────────────────────────────────────
 # skchat-data     /data/skchat (d+w)         No               P1 — daily
-# skchat-skcomm   /data/skcomm (daemon)      No               P2 — daily
+# skchat-skcomms   /data/skcomms (daemon)      No               P2 — daily
 # skchat-identity /data/capauth (d+w)        YES (keys)       P0 — daily + encrypted
 # skchat-skcapstone /data/skcapstone (d+w)   YES (trust)      P0 — daily + encrypted
 # skchat-recordings /data/recordings (voice) No (private)     P1 — daily (30d ret.)
@@ -380,8 +380,8 @@ volumes:
     # Shared read-write between daemon (writer) and webui (reader).
     driver: local
 
-  skchat-skcomm:
-    # SKComm transport state: pending outbox entries, delivery receipts.
+  skchat-skcomms:
+    # SKComms transport state: pending outbox entries, delivery receipts.
     # Daemon only.  Can be cleared to force a clean re-delivery cycle.
     driver: local
 

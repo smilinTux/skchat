@@ -11,7 +11,7 @@ Implemented automatic CapAuth identity resolution and peer name resolver.
 **Features:**
 - Automatic identity resolution from `~/.skcapstone/identity/identity.json`
 - Peer name resolver: `"lumina"` → `"capauth:lumina@capauth.local"`
-- Multi-source peer lookup (`~/.skcapstone/peers/` and `~/.skcomm/peers/`)
+- Multi-source peer lookup (`~/.skcapstone/peers/` and `~/.skcomms/peers/`)
 - Graceful fallbacks with helpful error messages
 - Support for both JSON and YAML peer files
 
@@ -101,8 +101,8 @@ pytest tests/ -v
 
 ### ✅ Working Integrations
 - **CapAuth Identity:** Reads from `~/.skcapstone/identity/`
-- **Peer Registry:** Reads from `~/.skcapstone/peers/` or `~/.skcomm/peers/`
-- **SKComm Transport:** Uses `SKComm.from_config()` for message routing
+- **Peer Registry:** Reads from `~/.skcapstone/peers/` or `~/.skcomms/peers/`
+- **SKComms Transport:** Uses `SKComms.from_config()` for message routing
 - **SKMemory Storage:** Stores messages in `~/.skchat/memory/`
 
 ### 🔄 Ready for Production
@@ -136,7 +136,7 @@ pytest tests/ -v
 │         └────────────┬───────────┘              │
 │                      │                           │
 ├──────────────────────┼───────────────────────────┤
-│              SKComm Transport                    │
+│              SKComms Transport                    │
 │   ┌──────────────────┴───────────────┐          │
 │   │  Router (Syncthing, File, ...)   │          │
 │   └──────────────────────────────────┘          │
@@ -154,7 +154,7 @@ pytest tests/ -v
 - ✅ Ready for end-to-end testing
 
 ### Future Enhancements
-1. **SKComm HTTP Daemon API** (when available)
+1. **SKComms HTTP Daemon API** (when available)
    - REST API for mobile/desktop clients
    - WebSocket support for real-time notifications
    - Multi-device sync

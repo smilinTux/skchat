@@ -453,7 +453,7 @@ lib/
 │   │   ├── pgp_bridge.dart         # FFI bridge to native PGP (via capauth)
 │   │   └── key_manager.dart        # Key storage, fingerprint display
 │   ├── transport/
-│   │   ├── skcomm_client.dart      # REST/gRPC client to local skcomm daemon
+│   │   ├── skcomms_client.dart      # REST/gRPC client to local skcomms daemon
 │   │   ├── sync_status.dart        # Syncthing health polling
 │   │   └── message_poller.dart     # Background inbox polling
 │   └── identity/
@@ -506,12 +506,12 @@ lib/
     └── biometric_lock.dart         # App lock on background
 ```
 
-### Communication with SKComm Daemon
+### Communication with SKComms Daemon
 
-The Flutter app does NOT run its own transport stack. Instead it talks to the local `skcomm` daemon over a lightweight API:
+The Flutter app does NOT run its own transport stack. Instead it talks to the local `skcomms` daemon over a lightweight API:
 
 ```
-Flutter App ←→ SKComm Daemon (localhost) ←→ Syncthing/File/Nostr
+Flutter App ←→ SKComms Daemon (localhost) ←→ Syncthing/File/Nostr
 ```
 
 **Protocol Options (pick one for MVP):**
@@ -521,7 +521,7 @@ Flutter App ←→ SKComm Daemon (localhost) ←→ Syncthing/File/Nostr
 
 **MVP recommendation:** HTTP REST on localhost for simplicity, upgrade to gRPC for v2 streaming.
 
-### Endpoints needed from SKComm daemon:
+### Endpoints needed from SKComms daemon:
 
 ```
 POST   /api/v1/send              — Send a message
@@ -589,7 +589,7 @@ dependencies:
   flutter_riverpod: ^2.6.0
   freezed_annotation: ^2.4.0
   go_router: ^14.0.0
-  dio: ^5.7.0               # HTTP client for skcomm daemon
+  dio: ^5.7.0               # HTTP client for skcomms daemon
   hive_flutter: ^1.1.0       # Local message cache
   flutter_local_notifications: ^18.0.0
   path_provider: ^2.1.0
@@ -618,7 +618,7 @@ dev_dependencies:
 ### Must Have
 - [ ] Chat list with soul-color avatars and encryption indicators
 - [ ] 1:1 conversation view with message bubbles
-- [ ] Send/receive via SKComm daemon (HTTP REST)
+- [ ] Send/receive via SKComms daemon (HTTP REST)
 - [ ] End-to-end encryption status display
 - [ ] Basic presence (online/offline)
 - [ ] CapAuth identity display

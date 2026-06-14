@@ -1,13 +1,13 @@
 ---
 name: skchat-sovereign
 emoji: "\U0001F4AC"
-description: AI-native encrypted P2P chat for humans and AI agents — sovereign communication over SKComm transports.
+description: AI-native encrypted P2P chat for humans and AI agents — sovereign communication over SKComms transports.
 metadata: {"clawdbot":{"requires":{"bins":["skchat"]},"install":[{"id":"pipx","kind":"shell","command":"pipx install 'skchat-sovereign[all]'","bins":["skchat","skchat-mcp"],"label":"Install skchat (pipx)"}]}}
 ---
 
 # SKChat
 
-AI-native encrypted P2P chat for humans and AI agents — sovereign communication over SKComm transports.
+AI-native encrypted P2P chat for humans and AI agents — sovereign communication over SKComms transports.
 
 ---
 
@@ -76,7 +76,7 @@ skchat watch --interval 2
 
 ### send
 
-Send a message to a recipient. Composes a `ChatMessage`, stores it in local history, and (when a transport is configured) delivers it via SKComm.
+Send a message to a recipient. Composes a `ChatMessage`, stores it in local history, and (when a transport is configured) delivers it via SKComms.
 
 The recipient can be a friendly peer name (`lumina`, `jarvis`) or a full CapAuth URI (`capauth:bob@skworld.io`). Peer names are resolved from the skcapstone peer registry.
 
@@ -127,7 +127,7 @@ skchat inbox --thread standup
 
 ### receive
 
-Poll all configured SKComm transports for incoming messages, then store them in local history. This is the command to run to actually fetch new messages from peers.
+Poll all configured SKComms transports for incoming messages, then store them in local history. This is the command to run to actually fetch new messages from peers.
 
 ```
 skchat receive
@@ -145,7 +145,7 @@ skchat receive
 
 ### watch
 
-Live-watch incoming messages. Continuously polls SKComm at a configurable interval and displays messages as they arrive. Uses `rich.live` for an updating terminal display. Press Ctrl+C to stop.
+Live-watch incoming messages. Continuously polls SKComms at a configurable interval and displays messages as they arrive. Uses `rich.live` for an updating terminal display. Press Ctrl+C to stop.
 
 ```
 skchat watch [OPTIONS]
@@ -232,7 +232,7 @@ skchat search "quantum upgrade" --limit 5
 
 ### daemon start
 
-Start a background receive daemon that polls SKComm transports at a regular interval and stores incoming messages automatically. The PID is written to `~/.skchat/daemon.pid`.
+Start a background receive daemon that polls SKComms transports at a regular interval and stores incoming messages automatically. The PID is written to `~/.skchat/daemon.pid`.
 
 ```
 skchat daemon start [OPTIONS]
@@ -282,19 +282,19 @@ Understanding the distinction between these three commands is important:
 
 ```
 skchat inbox    ->  Shows locally-stored messages from local history
-skchat receive  ->  Polls via SKComm transports AND stores in local history
-skcomm receive  ->  Polls raw transport envelopes (lower-level, no SKChat storage)
+skchat receive  ->  Polls via SKComms transports AND stores in local history
+skcomms receive  ->  Polls raw transport envelopes (lower-level, no SKChat storage)
 ```
 
 **Detailed flow:**
 
-1. `skchat send` composes a `ChatMessage`, stores a copy in local history (as pending/sent), and delivers via SKComm if a transport is configured.
+1. `skchat send` composes a `ChatMessage`, stores a copy in local history (as pending/sent), and delivers via SKComms if a transport is configured.
 
-2. `skchat receive` calls SKComm's receive layer, extracts `ChatMessage` payloads from the inbound envelopes, optionally decrypts them, and stores them in local history. This is the command that actually fetches messages from peers.
+2. `skchat receive` calls SKComms's receive layer, extracts `ChatMessage` payloads from the inbound envelopes, optionally decrypts them, and stores them in local history. This is the command that actually fetches messages from peers.
 
 3. `skchat inbox` reads from local history only. It does not touch any transport. If you have not run `skchat receive` recently, your inbox may be stale.
 
-4. `skcomm receive` is a lower-level command in the SKComm package. It returns raw transport envelopes without interpreting the payload or writing to SKChat history. Use `skchat receive` instead unless you are debugging the transport layer directly.
+4. `skcomms receive` is a lower-level command in the SKComms package. It returns raw transport envelopes without interpreting the payload or writing to SKChat history. Use `skchat receive` instead unless you are debugging the transport layer directly.
 
 **Typical workflow:**
 
@@ -315,7 +315,7 @@ Or, use the daemon to keep history up to date automatically — then just use `s
 
 ## Daemon
 
-The receive daemon is a background process that continuously polls SKComm transports and writes incoming messages to local history. It is the recommended way to use SKChat in persistent sessions or on servers.
+The receive daemon is a background process that continuously polls SKComms transports and writes incoming messages to local history. It is the recommended way to use SKChat in persistent sessions or on servers.
 
 **Start the daemon:**
 
@@ -452,17 +452,17 @@ from skchat import run_daemon
 run_daemon(interval=5.0, log_file="~/.skchat/daemon.log")
 ```
 
-**Transport bridge (requires SKComm):**
+**Transport bridge (requires SKComms):**
 
 ```python
-from skcomm import SKComm
+from skcomms import SKComms
 from skchat import ChatTransport, ChatHistory
 from skmemory import MemoryStore
 
-comm = SKComm.from_config()
+comm = SKComms.from_config()
 history = ChatHistory(store=MemoryStore())
 transport = ChatTransport(
-    skcomm=comm,
+    skcomms=comm,
     history=history,
     identity="capauth:you@skworld.io",
 )
@@ -489,7 +489,7 @@ for msg in messages:
 | `ContentType` | `PLAIN`, `MARKDOWN`, `SYSTEM` |
 | `DeliveryStatus` | `PENDING`, `SENT`, `DELIVERED`, `READ`, `FAILED` |
 | `ChatHistory` | SKMemory-backed message persistence and retrieval |
-| `ChatTransport` | SKComm bridge for P2P send and receive |
+| `ChatTransport` | SKComms bridge for P2P send and receive |
 | `ChatDaemon` | Background polling service |
 
 ---
@@ -533,7 +533,7 @@ Or configure it in your MCP host (Claude Code, Cursor, etc.):
 
 - `initiate_call` is non-blocking: returns immediately, ICE negotiation happens in background
 - Call `webrtc_status` after ~3s to confirm the connection is established
-- `send_file_p2p` uses WebRTC parallel data channels if connected, falls back to SKComm transport
+- `send_file_p2p` uses WebRTC parallel data channels if connected, falls back to SKComms transport
 - All WebRTC connections use CapAuth PGP-signed SDPs — MITM protection by design
 
 ---
