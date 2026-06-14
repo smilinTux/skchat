@@ -1,10 +1,10 @@
 """Tests for the SKChat transport bridge (skchat.transport.ChatTransport).
 
 Covers:
-- send_message with mocked SKComm (success + failure)
+- send_message with mocked SKComms (success + failure)
 - poll_inbox with mocked envelopes
 - send_and_store convenience method
-- Graceful degradation when SKComm operations fail
+- Graceful degradation when SKComms operations fail
 - Direct file inbox polling (_poll_file_inbox)
 - Loopback delivery when sender == receiver
 """
@@ -22,8 +22,8 @@ from skchat.transport import ChatTransport
 
 
 @pytest.fixture
-def mock_skcomm():
-    """Create a mock SKComm instance."""
+def mock_skcomms():
+    """Create a mock SKComms instance."""
     comm = MagicMock()
     comm.send.return_value = MagicMock(
         delivered=True,
@@ -42,10 +42,10 @@ def mock_history():
 
 
 @pytest.fixture
-def transport(mock_skcomm, mock_history):
+def transport(mock_skcomms, mock_history):
     """Create a ChatTransport with mocked dependencies."""
     return ChatTransport(
-        skcomm=mock_skcomm,
+        skcomms=mock_skcomms,
         history=mock_history,
         identity="capauth:test@skchat",
     )
@@ -54,8 +54,8 @@ def transport(mock_skcomm, mock_history):
 class TestSendMessage:
     """Tests for ChatTransport.send_message()."""
 
-    def test_send_success(self, transport, mock_skcomm, mock_history):
-        """Message is sent via SKComm and stored in history."""
+    def test_send_success(self, transport, mock_skcomms, mock_history):
+        """Message is sent via SKComms and stored in history."""
         msg = ChatMessage(
             sender="capauth:test@skchat",
             recipient="capauth:lumina@skworld",
@@ -66,12 +66,12 @@ class TestSendMessage:
 
         assert result["delivered"] is True
         assert result["recipient"] == "capauth:lumina@skworld"
-        mock_skcomm.send.assert_called_once()
+        mock_skcomms.send.assert_called_once()
         mock_history.store_message.assert_called_once()
 
-    def test_send_failure_stores_as_failed(self, transport, mock_skcomm, mock_history):
+    def test_send_failure_stores_as_failed(self, transport, mock_skcomms, mock_history):
         """Failed delivery still stores the message with FAILED status."""
-        mock_skcomm.send.return_value = MagicMock(
+        mock_skcomms.send.return_value = MagicMock(
             delivered=False,
             successful_transport=None,
         )
@@ -89,9 +89,9 @@ class TestSendMessage:
         stored_msg = mock_history.store_message.call_args[0][0]
         assert stored_msg.delivery_status == DeliveryStatus.FAILED
 
-    def test_send_exception_returns_error(self, transport, mock_skcomm, mock_history):
-        """SKComm exception is caught and reported gracefully."""
-        mock_skcomm.send.side_effect = ConnectionError("Transport unreachable")
+    def test_send_exception_returns_error(self, transport, mock_skcomms, mock_history):
+        """SKComms exception is caught and reported gracefully."""
+        mock_skcomms.send.side_effect = ConnectionError("Transport unreachable")
 
         msg = ChatMessage(
             sender="capauth:test@skchat",
@@ -109,15 +109,15 @@ class TestSendMessage:
 class TestPollInbox:
     """Tests for ChatTransport.poll_inbox()."""
 
-    def test_poll_empty_inbox(self, transport, mock_skcomm):
+    def test_poll_empty_inbox(self, transport, mock_skcomms):
         """Empty inbox returns empty list."""
-        mock_skcomm.receive.return_value = []
+        mock_skcomms.receive.return_value = []
 
         messages = transport.poll_inbox()
 
         assert messages == []
 
-    def test_poll_with_message(self, transport, mock_skcomm, mock_history):
+    def test_poll_with_message(self, transport, mock_skcomms, mock_history):
         """Valid envelope is parsed and stored as ChatMessage."""
         msg_data = ChatMessage(
             sender="capauth:opus@smilintux",
@@ -127,7 +127,7 @@ class TestPollInbox:
 
         envelope = MagicMock()
         envelope.payload.content = msg_data.model_dump_json()
-        mock_skcomm.receive.return_value = [envelope]
+        mock_skcomms.receive.return_value = [envelope]
 
         messages = transport.poll_inbox()
 
@@ -136,19 +136,19 @@ class TestPollInbox:
         assert messages[0].delivery_status == DeliveryStatus.DELIVERED
         mock_history.store_message.assert_called_once()
 
-    def test_poll_skips_invalid_envelope(self, transport, mock_skcomm):
+    def test_poll_skips_invalid_envelope(self, transport, mock_skcomms):
         """Invalid envelope payloads are silently skipped."""
         envelope = MagicMock()
         envelope.payload.content = "not valid json {{"
-        mock_skcomm.receive.return_value = [envelope]
+        mock_skcomms.receive.return_value = [envelope]
 
         messages = transport.poll_inbox()
 
         assert messages == []
 
-    def test_poll_receive_failure(self, transport, mock_skcomm):
-        """SKComm receive failure returns empty list."""
-        mock_skcomm.receive.side_effect = RuntimeError("Network error")
+    def test_poll_receive_failure(self, transport, mock_skcomms):
+        """SKComms receive failure returns empty list."""
+        mock_skcomms.receive.side_effect = RuntimeError("Network error")
 
         messages = transport.poll_inbox()
 
@@ -158,7 +158,7 @@ class TestPollInbox:
 class TestSendAndStore:
     """Tests for ChatTransport.send_and_store() convenience method."""
 
-    def test_compose_and_deliver(self, transport, mock_skcomm, mock_history):
+    def test_compose_and_deliver(self, transport, mock_skcomms, mock_history):
         """send_and_store composes a ChatMessage and delivers it."""
         result = transport.send_and_store(
             recipient="capauth:lumina@skworld",
@@ -167,9 +167,9 @@ class TestSendAndStore:
         )
 
         assert result["delivered"] is True
-        mock_skcomm.send.assert_called_once()
+        mock_skcomms.send.assert_called_once()
 
-        call_kwargs = mock_skcomm.send.call_args
+        call_kwargs = mock_skcomms.send.call_args
         assert "capauth:lumina@skworld" in str(call_kwargs)
 
 
@@ -180,19 +180,19 @@ class TestSendAndStore:
 
 def _make_transport(tmp_path: Path, identity: str = "capauth:test@skchat") -> tuple:
     """Create a ChatTransport wired to a temp file inbox and mock history."""
-    mock_skcomm = MagicMock()
-    mock_skcomm.receive.return_value = []
+    mock_skcomms = MagicMock()
+    mock_skcomms.receive.return_value = []
     mock_history = MagicMock()
     mock_history.store_message.return_value = "mem-001"
 
     ct = ChatTransport(
-        skcomm=mock_skcomm,
+        skcomms=mock_skcomms,
         history=mock_history,
         identity=identity,
     )
-    # Override the file inbox root to use a tmp dir — avoids touching ~/.skcomm
+    # Override the file inbox root to use a tmp dir — avoids touching ~/.skcomms
     ct._file_inbox_root = tmp_path / "transport" / "file" / "inbox"
-    return ct, mock_skcomm, mock_history
+    return ct, mock_skcomms, mock_history
 
 
 class TestFileInboxPoll:
@@ -232,7 +232,7 @@ class TestFileInboxPoll:
             content="Hello from file inbox!",
         )
         envelope = {
-            "skcomm_version": "1.0.0",
+            "skcomms_version": "1.0.0",
             "envelope_id": "aabbccdd",
             "sender": msg.sender,
             "recipient": msg.recipient,
@@ -307,8 +307,8 @@ class TestFileInboxPoll:
         assert not (inbox / "bad.skc.json").exists()
 
     def test_poll_inbox_includes_file_inbox_results(self, tmp_path):
-        """poll_inbox() combines SKComm envelopes + direct file inbox results."""
-        ct, mock_skcomm, mock_history = _make_transport(tmp_path)
+        """poll_inbox() combines SKComms envelopes + direct file inbox results."""
+        ct, mock_skcomms, mock_history = _make_transport(tmp_path)
         ct._get_own_fingerprint = lambda: "TESTFP"  # type: ignore[method-assign]
 
         inbox = ct._file_inbox_root / "TESTFP"  # type: ignore[attr-defined]
@@ -326,8 +326,8 @@ class TestFileInboxPoll:
         }
         (inbox / "ff998877.skc.json").write_text(json.dumps(envelope), encoding="utf-8")
 
-        # SKComm receive returns nothing
-        mock_skcomm.receive.return_value = []
+        # SKComms receive returns nothing
+        mock_skcomms.receive.return_value = []
 
         messages = ct.poll_inbox()
 
@@ -343,9 +343,9 @@ class TestFileInboxPoll:
 class TestLoopback:
     """Tests for sender == receiver loopback delivery."""
 
-    def test_loopback_send_does_not_call_skcomm(self, tmp_path):
-        """Self-addressed messages bypass SKComm.send()."""
-        ct, mock_skcomm, mock_history = _make_transport(
+    def test_loopback_send_does_not_call_skcomms(self, tmp_path):
+        """Self-addressed messages bypass SKComms.send()."""
+        ct, mock_skcomms, mock_history = _make_transport(
             tmp_path, identity="capauth:self@skworld.io"
         )
         ct._get_own_fingerprint = lambda: "SELFTEST"  # type: ignore[method-assign]
@@ -360,7 +360,7 @@ class TestLoopback:
 
         assert result["delivered"] is True
         assert result["transport"] == "file"
-        mock_skcomm.send.assert_not_called()
+        mock_skcomms.send.assert_not_called()
 
     def test_loopback_send_writes_to_file_inbox(self, tmp_path):
         """Self-addressed message creates a .skc.json file in own inbox dir."""
@@ -401,7 +401,7 @@ class TestLoopback:
         mock_history.store_message.assert_called_once()
 
     def test_get_own_fingerprint_fallback_slug(self, tmp_path):
-        """Falls back to identity slug when no ~/.skcomm/config.yml fingerprint."""
+        """Falls back to identity slug when no ~/.skcomms/config.yml fingerprint."""
         ct, _, _ = _make_transport(tmp_path, identity="capauth:opus@skworld.io")
         # Point config to a non-existent path to force fallback
         with patch("builtins.open", side_effect=FileNotFoundError):

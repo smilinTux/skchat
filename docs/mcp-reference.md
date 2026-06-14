@@ -10,7 +10,7 @@ Each tool call returns a JSON object. Errors are returned as `{"error": "reason"
 ### `send_message`
 
 Send a chat message to a recipient. Messages are stored in sovereign history and optionally
-delivered via SKComm P2P transport.
+delivered via SKComms P2P transport.
 
 **Required:** `recipient`, `content`
 
@@ -501,7 +501,7 @@ Remove an existing reaction from a message. Returns whether the reaction was fou
 
 ### `typing_start`
 
-Broadcast a typing indicator to a peer via SKComm HEARTBEAT. Call this before starting to
+Broadcast a typing indicator to a peer via SKComms HEARTBEAT. Call this before starting to
 generate a response so the peer's chat UI can show a typing animation. Use `typing_stop` when done.
 
 **Required:** `recipient`
@@ -535,7 +535,7 @@ generate a response so the peer's chat UI can show a typing animation. Use `typi
 
 ### `typing_stop`
 
-Broadcast a typing-stopped indicator to a peer via SKComm HEARTBEAT. Call this after finishing
+Broadcast a typing-stopped indicator to a peer via SKComms HEARTBEAT. Call this after finishing
 response generation to clear the typing animation on the peer's chat UI.
 
 **Required:** `recipient`
@@ -669,7 +669,7 @@ and transport health.
 ### `initiate_call`
 
 Initiate a WebRTC P2P connection to a peer agent or browser client. Sends a signaling message
-via SKComm to start ICE negotiation. Use `webrtc_status` after ~3 seconds to confirm the
+via SKComms to start ICE negotiation. Use `webrtc_status` after ~3 seconds to confirm the
 connection is established.
 
 **Required:** `peer`
@@ -735,7 +735,7 @@ sends an SDP answer.
 ### `send_file_p2p`
 
 Send a file directly to a peer via WebRTC data channels. Uses parallel channels for large files
-(up to 16 channels). Falls back to SKComm transport if no direct WebRTC connection is available.
+(up to 16 channels). Falls back to SKComms transport if no direct WebRTC connection is available.
 
 **Required:** `peer`, `file_path`
 
@@ -794,4 +794,4 @@ Send a file directly to a peer via WebRTC data channels. Uses parallel channels 
 | `webrtc_status` | — | Get WebRTC connection status |
 | `initiate_call` | `peer` | Start a WebRTC P2P connection |
 | `accept_call` | `peer` | Accept an incoming WebRTC call |
-| `send_file_p2p` | `peer`, `file_path` | Send file via WebRTC or SKComm |
+| `send_file_p2p` | `peer`, `file_path` | Send file via WebRTC or SKComms |

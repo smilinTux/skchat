@@ -2,13 +2,13 @@
 
 Tests the full AgentMessenger.send() -> ChatHistory.store_message() ->
 get_inbox() pipeline using an in-memory MemoryStore (no real network,
-no SKComm transport required).
+no SKComms transport required).
 
 Group message tests verify: GroupChat.create() -> compose_group_message()
 -> ChatHistory.store_message() -> get_thread_messages().
 
 All tests in this module are marked with ``pytest.mark.integration`` and
-will be skipped automatically when SKComm is not configured or skmemory
+will be skipped automatically when SKComms is not configured or skmemory
 is not importable.
 """
 
@@ -80,8 +80,8 @@ def history(tmp_path: Path):
 def messenger(history):
     """AgentMessenger with no transport (local-only mode).
 
-    The messenger uses the in-memory history fixture and has no SKComm
-    transport so all tests work without network or SKComm config.
+    The messenger uses the in-memory history fixture and has no SKComms
+    transport so all tests work without network or SKComms config.
 
     Args:
         history: Isolated ChatHistory fixture.

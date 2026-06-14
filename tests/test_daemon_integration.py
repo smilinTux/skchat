@@ -46,9 +46,9 @@ def _wait_for(condition, timeout: float = 3.0, interval: float = 0.05) -> bool:
 
 
 def _build_mock_stack():
-    """Return (mock_skcomm, mock_transport, mock_history, mock_advocacy) mocks."""
-    mock_skcomm = MagicMock()
-    mock_skcomm.router.transports = []  # no WebRTC transport
+    """Return (mock_skcomms, mock_transport, mock_history, mock_advocacy) mocks."""
+    mock_skcomms = MagicMock()
+    mock_skcomms.router.transports = []  # no WebRTC transport
 
     mock_transport = MagicMock()
     mock_transport.poll_inbox.return_value = []
@@ -60,21 +60,21 @@ def _build_mock_stack():
     mock_advocacy = MagicMock()
     mock_advocacy.process_message.return_value = None
 
-    return mock_skcomm, mock_transport, mock_history, mock_advocacy
+    return mock_skcomms, mock_transport, mock_history, mock_advocacy
 
 
-def _start_patches(mock_skcomm, mock_transport, mock_history, mock_advocacy):
+def _start_patches(mock_skcomms, mock_transport, mock_history, mock_advocacy):
     """Activate all daemon dependency patches and return the patcher list.
 
-    Core deps (SKComm, ChatTransport, ChatHistory, identity, AdvocacyEngine) are
+    Core deps (SKComms, ChatTransport, ChatHistory, identity, AdvocacyEngine) are
     wired to the supplied mock objects.  Optional subsystems that do real I/O
     (watchdog HTTP pings, outbox SQLite, presence file-cache, subprocess) are
     also patched so the daemon loop stays fast and isolated.
     """
     patchers = [
         # Core deps — patch the name as imported into the daemon module namespace,
-        # not the skcomm module itself (daemon does `from skcomm import SKComm`).
-        patch("skchat.daemon.SKComm"),
+        # not the skcomms module itself (daemon does `from skcomms import SKComms`).
+        patch("skchat.daemon.SKComms"),
         patch("skchat.transport.ChatTransport"),
         patch("skchat.history.ChatHistory"),
         patch("skchat.identity_bridge.get_sovereign_identity"),
@@ -88,9 +88,9 @@ def _start_patches(mock_skcomm, mock_transport, mock_history, mock_advocacy):
         patch("skchat.presence.PresenceTracker"),
     ]
     mocks = [p.start() for p in patchers]
-    p_skcomm_cls, p_transport_cls, p_history_cls, p_id_fn, p_engine_cls, *_ = mocks
+    p_skcomms_cls, p_transport_cls, p_history_cls, p_id_fn, p_engine_cls, *_ = mocks
 
-    p_skcomm_cls.from_config.return_value = mock_skcomm
+    p_skcomms_cls.from_config.return_value = mock_skcomms
     # Daemon obtains its transport via ``ChatTransport.from_config(...)`` (see
     # daemon.py run loop), so the from_config classmethod must return our
     # mock_transport — otherwise the daemon polls a fresh auto-mock and never
@@ -161,11 +161,11 @@ def test_daemon_processes_inbox_message(inbox_dir, test_message):
             return [ChatMessage.model_validate_json(envelope_path.read_text())]
         return []
 
-    mock_skcomm, mock_transport, mock_history, mock_advocacy = _build_mock_stack()
+    mock_skcomms, mock_transport, mock_history, mock_advocacy = _build_mock_stack()
     mock_transport.poll_inbox.side_effect = _poll_inbox
 
     # 3. Activate patches (must stay alive across thread boundary)
-    patchers = _start_patches(mock_skcomm, mock_transport, mock_history, mock_advocacy)
+    patchers = _start_patches(mock_skcomms, mock_transport, mock_history, mock_advocacy)
 
     # Daemon __init__ calls signal.signal() — must happen on main thread
     daemon = ChatDaemon(interval=0.05, quiet=True)
@@ -230,8 +230,8 @@ def test_daemon_health_endpoint(inbox_dir):
         _orig_start_health(self_d, port=health_port)
         health_started.set()
 
-    mock_skcomm, mock_transport, mock_history, mock_advocacy = _build_mock_stack()
-    patchers = _start_patches(mock_skcomm, mock_transport, mock_history, mock_advocacy)
+    mock_skcomms, mock_transport, mock_history, mock_advocacy = _build_mock_stack()
+    patchers = _start_patches(mock_skcomms, mock_transport, mock_history, mock_advocacy)
     # Add the health-server redirect patch
     health_patcher = patch.object(ChatDaemon, "_start_health_server", _patched_health)
     health_patcher.start()
@@ -320,7 +320,7 @@ def test_init_attachments_binds_on_complete(tmp_path):
         svc = daemon._init_attachments(
             history=mock_history,
             identity="capauth:bob@skworld.io",
-            skcomm=MagicMock(),
+            skcomms=MagicMock(),
         )
 
     assert svc is not None
@@ -341,7 +341,7 @@ def test_init_attachments_non_fatal_on_failure():
         svc = daemon._init_attachments(
             history=MagicMock(),
             identity="capauth:bob@skworld.io",
-            skcomm=MagicMock(),
+            skcomms=MagicMock(),
         )
     assert svc is None
     assert daemon._attachment_service is None
@@ -359,10 +359,10 @@ def test_daemon_empty_inbox_no_messages(inbox_dir):
     Runs for several poll cycles to confirm the daemon stays stable with
     no messages available.
     """
-    mock_skcomm, mock_transport, mock_history, mock_advocacy = _build_mock_stack()
+    mock_skcomms, mock_transport, mock_history, mock_advocacy = _build_mock_stack()
     # poll_inbox already returns [] from _build_mock_stack defaults
 
-    patchers = _start_patches(mock_skcomm, mock_transport, mock_history, mock_advocacy)
+    patchers = _start_patches(mock_skcomms, mock_transport, mock_history, mock_advocacy)
     daemon = ChatDaemon(interval=0.05, quiet=True)
     exc_holder: list[BaseException] = []
 

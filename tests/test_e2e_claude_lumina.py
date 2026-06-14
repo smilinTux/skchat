@@ -4,7 +4,7 @@ Flow:
   1. Write a ChatMessage JSON envelope into lumina's file-transport inbox dir.
   2. Patch call_consciousness to return 'Hello from Lumina'.
   3. Patch check_inbox_for_lumina to read from the tmp inbox dir via
-     ChatTransport + _FileSKComm (no skmemory, no daemon).
+     ChatTransport + _FileSKComms (no skmemory, no daemon).
   4. Patch send_reply to write the response to opus's tmp inbox dir.
   5. Run one lumina-bridge poll iteration.
   6. Assert lumina's reply appears in opus's inbox dir.
@@ -42,12 +42,12 @@ LUMINA_IDENTITY = "capauth:lumina@skworld.io"
 OPUS_IDENTITY = "capauth:opus@skworld.io"
 
 # ---------------------------------------------------------------------------
-# File-based SKComm stub  (no real SKComm / Syncthing)
+# File-based SKComms stub  (no real SKComms / Syncthing)
 # ---------------------------------------------------------------------------
 
 
-class _FileSKComm:
-    """Minimal file-based SKComm stub.
+class _FileSKComms:
+    """Minimal file-based SKComms stub.
 
     send() writes JSON payload to outbox_dir/{uuid}.json.
     receive() reads + deletes all *.json files from inbox_dir.
@@ -159,14 +159,14 @@ def test_claude_sends_to_lumina_lumina_responds(tmp_path: Path, monkeypatch) -> 
     # ── 3. File-transport stubs for lumina (read) and opus (write) ───────────
     lumina_history = _InMemoryHistory()
     lumina_transport = ChatTransport(
-        skcomm=_FileSKComm(outbox_dir=lumina_outbox, inbox_dir=lumina_inbox),
+        skcomms=_FileSKComms(outbox_dir=lumina_outbox, inbox_dir=lumina_inbox),
         history=lumina_history,
         identity=LUMINA_IDENTITY,
     )
 
-    # Lumina's reply skcomm writes to opus_inbox so opus can read it.
+    # Lumina's reply skcomms writes to opus_inbox so opus can read it.
     reply_transport = ChatTransport(
-        skcomm=_FileSKComm(outbox_dir=opus_inbox, inbox_dir=lumina_outbox),
+        skcomms=_FileSKComms(outbox_dir=opus_inbox, inbox_dir=lumina_outbox),
         history=_InMemoryHistory(),
         identity=LUMINA_IDENTITY,
     )
@@ -229,7 +229,7 @@ def test_claude_sends_to_lumina_lumina_responds(tmp_path: Path, monkeypatch) -> 
     # ── 10. Assert lumina's response is in opus's inbox ──────────────────────
     opus_history = _InMemoryHistory()
     opus_transport = ChatTransport(
-        skcomm=_FileSKComm(outbox_dir=opus_outbox, inbox_dir=opus_inbox),
+        skcomms=_FileSKComms(outbox_dir=opus_outbox, inbox_dir=opus_inbox),
         history=opus_history,
         identity=OPUS_IDENTITY,
     )

@@ -2,7 +2,7 @@
 
 Every message is a sovereign artifact: it has an identity (sender),
 a destination (recipient), PGP encryption, and thread context.
-Models here are transport-agnostic — they don't know about SKComm.
+Models here are transport-agnostic — they don't know about SKComms.
 """
 
 from __future__ import annotations
@@ -74,7 +74,7 @@ class ChatMessage(BaseModel):
     """Core message model for SKChat.
 
     All messages are PGP-encrypted before leaving the crypto layer.
-    The envelope wraps the encrypted payload for SKComm transport.
+    The envelope wraps the encrypted payload for SKComms transport.
 
     Attributes:
         id: UUID v4 message identifier.

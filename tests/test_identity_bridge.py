@@ -169,7 +169,7 @@ def test_resolve_peer_name_already_uri():
 def test_resolve_peer_name_from_email(temp_peers_dir):
     """Test resolving peer name when only email is available (jarvis uses email fallback)."""
     with patch("skchat.identity_bridge.SKCAPSTONE_PEERS_DIR", temp_peers_dir):
-        with patch("skchat.identity_bridge.SKCOMM_PEERS_DIR", Path("/nonexistent")):
+        with patch("skchat.identity_bridge.SKCOMMS_PEERS_DIR", Path("/nonexistent")):
             # Jarvis has no capauth: URI so falls back to email/fingerprint
             uri = resolve_peer_name("jarvis")
             assert uri.startswith("capauth:jarvis@") or uri.startswith("capauth:FFEEAABB")
@@ -182,7 +182,7 @@ def test_resolve_peer_name_from_json(temp_peers_dir):
     This test verifies the file-lookup path by also patching capauth.
     """
     with patch("skchat.identity_bridge.SKCAPSTONE_PEERS_DIR", temp_peers_dir):
-        with patch("skchat.identity_bridge.SKCOMM_PEERS_DIR", Path("/nonexistent")):
+        with patch("skchat.identity_bridge.SKCOMMS_PEERS_DIR", Path("/nonexistent")):
             with patch(
                 "capauth.agent_identity.resolve_agent_identity",
                 side_effect=ImportError("mocked absence"),
@@ -194,7 +194,7 @@ def test_resolve_peer_name_from_json(temp_peers_dir):
 def test_resolve_peer_name_contact_uris_priority(temp_peers_dir):
     """contact_uris takes priority over other fields in file lookup."""
     with patch("skchat.identity_bridge.SKCAPSTONE_PEERS_DIR", temp_peers_dir):
-        with patch("skchat.identity_bridge.SKCOMM_PEERS_DIR", Path("/nonexistent")):
+        with patch("skchat.identity_bridge.SKCOMMS_PEERS_DIR", Path("/nonexistent")):
             with patch(
                 "capauth.agent_identity.resolve_agent_identity",
                 side_effect=ImportError("mocked absence"),
@@ -210,7 +210,7 @@ def test_resolve_peer_name_not_found():
     The peer dirs don't exist → PeerResolutionError.
     """
     with patch("skchat.identity_bridge.SKCAPSTONE_PEERS_DIR", Path("/nonexistent")):
-        with patch("skchat.identity_bridge.SKCOMM_PEERS_DIR", Path("/nonexistent")):
+        with patch("skchat.identity_bridge.SKCOMMS_PEERS_DIR", Path("/nonexistent")):
             with patch(
                 "capauth.agent_identity.resolve_agent_identity",
                 side_effect=ImportError("mocked absence"),
@@ -229,7 +229,7 @@ def test_peer_resolution_with_corrupt_json(tmp_path):
         f.write("{ invalid json")
 
     with patch("skchat.identity_bridge.SKCAPSTONE_PEERS_DIR", peers_dir):
-        with patch("skchat.identity_bridge.SKCOMM_PEERS_DIR", Path("/nonexistent")):
+        with patch("skchat.identity_bridge.SKCOMMS_PEERS_DIR", Path("/nonexistent")):
             with patch(
                 "capauth.agent_identity.resolve_agent_identity",
                 side_effect=ImportError("mocked absence"),
@@ -257,7 +257,7 @@ trust_level: verified
         f.write(yaml_content)
 
     with patch("skchat.identity_bridge.SKCAPSTONE_PEERS_DIR", peers_dir):
-        with patch("skchat.identity_bridge.SKCOMM_PEERS_DIR", Path("/nonexistent")):
+        with patch("skchat.identity_bridge.SKCOMMS_PEERS_DIR", Path("/nonexistent")):
             with patch(
                 "capauth.agent_identity.resolve_agent_identity",
                 side_effect=ImportError("mocked absence"),
@@ -269,7 +269,7 @@ trust_level: verified
 def test_get_peer_transport_address(temp_peers_dir):
     """Test retrieving transport addresses for a peer."""
     with patch("skchat.identity_bridge.SKCAPSTONE_PEERS_DIR", temp_peers_dir):
-        with patch("skchat.identity_bridge.SKCOMM_PEERS_DIR", Path("/nonexistent")):
+        with patch("skchat.identity_bridge.SKCOMMS_PEERS_DIR", Path("/nonexistent")):
             transport = get_peer_transport_address("jarvis")
             assert transport is not None
             assert transport["syncthing_device_id"] == "JARVIS-DEVICE-ID-123"
@@ -279,7 +279,7 @@ def test_get_peer_transport_address(temp_peers_dir):
 def test_get_peer_transport_address_not_found():
     """Test transport address lookup for non-existent peer."""
     with patch("skchat.identity_bridge.SKCAPSTONE_PEERS_DIR", Path("/nonexistent")):
-        with patch("skchat.identity_bridge.SKCOMM_PEERS_DIR", Path("/nonexistent")):
+        with patch("skchat.identity_bridge.SKCOMMS_PEERS_DIR", Path("/nonexistent")):
             transport = get_peer_transport_address("unknown")
             assert transport is None
 

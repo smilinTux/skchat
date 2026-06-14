@@ -20,8 +20,8 @@ Tools:
     remove_reaction    — Remove a reaction from a message
     get_reactions      — Get all reactions for a message
     daemon_status      — Get SKChat background daemon status
-    typing_start              — Broadcast a typing indicator to a peer via SKComm
-    typing_stop               — Broadcast a typing-stopped indicator to a peer via SKComm
+    typing_start              — Broadcast a typing indicator to a peer via SKComms
+    typing_stop               — Broadcast a typing-stopped indicator to a peer via SKComms
     capture_to_memory         — Capture a conversation thread to skcapstone memory
     capture_chat_to_memory    — Capture recent messages as a skcapstone memory (session-aware)
     get_context_for_message   — Search skcapstone memories relevant to a query for AI context
@@ -31,7 +31,7 @@ Tools:
     skchat_group_send         — Send to group; returns {status, delivered_to, failed}
     skchat_send               — Send a message via AgentMessenger; returns {status, message_id, delivered, recipient}
     skchat_peers              — List known peers with presence state and capabilities
-    skchat_set_presence       — Broadcast own presence state via file transport to ~/.skcomm/outbox/
+    skchat_set_presence       — Broadcast own presence state via file transport to ~/.skcomms/outbox/
     skchat_get_presence       — Query presence cache for all peers or a specific peer
     skchat_who_is_online      — List all peers with online/away/offline status (presence cache)
     skchat_inbox              — Unified inbox: all messages for this agent with sender/timestamp/unread filters
@@ -214,7 +214,7 @@ async def list_tools() -> list[Tool]:
             name="send_message",
             description=(
                 "Send a chat message to a recipient. Messages are stored in "
-                "sovereign history and optionally delivered via SKComm P2P transport."
+                "sovereign history and optionally delivered via SKComms P2P transport."
             ),
             inputSchema={
                 "type": "object",
@@ -453,7 +453,7 @@ async def list_tools() -> list[Tool]:
             name="initiate_call",
             description=(
                 "Initiate a WebRTC P2P connection to a peer agent or browser client. "
-                "Sends a signaling message via SKComm to start ICE negotiation. "
+                "Sends a signaling message via SKComms to start ICE negotiation. "
                 "Use webrtc_status after ~3s to confirm the connection is established."
             ),
             inputSchema={
@@ -573,7 +573,7 @@ async def list_tools() -> list[Tool]:
             description=(
                 "Send a file directly to a peer via WebRTC data channels. "
                 "Uses parallel channels for large files (up to 16 channels, "
-                "similar to Weblink's approach). Falls back to SKComm transport if "
+                "similar to Weblink's approach). Falls back to SKComms transport if "
                 "no direct WebRTC connection is available."
             ),
             inputSchema={
@@ -598,7 +598,7 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="send_file",
             description=(
-                "Send a file to a recipient via SKComm chunked transfer. "
+                "Send a file to a recipient via SKComms chunked transfer. "
                 "Chunks and AES-256-GCM encrypts the file, then sends "
                 "FILE_TRANSFER_INIT + FILE_CHUNK × N + FILE_TRANSFER_DONE. "
                 "Returns transfer_id for tracking with list_transfers."
@@ -733,7 +733,7 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="typing_start",
             description=(
-                "Broadcast a typing indicator to a peer via SKComm HEARTBEAT. "
+                "Broadcast a typing indicator to a peer via SKComms HEARTBEAT. "
                 "Call this before starting to generate a response so the peer's "
                 "chat UI can show a typing animation. Use typing_stop when done."
             ),
@@ -807,7 +807,7 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="typing_stop",
             description=(
-                "Broadcast a typing-stopped indicator to a peer via SKComm HEARTBEAT. "
+                "Broadcast a typing-stopped indicator to a peer via SKComms HEARTBEAT. "
                 "Call this after finishing response generation to clear the typing "
                 "animation on the peer's chat UI."
             ),
@@ -1139,7 +1139,7 @@ async def list_tools() -> list[Tool]:
             name="skchat_send",
             description=(
                 "Send a message to a recipient using AgentMessenger. "
-                "Stores the message in sovereign history and delivers via SKComm "
+                "Stores the message in sovereign history and delivers via SKComms "
                 "transport when available. Returns status, message_id, delivered, "
                 "and recipient."
             ),
@@ -1181,8 +1181,8 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="skchat_set_presence",
             description=(
-                "Broadcast your own presence state to peers via the SKComm file transport "
-                "(~/.skcomm/outbox/). Valid states: online, offline, away, do-not-disturb, typing. "
+                "Broadcast your own presence state to peers via the SKComms file transport "
+                "(~/.skcomms/outbox/). Valid states: online, offline, away, do-not-disturb, typing. "
                 "Optionally attach a custom_status text (e.g. 'In a meeting'). "
                 "Also updates the local presence cache so skchat_get_presence reflects the change. "
                 "Returns {ok: bool}."
@@ -1893,7 +1893,7 @@ async def _handle_group_send(args: dict) -> list[TextContent]:
     """Send a message to a group.
 
     Stores the composed message in local history, then delivers it
-    to every group member (excluding the sender) via SKComm.
+    to every group member (excluding the sender) via SKComms.
 
     Args:
         args: group_id, content.
@@ -1932,7 +1932,7 @@ async def _handle_group_send(args: dict) -> list[TextContent]:
     history = _get_history()
     memory_id = history.store_message(message)
 
-    # Deliver to each member via SKComm
+    # Deliver to each member via SKComms
     messenger = _get_messenger()
     delivered = 0
     failed = 0
@@ -2306,15 +2306,15 @@ async def _handle_call_auto(args: dict) -> list[TextContent]:
 
 
 def _get_webrtc_transport():
-    """Lazy-get the WebRTC transport from the SKComm router.
+    """Lazy-get the WebRTC transport from the SKComms router.
 
     Returns:
         WebRTCTransport instance, or None if not configured.
     """
     try:
-        from skcomms import SKComm
+        from skcomms import SKComms
 
-        comm = SKComm.from_config()
+        comm = SKComms.from_config()
         for t in comm.router.transports:
             if t.name == "webrtc":
                 return t
@@ -2338,7 +2338,7 @@ async def _handle_webrtc_status(args: dict) -> list[TextContent]:
         return _json(
             {
                 "available": False,
-                "reason": "WebRTC transport not configured. Add webrtc to ~/.skcomm/config.yml and pip install 'skcomm[webrtc]'.",
+                "reason": "WebRTC transport not configured. Add webrtc to ~/.skcomms/config.yml and pip install 'skcomms[webrtc]'.",
             }
         )
 
@@ -2388,7 +2388,7 @@ async def _handle_initiate_call(args: dict) -> list[TextContent]:
     if transport is None:
         return _error(
             "WebRTC transport not configured. "
-            "Install aiortc: pip install 'skcomm[webrtc]' and enable webrtc in ~/.skcomm/config.yml"
+            "Install aiortc: pip install 'skcomms[webrtc]' and enable webrtc in ~/.skcomms/config.yml"
         )
 
     if not transport._running:
@@ -2479,7 +2479,7 @@ async def _handle_accept_call(args: dict) -> list[TextContent]:
 
 
 async def _handle_send_file_p2p(args: dict) -> list[TextContent]:
-    """Send a file to a peer via WebRTC data channel or SKComm fallback.
+    """Send a file to a peer via WebRTC data channel or SKComms fallback.
 
     Uses FileSender (skchat.files) for 256KB-chunked, encrypted transfer so
     the full file is never loaded into memory at once.  Each FileChunk is sent
@@ -2567,14 +2567,14 @@ async def _handle_send_file_p2p(args: dict) -> list[TextContent]:
                     }
                 )
         except Exception as exc:
-            logger.warning("WebRTC direct file send failed: %s — falling back to SKComm", exc)
+            logger.warning("WebRTC direct file send failed: %s — falling back to SKComms", exc)
 
-    # Fallback: send via SKComm as chunked WEBRTC_FILE messages
+    # Fallback: send via SKComms as chunked WEBRTC_FILE messages
     try:
-        from skcomms import SKComm
+        from skcomms import SKComms
         from skcomms.models import MessageType
 
-        comm = SKComm.from_config()
+        comm = SKComms.from_config()
 
         # Send manifest (includes encrypted_key for the receiver)
         manifest_dict["encrypted_key"] = transfer.encrypted_key
@@ -2594,7 +2594,7 @@ async def _handle_send_file_p2p(args: dict) -> list[TextContent]:
         return _json(
             {
                 "sent": True,
-                "transport": "skcomm-chunked",
+                "transport": "skcomms-chunked",
                 "peer": peer,
                 "file": file_name,
                 "size_bytes": file_size,
@@ -2608,7 +2608,7 @@ async def _handle_send_file_p2p(args: dict) -> list[TextContent]:
 
 
 async def _handle_send_file(args: dict) -> list[TextContent]:
-    """Send a file to a recipient via SKComm chunked transfer.
+    """Send a file to a recipient via SKComms chunked transfer.
 
     Args:
         args: recipient (str), file_path (str).
@@ -2635,15 +2635,15 @@ async def _handle_send_file(args: dict) -> list[TextContent]:
     if not path.is_file():
         return _error(f"Not a file: {file_path}")
 
-    skcomm = None
+    skcomms = None
     try:
-        from skcomms.core import SKComm
+        from skcomms.core import SKComms
 
-        skcomm = SKComm.from_config()
+        skcomms = SKComms.from_config()
     except Exception as exc:
-        logger.warning("SKComm unavailable for file transfer: %s", exc)
+        logger.warning("SKComms unavailable for file transfer: %s", exc)
 
-    service = FileTransferService(identity=_get_identity(), skcomm=skcomm)
+    service = FileTransferService(identity=_get_identity(), skcomms=skcomms)
 
     try:
         transfer_id = service.send_file(recipient, path)
@@ -2659,8 +2659,8 @@ async def _handle_send_file(args: dict) -> list[TextContent]:
                     "transfer_id": transfer_id,
                     "filename": path.name,
                     "recipient": recipient,
-                    "status": "sent" if skcomm else "queued_local",
-                    "transport": "skcomm" if skcomm else "none",
+                    "status": "sent" if skcomms else "queued_local",
+                    "transport": "skcomms" if skcomms else "none",
                 }
             ),
         )
@@ -2833,7 +2833,7 @@ async def _handle_list_groups(args: dict) -> list[TextContent]:
 
 
 def _send_typing_indicator(recipient: str, typing: bool, thread_id: Optional[str]) -> bool:
-    """Send a typing presence indicator over SKComm HEARTBEAT.
+    """Send a typing presence indicator over SKComms HEARTBEAT.
 
     Args:
         recipient: Resolved CapAuth identity URI.
@@ -2854,10 +2854,10 @@ def _send_typing_indicator(recipient: str, typing: bool, thread_id: Optional[str
     )
 
     try:
-        from skcomms import SKComm
+        from skcomms import SKComms
         from skcomms.models import MessageType
 
-        comm = SKComm.from_config()
+        comm = SKComms.from_config()
         comm.send(
             recipient=recipient,
             message=indicator.model_dump_json(),
@@ -3010,7 +3010,7 @@ async def _handle_daemon_status(args: dict) -> list[TextContent]:
 
     status = daemon_status()
 
-    # Enrich with live outbox pending count from skcomm PersistentOutbox.
+    # Enrich with live outbox pending count from skcomms PersistentOutbox.
     try:
         from skcomms.outbox import PersistentOutbox
 
@@ -4122,9 +4122,9 @@ async def _handle_skchat_inbox(args: dict) -> list[TextContent]:
 
 
 async def _handle_skchat_set_presence(args: dict) -> list[TextContent]:
-    """Broadcast own presence state via the SKComm file transport.
+    """Broadcast own presence state via the SKComms file transport.
 
-    Writes a PresenceIndicator JSON file to ~/.skcomm/outbox/ so that
+    Writes a PresenceIndicator JSON file to ~/.skcomms/outbox/ so that
     Syncthing (or any polling file-transport receiver) delivers it to peers.
     Also records the new state in the local PresenceCache so that
     skchat_get_presence reflects the change immediately.
@@ -4154,8 +4154,8 @@ async def _handle_skchat_set_presence(args: dict) -> list[TextContent]:
         custom_status=custom_status,
     )
 
-    # Write to ~/.skcomm/outbox/ so file transport picks it up
-    outbox_dir = pathlib.Path.home() / ".skcomm" / "outbox"
+    # Write to ~/.skcomms/outbox/ so file transport picks it up
+    outbox_dir = pathlib.Path.home() / ".skcomms" / "outbox"
     ok = False
     try:
         outbox_dir.mkdir(parents=True, exist_ok=True)

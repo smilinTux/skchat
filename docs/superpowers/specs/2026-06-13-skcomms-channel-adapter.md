@@ -401,7 +401,7 @@ class AdapterRegistry:
     Maintains the set of live channel adapters and routes messages.
 
     One registry per skcomms hub instance.  Loaded at daemon startup
-    from the adapter config block in ~/.skcomm/config.yml (or the
+    from the adapter config block in ~/.skcomms/config.yml (or the
     skcomms stack's environment).
 
     Key responsibilities:
@@ -587,7 +587,7 @@ class TelegramAdapter(ChannelAdapter):
     Replaces the bespoke Hermes path for the DR-Chiro group and generalizes
     to any number of configured chats.
 
-    Config block in ~/.skcomm/config.yml:
+    Config block in ~/.skcomms/config.yml:
 
         adapters:
           telegram:
@@ -599,7 +599,7 @@ class TelegramAdapter(ChannelAdapter):
                 chat_id: "-5134021983"
                 agent_fqid: "lumina@skworld.io"   # which agent owns this chat
                 allow_untrusted: true              # accept msgs without FQID binding
-            identity_store: "~/.skcomm/adapters/telegram-ids.yaml"
+            identity_store: "~/.skcomms/adapters/telegram-ids.yaml"
     """
 
     channel_type = ChannelType.TELEGRAM
@@ -609,7 +609,7 @@ class TelegramAdapter(ChannelAdapter):
         self._token      = config["bot_token"]
         self._poll_s     = config.get("poll_interval_s", 2)
         self._rooms      = config.get("rooms", {})
-        self._id_store   = config.get("identity_store", "~/.skcomm/adapters/telegram-ids.yaml")
+        self._id_store   = config.get("identity_store", "~/.skcomms/adapters/telegram-ids.yaml")
         self._last_update_id: int = 0
         self._running    = False
         self._bindings: dict[str, str] = {}   # canonical_key → fqid
@@ -874,7 +874,7 @@ An agent's FQID (`lumina@skworld.io`) is the anchor. The adapter registry maps
 that FQID to every room the adapter is configured to serve:
 
 ```yaml
-# ~/.skcomm/config.yml — adapter section
+# ~/.skcomms/config.yml — adapter section
 adapters:
   telegram:
     enabled: true
@@ -990,7 +990,7 @@ skcomms/
         └── matrix.py            # MatrixAdapter (mautrix) — C5 optional
 ```
 
-Config extension to `~/.skcomm/config.yml`:
+Config extension to `~/.skcomms/config.yml`:
 
 ```yaml
 adapters:
@@ -1002,7 +1002,7 @@ adapters:
       dr_chiro:
         chat_id: "-5134021983"
         agent_fqid: "lumina@skworld.io"
-    identity_store: "~/.skcomm/adapters/telegram-ids.yaml"
+    identity_store: "~/.skcomms/adapters/telegram-ids.yaml"
 ```
 
 The `AdapterRegistry` is instantiated inside the existing `skcomms` daemon

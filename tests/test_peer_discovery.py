@@ -19,7 +19,7 @@ LUMINA_DATA = {
     "entity_type": "ai-agent",
     "handle": "lumina@skworld.io",
     "email": "lumina@skworld.io",
-    "capabilities": ["capauth:identity", "skcomm:messaging", "skmemory:persistence"],
+    "capabilities": ["capauth:identity", "skcomms:messaging", "skmemory:persistence"],
     "contact_uris": [
         "capauth:AABB1122CCDD3344EEFF5566AABB1122CCDD3344",
         "capauth:lumina@skworld.io",

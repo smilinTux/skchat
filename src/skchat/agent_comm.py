@@ -2,7 +2,7 @@
 
 Provides AgentMessenger, a high-level API for agents to exchange messages,
 share findings, and coordinate work within teams. Built on top of
-ChatTransport (SKComm) and ChatHistory (SKMemory).
+ChatTransport (SKComms) and ChatHistory (SKMemory).
 
 Unlike the CLI-oriented send/receive flow, AgentMessenger is designed for
 programmatic use: agents import it and call methods directly, without
@@ -60,7 +60,7 @@ class AgentMessenger:
         cls,
         identity: Optional[str] = None,
         team_id: Optional[str] = None,
-        skcomm: Optional[object] = None,
+        skcomms: Optional[object] = None,
     ) -> "AgentMessenger":
         """Create an AgentMessenger from the local sovereign identity.
 
@@ -69,8 +69,8 @@ class AgentMessenger:
         Args:
             identity: Override identity URI. Auto-detected if None.
             team_id: Optional team scope.
-            skcomm: Optional pre-initialized SKComm instance. If provided,
-                avoids a redundant SKComm.from_config() call.
+            skcomms: Optional pre-initialized SKComms instance. If provided,
+                avoids a redundant SKComms.from_config() call.
 
         Returns:
             AgentMessenger: Ready to send/receive.
@@ -81,7 +81,7 @@ class AgentMessenger:
             identity = get_sovereign_identity()
 
         history = ChatHistory.from_config()
-        transport = cls._try_init_transport(history, identity, skcomm=skcomm)
+        transport = cls._try_init_transport(history, identity, skcomms=skcomms)
 
         return cls(
             identity=identity,
@@ -94,27 +94,27 @@ class AgentMessenger:
     def _try_init_transport(
         history: ChatHistory,
         identity: str,
-        skcomm: Optional[object] = None,
+        skcomms: Optional[object] = None,
     ) -> Optional[object]:
-        """Try to initialize ChatTransport backed by SKComm.
+        """Try to initialize ChatTransport backed by SKComms.
 
-        Returns None if SKComm is not available.
+        Returns None if SKComms is not available.
 
         Args:
             history: ChatHistory instance.
             identity: Local identity URI.
-            skcomm: Optional pre-initialized SKComm instance. If None, calls
-                SKComm.from_config() to create one.
+            skcomms: Optional pre-initialized SKComms instance. If None, calls
+                SKComms.from_config() to create one.
         """
         try:
-            if skcomm is None:
-                from skcomms import SKComm
+            if skcomms is None:
+                from skcomms import SKComms
 
-                skcomm = SKComm.from_config()
+                skcomms = SKComms.from_config()
             from .transport import ChatTransport
 
             return ChatTransport(
-                skcomm=skcomm,
+                skcomms=skcomms,
                 history=history,
                 identity=identity,
             )
@@ -398,7 +398,7 @@ class AgentMessenger:
     def receive(self, limit: int = 50) -> list[dict]:
         """Receive pending agent messages from transport.
 
-        Polls SKComm for incoming messages and returns those tagged
+        Polls SKComms for incoming messages and returns those tagged
         as agent communications.
 
         Args:

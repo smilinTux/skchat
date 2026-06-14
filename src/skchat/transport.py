@@ -1,11 +1,11 @@
-"""SKChat transport bridge — wires ChatMessage to SKComm for P2P delivery.
+"""SKChat transport bridge — wires ChatMessage to SKComms for P2P delivery.
 
-This is the glue between SKChat and SKComm: it takes a ChatMessage,
-optionally encrypts it via ChatCrypto, wraps it in an SKComm
-MessageEnvelope, and sends it through whatever transports SKComm
+This is the glue between SKChat and SKComms: it takes a ChatMessage,
+optionally encrypts it via ChatCrypto, wraps it in an SKComms
+MessageEnvelope, and sends it through whatever transports SKComms
 has available (Syncthing, file, Nostr, etc).
 
-On the receive side, it polls SKComm for inbound envelopes,
+On the receive side, it polls SKComms for inbound envelopes,
 extracts the ChatMessage payload, and stores it in ChatHistory.
 """
 
@@ -24,12 +24,12 @@ from .models import ChatMessage, ContentType, DeliveryStatus
 logger = logging.getLogger("skchat.transport")
 
 # Local file outbox that lumina-bridge's poll_outbox_for_lumina() scans.
-_LOCAL_OUTBOX = Path("~/.skcomm/outbox").expanduser()
+_LOCAL_OUTBOX = Path("~/.skcomms/outbox").expanduser()
 
 # Per-fingerprint file inbox root — the standard path for local P2P delivery.
-# Each agent polls ~/.skcomm/transport/file/inbox/<fingerprint>/ for incoming
+# Each agent polls ~/.skcomms/transport/file/inbox/<fingerprint>/ for incoming
 # messages from peers on the same machine.
-_FILE_INBOX_ROOT = Path("~/.skcomm/transport/file/inbox").expanduser()
+_FILE_INBOX_ROOT = Path("~/.skcomms/transport/file/inbox").expanduser()
 
 # Local peers on the same machine: messages to these identities get a loopback
 # copy written directly to the file-transport outbox so lumina-bridge's
@@ -46,12 +46,12 @@ _LOCAL_PEERS: frozenset[str] = frozenset(
 
 
 def _write_local_loopback(message: ChatMessage) -> None:
-    """Write a plaintext envelope to ~/.skcomm/outbox/ for same-machine delivery.
+    """Write a plaintext envelope to ~/.skcomms/outbox/ for same-machine delivery.
 
-    When SKComm routes via Syncthing (priority 1), the envelope lands in
+    When SKComms routes via Syncthing (priority 1), the envelope lands in
     ~/.skcapstone/sync/comms/outbox/<peer>/ — a path that lumina-bridge does
     NOT scan.  This function writes a second, unencrypted copy directly to
-    ~/.skcomm/outbox/ so poll_outbox_for_lumina() picks it up on the next
+    ~/.skcomms/outbox/ so poll_outbox_for_lumina() picks it up on the next
     3-second poll cycle.
 
     Key properties:
@@ -66,7 +66,7 @@ def _write_local_loopback(message: ChatMessage) -> None:
 
     envelope_id = str(uuid.uuid4())
     envelope = {
-        "skcomm_version": "1.0.0",
+        "skcomms_version": "1.0.0",
         "envelope_id": envelope_id,
         "sender": message.sender,
         "recipient": message.recipient,
@@ -113,13 +113,13 @@ def _write_local_loopback(message: ChatMessage) -> None:
 
 
 class ChatTransport:
-    """Bridge between SKChat and SKComm for P2P message delivery.
+    """Bridge between SKChat and SKComms for P2P message delivery.
 
     Handles the full lifecycle: compose -> encrypt -> envelope -> route,
     and receive -> deserialize -> decrypt -> store.
 
     Args:
-        skcomm: An SKComm instance for transport.
+        skcomms: An SKComms instance for transport.
         history: A ChatHistory instance for persistence.
         crypto: Optional ChatCrypto for encryption/signing.
         identity: CapAuth identity URI for the local user.
@@ -130,14 +130,14 @@ class ChatTransport:
 
     def __init__(
         self,
-        skcomm: object,
+        skcomms: object,
         history: ChatHistory,
         crypto: Optional[object] = None,
         identity: str = "capauth:local@skchat",
         presence_cache: Optional[object] = None,
         fallback_transport: Optional[object] = None,
     ) -> None:
-        self._skcomm = skcomm
+        self._skcomms = skcomms
         self._history = history
         self._crypto = crypto
         self._identity = identity
@@ -149,7 +149,7 @@ class ChatTransport:
     @classmethod
     def from_config(
         cls,
-        skcomm: object,
+        skcomms: object,
         history: object,
         identity: str = "capauth:local@skchat",
         **kwargs: object,
@@ -157,7 +157,7 @@ class ChatTransport:
         """Create a ChatTransport from runtime objects.
 
         Args:
-            skcomm: SKComm transport instance.
+            skcomms: SKComms transport instance.
             history: ChatHistory instance.
             identity: CapAuth identity URI.
             **kwargs: Additional keyword arguments forwarded to __init__.
@@ -165,7 +165,7 @@ class ChatTransport:
         Returns:
             ChatTransport: Configured instance.
         """
-        return cls(skcomm=skcomm, history=history, identity=identity, **kwargs)
+        return cls(skcomms=skcomms, history=history, identity=identity, **kwargs)
 
     @property
     def identity(self) -> str:
@@ -181,10 +181,10 @@ class ChatTransport:
         message: ChatMessage,
         recipient_public_armor: Optional[str] = None,
     ) -> dict:
-        """Send a ChatMessage via SKComm.
+        """Send a ChatMessage via SKComms.
 
         Encrypts (if crypto and public key are available), serializes
-        the ChatMessage into the SKComm envelope payload, and routes
+        the ChatMessage into the SKComms envelope payload, and routes
         it through available transports.
 
         Args:
@@ -225,7 +225,7 @@ class ChatTransport:
             }
 
         try:
-            report = self._skcomm.send(
+            report = self._skcomms.send(
                 recipient=message.recipient,
                 message=payload_json,
                 thread_id=message.thread_id,
@@ -251,7 +251,7 @@ class ChatTransport:
             }
 
         except Exception as exc:
-            logger.error("SKComm send failed: %s", exc)
+            logger.error("SKComms send failed: %s", exc)
 
             # Try fallback transport if primary failed
             if self._fallback_transport is not None:
@@ -294,9 +294,9 @@ class ChatTransport:
         self,
         sender_public_armor: Optional[str] = None,
     ) -> list[ChatMessage]:
-        """Poll SKComm for incoming messages and store them.
+        """Poll SKComms for incoming messages and store them.
 
-        Receives all pending envelopes from SKComm, extracts
+        Receives all pending envelopes from SKComms, extracts
         ChatMessage payloads, optionally decrypts them, stores
         in ChatHistory, and returns the messages.
 
@@ -308,9 +308,9 @@ class ChatTransport:
             list[ChatMessage]: Newly received ChatMessages.
         """
         try:
-            envelopes = self._skcomm.receive()
+            envelopes = self._skcomms.receive()
         except Exception as exc:
-            logger.error("SKComm receive failed: %s", exc)
+            logger.error("SKComms receive failed: %s", exc)
             return []
 
         messages: list[ChatMessage] = []
@@ -414,7 +414,7 @@ class ChatTransport:
                 logger.debug("Failed to process envelope: %s", exc)
 
         # Also poll the per-fingerprint file inbox directly, independent of
-        # the SKComm receive path.  This catches messages written by peers on
+        # the SKComms receive path.  This catches messages written by peers on
         # the same machine (including loopback self-messages).
         file_messages = self._poll_file_inbox()
         messages.extend(file_messages)
@@ -461,7 +461,7 @@ class ChatTransport:
     def _get_own_fingerprint(self) -> str:
         """Derive a filesystem-safe fingerprint/slug for the local agent.
 
-        Reads the PGP fingerprint from ~/.skcomm/config.yml when available.
+        Reads the PGP fingerprint from ~/.skcomms/config.yml when available.
         Falls back to a sanitized slug derived from the identity URI so the
         per-fingerprint inbox path always resolves to a stable directory.
 
@@ -469,13 +469,13 @@ class ChatTransport:
             str: PGP fingerprint (hex) or a sanitized identity slug.
         """
         try:
-            import yaml  # soft dep — available in all SKComm environments
+            import yaml  # soft dep — available in all SKComms environments
 
-            config_path = Path("~/.skcomm/config.yml").expanduser()
+            config_path = Path("~/.skcomms/config.yml").expanduser()
             if config_path.exists():
                 with open(config_path) as _f:
                     cfg = yaml.safe_load(_f) or {}
-                fp = cfg.get("skcomm", {}).get("identity", {}).get("fingerprint", "")
+                fp = cfg.get("skcomms", {}).get("identity", {}).get("fingerprint", "")
                 if fp:
                     return str(fp).replace(" ", "")
         except Exception as e:
@@ -507,7 +507,7 @@ class ChatTransport:
 
         envelope_id = uuid.uuid4().hex
         envelope = {
-            "skcomm_version": "1.0.0",
+            "skcomms_version": "1.0.0",
             "envelope_id": envelope_id,
             "sender": message.sender,
             "recipient": message.recipient,
@@ -554,7 +554,7 @@ class ChatTransport:
     def _poll_file_inbox(self) -> list[ChatMessage]:
         """Scan the per-fingerprint file inbox directory for new messages.
 
-        Reads ~/.skcomm/transport/file/inbox/<fingerprint>/*.skc.json,
+        Reads ~/.skcomms/transport/file/inbox/<fingerprint>/*.skc.json,
         parses each file as a MessageEnvelope (or falls back to raw
         ChatMessage JSON), stores valid messages in history, and archives
         each processed file.
@@ -585,7 +585,7 @@ class ChatTransport:
 
             envelope_sender_file: str = ""
 
-            # Try full MessageEnvelope first (standard SKComm wire format)
+            # Try full MessageEnvelope first (standard SKComms wire format)
             try:
                 from skcomms.models import MessageEnvelope
 
@@ -706,12 +706,12 @@ class ChatTransport:
 
     @staticmethod
     def _extract_payload(envelope: object) -> Optional[str]:
-        """Extract the message content from an SKComm envelope.
+        """Extract the message content from an SKComms envelope.
 
         Handles both MessageEnvelope objects and raw dicts.
 
         Args:
-            envelope: An SKComm MessageEnvelope or dict.
+            envelope: An SKComms MessageEnvelope or dict.
 
         Returns:
             Optional[str]: The payload content string, or None.
@@ -751,7 +751,7 @@ class ChatTransport:
         try:
             from skcomms.models import MessageType
 
-            self._skcomm.send(
+            self._skcomms.send(
                 recipient=recipient,
                 message=indicator.model_dump_json(),
                 message_type=MessageType.HEARTBEAT,
@@ -767,7 +767,7 @@ class ChatTransport:
         clear any existing typing indicator for the sender.
 
         Args:
-            envelope: An SKComm MessageEnvelope with message_type=HEARTBEAT.
+            envelope: An SKComms MessageEnvelope with message_type=HEARTBEAT.
         """
         if self._presence_cache is None:
             return

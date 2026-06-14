@@ -603,7 +603,7 @@ Architecture note: the default `send_file` path (skcomms) MUST work with zero fa
 
 Add to `tests/test_attachments.py`:
 ```python
-def test_transport_auto_falls_back_to_skcomm_when_no_fastpath(tmp_path):
+def test_transport_auto_falls_back_to_skcomms_when_no_fastpath(tmp_path):
     svc, fake_transfer, _ = _service(tmp_path)
     f = tmp_path / "d.bin"; f.write_bytes(b"x")
     # no webrtc, no tailscale available
@@ -655,7 +655,7 @@ In `src/skchat/attachments.py`, add to `AttachmentService` and use it in `send_a
             return False
 
     def _select_transport(self, recipient, transport="auto", webrtc_ok=None, tailscale_ok=None):
-        """Pick a transport. 'auto' tries fast-paths, falls back to skcomm."""
+        """Pick a transport. 'auto' tries fast-paths, falls back to skcomms."""
         if transport != "auto":
             return transport
         webrtc_ok = webrtc_ok or self._webrtc_available
@@ -1107,4 +1107,4 @@ Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 - If a pre-existing `test_models.py` test asserted the exact old error string "Message content cannot be empty", update it to the new model-validator message — the *behavior* (reject empty + no attachments) is unchanged.
 - `_get_history()` may not exist yet in webui — if history is fetched inline at ~line 210, extract it to a `_get_history()` helper in Task 6 and reuse it in Tasks 6–8.
 - Every new test uses tmp dirs / `SKCHAT_HOME` / fakes — none touch the real `~/.skchat`, the network, WebRTC, or tailscale. The transport selector is exercised purely through injected probes.
-- Tailscale is only ever a *probe that can say no* — there is no code path that requires it (verified by `test_transport_auto_falls_back_to_skcomm_when_no_fastpath`).
+- Tailscale is only ever a *probe that can say no* — there is no code path that requires it (verified by `test_transport_auto_falls_back_to_skcomms_when_no_fastpath`).

@@ -6,16 +6,16 @@ PGP-encrypted for the recipient. Chunks can arrive out of order
 and the receiver reassembles by sequence number.
 
 This is the P2P file sharing layer from the SKChat architecture.
-Transport is handled externally by SKComm.
+Transport is handled externally by SKComms.
 
 Usage:
     sender = FileSender(recipient_pub_armor)
     transfer = sender.prepare("/path/to/file.pdf")
     for chunk in sender.chunks(transfer):
-        skcomm.send(chunk.to_json())
+        skcomms.send(chunk.to_json())
 
     receiver = FileReceiver(my_private_armor, passphrase)
-    for incoming_json in skcomm.receive():
+    for incoming_json in skcomms.receive():
         receiver.receive_chunk(FileChunk.from_json(incoming_json))
     receiver.assemble(transfer_id, "/path/to/output.pdf")
 """
@@ -489,25 +489,25 @@ class FileTransferService:
     """High-level file transfer manager with persistent state.
 
     Orchestrates FileSender / FileReceiver with:
-    - Chunked, AES-256-GCM encrypted delivery via SKComm
+    - Chunked, AES-256-GCM encrypted delivery via SKComms
       (FILE_TRANSFER_INIT / FILE_CHUNK × N / FILE_TRANSFER_DONE)
     - Persistent JSON metadata in ``~/.skchat/transfers/``
     - Inbound chunk storage and SHA-256 verified reassembly
 
     Args:
         identity: CapAuth identity URI of the local user.
-        skcomm: Optional SKComm instance for transport.
+        skcomms: Optional SKComms instance for transport.
         base_dir: Override base directory (default: ``~/.skchat``).
     """
 
     def __init__(
         self,
         identity: str = "local",
-        skcomm: Optional[object] = None,
+        skcomms: Optional[object] = None,
         base_dir: Optional[Path] = None,
     ) -> None:
         self._identity = identity
-        self._skcomm = skcomm
+        self._skcomms = skcomms
         self.on_complete: Optional[Callable[[str, str], None]] = None
         _base = (base_dir or Path("~/.skchat")).expanduser()
         self._transfers_dir = _base / "transfers"
@@ -523,9 +523,9 @@ class FileTransferService:
         Steps:
         1. Read file and compute SHA-256.
         2. Chunk into 64 KB blocks (AES-256-GCM encrypted).
-        3. Send FILE_TRANSFER_INIT via SKComm.
-        4. Send each FILE_CHUNK via SKComm.
-        5. Send FILE_TRANSFER_DONE via SKComm.
+        3. Send FILE_TRANSFER_INIT via SKComms.
+        4. Send each FILE_CHUNK via SKComms.
+        5. Send FILE_TRANSFER_DONE via SKComms.
 
         Metadata is persisted to ``~/.skchat/transfers/{transfer_id}.json``
         even when no transport is available.
@@ -569,18 +569,18 @@ class FileTransferService:
         meta_path = self._transfers_dir / f"{transfer.transfer_id}.json"
         meta_path.write_text(_json.dumps(meta, indent=2))
 
-        if self._skcomm is not None:
+        if self._skcomms is not None:
             try:
-                self._send_via_skcomm(transfer, chunks, recipient, meta, meta_path)
+                self._send_via_skcomms(transfer, chunks, recipient, meta, meta_path)
             except Exception as exc:
-                logger.warning("SKComm send failed: %s", exc)
+                logger.warning("SKComms send failed: %s", exc)
                 meta["status"] = "failed"
                 meta["error"] = str(exc)
                 meta_path.write_text(_json.dumps(meta, indent=2))
 
         return transfer.transfer_id
 
-    def _send_via_skcomm(
+    def _send_via_skcomms(
         self,
         transfer: "FileTransfer",
         chunks: "list[FileChunk]",
@@ -611,7 +611,7 @@ class FileTransferService:
                     "sender": self._identity,
                 }
             )
-            self._skcomm.send(  # type: ignore[union-attr]
+            self._skcomms.send(  # type: ignore[union-attr]
                 recipient=recipient, message=init_msg, thread_id=transfer.transfer_id
             )
             meta["init_sent"] = True
@@ -630,7 +630,7 @@ class FileTransferService:
                     "chunk_hash": chunk.chunk_hash,
                 }
             )
-            self._skcomm.send(  # type: ignore[union-attr]
+            self._skcomms.send(  # type: ignore[union-attr]
                 recipient=recipient, message=chunk_msg, thread_id=transfer.transfer_id
             )
             meta["chunks_sent"] = chunk.sequence + 1
@@ -642,7 +642,7 @@ class FileTransferService:
                 "transfer_id": transfer.transfer_id,
             }
         )
-        self._skcomm.send(  # type: ignore[union-attr]
+        self._skcomms.send(  # type: ignore[union-attr]
             recipient=recipient, message=done_msg, thread_id=transfer.transfer_id
         )
 
@@ -698,7 +698,7 @@ class FileTransferService:
         if path is None or not path.exists():
             raise FileNotFoundError(f"Source file unavailable for resume: {source!r}")
 
-        if self._skcomm is None:
+        if self._skcomms is None:
             return False
 
         recipient = str(meta.get("recipient", ""))
@@ -719,11 +719,11 @@ class FileTransferService:
         meta["status"] = "sending"
         meta_path.write_text(_json.dumps(meta, indent=2))
         try:
-            self._send_via_skcomm(
+            self._send_via_skcomms(
                 transfer, chunks, recipient, meta, meta_path, start_idx=start_idx
             )
         except Exception as exc:
-            logger.warning("SKComm resume failed: %s", exc)
+            logger.warning("SKComms resume failed: %s", exc)
             meta["status"] = "failed"
             meta["error"] = str(exc)
             meta_path.write_text(_json.dumps(meta, indent=2))

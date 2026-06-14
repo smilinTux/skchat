@@ -19,7 +19,7 @@ Architecture:
     Browser ─── WS /ws/facetime/{agent} ── skchat (proxy) ── GPU SKVoice
 
 Dependencies:
-    - SKComm signaling broker (already running as part of skchat/skcomm serve)
+    - SKComms signaling broker (already running as part of skchat/skcomms serve)
     - SKVoice on GPU box (127.0.0.1:18800) for voice pipeline
     - FaceTimeSession on GPU box (new: manages WebRTC media tracks)
 """
@@ -47,7 +47,7 @@ DEFAULT_AGENT = os.getenv("SKCHAT_FACETIME_AGENT", "lumina")
 def register_facetime_routes(app: FastAPI) -> None:
     """Register FaceTime page and WebSocket fallback routes.
 
-    The signaling WebSocket (/webrtc/ws) is already registered by SKComm.
+    The signaling WebSocket (/webrtc/ws) is already registered by SKComms.
     This registers:
         - GET /facetime — FaceTime page (default agent)
         - GET /facetime/{agent} — FaceTime page for specific agent

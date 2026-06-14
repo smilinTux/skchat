@@ -569,7 +569,7 @@ class GroupChat(BaseModel):
     def broadcast(self, message: str, sender_uri: str) -> dict:
         """Multicast a message to all group members except the sender.
 
-        Uses AgentMessenger (backed by file transport via SKComm) to deliver
+        Uses AgentMessenger (backed by file transport via SKComms) to deliver
         the message individually to each non-sender member. Collects per-member
         delivery outcomes and returns a summary.
 

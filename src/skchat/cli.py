@@ -12,7 +12,7 @@ Commands:
 
 All commands operate against the local SKMemory-backed chat history.
 Messages are composed locally, stored via ChatHistory, and (when
-transport is wired) sent via SKComm.
+transport is wired) sent via SKComms.
 """
 
 from __future__ import annotations
@@ -61,7 +61,7 @@ _reaction_store = ReactionStore()
 def _suppress_pgp_warnings_if_configured() -> None:
     """Suppress PGPy UserWarnings if crypto.suppress_passphrase_warning is set.
 
-    Reads ~/.skcomm/config.yml for::
+    Reads ~/.skcomms/config.yml for::
 
         crypto:
           suppress_passphrase_warning: true
@@ -73,7 +73,7 @@ def _suppress_pgp_warnings_if_configured() -> None:
     try:
         import yaml  # type: ignore[import-untyped]
 
-        config_path = Path.home() / ".skcomm" / "config.yml"
+        config_path = Path.home() / ".skcomms" / "config.yml"
         if config_path.exists():
             with open(config_path) as _f:
                 cfg = yaml.safe_load(_f) or {}
@@ -89,23 +89,23 @@ _suppress_pgp_warnings_if_configured()
 def _get_chat_transport():
     """Create a ChatTransport instance for message delivery.
 
-    Returns None if SKComm is not installed or has no transports.
+    Returns None if SKComms is not installed or has no transports.
 
     Returns:
         ChatTransport or None.
     """
     try:
-        from skcomms.core import SKComm
+        from skcomms.core import SKComms
 
         from .transport import ChatTransport
 
-        comm = SKComm.from_config()
+        comm = SKComms.from_config()
         if not comm.router.transports:
             return None
 
         history = _get_history()
         return ChatTransport(
-            skcomm=comm,
+            skcomms=comm,
             history=history,
             identity=_get_identity(),
         )
@@ -189,24 +189,24 @@ def _get_history() -> "ChatHistory":
 
 
 def _get_transport() -> "Optional[ChatTransport]":
-    """Try to create a ChatTransport backed by SKComm.
+    """Try to create a ChatTransport backed by SKComms.
 
-    Returns None if SKComm is not installed or not configured,
+    Returns None if SKComms is not installed or not configured,
     allowing graceful fallback to local-only storage.
 
     Returns:
         Optional[ChatTransport]: Transport bridge, or None.
     """
     try:
-        from skcomms import SKComm
+        from skcomms import SKComms
 
         from .transport import ChatTransport
 
-        comm = SKComm.from_config()
+        comm = SKComms.from_config()
         history = _get_history()
         identity = _get_identity()
         return ChatTransport(
-            skcomm=comm,
+            skcomms=comm,
             history=history,
             identity=identity,
         )
@@ -223,7 +223,7 @@ def _send_typing_before_message(
     """Send a TYPING indicator to recipient, then pause briefly.
 
     Fire-and-forget: any transport errors are silently suppressed so
-    a missing SKComm config never blocks the actual send.
+    a missing SKComms config never blocks the actual send.
 
     Args:
         recipient: Resolved CapAuth identity URI.
@@ -243,9 +243,9 @@ def _send_typing_before_message(
 
 
 def _try_deliver(msg: "ChatMessage") -> dict:
-    """Attempt to deliver a message via SKComm transport.
+    """Attempt to deliver a message via SKComms transport.
 
-    Falls back gracefully if SKComm is not available.
+    Falls back gracefully if SKComms is not available.
 
     Args:
         msg: The ChatMessage to deliver.
@@ -318,7 +318,7 @@ def send(
     """Send a message to a recipient.
 
     Composes a ChatMessage, stores it in local history, and
-    (when transport is available) queues it for delivery via SKComm.
+    (when transport is available) queues it for delivery via SKComms.
 
     The recipient can be either a full capauth URI or a friendly peer name
     that will be resolved from the peer registry (e.g., "lumina" resolves
@@ -839,7 +839,7 @@ def _inbox_display_threads(messages: list, my_identity: str) -> None:
     "-w",
     is_flag=True,
     default=False,
-    help="Continuously poll SKComm for new messages (Ctrl+C to stop).",
+    help="Continuously poll SKComms for new messages (Ctrl+C to stop).",
 )
 @click.option(
     "--interval",
@@ -892,7 +892,7 @@ def inbox(
     Displays messages grouped by conversation peer with coloured
     dividers.  Your messages appear in blue; peer colours vary by name.
 
-    With --watch, continuously polls SKComm for new messages and shows
+    With --watch, continuously polls SKComms for new messages and shows
     a Rich Live auto-updating table.  Press Ctrl+C to stop.
 
     With --threads, shows a one-line summary per conversation.
@@ -1002,7 +1002,7 @@ def inbox(
 
 
 def _watch_inbox(interval: float = 5.0, limit: int = 50) -> None:
-    """Continuously poll SKComm for new messages and display via Rich Live.
+    """Continuously poll SKComms for new messages and display via Rich Live.
 
     Polls the transport on each tick, decrypts via ChatCrypto (if the
     transport has a crypto backend), stores every received message in
@@ -1018,7 +1018,7 @@ def _watch_inbox(interval: float = 5.0, limit: int = 50) -> None:
 
     if transport is None:
         _print(
-            "\n  [yellow]No transport available.[/] Configure SKComm first.\n"
+            "\n  [yellow]No transport available.[/] Configure SKComms first.\n"
             "  Running in local-history-only mode — showing stored messages.\n"
         )
 
@@ -1813,7 +1813,7 @@ def chat(peer: str, interval: float, thread: Optional[str], group: bool) -> None
 
     # ── Presence broadcasting ────────────────────────────────────────────────
     def _send_presence(state: PresenceState) -> None:
-        """Fire-and-forget presence signal to the peer via SKComm or file."""
+        """Fire-and-forget presence signal to the peer via SKComms or file."""
         indicator = PresenceIndicator(
             identity_uri=identity,
             state=state,
@@ -1824,15 +1824,15 @@ def chat(peer: str, interval: float, thread: Optional[str], group: bool) -> None
             from skcomms.models import MessageType
 
             xport = messenger._transport
-            if xport is not None and hasattr(xport, "_skcomm"):
-                xport._skcomm.send(
+            if xport is not None and hasattr(xport, "_skcomms"):
+                xport._skcomms.send(
                     recipient=peer_uri,
                     message=payload,
                     message_type=MessageType.HEARTBEAT,
                 )
                 return
         except Exception as exc:
-            logger.warning("SKComm presence broadcast failed: %s", exc)
+            logger.warning("SKComms presence broadcast failed: %s", exc)
         # File-transport fallback: drop JSON in shared inbox dir
         try:
             import uuid as _uuid
@@ -2011,7 +2011,7 @@ def chat(peer: str, interval: float, thread: Optional[str], group: bool) -> None
 
 @main.command(name="receive")
 def receive_cmd() -> None:
-    """Poll SKComm transports for incoming chat messages.
+    """Poll SKComms transports for incoming chat messages.
 
     Checks all configured transports for new messages addressed
     to this agent and stores them in local history.
@@ -2023,8 +2023,8 @@ def receive_cmd() -> None:
     transport = _get_chat_transport()
     if transport is None:
         _print("")
-        _print("  [yellow]No transports available.[/] Configure SKComm first.")
-        _print("  See: skcomm init --name YourAgent --email you@example.com")
+        _print("  [yellow]No transports available.[/] Configure SKComms first.")
+        _print("  See: skcomms init --name YourAgent --email you@example.com")
         _print("")
         return
 
@@ -2110,7 +2110,7 @@ def watch(
 ) -> None:
     """Watch for incoming messages in real-time.
 
-    Continuously polls SKComm for new messages and displays
+    Continuously polls SKComms for new messages and displays
     them as they arrive with color. Press Ctrl+C to stop.
 
     Use --group GROUP_ID to watch a specific group, --all to include all
@@ -2133,7 +2133,7 @@ def watch(
 
     transport = _get_transport()
     if transport is None:
-        _print("\n  [yellow]No transport available.[/] Configure SKComm first.\n")
+        _print("\n  [yellow]No transport available.[/] Configure SKComms first.\n")
         return
 
     identity = _get_identity()
@@ -2247,12 +2247,12 @@ def watch(
     )
 
 
-def _attachment_service_for(identity, skcomm):
+def _attachment_service_for(identity, skcomms):
     from .attachments import AttachmentService
     from .files import FileTransferService
     from .history import ChatHistory
 
-    fs = FileTransferService(identity=identity, skcomm=skcomm)
+    fs = FileTransferService(identity=identity, skcomms=skcomms)
     return AttachmentService(identity, ChatHistory(), fs)
 
 
@@ -2261,7 +2261,7 @@ def _attachment_service_for(identity, skcomm):
 @click.argument("file_path", type=click.Path(exists=True, path_type=Path))
 @click.option("--caption", default=None, help="Optional caption shown with the file.")
 def send_file_cmd(recipient: str, file_path: Path, caption: Optional[str]) -> None:
-    """Send a file to a recipient via SKComm.
+    """Send a file to a recipient via SKComms.
 
     Chunks and AES-256-GCM encrypts the file, then sends
     FILE_TRANSFER_INIT, FILE_CHUNK (xN), and FILE_TRANSFER_DONE messages.
@@ -2281,19 +2281,19 @@ def send_file_cmd(recipient: str, file_path: Path, caption: Optional[str]) -> No
     except PeerResolutionError:
         resolved_recipient = recipient
 
-    skcomm = None
+    skcomms = None
     try:
-        from skcomms.core import SKComm
+        from skcomms.core import SKComms
 
-        skcomm = SKComm.from_config()
+        skcomms = SKComms.from_config()
     except Exception as exc:
-        logger.warning("SKComm unavailable for CLI file send: %s", exc)
+        logger.warning("SKComms unavailable for CLI file send: %s", exc)
 
     _print("")
     _print(f"  Sending [cyan]{file_path.name}[/] to [cyan]{resolved_recipient}[/] ...")
 
     try:
-        svc = _attachment_service_for(identity, skcomm)
+        svc = _attachment_service_for(identity, skcomms)
         msg = svc.send_attachment(resolved_recipient, file_path, caption=caption)
         transfer_id = msg.attachments[0].transfer_id
     except FileNotFoundError as exc:
@@ -2621,7 +2621,7 @@ def _build_watch_table(recent_messages: list, total: int) -> "Panel":
 def daemon() -> None:
     """Manage the SKChat receive daemon.
 
-    The daemon polls SKComm transports in the background and
+    The daemon polls SKComms transports in the background and
     stores incoming messages in local history automatically.
     PID is tracked at ~/.skchat/daemon.pid.
 
@@ -2651,7 +2651,7 @@ def daemon() -> None:
 def daemon_start(interval: float, log_file: Optional[str], quiet: bool, foreground: bool) -> None:
     """Start the receive daemon in the background.
 
-    Spawns a background process that polls SKComm every INTERVAL
+    Spawns a background process that polls SKComms every INTERVAL
     seconds. PID is written to ~/.skchat/daemon.pid.
 
     Examples:
@@ -3561,17 +3561,17 @@ def group_quick_start(name: str, members: tuple[str, ...], description: str) -> 
     "--url",
     default="http://127.0.0.1:9384",
     show_default=True,
-    help="SKComm base URL.",
+    help="SKComms base URL.",
 )
 def health(url: str) -> None:
     """Show transport health: WebRTC, file fallback, and daemon uptime.
 
-    Checks SKComm HTTP health, WebRTC signaling endpoint, and ICE config.
+    Checks SKComms HTTP health, WebRTC signaling endpoint, and ICE config.
     File transport is always reported as available.
     """
     from .watchdog import TransportWatchdog
 
-    wd = TransportWatchdog(transport=None, skcomm_url=url)
+    wd = TransportWatchdog(transport=None, skcomms_url=url)
     summary = wd.health_summary()
 
     webrtc = summary["webrtc"]
@@ -3587,7 +3587,7 @@ def health(url: str) -> None:
         console.print(
             f"[bold]Transport status:[/]  {summary['transport_status']}\n"
             f"\n"
-            f"[bold]SKComm:[/]            {_ok(summary['skcomm_ok'])}\n"
+            f"[bold]SKComms:[/]            {_ok(summary['skcomms_ok'])}\n"
             f"[bold]WebRTC:[/]            signaling {_ok(webrtc['signaling_ok'])}"
             f"  |  ICE servers {_ok(webrtc['ice_servers_configured'])}"
             f"  |  active peers [cyan]{peers}[/]\n"
@@ -3602,7 +3602,7 @@ def health(url: str) -> None:
             return "OK" if v else "DOWN"
 
         _print(f"  Transport status:  {summary['transport_status']}")
-        _print(f"  SKComm:            {_ok_plain(summary['skcomm_ok'])}")
+        _print(f"  SKComms:            {_ok_plain(summary['skcomms_ok'])}")
         _print(
             f"  WebRTC:            signaling={_ok_plain(webrtc['signaling_ok'])}"
             f"  ice={_ok_plain(webrtc['ice_servers_configured'])}"

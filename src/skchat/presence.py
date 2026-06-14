@@ -1,7 +1,7 @@
 """Presence indicators for SKChat — who's online, typing, or away.
 
 Presence is ephemeral state: it doesn't persist to SKMemory.
-It flows as lightweight signals over SKComm alongside chat messages.
+It flows as lightweight signals over SKComms alongside chat messages.
 """
 
 from __future__ import annotations

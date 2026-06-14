@@ -2,7 +2,7 @@
 
 Reactions let participants (human and AI) respond to messages with
 emoji or text annotations without creating a full reply. Reactions
-are lightweight, transportable via SKComm, and stored alongside
+are lightweight, transportable via SKComms, and stored alongside
 messages in ChatHistory.
 
 The ReactionManager handles add/remove, deduplication, aggregation,
@@ -12,7 +12,7 @@ Usage:
     manager = ReactionManager()
     manager.add_reaction("msg-123", "thumbsup", "capauth:alice@skworld.io")
     summary = manager.summarize("msg-123")
-    payload = manager.to_sync_payload("msg-123")  # for SKComm
+    payload = manager.to_sync_payload("msg-123")  # for SKComms
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ logger = logging.getLogger("skchat.reactions")
 
 
 class ReactionEvent(BaseModel):
-    """A reaction event for sync over SKComm.
+    """A reaction event for sync over SKComms.
 
     This is the transportable form of a reaction -- sent to peers
     so they can update their local reaction state.

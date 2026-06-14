@@ -314,7 +314,7 @@ def mock_messenger(tmp_skchat_dir: Path):
     history = ChatHistory(history_dir=tmp_skchat_dir / "history")
 
     chat_transport = ChatTransport(
-        skcomm=file_transport,
+        skcomms=file_transport,
         history=history,
         identity="capauth:test-agent@skworld.io",
     )
@@ -572,7 +572,7 @@ def transport() -> _CapturingTransport:
     """Capturing ChatTransport stub (top-level alias for mock_transport).
 
     Prefer this fixture in tests that only need to verify outbound traffic
-    and do not care about SKComm internals.  Tests that patch SKComm
+    and do not care about SKComms internals.  Tests that patch SKComms
     directly should use their own local ``transport`` fixture instead.
 
     Returns:

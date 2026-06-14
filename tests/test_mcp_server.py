@@ -717,8 +717,8 @@ class TestSendFileP2P:
         assert "error" in data
 
     @pytest.mark.asyncio
-    async def test_skcomm_fallback_on_no_webrtc(self, tmp_path):
-        """Expected: falls back to SKComm when no WebRTC transport available."""
+    async def test_skcomms_fallback_on_no_webrtc(self, tmp_path):
+        """Expected: falls back to SKComms when no WebRTC transport available."""
         test_file = tmp_path / "test.txt"
         test_file.write_bytes(b"hello p2p world")
 
@@ -740,7 +740,7 @@ class TestSendFileP2P:
         with patch("skchat.mcp_server._get_webrtc_transport", return_value=None):
             with patch("skchat.mcp_server._get_identity", return_value="capauth:opus@skworld.io"):
                 with patch("skchat.files.FileSender", return_value=mock_sender):
-                    with patch("skcomm.SKComm.from_config", return_value=mock_comm):
+                    with patch("skcomms.SKComms.from_config", return_value=mock_comm):
                         result = await _handle_send_file_p2p(
                             {
                                 "peer": PEER_FP,
@@ -750,7 +750,7 @@ class TestSendFileP2P:
 
         data = _parse_result(result)
         assert data["sent"] is True
-        assert data["transport"] == "skcomm-chunked"
+        assert data["transport"] == "skcomms-chunked"
         assert data["transfer_id"] == "xfer-001"
 
     @pytest.mark.asyncio

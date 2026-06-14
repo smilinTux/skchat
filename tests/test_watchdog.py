@@ -1,7 +1,7 @@
 """Tests for skchat.watchdog.TransportWatchdog.
 
 Covers:
-- ping_skcomm: success, non-200, connection error
+- ping_skcomms: success, non-200, connection error
 - check(): reconnect trigger, single-trigger-per-streak
 - transport_status / is_healthy properties
 - uptime_seconds
@@ -35,13 +35,13 @@ def mock_transport():
 def watchdog(mock_transport):
     return TransportWatchdog(
         transport=mock_transport,
-        skcomm_url="http://127.0.0.1:9384",
+        skcomms_url="http://127.0.0.1:9384",
         failure_threshold=3,
     )
 
 
 # ---------------------------------------------------------------------------
-# ping_skcomm
+# ping_skcomms
 # ---------------------------------------------------------------------------
 
 
@@ -51,7 +51,7 @@ class TestPingSkcomm:
         resp = MagicMock(status_code=200)
         with patch("httpx.get", return_value=resp):
             watchdog.consecutive_failures = 2
-            result = watchdog.ping_skcomm()
+            result = watchdog.ping_skcomms()
 
         assert result is True
         assert watchdog.consecutive_failures == 0
@@ -62,7 +62,7 @@ class TestPingSkcomm:
         """HTTP 503 increments consecutive_failures and returns False."""
         resp = MagicMock(status_code=503)
         with patch("httpx.get", return_value=resp):
-            result = watchdog.ping_skcomm()
+            result = watchdog.ping_skcomms()
 
         assert result is False
         assert watchdog.consecutive_failures == 1
@@ -71,7 +71,7 @@ class TestPingSkcomm:
     def test_connection_error_increments_failures(self, watchdog):
         """Connection error increments consecutive_failures and returns False."""
         with patch("httpx.get", side_effect=ConnectionError("refused")):
-            result = watchdog.ping_skcomm()
+            result = watchdog.ping_skcomms()
 
         assert result is False
         assert watchdog.consecutive_failures == 1
@@ -81,7 +81,7 @@ class TestPingSkcomm:
         import httpx
 
         with patch("httpx.get", side_effect=httpx.TimeoutException("timeout")):
-            result = watchdog.ping_skcomm()
+            result = watchdog.ping_skcomms()
 
         assert result is False
         assert watchdog.consecutive_failures == 1
@@ -276,7 +276,7 @@ class TestHealthSummary:
         with patch("httpx.get", side_effect=[resp, ws_resp, ice_resp]):
             summary = watchdog.health_summary()
 
-        assert "skcomm_ok" in summary
+        assert "skcomms_ok" in summary
         assert "transport_status" in summary
         assert "webrtc" in summary
         assert "file_transport_available" in summary
@@ -290,8 +290,8 @@ class TestHealthSummary:
 
         assert summary["file_transport_available"] is True
 
-    def test_summary_skcomm_ok_when_healthy(self, watchdog):
-        """skcomm_ok reflects ping_skcomm result."""
+    def test_summary_skcomms_ok_when_healthy(self, watchdog):
+        """skcomms_ok reflects ping_skcomms result."""
         ok_resp = MagicMock(status_code=200)
         ws_resp = MagicMock(status_code=426)
         ice_resp = MagicMock(status_code=503)
@@ -299,7 +299,7 @@ class TestHealthSummary:
         with patch("httpx.get", side_effect=[ok_resp, ws_resp, ice_resp]):
             summary = watchdog.health_summary()
 
-        assert summary["skcomm_ok"] is True
+        assert summary["skcomms_ok"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -309,7 +309,7 @@ class TestHealthSummary:
 
 class TestFallbackTransport:
     def test_fallback_used_when_primary_fails(self):
-        """When skcomm.send() raises, the fallback transport is tried."""
+        """When skcomms.send() raises, the fallback transport is tried."""
         from skchat.models import ChatMessage
         from skchat.transport import ChatTransport
 
@@ -322,7 +322,7 @@ class TestFallbackTransport:
         mock_history = MagicMock()
 
         transport = ChatTransport(
-            skcomm=mock_primary,
+            skcomms=mock_primary,
             history=mock_history,
             identity="capauth:test@skchat",
             fallback_transport=mock_fallback,
@@ -350,7 +350,7 @@ class TestFallbackTransport:
         mock_history = MagicMock()
 
         transport = ChatTransport(
-            skcomm=mock_primary,
+            skcomms=mock_primary,
             history=mock_history,
             identity="capauth:test@skchat",
         )

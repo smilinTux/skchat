@@ -10,11 +10,11 @@ stays green in CI environments without the daemons.
 
 Delivery path used in this test
 --------------------------------
-Rather than calling ``skchat send`` (which blocks on SKComm transport
-initialisation), we write a properly-formatted SKComm envelope directly to
-``~/.skcomm/outbox/<uuid>.skc.json``.  The lumina-bridge's
+Rather than calling ``skchat send`` (which blocks on SKComms transport
+initialisation), we write a properly-formatted SKComms envelope directly to
+``~/.skcomms/outbox/<uuid>.skc.json``.  The lumina-bridge's
 ``poll_outbox_for_lumina()`` scans that directory on every poll cycle and
-hands the message to the consciousness loop without going through the SKComm
+hands the message to the consciousness loop without going through the SKComms
 daemon.  Lumina's reply is written to ``~/.skchat/history/<today>.jsonl`` via
 ``deliver_reply_to_inbox() → history.save()``, which is where we poll for it.
 
@@ -50,7 +50,7 @@ TIMEOUT_S = 15
 POLL_INTERVAL_S = 1.5
 
 SKCHAT_HOME = Path.home() / ".skchat"
-SKCOMM_OUTBOX = Path.home() / ".skcomm" / "outbox"
+SKCOMMS_OUTBOX = Path.home() / ".skcomms" / "outbox"
 
 DAEMON_HEALTH_URL = "http://127.0.0.1:9385/health"
 LUMINA_HEALTH_URL = "http://127.0.0.1:9386/health"
@@ -80,7 +80,7 @@ def _write_outbox_envelope(
     content: str,
     thread_id: str | None = None,
 ) -> tuple[str, Path]:
-    """Write a SKComm envelope to ~/.skcomm/outbox/ for lumina-bridge to pick up.
+    """Write a SKComms envelope to ~/.skcomms/outbox/ for lumina-bridge to pick up.
 
     The lumina-bridge's ``poll_outbox_for_lumina()`` scans ``*.skc.json``
     files; it tries to parse ``payload.content`` as a ChatMessage JSON first
@@ -92,7 +92,7 @@ def _write_outbox_envelope(
     """
     from skchat.models import ChatMessage, ContentType
 
-    SKCOMM_OUTBOX.mkdir(parents=True, exist_ok=True)
+    SKCOMMS_OUTBOX.mkdir(parents=True, exist_ok=True)
 
     msg = ChatMessage(
         sender=sender,
@@ -104,7 +104,7 @@ def _write_outbox_envelope(
     envelope_id = str(uuid.uuid4())
 
     envelope = {
-        "skcomm_version": "1.0.0",
+        "skcomms_version": "1.0.0",
         "envelope_id": envelope_id,
         "sender": sender,
         "recipient": recipient,
@@ -135,8 +135,8 @@ def _write_outbox_envelope(
     }
 
     filename = f"{envelope_id}.skc.json"
-    path = SKCOMM_OUTBOX / filename
-    tmp = SKCOMM_OUTBOX / f".{filename}.tmp"
+    path = SKCOMMS_OUTBOX / filename
+    tmp = SKCOMMS_OUTBOX / f".{filename}.tmp"
     tmp.write_bytes(json.dumps(envelope, indent=2).encode("utf-8"))
     tmp.rename(path)
 
@@ -208,9 +208,9 @@ def test_opus_sends_to_lumina_lumina_responds() -> None:
        (:9386) are reachable.
     2. Compose a unique ``@lumina ping e2e-<nonce>`` message — the nonce
        prevents false matches against stale history entries.
-    3. Write a ``*.skc.json`` envelope directly to ``~/.skcomm/outbox/``
+    3. Write a ``*.skc.json`` envelope directly to ``~/.skcomms/outbox/``
        (the path that ``poll_outbox_for_lumina()`` scans on every cycle).
-       This bypasses the SKComm transport daemon, which can block indefinitely
+       This bypasses the SKComms transport daemon, which can block indefinitely
        when its backing network is unavailable.
     4. Poll ``~/.skchat/history/<today>.jsonl`` every 1.5 s for up to 15 s,
        looking for a message whose sender is Lumina and whose timestamp
@@ -232,7 +232,7 @@ def test_opus_sends_to_lumina_lumina_responds() -> None:
     nonce = uuid.uuid4().hex[:12]
     content = f"@lumina ping e2e-{nonce}"
 
-    # ── 3. Deliver via outbox file — no SKComm daemon required ─────────────
+    # ── 3. Deliver via outbox file — no SKComms daemon required ─────────────
     send_time = datetime.now(timezone.utc)
     message_id, envelope_path = _write_outbox_envelope(
         sender=OPUS_IDENTITY,

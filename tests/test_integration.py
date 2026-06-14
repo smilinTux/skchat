@@ -1,7 +1,7 @@
 """Integration tests: full send/receive roundtrip over file:// transport.
 
 All tests use temporary directories under /tmp/skchat-test-*/ to simulate
-a shared-filesystem transport (no network, no daemon, no real SKComm server).
+a shared-filesystem transport (no network, no daemon, no real SKComms server).
 
 Tests
 -----
@@ -10,7 +10,7 @@ test_group_send       — group message composed → sent → received by peer
 test_history_persist  — JSONL history save/load roundtrip (file durability)
 test_peer_discovery   — peer files loaded, looked up, identity resolved
 
-None of these tests require skmemory or a running SKComm daemon.
+None of these tests require skmemory or a running SKComms daemon.
 
 Run (from ~/):
     cd ~ && python -m pytest \\
@@ -35,21 +35,21 @@ from skchat.models import ChatMessage, ContentType, DeliveryStatus
 from skchat.transport import ChatTransport
 
 # ---------------------------------------------------------------------------
-# Minimal file-based SKComm stub
+# Minimal file-based SKComms stub
 # ---------------------------------------------------------------------------
 
 
-class _FileSKComm:
-    """Minimal file-based SKComm stub for offline integration testing.
+class _FileSKComms:
+    """Minimal file-based SKComms stub for offline integration testing.
 
     Writes outbound messages as JSON files to *outbox_dir*.
     Reads (and removes) inbound messages from *inbox_dir*.
 
     For loopback (sender == receiver) use the same path for both.
 
-    This mirrors the ``_FileSKComm`` used in ``test_e2e_live.py`` so that
+    This mirrors the ``_FileSKComms`` used in ``test_e2e_live.py`` so that
     ``ChatTransport.send_message()`` / ``poll_inbox()`` work without any
-    real SKComm dependency.
+    real SKComms dependency.
 
     Args:
         outbox_dir: Directory where sent envelope files are written.
@@ -163,8 +163,8 @@ def test_send_to_self(test_dir: Path) -> None:
 
     identity = "capauth:self@skworld.io"
     history = _InMemoryHistory()
-    skcomm = _FileSKComm(outbox_dir=transport_dir, inbox_dir=transport_dir)
-    transport = ChatTransport(skcomm=skcomm, history=history, identity=identity)
+    skcomms = _FileSKComms(outbox_dir=transport_dir, inbox_dir=transport_dir)
+    transport = ChatTransport(skcomms=skcomms, history=history, identity=identity)
 
     content = "Loopback echo — the sovereign agent hears itself."
     result = transport.send_and_store(recipient=identity, content=content)
@@ -253,16 +253,16 @@ def test_group_send(test_dir: Path) -> None:
 
     # Opus sends via transport to the shared dir
     opus_history = _InMemoryHistory()
-    opus_skcomm = _FileSKComm(outbox_dir=shared_dir, inbox_dir=shared_dir)
-    opus_transport = ChatTransport(skcomm=opus_skcomm, history=opus_history, identity=OPUS)
+    opus_skcomms = _FileSKComms(outbox_dir=shared_dir, inbox_dir=shared_dir)
+    opus_transport = ChatTransport(skcomms=opus_skcomms, history=opus_history, identity=OPUS)
 
     result = opus_transport.send_message(msg)
     assert result["delivered"] is True, f"group send_message failed: {result}"
 
     # Lumina polls the shared inbox — must receive the group message
     lumina_history = _InMemoryHistory()
-    lumina_skcomm = _FileSKComm(outbox_dir=shared_dir, inbox_dir=shared_dir)
-    lumina_transport = ChatTransport(skcomm=lumina_skcomm, history=lumina_history, identity=LUMINA)
+    lumina_skcomms = _FileSKComms(outbox_dir=shared_dir, inbox_dir=shared_dir)
+    lumina_transport = ChatTransport(skcomms=lumina_skcomms, history=lumina_history, identity=LUMINA)
 
     received = lumina_transport.poll_inbox()
 

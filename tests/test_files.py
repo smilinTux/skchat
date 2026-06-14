@@ -483,10 +483,10 @@ class TestFileTransferService:
         assert out_path.read_bytes() == original.read_bytes()
 
     def test_send_with_mock_transport(self, tmp_path: Path) -> None:
-        """send_file() calls skcomm.send() for INIT, each CHUNK, and DONE."""
+        """send_file() calls skcomms.send() for INIT, each CHUNK, and DONE."""
         import json
 
-        class _MockSKComm:
+        class _MockSKComms:
             def __init__(self) -> None:
                 self.calls: list[dict] = []
 
@@ -494,10 +494,10 @@ class TestFileTransferService:
                 self.calls.append({"recipient": recipient, "message": json.loads(message)})
 
         f = _create_test_file(tmp_path, "transport.bin", 1000)
-        mock = _MockSKComm()
+        mock = _MockSKComms()
         service = FileTransferService(
             identity="capauth:alice@test",
-            skcomm=mock,
+            skcomms=mock,
             base_dir=tmp_path / ".skchat",
         )
         transfer_id = service.send_file("capauth:bob@test", f)
@@ -510,8 +510,8 @@ class TestFileTransferService:
         assert all(c["message"]["transfer_id"] == transfer_id for c in mock.calls)
 
 
-class _FlakySKComm:
-    """In-memory SKComm fake that fails after a configured number of sends.
+class _FlakySKComms:
+    """In-memory SKComms fake that fails after a configured number of sends.
 
     Records every message it accepted; raises RuntimeError once *fail_after*
     successful sends have been made, simulating an interrupted connection.
@@ -541,8 +541,8 @@ class TestResumeSend:
         f = _create_test_file(tmp_path, "resume.bin", TRANSFER_CHUNK_SIZE * 5)
         base = tmp_path / ".skchat"
         # INIT (1 call) + 2 chunks, then fail
-        flaky = _FlakySKComm(fail_after=3)
-        service = FileTransferService(identity="capauth:alice@test", skcomm=flaky, base_dir=base)
+        flaky = _FlakySKComms(fail_after=3)
+        service = FileTransferService(identity="capauth:alice@test", skcomms=flaky, base_dir=base)
         tid = service.send_file("capauth:bob@test", f)
 
         import json
@@ -556,14 +556,14 @@ class TestResumeSend:
         """resume_send re-sends only the chunks not yet acked, then DONE."""
         f = _create_test_file(tmp_path, "resume2.bin", TRANSFER_CHUNK_SIZE * 5)
         base = tmp_path / ".skchat"
-        flaky = _FlakySKComm(fail_after=3)  # INIT + chunks 0,1 succeed
-        service = FileTransferService(identity="capauth:alice@test", skcomm=flaky, base_dir=base)
+        flaky = _FlakySKComms(fail_after=3)  # INIT + chunks 0,1 succeed
+        service = FileTransferService(identity="capauth:alice@test", skcomms=flaky, base_dir=base)
         tid = service.send_file("capauth:bob@test", f)
         assert flaky.chunk_indices() == [0, 1]
 
         # Reconnect with a healthy transport and resume.
-        good = _FlakySKComm()
-        service2 = FileTransferService(identity="capauth:alice@test", skcomm=good, base_dir=base)
+        good = _FlakySKComms()
+        service2 = FileTransferService(identity="capauth:alice@test", skcomms=good, base_dir=base)
         service2.resume_send(tid)
 
         # Only the remaining chunks (2,3,4) are re-sent — no duplicates.
@@ -582,13 +582,13 @@ class TestResumeSend:
         """resume_send on an already-complete transfer sends nothing."""
         f = _create_test_file(tmp_path, "done.bin", TRANSFER_CHUNK_SIZE * 2)
         base = tmp_path / ".skchat"
-        good = _FlakySKComm()
-        service = FileTransferService(identity="capauth:alice@test", skcomm=good, base_dir=base)
+        good = _FlakySKComms()
+        service = FileTransferService(identity="capauth:alice@test", skcomms=good, base_dir=base)
         tid = service.send_file("capauth:bob@test", f)
         sent_before = len(good.calls)
 
-        good2 = _FlakySKComm()
-        service2 = FileTransferService(identity="capauth:alice@test", skcomm=good2, base_dir=base)
+        good2 = _FlakySKComms()
+        service2 = FileTransferService(identity="capauth:alice@test", skcomms=good2, base_dir=base)
         result = service2.resume_send(tid)
         assert good2.calls == []
         assert result is True  # already complete counts as success
@@ -596,9 +596,9 @@ class TestResumeSend:
 
     def test_resume_unknown_transfer_returns_false(self, tmp_path: Path) -> None:
         """resume_send on an unknown transfer_id returns False."""
-        good = _FlakySKComm()
+        good = _FlakySKComms()
         service = FileTransferService(
-            identity="capauth:alice@test", skcomm=good, base_dir=tmp_path / ".skchat"
+            identity="capauth:alice@test", skcomms=good, base_dir=tmp_path / ".skchat"
         )
         assert service.resume_send("no-such-id") is False
         assert good.calls == []
@@ -627,7 +627,7 @@ class TestResumeSend:
                 recv.store_incoming_chunk(json.loads(message))
 
         relay = _Relay()
-        sender = FileTransferService(identity="capauth:alice@test", skcomm=relay, base_dir=send_base)
+        sender = FileTransferService(identity="capauth:alice@test", skcomms=relay, base_dir=send_base)
         tid = sender.send_file("capauth:bob@test", original)
 
         # Resume over a clean relay that always delivers.
@@ -638,7 +638,7 @@ class TestResumeSend:
                 recv.store_incoming_chunk(json.loads(message))
 
         sender2 = FileTransferService(
-            identity="capauth:alice@test", skcomm=_GoodRelay(), base_dir=send_base
+            identity="capauth:alice@test", skcomms=_GoodRelay(), base_dir=send_base
         )
         sender2.resume_send(tid)
 

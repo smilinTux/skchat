@@ -109,7 +109,7 @@ def test_daemon_log_verbose(capsys):
 
 
 @patch("skchat.daemon.time.sleep", return_value=None)
-@patch("skchat.daemon.SKComm")
+@patch("skchat.daemon.SKComms")
 @patch("skchat.transport.ChatTransport")
 @patch("skchat.history.ChatHistory")
 @patch("skchat.identity_bridge.get_sovereign_identity")
@@ -117,12 +117,12 @@ def test_daemon_start_no_messages(
     mock_identity,
     mock_history_class,
     mock_transport_class,
-    mock_skcomm_class,
+    mock_skcomms_class,
     mock_sleep,
     mock_transport,
 ):
     """Test daemon with no incoming messages."""
-    mock_skcomm_class.from_config.return_value = mock_skcomm_class
+    mock_skcomms_class.from_config.return_value = mock_skcomms_class
     mock_transport_class.from_config.return_value = mock_transport
     mock_identity.return_value = "capauth:test@capauth.local"
 
@@ -145,7 +145,7 @@ def test_daemon_start_no_messages(
 
 
 @patch("skchat.daemon.time.sleep", return_value=None)
-@patch("skchat.daemon.SKComm")
+@patch("skchat.daemon.SKComms")
 @patch("skchat.transport.ChatTransport")
 @patch("skchat.history.ChatHistory")
 @patch("skchat.identity_bridge.get_sovereign_identity")
@@ -153,13 +153,13 @@ def test_daemon_start_with_messages(
     mock_identity,
     mock_history_class,
     mock_transport_class,
-    mock_skcomm_class,
+    mock_skcomms_class,
     mock_sleep,
     mock_transport,
     sample_message,
 ):
     """Test daemon receiving messages."""
-    mock_skcomm_class.from_config.return_value = mock_skcomm_class
+    mock_skcomms_class.from_config.return_value = mock_skcomms_class
     mock_transport.poll_inbox = MagicMock(return_value=[sample_message])
     mock_transport_class.from_config.return_value = mock_transport
     mock_identity.return_value = "capauth:test@capauth.local"
@@ -202,7 +202,7 @@ def test_daemon_graceful_shutdown(
 
 
 @patch("skchat.daemon.time.sleep", return_value=None)
-@patch("skchat.daemon.SKComm")
+@patch("skchat.daemon.SKComms")
 @patch("skchat.transport.ChatTransport")
 @patch("skchat.history.ChatHistory")
 @patch("skchat.identity_bridge.get_sovereign_identity")
@@ -210,12 +210,12 @@ def test_daemon_poll_error_handling(
     mock_identity,
     mock_history_class,
     mock_transport_class,
-    mock_skcomm_class,
+    mock_skcomms_class,
     mock_sleep,
     mock_transport,
 ):
     """Test daemon handling poll errors gracefully — backoff sleep is bypassed."""
-    mock_skcomm_class.from_config.return_value = mock_skcomm_class
+    mock_skcomms_class.from_config.return_value = mock_skcomms_class
     mock_transport.poll_inbox = MagicMock(side_effect=Exception("Transport error"))
     mock_transport_class.from_config.return_value = mock_transport
     mock_identity.return_value = "capauth:test@capauth.local"
@@ -238,7 +238,7 @@ def test_daemon_poll_error_handling(
     assert daemon._consecutive_failures >= 2
 
 
-@patch("skchat.daemon.SKComm")
+@patch("skchat.daemon.SKComms")
 @patch("skchat.history.ChatHistory")
 @patch("skchat.transport.ChatTransport")
 @patch("skchat.identity_bridge.get_sovereign_identity")
@@ -246,10 +246,10 @@ def test_daemon_start_transport_init_failure(
     mock_identity,
     mock_transport_class,
     mock_history_class,
-    mock_skcomm_class,
+    mock_skcomms_class,
 ):
     """Test daemon handling transport initialization failure."""
-    mock_skcomm_class.from_config.return_value = mock_skcomm_class
+    mock_skcomms_class.from_config.return_value = mock_skcomms_class
     mock_history_class.from_config.return_value = MagicMock()
     mock_identity.return_value = "capauth:test@capauth.local"
     mock_transport_class.from_config.side_effect = Exception("No transport")

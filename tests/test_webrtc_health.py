@@ -44,13 +44,13 @@ class TestWebRTCSignalingHealth:
 
 class TestTurnSecretPresence:
     def test_present_when_env_set(self) -> None:
-        assert turn_secret_present({"SKCOMM_TURN_SECRET": "hunter2"}) is True
+        assert turn_secret_present({"SKCOMMS_TURN_SECRET": "hunter2"}) is True
 
     def test_absent_when_env_missing(self) -> None:
         assert turn_secret_present({}) is False
 
     def test_absent_when_env_blank(self) -> None:
-        assert turn_secret_present({"SKCOMM_TURN_SECRET": "   "}) is False
+        assert turn_secret_present({"SKCOMMS_TURN_SECRET": "   "}) is False
 
 
 class TestTurnWarning:
@@ -60,4 +60,4 @@ class TestTurnWarning:
         assert "TURN" in warning
 
     def test_no_warning_when_secret_present(self) -> None:
-        assert webrtc_turn_warning({"SKCOMM_TURN_SECRET": "hunter2"}) is None
+        assert webrtc_turn_warning({"SKCOMMS_TURN_SECRET": "hunter2"}) is None

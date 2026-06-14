@@ -277,12 +277,12 @@ def _attachment_service():
 
 def _get_transport(identity: str):
     try:
-        from skcomms import SKComm
+        from skcomms import SKComms
 
         from .transport import ChatTransport
 
-        comm = SKComm.from_config()
-        return ChatTransport(skcomm=comm, history=_get_history(), identity=identity)
+        comm = SKComms.from_config()
+        return ChatTransport(skcomms=comm, history=_get_history(), identity=identity)
     except Exception as e:
         logger.warning("webui.py: %s", e)
         return None

@@ -58,7 +58,7 @@ MAX_RESULT_CHARS = int(os.getenv("LUMINA_MCP_MAX_RESULT_CHARS", "8000"))
 # Default set of servers Lumina should enable when bootstrapping a fresh
 # config. sksecurity is intentionally disabled — voice agent shouldn't
 # manage cryptographic keys without a deliberate opt-in.
-DEFAULT_ENABLED = {"skmemory", "skcapstone", "skchat", "skcomm", "nextcloud", "gog"}
+DEFAULT_ENABLED = {"skmemory", "skcapstone", "skchat", "skcomms", "nextcloud", "gog"}
 
 # Servers that exist outside Hermes' config (Nextcloud MCP, etc.) — added
 # to the bootstrapped config so they show up automatically. If the
@@ -128,8 +128,8 @@ DEFAULT_EXPOSE: dict[str, list[str]] = {
         "skchat_peers", "skchat_group_send", "list_groups",
         "who_is_online", "skchat_set_presence",
     ],
-    # skcomm — small surface, expose all read-style + send
-    "skcomm": [
+    # skcomms — small surface, expose all read-style + send
+    "skcomms": [
         "send_message", "receive_messages", "get_peers", "get_status",
     ],
     "sksecurity": [],  # disabled by default; nothing exposed
@@ -553,7 +553,7 @@ _TOOL_GROUPS: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
         "skchat__skchat_peers",
         "skchat__skchat_group_send",
         "skcapstone__telegram_send",
-        "skcomm__send_message",
+        "skcomms__send_message",
     )),
     # journal / diary
     (("journal", "diary"), (

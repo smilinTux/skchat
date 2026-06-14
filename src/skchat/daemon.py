@@ -1,6 +1,6 @@
 """SKChat receive daemon — background polling for incoming messages.
 
-This module provides a background service that continuously polls SKComm
+This module provides a background service that continuously polls SKComms
 transports for incoming chat messages and stores them in local history.
 
 The daemon can be run as:
@@ -25,11 +25,11 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# SKComm is imported at module level so tests can patch skchat.daemon.SKComm.
+# SKComms is imported at module level so tests can patch skchat.daemon.SKComms.
 try:
-    from skcomms import SKComm  # type: ignore
+    from skcomms import SKComms  # type: ignore
 except ImportError:  # pragma: no cover
-    SKComm = None  # type: ignore
+    SKComms = None  # type: ignore
 
 # Exponential backoff delays (seconds) for consecutive transport poll failures.
 # Index 0 = 1st failure delay; last entry is the cap applied for all further failures.
@@ -40,7 +40,7 @@ _BACKOFF_ERROR_THRESHOLD: int = 5  # emit ERROR after this many consecutive fail
 # Environment variable holding the WebRTC/coturn HMAC shared secret.
 # When absent, relayed (TURN) calls can't authenticate — we warn but never
 # fail: STUN-only / LAN / local fallback still works.
-_TURN_SECRET_ENV: str = "SKCOMM_TURN_SECRET"
+_TURN_SECRET_ENV: str = "SKCOMMS_TURN_SECRET"
 
 
 def webrtc_signaling_health(
@@ -79,7 +79,7 @@ def turn_secret_present(env: Optional[dict] = None) -> bool:
         env: Environment mapping to inspect (defaults to ``os.environ``).
 
     Returns:
-        bool: True when ``SKCOMM_TURN_SECRET`` is set and non-blank.
+        bool: True when ``SKCOMMS_TURN_SECRET`` is set and non-blank.
     """
     import os
 
@@ -115,7 +115,7 @@ class DaemonShutdown(Exception):
 class ChatDaemon:
     """Background daemon for receiving chat messages.
 
-    Continuously polls SKComm transports and stores incoming messages
+    Continuously polls SKComms transports and stores incoming messages
     in the local chat history.
 
     Args:
@@ -145,7 +145,7 @@ class ChatDaemon:
         self.last_heartbeat_at: Optional[datetime] = None
         self.advocacy_responses: int = 0
         self._outbox_messenger: Optional[object] = None
-        self._skcomm: Optional[object] = None  # set in start(), used for reconnect
+        self._skcomms: Optional[object] = None  # set in start(), used for reconnect
         # Persistent receive-side file-transfer plumbing (set by _init_attachments).
         # _file_service stores incoming FILE_* chunks; _attachment_service.on_complete
         # is bound to it so a completed inbound transfer posts a chat message.
@@ -206,14 +206,14 @@ class ChatDaemon:
             raise
 
         try:
-            if SKComm is None:
-                raise ImportError("skcomm package not installed")
-            skcomm = SKComm.from_config()
-            self._skcomm = skcomm
+            if SKComms is None:
+                raise ImportError("skcomms package not installed")
+            skcomms = SKComms.from_config()
+            self._skcomms = skcomms
         except Exception as exc:
             logger.warning("daemon.py: %s", exc)
-            self._log(f"Failed to initialize SKComm: {exc}", "error")
-            self._log("Make sure SKComm is configured: skcomm init", "error")
+            self._log(f"Failed to initialize SKComms: {exc}", "error")
+            self._log("Make sure SKComms is configured: skcomms init", "error")
             raise
 
         try:
@@ -234,7 +234,7 @@ class ChatDaemon:
 
         try:
             transport = ChatTransport.from_config(
-                skcomm=skcomm,
+                skcomms=skcomms,
                 history=history,
                 identity=identity,
             )
@@ -262,11 +262,11 @@ class ChatDaemon:
             nonlocal reaper, presence, queue, bridge, watchdog, engine, plugin_registry
             reaper = self._init_reaper(history)
             presence = self._init_presence(identity)
-            queue = self._init_queue(skcomm, identity)
+            queue = self._init_queue(skcomms, identity)
             bridge = self._init_memory_bridge(history)
-            self._init_webrtc(skcomm, identity)
-            self._init_attachments(history=history, identity=identity, skcomm=skcomm)
-            watchdog = self._init_watchdog(skcomm)
+            self._init_webrtc(skcomms, identity)
+            self._init_attachments(history=history, identity=identity, skcomms=skcomms)
+            watchdog = self._init_watchdog(skcomms)
             try:
                 from skchat.advocacy import AdvocacyEngine
 
@@ -399,13 +399,13 @@ class ChatDaemon:
                     if self._consecutive_failures >= _BACKOFF_ERROR_THRESHOLD:
                         logger.error(
                             "Transport has failed %d consecutive time(s);"
-                            " check SKComm connectivity",
+                            " check SKComms connectivity",
                             self._consecutive_failures,
                         )
                     # Attempt transport reconnect on the 2nd consecutive failure
                     # so recovery is faster than waiting for the watchdog cycle.
-                    if self._consecutive_failures == 2 and self._skcomm is not None:
-                        reconnect_fn = getattr(self._skcomm, "reconnect", None)
+                    if self._consecutive_failures == 2 and self._skcomms is not None:
+                        reconnect_fn = getattr(self._skcomms, "reconnect", None)
                         if reconnect_fn:
                             try:
                                 logger.info(
@@ -453,7 +453,7 @@ class ChatDaemon:
                 if presence and presence_counter >= 12:
                     presence_counter = 0
                     try:
-                        self._broadcast_presence(skcomm, identity, presence)
+                        self._broadcast_presence(skcomms, identity, presence)
                         self.last_heartbeat_at = datetime.now(timezone.utc)
                     except Exception as exc:
                         logger.warning("daemon.py: %s", exc)
@@ -484,7 +484,7 @@ class ChatDaemon:
                             logger.warning("daemon.py: %s", exc)
                             self._log(f"Watchdog error: {exc}", "warning")
                     try:
-                        self._write_daemon_stats(watchdog, presence, skcomm)
+                        self._write_daemon_stats(watchdog, presence, skcomms)
                     except Exception as exc:
                         logger.warning("Daemon stats write error: %s", exc)
 
@@ -498,7 +498,7 @@ class ChatDaemon:
             # Send offline presence on shutdown
             if presence:
                 try:
-                    self._broadcast_presence(skcomm, identity, presence, going_offline=True)
+                    self._broadcast_presence(skcomms, identity, presence, going_offline=True)
                 except Exception as exc:
                     logger.warning("Failed to send offline presence on shutdown: %s", exc)
             self._log(f"Daemon stopped. Received {self.total_received} message(s) total.")
@@ -539,14 +539,14 @@ class ChatDaemon:
             self._log(f"Presence init skipped: {exc}", "warning")
             return None
 
-    def _init_queue(self, skcomm: object, identity: str) -> object:
+    def _init_queue(self, skcomms: object, identity: str) -> object:
         """Initialize the outbox message queue for retry delivery.
 
         Also initialises the AgentMessenger stored on self._outbox_messenger
         so deliver_pending() has a send channel without re-creating it each cycle.
 
         Args:
-            skcomm: SKComm instance.
+            skcomms: SKComms instance.
             identity: Local CapAuth identity URI.
 
         Returns:
@@ -558,7 +558,7 @@ class ChatDaemon:
 
             queue = OutboxQueue()
             try:
-                self._outbox_messenger = AgentMessenger.from_identity(identity, skcomm=skcomm)
+                self._outbox_messenger = AgentMessenger.from_identity(identity, skcomms=skcomms)
             except Exception as exc:
                 logger.warning("daemon.py: %s", exc)
                 self._log(f"Outbox messenger init skipped: {exc}", "warning")
@@ -568,20 +568,20 @@ class ChatDaemon:
             self._log(f"Queue init skipped: {exc}", "warning")
             return None
 
-    def _init_webrtc(self, skcomm: object, identity: str) -> None:
+    def _init_webrtc(self, skcomms: object, identity: str) -> None:
         """Wire the WebRTC transport to the chat daemon if available.
 
-        Finds the WebRTC transport in the SKComm router and starts it
+        Finds the WebRTC transport in the SKComms router and starts it
         if it hasn't been started yet. Stores incoming WEBRTC_SIGNAL
         envelopes as chat messages in the history for call management.
 
         Args:
-            skcomm: Initialized SKComm instance.
+            skcomms: Initialized SKComms instance.
             identity: Local identity URI (for call routing).
         """
         try:
             webrtc_transport = None
-            for t in skcomm.router.transports:
+            for t in skcomms.router.transports:
                 if t.name == "webrtc":
                     webrtc_transport = t
                     break
@@ -606,7 +606,7 @@ class ChatDaemon:
             logger.warning("daemon.py: %s", exc)
             self._log(f"WebRTC init skipped: {exc}", "warning")
 
-    def _init_attachments(self, history: object, identity: str, skcomm: object) -> object:
+    def _init_attachments(self, history: object, identity: str, skcomms: object) -> object:
         """Wire the receive-side AttachmentService into a FileTransferService.
 
         Builds a *persistent* FileTransferService (the one the poll loop routes
@@ -625,7 +625,7 @@ class ChatDaemon:
         Args:
             history: ChatHistory instance (where inbound messages are saved).
             identity: Local CapAuth identity URI (recipient of inbound files).
-            skcomm: Initialized SKComm instance (transport for the service).
+            skcomms: Initialized SKComms instance (transport for the service).
 
         Returns:
             AttachmentService or None if initialization fails.
@@ -634,7 +634,7 @@ class ChatDaemon:
             from .attachments import AttachmentService
             from .files import FileTransferService
 
-            file_service = FileTransferService(identity, skcomm=skcomm)
+            file_service = FileTransferService(identity, skcomms=skcomms)
             attach = AttachmentService(
                 identity=identity,
                 history=history,
@@ -707,15 +707,15 @@ class ChatDaemon:
 
     def _broadcast_presence(
         self,
-        skcomm: object,
+        skcomms: object,
         identity: str,
         tracker: object,
         going_offline: bool = False,
     ) -> None:
-        """Broadcast presence state over SKComm.
+        """Broadcast presence state over SKComms.
 
         Args:
-            skcomm: SKComm instance.
+            skcomms: SKComms instance.
             identity: Local identity URI.
             tracker: PresenceTracker instance.
             going_offline: If True, send offline status.
@@ -742,7 +742,7 @@ class ChatDaemon:
             payload = indicator.model_dump_json()
             from skcomms.models import MessageType
 
-            skcomm.send(
+            skcomms.send(
                 recipient="*",
                 message=payload,
                 message_type=MessageType.HEARTBEAT,
@@ -868,11 +868,11 @@ class ChatDaemon:
         thread.start()
         self._log(f"Health endpoint listening on http://127.0.0.1:{port}/health")
 
-    def _init_watchdog(self, skcomm: object) -> object:
+    def _init_watchdog(self, skcomms: object) -> object:
         """Initialize the transport watchdog.
 
         Args:
-            skcomm: SKComm instance to monitor and reconnect.
+            skcomms: SKComms instance to monitor and reconnect.
 
         Returns:
             TransportWatchdog or None if initialization fails.
@@ -880,7 +880,7 @@ class ChatDaemon:
         try:
             from .watchdog import TransportWatchdog
 
-            return TransportWatchdog(transport=skcomm)
+            return TransportWatchdog(transport=skcomms)
         except Exception as exc:
             logger.warning("daemon.py: %s", exc)
             self._log(f"Watchdog init skipped: {exc}", "warning")
@@ -890,7 +890,7 @@ class ChatDaemon:
         self,
         watchdog: object,
         presence: object,
-        skcomm: object,
+        skcomms: object,
     ) -> None:
         """Write daemon runtime stats to the stats JSON file.
 
@@ -900,7 +900,7 @@ class ChatDaemon:
         Args:
             watchdog: TransportWatchdog instance (or None).
             presence: PresenceTracker instance (or None).
-            skcomm: SKComm instance (or None).
+            skcomms: SKComms instance (or None).
         """
         stats_path = _DAEMON_STATS_FILE.expanduser()
 
@@ -920,9 +920,9 @@ class ChatDaemon:
                 logger.warning("presence.who_is_online() failed: %s", exc)
 
         webrtc_signaling_ok = False
-        if skcomm:
+        if skcomms:
             try:
-                for t in skcomm.router.transports:
+                for t in skcomms.router.transports:
                     if t.name == "webrtc":
                         webrtc_signaling_ok = bool(getattr(t, "_signaling_connected", False))
                         break

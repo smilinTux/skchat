@@ -62,7 +62,7 @@ flowchart TB
 
 skchat never owns identity or transport: `identity_bridge.py` is a thin delegate
 to the canonical `capauth.resolve_agent_identity`, and `transport.py` hands every
-encrypted envelope to SKComm. This keeps the package small and lets the rest of
+encrypted envelope to SKComms. This keeps the package small and lets the rest of
 the ecosystem evolve the hard parts independently.
 
 ---
@@ -70,7 +70,7 @@ the ecosystem evolve the hard parts independently.
 ## 2. Outbound message lifecycle
 
 A message is composed locally, persisted immediately, then PGP-protected and
-handed to SKComm. The local store is the source of truth — delivery is best-effort
+handed to SKComms. The local store is the source of truth — delivery is best-effort
 with a reliable outbox behind it.
 
 ```mermaid
@@ -106,7 +106,7 @@ drains it.
 
 ## 3. Inbound polling + the @mention advocacy loop
 
-The daemon polls SKComm on an interval (default 5 s) with exponential backoff on
+The daemon polls SKComms on an interval (default 5 s) with exponential backoff on
 consecutive failures. Each received message is decrypted, persisted, and screened
 for an `@mention` — the heart of "the AI is in the room."
 
@@ -205,7 +205,7 @@ flowchart LR
 | `_daemon_entry.py` | Systemd / process entry-point wrapper |
 | `watchdog.py` | Daemon watchdog / health monitor |
 | `advocacy.py` | `AdvocacyEngine` — `@mention` detection → skcapstone consciousness loop → in-thread reply |
-| `transport.py` | `ChatTransport` — send/receive over SKComm |
+| `transport.py` | `ChatTransport` — send/receive over SKComms |
 | `agent_comm.py` | `AgentMessenger` — low-level agent-to-agent send primitives |
 | `outbox.py` | SQLite outbox with retry/backoff for reliable delivery |
 | `history.py` | `ChatHistory` — persistent SQLite message store |
@@ -217,7 +217,7 @@ flowchart LR
 | `presence.py` | `PresenceCache` — online/offline tracking |
 | `crypto.py` | PGP sign/verify helpers (PGPy) |
 | `plugins_skseal.py` | SKSeal encryption plugin |
-| `identity_bridge.py` | Thin delegate to canonical `capauth.resolve_agent_identity` (CapAuth ↔ SKComm addresses) |
+| `identity_bridge.py` | Thin delegate to canonical `capauth.resolve_agent_identity` (CapAuth ↔ SKComms addresses) |
 | `agent_profile.py` | Resolves agent identities from `~/.skcapstone/agents/<agent>/` |
 | `peer_discovery.py` | `PeerDiscovery` — loads peers from `~/.skcapstone/peers/` |
 | `memory_bridge.py` | Forwards chat threads to skcapstone memory (`session_capture`) |
@@ -276,11 +276,11 @@ flowchart TD
 
 ## 8. Storage & runtime
 
-- **Home**: `~/.skchat` (history DB, daemon pid/log) and `~/.skcomm` (transport
+- **Home**: `~/.skchat` (history DB, daemon pid/log) and `~/.skcomms` (transport
   config, outbox).
 - **Peers**: `~/.skcapstone/peers/`; agent profiles: `~/.skcapstone/agents/<agent>/`.
 - **Daemon**: systemd-managed (`skchat-daemon.service`), `Type=forking`, health
-  endpoint on `:9385` (skcomm transport health on `:9384`). Companion units:
+  endpoint on `:9385` (skcomms transport health on `:9384`). Companion units:
   `skchat-webui`, `skchat-lumina-call`, `jarvis-heartbeat`. Never run
   `skchat daemon start` by hand alongside the managed unit — see
   [CLAUDE.md](../CLAUDE.md).

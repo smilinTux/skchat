@@ -17,7 +17,7 @@ guarantee as the A-phase CALL_INVITE ring, which today's signing fix made real).
 
 ## Context — this is mostly "finish + wire + harden," not greenfield
 skcomms already has an aiortc P2P stack (mapped 2026-06-11):
-- **DONE:** `RTCPeerConnection` setup; ordered/reliable **data channel** (`skcomm` label)
+- **DONE:** `RTCPeerConnection` setup; ordered/reliable **data channel** (`skcomms` label)
   agent↔agent; WebSocket signaling **broker** (`/webrtc/ws`) with CapAuth auth +
   anti-spoof; STUN/TURN config incl. HMAC time-limited creds; `TTSAudioTrack` +
   `MuseTalkVideoTrack`; browser↔agent media **receive** path (`facetime.html`).

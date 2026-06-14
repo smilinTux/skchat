@@ -195,6 +195,6 @@ graph LR
   `call_auto` (P2P-first + SFU fallback). Operator alert (topic + one-press join) on `/call/start`.
 - Browser media leg proven; **Lumina's conversational agent in `lumina-and-chef`** (audio +
   77 MCP tools). Runbooks: `qr-pairing-phone-test.md`, `browser-call-test.md`.
-- **Open:** live-broker validation of BrokerSignaling (needs the skcomm daemon broker up);
+- **Open:** live-broker validation of BrokerSignaling (needs the skcomms daemon broker up);
   Tailscale Funnel public pairing (`2ab5aa6c`, outward-facing — operator-gated). **🔴 live
   voice blocked by `.100` F5-TTS on the wedged Arc iGPU (no CUDA for the 5060 Ti).**

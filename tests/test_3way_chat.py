@@ -48,7 +48,7 @@ Infrastructure status during test
 - passthrough     : last resort fallback available
 - Previous Lumina DM replies confirmed at 12:41 and 13:50 (same session)
   → bridge and consciousness pipeline functional; only LLM backend slow
-- SKComm daemon   : health check failing (GET :9384 → 404); file transport active
+- SKComms daemon   : health check failing (GET :9384 → 404); file transport active
 
 Tag schema (corrected — earlier analysis was wrong)
 ----------------------------------------------------
@@ -105,7 +105,7 @@ LUMINA_URI = "capauth:lumina@skworld.io"
 CLAUDE_URI = "capauth:claude@skworld.io"
 
 SKCHAT_HOME = Path.home() / ".skchat"
-SKCOMM_OUTBOX = Path.home() / ".skcomm" / "outbox"
+SKCOMMS_OUTBOX = Path.home() / ".skcomms" / "outbox"
 GROUP_STORE = SKCHAT_HOME / "groups"
 
 DAEMON_HEALTH_URL = "http://127.0.0.1:9385/health"
@@ -171,12 +171,12 @@ def _send_group_via_outbox(
     sender: str,
     content: str,
 ) -> str:
-    """Write a group_message envelope to ~/.skcomm/outbox for each recipient.
+    """Write a group_message envelope to ~/.skcomms/outbox for each recipient.
 
     Mirrors what ``skchat group send`` does but without requiring the CLI,
     useful for hermetic tests.  Returns the message_id.
     """
-    SKCOMM_OUTBOX.mkdir(parents=True, exist_ok=True)
+    SKCOMMS_OUTBOX.mkdir(parents=True, exist_ok=True)
     message_id = str(uuid.uuid4())
     members = _group_member_uris(group_id)
     recipients = [m for m in members if m != sender]
@@ -201,7 +201,7 @@ def _send_group_via_outbox(
             "payload": payload,
             "timestamp": payload["timestamp"],
         }
-        fname = SKCOMM_OUTBOX / f"{envelope['id']}.skc.json"
+        fname = SKCOMMS_OUTBOX / f"{envelope['id']}.skc.json"
         fname.write_text(json.dumps(envelope))
 
     return message_id
@@ -450,7 +450,7 @@ class TestGroupSendE2E:
     @both_services
     def test_group_message_enqueued_in_outbox(self, tmp_path: Path) -> None:
         """Group send via outbox helper creates envelope files."""
-        with patch("tests.test_3way_chat.SKCOMM_OUTBOX", tmp_path / "outbox"):
+        with patch("tests.test_3way_chat.SKCOMMS_OUTBOX", tmp_path / "outbox"):
             mid = _send_group_via_outbox(
                 group_id=SKWORLD_GROUP_ID,
                 sender=OPUS_URI,

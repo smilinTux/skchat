@@ -417,7 +417,7 @@ class SKSealPlugin(ChatPlugin):
             return f"Error listing documents: {exc}"
 
     def _handle_doc_send(self, args: str, context: dict) -> str:
-        """Handle /doc-send <document_id> <recipient> — send signing request via SKComm.
+        """Handle /doc-send <document_id> <recipient> — send signing request via SKComms.
 
         Delivers a signing request as a ChatMessage with signing_request
         metadata. The document ID and signer details are embedded so the
@@ -498,18 +498,18 @@ class SKSealPlugin(ChatPlugin):
         except Exception as exc:
             logger.warning("Failed to store signing request in local history: %s", exc)
 
-        # Deliver via SKComm transport
+        # Deliver via SKComms transport
         delivered = False
         transport_name = None
         try:
-            from skcomms import SKComm
+            from skcomms import SKComms
 
             from .transport import ChatTransport
 
-            skcomm = SKComm.from_config()
+            skcomms = SKComms.from_config()
             history = ChatHistory.from_config()
             transport = ChatTransport(
-                skcomm=skcomm,
+                skcomms=skcomms,
                 history=history,
                 identity=sender,
             )
@@ -517,7 +517,7 @@ class SKSealPlugin(ChatPlugin):
             delivered = result.get("delivered", False)
             transport_name = result.get("transport")
         except Exception as exc:
-            logger.warning("SKComm delivery of signing request failed: %s", exc)
+            logger.warning("SKComms delivery of signing request failed: %s", exc)
 
         # Add audit entry for send
         try:
@@ -527,7 +527,7 @@ class SKSealPlugin(ChatPlugin):
                 document_id=document_id,
                 action=AuditAction.SENT,
                 actor_fingerprint=context.get("fingerprint", sender),
-                details=f"Signing request sent to {resolved_recipient} via SKComm",
+                details=f"Signing request sent to {resolved_recipient} via SKComms",
             )
             store.append_audit(entry)
         except Exception as exc:

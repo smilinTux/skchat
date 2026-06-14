@@ -3,7 +3,7 @@
 test_send_to_lumina_and_receive_reply
     1. Builds a ChatMessage (claude → lumina).
     2. Persists it via ChatHistory.save() (JSONL).
-    3. Also writes a raw SKComm envelope to ~/.skcomm/outbox/ so that
+    3. Also writes a raw SKComms envelope to ~/.skcomms/outbox/ so that
        lumina's poll_outbox_for_lumina() picks it up without Syncthing.
     4. Polls ChatHistory.load() (JSONL) for lumina's reply within 120s.
        Lumina's bridge calls history.save() when replying, so JSONL
@@ -44,7 +44,7 @@ CLAUDE_IDENTITY = "capauth:claude@skworld.io"
 LUMINA_IDENTITY = "capauth:lumina@skworld.io"
 
 # File paths mirrored from lumina-bridge.py
-_SKCOMM_OUTBOX = Path("~/.skcomm/outbox").expanduser()
+_SKCOMMS_OUTBOX = Path("~/.skcomms/outbox").expanduser()
 _SKCHAT_HISTORY_DIR = Path("~/.skchat/history").expanduser()
 
 # ---------------------------------------------------------------------------
@@ -76,9 +76,9 @@ _DAEMON_UP: bool = _daemon_running()
 
 
 def _inject_to_lumina_outbox(message: ChatMessage) -> None:
-    """Write *message* as a SKComm envelope to the local outbox.
+    """Write *message* as a SKComms envelope to the local outbox.
 
-    lumina-bridge.py's poll_outbox_for_lumina() scans ~/.skcomm/outbox/
+    lumina-bridge.py's poll_outbox_for_lumina() scans ~/.skcomms/outbox/
     for ``*.skc.json`` files whose recipient is lumina.  Writing the
     envelope here triggers lumina without requiring Syncthing.
 
@@ -88,16 +88,16 @@ def _inject_to_lumina_outbox(message: ChatMessage) -> None:
         message: Outbound ChatMessage to envelope-wrap.
     """
     try:
-        _SKCOMM_OUTBOX.mkdir(parents=True, exist_ok=True)
+        _SKCOMMS_OUTBOX.mkdir(parents=True, exist_ok=True)
         envelope = {
-            "skcomm_version": "1.0.0",
+            "skcomms_version": "1.0.0",
             "envelope_id": message.id,
             "sender": message.sender,
             "recipient": message.recipient,
             "payload": {"content": message.model_dump_json()},
             "timestamp": message.timestamp.isoformat(),
         }
-        outfile = _SKCOMM_OUTBOX / f"{message.id}.skc.json"
+        outfile = _SKCOMMS_OUTBOX / f"{message.id}.skc.json"
         outfile.write_text(json.dumps(envelope), encoding="utf-8")
     except Exception:
         pass  # best-effort; test will still wait and may time out
@@ -155,7 +155,7 @@ def test_send_to_lumina_and_receive_reply() -> None:
     ────
     1. Build a unique ChatMessage (claude → lumina).
     2. Persist outbound record via ChatHistory.save() (JSONL).
-    3. Inject an SKComm envelope into ~/.skcomm/outbox/ so lumina's
+    3. Inject an SKComms envelope into ~/.skcomms/outbox/ so lumina's
        poll_outbox_for_lumina() loop picks it up without Syncthing.
     4. Poll ChatHistory.load() every 3 s for up to 120 s.
     5. Assert a reply appears with sender=lumina, recipient=claude.

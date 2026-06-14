@@ -1,7 +1,7 @@
 """E2E live tests for SKChat using file-based transport (no network).
 
 Full ChatTransport.send() -> shared-dir -> ChatTransport.poll_inbox()
-roundtrip with no daemon, no real SKComm, and no network.
+roundtrip with no daemon, no real SKComms, and no network.
 
 A shared temporary directory acts as the transport medium: one side
 writes an envelope file, the other reads it back.  This mirrors the
@@ -9,7 +9,7 @@ Syncthing file-share scenario used in production.
 
 The tests are self-contained and always runnable:
 - No skmemory required (in-memory history stub used)
-- No SKComm dependency (file-based stub)
+- No SKComms dependency (file-based stub)
 - No daemon required
 
 Run with:
@@ -38,12 +38,12 @@ pytestmark = pytest.mark.e2e_live
 
 
 # ---------------------------------------------------------------------------
-# File-based SKComm stub
+# File-based SKComms stub
 # ---------------------------------------------------------------------------
 
 
-class _FileSKComm:
-    """Minimal file-based SKComm stub for offline E2E testing.
+class _FileSKComms:
+    """Minimal file-based SKComms stub for offline E2E testing.
 
     Writes outbound envelopes as JSON files to ``outbox_dir``.
     Reads (and consumes) inbound envelopes from ``inbox_dir``.
@@ -136,9 +136,9 @@ def history() -> _InMemoryHistory:
 @pytest.fixture()
 def sender_transport(transport_dir: Path, history: _InMemoryHistory) -> ChatTransport:
     """ChatTransport for the sender (opus)."""
-    skcomm = _FileSKComm(outbox_dir=transport_dir, inbox_dir=transport_dir)
+    skcomms = _FileSKComms(outbox_dir=transport_dir, inbox_dir=transport_dir)
     return ChatTransport(
-        skcomm=skcomm,
+        skcomms=skcomms,
         history=history,
         identity="capauth:opus@skworld.io",
     )
@@ -147,9 +147,9 @@ def sender_transport(transport_dir: Path, history: _InMemoryHistory) -> ChatTran
 @pytest.fixture()
 def receiver_transport(transport_dir: Path, history: _InMemoryHistory) -> ChatTransport:
     """ChatTransport for the receiver (lumina) — same shared dir."""
-    skcomm = _FileSKComm(outbox_dir=transport_dir, inbox_dir=transport_dir)
+    skcomms = _FileSKComms(outbox_dir=transport_dir, inbox_dir=transport_dir)
     return ChatTransport(
-        skcomm=skcomm,
+        skcomms=skcomms,
         history=history,
         identity="capauth:lumina@skworld.io",
     )
@@ -440,9 +440,9 @@ class TestErrorHandling:
         # Inject a corrupt file directly into the transport dir
         (transport_dir / "corrupt.json").write_text("{{not valid json", encoding="utf-8")
 
-        skcomm = _FileSKComm(outbox_dir=transport_dir, inbox_dir=transport_dir)
+        skcomms = _FileSKComms(outbox_dir=transport_dir, inbox_dir=transport_dir)
         transport = ChatTransport(
-            skcomm=skcomm,
+            skcomms=skcomms,
             history=history,
             identity="capauth:lumina@skworld.io",
         )

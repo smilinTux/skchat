@@ -148,7 +148,7 @@ research (coord `d8df240d`) + Lumina's pass (`a47c6c64`) → decision `3196673d`
 ## 3. Current state (what exists, 2026-06-12)
 
 **Built & running (systemd, this box):**
-- `skchat-daemon` (:9385/:9384) — SKComm receive loop, history, advocacy.
+- `skchat-daemon` (:9385/:9384) — SKComms receive loop, history, advocacy.
 - `skchat-webui@<agent>` (:8765 lumina / :8766 opus) — FastAPI UI + voice WS +
   `/livekit/*` token mint + `/call/*` ring/answer + `/pair` gate.
 - `skchat-lumina-call` — LiveKit conversational agent (the "skvideo" path).

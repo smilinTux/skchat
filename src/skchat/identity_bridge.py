@@ -2,7 +2,7 @@
 
 This module provides automatic identity resolution from CapAuth sovereign
 profiles at ~/.skcapstone/identity/ and peer name resolution from the peer
-registry at ~/.skcapstone/peers/ or ~/.skcomm/peers/.
+registry at ~/.skcapstone/peers/ or ~/.skcomms/peers/.
 
 Functions:
     get_sovereign_identity() -> Resolves the local user's CapAuth identity
@@ -29,10 +29,10 @@ logger = logging.getLogger("skchat.identity_bridge")
 SK_DEFAULT_DOMAIN = "skworld.io"
 
 # Reason: Multiple possible locations for identity and peer data
-# based on whether using skcapstone or standalone skcomm
+# based on whether using skcapstone or standalone skcomms
 SKCAPSTONE_IDENTITY_DIR = Path.home() / ".skcapstone" / "identity"
 SKCAPSTONE_PEERS_DIR = Path.home() / ".skcapstone" / "peers"
-SKCOMM_PEERS_DIR = Path.home() / ".skcomm" / "peers"
+SKCOMMS_PEERS_DIR = Path.home() / ".skcomms" / "peers"
 
 
 class IdentityResolutionError(Exception):
@@ -97,7 +97,7 @@ def resolve_peer_name(name: str) -> str:
     identity.json writes).
 
     Looks up the peer in the peer registry at ~/.skcapstone/peers/ or
-    ~/.skcomm/peers/. Supports both JSON and YAML peer files.
+    ~/.skcomms/peers/. Supports both JSON and YAML peer files.
 
     Args:
         name: Friendly name of the peer (e.g., "lumina", "jarvis"),
@@ -133,7 +133,7 @@ def resolve_peer_name(name: str) -> str:
         logger.debug("capauth resolver unavailable for peer '%s': %s", name, exc)
 
     peer_files_to_check = []
-    for peers_dir in [SKCAPSTONE_PEERS_DIR, SKCOMM_PEERS_DIR]:
+    for peers_dir in [SKCAPSTONE_PEERS_DIR, SKCOMMS_PEERS_DIR]:
         if peers_dir.exists():
             peer_files_to_check.extend(
                 [
@@ -191,7 +191,7 @@ def resolve_peer_name(name: str) -> str:
 
     raise PeerResolutionError(
         f"Cannot resolve peer '{name}'. No peer file found in "
-        f"{SKCAPSTONE_PEERS_DIR} or {SKCOMM_PEERS_DIR}"
+        f"{SKCAPSTONE_PEERS_DIR} or {SKCOMMS_PEERS_DIR}"
     )
 
 
@@ -296,7 +296,7 @@ def get_peer_transport_address(name: str) -> Optional[dict]:
         {'syncthing_device_id': 'ABC123...', 'nostr_pubkey': 'npub1...'}
     """
     peer_files_to_check = []
-    for peers_dir in [SKCAPSTONE_PEERS_DIR, SKCOMM_PEERS_DIR]:
+    for peers_dir in [SKCAPSTONE_PEERS_DIR, SKCOMMS_PEERS_DIR]:
         if peers_dir.exists():
             peer_files_to_check.extend(
                 [

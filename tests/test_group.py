@@ -174,7 +174,7 @@ class TestToolScoping:
         group.add_member(
             identity_uri="capauth:scoped@test",
             participant_type=ParticipantType.AGENT,
-            tool_scope=["sksecurity.audit", "skcomm.send"],
+            tool_scope=["sksecurity.audit", "skcomms.send"],
         )
         assert group.can_invoke_tool("capauth:scoped@test", "sksecurity.audit")
 
@@ -196,12 +196,12 @@ class TestToolScoping:
         group.add_member(identity_uri="capauth:target@test")
         result = group.set_tool_scope(
             "capauth:target@test",
-            ["skcomm.send"],
+            ["skcomms.send"],
             by_admin="capauth:alice@skworld.io",
         )
         assert result is True
         member = group.get_member("capauth:target@test")
-        assert member.tool_scope == ["skcomm.send"]
+        assert member.tool_scope == ["skcomms.send"]
 
     def test_nonadmin_cannot_set_scope(self, group: GroupChat) -> None:
         """Non-admins cannot change tool scopes."""

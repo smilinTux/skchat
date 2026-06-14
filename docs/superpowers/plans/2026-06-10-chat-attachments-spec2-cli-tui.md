@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.12, Click (CLI), Textual (TUI), pytest. Repo `/home/cbrd21/clawd/skcapstone-repos/skchat`. Conventions: TDD, explicit `git add`, Co-Authored-By trailer, no push, tests standalone (tmp dirs, fakes, no network), conftest keeps `SK_DESKTOP_NOTIFY=0`.
 
-Layer-0 API (already built): `AttachmentService(identity, history, file_service, thumb_root=None).send_attachment(recipient, path: Path, caption=None) -> ChatMessage`. `FileTransferService(identity, skcomm=...)`. `ChatMessage.attachments: list[FileRef]`; `FileRef.filename/mime_type/transfer_id/...`.
+Layer-0 API (already built): `AttachmentService(identity, history, file_service, thumb_root=None).send_attachment(recipient, path: Path, caption=None) -> ChatMessage`. `FileTransferService(identity, skcomms=...)`. `ChatMessage.attachments: list[FileRef]`; `FileRef.filename/mime_type/transfer_id/...`.
 
 ---
 
@@ -48,16 +48,16 @@ def test_send_file_posts_chat_message(tmp_path, monkeypatch):
 
 - [ ] **Step 3 — implement:** In `cli.py`, add a small factory near the other helpers:
 ```python
-def _attachment_service_for(identity, skcomm):
+def _attachment_service_for(identity, skcomms):
     from .attachments import AttachmentService
     from .files import FileTransferService
     from .history import ChatHistory
-    fs = FileTransferService(identity=identity, skcomm=skcomm)
+    fs = FileTransferService(identity=identity, skcomms=skcomms)
     return AttachmentService(identity, ChatHistory(), fs)
 ```
-Add `@click.option("--caption", default=None, help="Optional caption shown with the file.")` to `send_file_cmd` and change its body: after resolving `identity`, `skcomm`, `resolved_recipient`, replace the direct `service.send_file(...)` with:
+Add `@click.option("--caption", default=None, help="Optional caption shown with the file.")` to `send_file_cmd` and change its body: after resolving `identity`, `skcomms`, `resolved_recipient`, replace the direct `service.send_file(...)` with:
 ```python
-    svc = _attachment_service_for(identity, skcomm)
+    svc = _attachment_service_for(identity, skcomms)
     msg = svc.send_attachment(resolved_recipient, file_path, caption=caption)
     transfer_id = msg.attachments[0].transfer_id
     click.echo(f"  Sent {file_path.name} ({transfer_id}) — posted to chat.")

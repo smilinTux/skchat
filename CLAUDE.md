@@ -2,7 +2,7 @@
 
 ## Overview
 SKChat is an AI-native P2P encrypted messaging daemon with MCP integration.
-It enables agents (Opus/Claude, Lumina) and humans (Chef) to chat in real-time over SKComm transports.
+It enables agents (Opus/Claude, Lumina) and humans (Chef) to chat in real-time over SKComms transports.
 
 - **Package**: `skchat` v0.1.0 (GPL-3.0) — PyPI name: `skchat-sovereign`
 - **Install**: `~/.skenv/bin/pip install skchat-sovereign` (all SK* packages use `~/.skenv/`)
@@ -56,7 +56,7 @@ cd ~ && ~/.skenv/bin/skchat daemon start --interval 5
 | `call_session.py` | **WebRTC calls** — `derive_room()` (deterministic per-pair LiveKit room) + `CALL_INVITE` envelope build/parse. See `docs/superpowers/specs/2026-06-11-webrtc-architecture-overview.md` |
 | `connectivity.py` | **WebRTC calls** — `ice_config()` sovereign ICE tier ladder (Tailscale→LAN→coturn ephemeral creds) |
 | `call_routes.py` | **WebRTC calls** — `/call/start` (ring), `/call/answer` (no ring), `/call/incoming` (sig-gated), `/call/peers`, `/connectivity/ice` |
-| `transport.py` | `ChatTransport` — send/receive over SKComm |
+| `transport.py` | `ChatTransport` — send/receive over SKComms |
 | `mcp_server.py` | FastMCP server — 24 tools exposed to AI agents |
 | `models.py` | `ChatMessage`, `Group`, `Peer`, `MessageType` Pydantic models |
 | `history.py` | `ChatHistory` — persistent message store (SQLite) |
@@ -64,7 +64,7 @@ cd ~ && ~/.skenv/bin/skchat daemon start --interval 5
 | `group.py` | `GroupChat` — encrypted group messaging |
 | `presence.py` | `PresenceCache` — online/offline tracking |
 | `peer_discovery.py` | Loads peers from `~/.skcapstone/peers/` |
-| `identity_bridge.py` | Thin delegate to the canonical `capauth.resolve_agent_identity` (CapAuth ↔ SKComm addresses) — see "Identity" below |
+| `identity_bridge.py` | Thin delegate to the canonical `capauth.resolve_agent_identity` (CapAuth ↔ SKComms addresses) — see "Identity" below |
 | `memory_bridge.py` | Reads/writes skcapstone memory from chat context |
 | `crypto.py` | PGP sign/verify helpers (PGPy) |
 | `encrypted_store.py` | AES-encrypted local store |
@@ -273,13 +273,13 @@ bash scripts/mcp-test.sh                             # smoke test
 ```bash
 skchat daemon status              # check transport_status field
 skchat health                     # green/red transport summary
-ls ~/.skcomm/outbox/              # pending outbox entries
+ls ~/.skcomms/outbox/              # pending outbox entries
 ```
 
 ### Daemon health endpoint
 ```bash
 curl http://localhost:9385/health  # skchat health
-curl http://localhost:9384/health  # skcomm transport health
+curl http://localhost:9384/health  # skcomms transport health
 ```
 
 ### Identity (unified resolver)
@@ -309,7 +309,7 @@ systemctl --user status skchat-webui.service skchat-lumina-call.service jarvis-h
 ```
 
 ## Dependencies
-- `skcomm>=0.1` — P2P transport layer
+- `skcomms>=0.1` — P2P transport layer
 - `skmemory>=0.5` — persistent memory store (namespace collision risk — see Running)
 - `pydantic>=2.0` — models
 - `PGPy>=0.6` — PGP crypto

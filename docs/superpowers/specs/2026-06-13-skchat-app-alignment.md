@@ -15,7 +15,7 @@ LiveKit-unified architecture we designed tonight).
 
 **What it already has (solid bones):**
 - **Identity** — capauth/identity services, trust meter, capability chips, QR login.
-- **Messaging** — `skcomm_client` + `skcomm_sync` to the SKComm daemon; chats, groups
+- **Messaging** — `skcomms_client` + `skcomms_sync` to the SKComms daemon; chats, groups
   (create/info/tiles), conversations/messages with Hive local storage.
 - **Coord board screen** — it already renders the coordination board.
 - **Onboarding/pairing** — `skchat://peer/<fingerprint>` URIs + QR pairing flow,
