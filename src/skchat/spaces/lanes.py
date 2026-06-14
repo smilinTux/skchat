@@ -66,3 +66,21 @@ class LaneStore:
                 (space_id, lane, limit),
             ).fetchall()
         return [json.loads(r[0]) for r in reversed(rows)]
+
+
+class LaneDispatcher:
+    """Validates an inbound lane envelope and routes it to the store by lane kind."""
+
+    def __init__(self, *, store: LaneStore) -> None:
+        self.store = store
+
+    def dispatch(self, space_id: str, envelope: dict) -> None:
+        if not isinstance(envelope, dict):
+            raise ValueError("lane envelope must be an object")
+        lane = envelope.get("lane")
+        if lane not in KNOWN_LANES:
+            raise ValueError(f"unknown or missing lane {lane!r}")
+        if lane in SNAPSHOT_LANES:
+            self.store.snapshot(space_id, lane, envelope)
+        else:
+            self.store.append(space_id, lane, envelope)
