@@ -25,7 +25,7 @@ from pathlib import Path
 
 DEFAULT_CAPS = [
     "capauth:identity",
-    "skcomm:messaging",
+    "skcomms:messaging",
     "skchat:p2p-chat",
     "skmemory:persistence",
 ]
@@ -77,7 +77,7 @@ def build_peer(name: str, agent_home: Path) -> dict:
         "source": "auto-generated:generate-peers-from-agents",
         "agent_type": "ai",
         "notes": notes,
-        "transport_addresses": {"file": f"file://{Path.home()}/.skcomm/inbox"},
+        "transport_addresses": {"file": f"file://{Path.home()}/.skcomms/inbox"},
     }
 
 

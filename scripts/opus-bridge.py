@@ -54,8 +54,8 @@ POLL_INTERVAL = int(os.environ.get("OPUS_BRIDGE_INTERVAL", "3"))
 RATE_LIMIT_SECONDS = 10
 CONTEXT_MESSAGES = 5
 
-OUTBOX_PATH = Path.home() / ".skcomm" / "outbox"
-INBOX_PATH = Path.home() / ".skcomm" / "inbox"
+OUTBOX_PATH = Path.home() / ".skcomms" / "outbox"
+INBOX_PATH = Path.home() / ".skcomms" / "inbox"
 
 # All identity forms other agents may use when addressing Opus
 OPUS_IDENTITY_VARIANTS = {
@@ -433,10 +433,10 @@ def _msg_key(msg: dict) -> str:
 # ─── Outbox polling (local delivery without Syncthing) ───────────────────────
 
 def poll_outbox_for_opus() -> list[dict]:
-    """Scan the local SKComm outbox for envelopes addressed to Opus.
+    """Scan the local SKComms outbox for envelopes addressed to Opus.
 
     When sender and recipient are on the same machine and Syncthing is not
-    running, messages written by skchat/skcomm land in ~/.skcomm/outbox/ and
+    running, messages written by skchat/skcomms land in ~/.skcomms/outbox/ and
     never reach any inbox.  This function reads the outbox directly and returns
     envelopes whose recipient is one of the known Opus identity variants.
 
@@ -485,7 +485,7 @@ def poll_outbox_for_opus() -> list[dict]:
         message_id = envelope_id
 
         # payload.content may be a JSON-serialised ChatMessage (skchat send path)
-        # or a plain text string (REST API / raw skcomm send path).
+        # or a plain text string (REST API / raw skcomms send path).
         try:
             from skchat.models import ChatMessage as _CM
 
@@ -535,7 +535,7 @@ def deliver_reply_to_inbox(
     thread_id: str | None = None,
     reply_to: str | None = None,
 ) -> None:
-    """Write Opus's reply directly to ~/.skcomm/inbox/ and to JSONL history.
+    """Write Opus's reply directly to ~/.skcomms/inbox/ and to JSONL history.
 
     On the same machine without Syncthing there is no transport relay to move
     outbox → inbox, so we short-circuit by writing the delivery envelope
@@ -580,7 +580,7 @@ def deliver_reply_to_inbox(
     # Write the delivery envelope so the recipient daemon picks it up
     envelope_id = str(_uuid.uuid4())
     envelope = {
-        "skcomm_version": "1.0.0",
+        "skcomms_version": "1.0.0",
         "envelope_id": envelope_id,
         "sender": OPUS_IDENTITY,
         "recipient": recipient,
@@ -627,7 +627,7 @@ def deliver_reply_to_inbox(
 def send_reply(original_msg: dict, reply_text: str) -> None:
     """Send Opus's reply back to the original sender.
 
-    Writes directly to ~/.skcomm/inbox/ (bypassing the outbox) so the
+    Writes directly to ~/.skcomms/inbox/ (bypassing the outbox) so the
     recipient daemon picks it up on its next poll cycle, and to the JSONL
     history file so `skchat inbox` shows it immediately.
     """

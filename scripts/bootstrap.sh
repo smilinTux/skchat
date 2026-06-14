@@ -4,7 +4,7 @@
 set -euo pipefail
 
 SKCHAT_DIR="$HOME/.skchat"
-SKCOMM_DIR="$HOME/.skcomm"
+SKCOMMS_DIR="$HOME/.skcomms"
 SKCAPSTONE_PEERS="$HOME/.skcapstone/peers"
 SKCHAT_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHON="${HOME}/.pyenv/shims/python3"
@@ -51,7 +51,7 @@ if [ ! -f "$SKCAPSTONE_PEERS/lumina.json" ]; then
   "entity_type": "ai-agent",
   "handle": "lumina@skworld.io",
   "email": "lumina@skworld.io",
-  "capabilities": ["capauth:identity","skcomm:messaging","skchat:p2p-chat"],
+  "capabilities": ["capauth:identity","skcomms:messaging","skchat:p2p-chat"],
   "contact_uris": ["capauth:lumina@skworld.io","mailto:lumina@skworld.io"],
   "trust_level": "verified",
   "added_at": "2026-03-03T00:00:00+00:00",
@@ -71,7 +71,7 @@ if [ ! -f "$SKCAPSTONE_PEERS/claude.json" ]; then
   "entity_type": "ai-agent",
   "handle": "claude@skworld.io",
   "email": "claude@skworld.io",
-  "capabilities": ["capauth:identity","skcomm:messaging","skchat:p2p-chat"],
+  "capabilities": ["capauth:identity","skcomms:messaging","skchat:p2p-chat"],
   "contact_uris": ["capauth:claude@skworld.io"],
   "trust_level": "verified",
   "added_at": "2026-03-03T00:00:00+00:00",

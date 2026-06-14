@@ -56,14 +56,14 @@ CONTEXT_MESSAGES = 5
 # instead. Toggled by the --dry-run CLI flag.
 DRY_RUN = False
 
-OUTBOX_PATH = Path.home() / ".skcomm" / "outbox"
-INBOX_PATH = Path.home() / ".skcomm" / "inbox"
+OUTBOX_PATH = Path.home() / ".skcomms" / "outbox"
+INBOX_PATH = Path.home() / ".skcomms" / "inbox"
 
 # Per-fingerprint file inbox written by ChatTransport._write_local_loopback().
 # When skchat sends to a local Lumina peer the transport writes a .skc.json
 # here so the bridge can pick it up on its next poll cycle without touching
-# the shared ~/.skcomm/inbox/ that the skchat daemon also reads.
-_FILE_TRANSPORT_INBOX = Path.home() / ".skcomm" / "transport" / "file" / "inbox"
+# the shared ~/.skcomms/inbox/ that the skchat daemon also reads.
+_FILE_TRANSPORT_INBOX = Path.home() / ".skcomms" / "transport" / "file" / "inbox"
 
 # All identity forms Opus may use when addressing Lumina
 LUMINA_IDENTITY_VARIANTS = {
@@ -460,10 +460,10 @@ def _msg_key(msg: dict) -> str:
 # ─── Outbox polling (local delivery without Syncthing) ───────────────────────
 
 def poll_outbox_for_lumina() -> list[dict]:
-    """Scan the local SKComm outbox for envelopes addressed to Lumina.
+    """Scan the local SKComms outbox for envelopes addressed to Lumina.
 
     When sender and recipient are on the same machine and Syncthing is not
-    running, messages written by skchat/skcomm land in ~/.skcomm/outbox/ and
+    running, messages written by skchat/skcomms land in ~/.skcomms/outbox/ and
     never reach any inbox.  This function reads the outbox directly and returns
     envelopes whose recipient is one of the known Lumina identity variants.
 
@@ -512,7 +512,7 @@ def poll_outbox_for_lumina() -> list[dict]:
         message_id = envelope_id
 
         # payload.content may be a JSON-serialised ChatMessage (skchat send path)
-        # or a plain text string (REST API / raw skcomm send path).
+        # or a plain text string (REST API / raw skcomms send path).
         try:
             from skchat.models import ChatMessage as _CM
 
@@ -565,7 +565,7 @@ def _consume_outbox_file(msg: dict) -> None:
 # ─── File-transport inbox polling (loopback from ChatTransport) ──────────────
 
 def poll_inbox_file_for_lumina() -> list[dict]:
-    """Scan ~/.skcomm/transport/file/inbox/ for loopback envelopes to Lumina.
+    """Scan ~/.skcomms/transport/file/inbox/ for loopback envelopes to Lumina.
 
     ChatTransport._write_local_loopback() writes .skc.json envelopes here
     when the sender uses skchat to message a local Lumina peer.  The bridge
@@ -583,7 +583,7 @@ def poll_inbox_file_for_lumina() -> list[dict]:
         d for d in _FILE_TRANSPORT_INBOX.iterdir() if d.is_dir()
     ] if _FILE_TRANSPORT_INBOX.exists() else []
 
-    # Also check ~/.skcomm/inbox/ for any loopback envelopes addressed to Lumina
+    # Also check ~/.skcomms/inbox/ for any loopback envelopes addressed to Lumina
     # that were written there (e.g., by deliver_reply_to_inbox or other callers).
     if INBOX_PATH.exists():
         candidate_dirs.append(INBOX_PATH)
@@ -679,7 +679,7 @@ def deliver_reply_to_inbox(
     thread_id: str | None = None,
     reply_to: str | None = None,
 ) -> None:
-    """Write Lumina's reply directly to ~/.skcomm/inbox/ and to JSONL history.
+    """Write Lumina's reply directly to ~/.skcomms/inbox/ and to JSONL history.
 
     On the same machine without Syncthing there is no transport relay to move
     outbox → inbox, so we short-circuit by writing the delivery envelope
@@ -727,7 +727,7 @@ def deliver_reply_to_inbox(
     # Write the delivery envelope so the Opus daemon picks it up
     envelope_id = str(_uuid.uuid4())
     envelope = {
-        "skcomm_version": "1.0.0",
+        "skcomms_version": "1.0.0",
         "envelope_id": envelope_id,
         "sender": LUMINA_IDENTITY,
         "recipient": recipient,
@@ -774,7 +774,7 @@ def deliver_reply_to_inbox(
 def send_reply(original_msg: dict, reply_text: str) -> None:
     """Send Lumina's reply back to the original sender.
 
-    Writes directly to ~/.skcomm/inbox/ (bypassing the outbox) so the Opus
+    Writes directly to ~/.skcomms/inbox/ (bypassing the outbox) so the Opus
     daemon picks it up on its next poll cycle, and to the JSONL history file
     so `skchat inbox` shows it immediately.
     """

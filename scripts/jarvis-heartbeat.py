@@ -95,8 +95,8 @@ CLAUDE_TIMEOUT = 300  # 5 min per session
 MAX_CONCURRENT = 3  # max tmux windows at once
 TMUX_SESSION = "skchat-agents"
 
-INBOX_PATH = Path.home() / ".skcomm" / "inbox"
-FILE_TRANSPORT_INBOX = Path.home() / ".skcomm" / "transport" / "file" / "inbox"
+INBOX_PATH = Path.home() / ".skcomms" / "inbox"
+FILE_TRANSPORT_INBOX = Path.home() / ".skcomms" / "transport" / "file" / "inbox"
 
 NVIDIA_AGENT = Path(__file__).parent / "nvidia-agent.sh"
 SKENV_BIN = Path.home() / ".skenv" / "bin"
@@ -452,7 +452,7 @@ def poll_all() -> list[tuple[str, dict]]:
     # Primary: skchat memory DB (catches all local sends)
     all_msgs = poll_skchat_memory_db()
 
-    # Secondary: file inboxes (catches direct SKComm deliveries)
+    # Secondary: file inboxes (catches direct SKComms deliveries)
     all_msgs.extend(poll_inbox_files())
 
     # Deduplicate by both ID and content hash
