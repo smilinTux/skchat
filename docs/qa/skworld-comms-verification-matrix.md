@@ -105,6 +105,7 @@ real use case has a **LIVE ✅**.
 | **Lane persistence (Tier 2)** | `test_lane_store.py`, `test_lane_dispatcher.py`, `test_lane_routes.py`, `test_lane_client_markup.py` | 17 | LaneStore snapshot/log, dispatcher validate+route, `/lanes/event`+`/lanes/{lane}/state`, client mirror+catch-up | **LIVE ✅** (all 5 lanes persist+replay live on `:8765` + unknown-lane→400; harness `scripts/tier5_verify.py`, F-3) |
 | **Recording write-up (transcript→chat lane)** | `test_recording_writeup.py` | 5 | transcribe→summarize→post-to-chat-lane orchestrator; graceful no-transcript note; injectable seams | CI |
 | **2-phone audio** | manual (Town Hall `space-zvteyh73i6b6czb6`) | — | two phones, one SFU, real audio | **LIVE ✅** |
+| **Data-channel lane (real-time peer)** | `scripts/qa_two_browser.py` | — | two headless browsers, same Space, A `publishLane(chat)` over WebRTC data channel → B receives via `DataReceived` | **LIVE ✅** (two contexts connect to SFU + round-trip a chat-lane DC message; harness, F-6) |
 
 ### 1f. skchat — Federation (cross-host Spaces)
 
@@ -350,3 +351,27 @@ near-misses, because those are the difference between "wired" and "works."
   Real two-party communication through the live lane store verified (not self-echo). The
   remaining un-verified leg is the real-time LiveKit **data-channel** peer path (needs actual
   browser/SDK clients, not HTTP) — the persistence/catch-up/cross-party substrate is LIVE.
+
+- **F-6 (2026-06-14, real-time LiveKit DATA-CHANNEL lane sync — LIVE ✅):** Closes the one
+  leg F-5 left open. Headless two-browser harness `scripts/qa_two_browser.py` (Playwright +
+  full Chromium with `--use-fake-device-for-media-stream`) launched **two independent browser
+  contexts**, each joined to the SAME live Space (`space-zvteyh73i6b6czb6`, "Town Hall") with
+  its **own Space-minted token** (`POST /spaces/{id}/join` → `{url, token, room}`; alice 387B,
+  bob 381B). **Both contexts connected to the live SFU** (`wss://noroc2027.tail204f0c.ts.net:8443`,
+  real `roomID RM_…`) and saw each other (2 participants). Context A called
+  `publishLane({lane:'chat', …})` over the **WebRTC data channel**; context B received it via
+  `RoomEvent.DataReceived → routeDataMessage → onChatReceived` and rendered it in `#chat-messages`
+  within the timeout. **Real-time peer delivery verified** (distinct from the HTTP lane store of
+  F-2/F-5) — PASS on two consecutive runs, exit 0.
+  - **Bug fixed in the process:** `static/livekit.html` imported `TrackPublishOptions` (+ unused
+    `LocalTrack`) from the livekit-client ESM, which does NOT export it — a **fatal ESM module
+    load error** that left `room`/`publishLane`/`connect` undefined, i.e. the call/lane page was
+    broken for everyone. Removed both unused imports; page now loads and connects. Also added a
+    tiny test hook (`window.__skRoom` / `window.__skPublishLane`, set after `room.connect`) so
+    module-scoped state is reachable from `page.evaluate` (no UI behaviour change).
+  - **NB on the page used:** the Space page (`/space/{id}`, `space.html`) is audio-only and has
+    NO data-channel lane JS. The lane logic lives in `livekit.html`, which joins the SAME room
+    (room name == space_id), so this exercises the exact lane wiring against the Space's real room.
+  - **Env requirement (cannot run in GitHub CI):** needs the live webui + an SFU reachable from
+    the runner with a trusted TLS cert + a full Chromium build. Run locally:
+    `~/.skenv/bin/python scripts/qa_two_browser.py`.

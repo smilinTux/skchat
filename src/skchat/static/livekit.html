@@ -834,7 +834,7 @@
 </main>
 
 <script type="module">
-import { Room, RoomEvent, Track, createLocalAudioTrack, createLocalVideoTrack, LocalTrack, TrackPublishOptions }
+import { Room, RoomEvent, Track, createLocalAudioTrack, createLocalVideoTrack }
   from 'https://cdn.jsdelivr.net/npm/livekit-client@2.6.0/+esm';
 
 const $ = s => document.querySelector(s);
@@ -2028,6 +2028,11 @@ async function connect() {
       .on(RoomEvent.DataReceived,               (payload,participant) => routeDataMessage(payload, participant));
 
     await room.connect(livekitUrl, livekitToken);
+    // Test hook: expose the live room + lane publisher for headless QA drivers
+    // (scripts/qa_two_browser.py). Module-scoped `room`/`publishLane` are not
+    // reachable from page.evaluate otherwise. No behavioural effect in the UI.
+    window.__skRoom = room;
+    window.__skPublishLane = publishLane;
     setStatus('connected', `${identity} in ${roomName}`);
     $('#room-pill').textContent = `room: ${roomName}`;
     log('connected; existing peers:', [...room.remoteParticipants.values()].map(p => p.identity).join(', ') || 'none');

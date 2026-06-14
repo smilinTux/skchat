@@ -989,7 +989,9 @@ a byte-identical `youtubeId`/`_cleanId`, so these cases pin both.
 
 ### 5. Honest device-/LIVE-only gaps (cannot be unit-tested without hardware)
 
-- `LaneService` (LiveKit data channel + server lane store) — **device-manual**
+- `LaneService` (LiveKit data channel + server lane store) — **device-manual** (Flutter app).
+  The web/SDK data-channel path is now **LIVE ✅** via `scripts/qa_two_browser.py` (two headless
+  browsers round-trip a chat-lane message over the WebRTC data channel; QA matrix F-6).
 - All 6 lane panels' widget behavior (watch/whiteboard/doc/screen/terminal) — **device-manual**
 - watch_video_web embed render + YouTube IFrame postMessage sync — **device-manual (web)**
 - Identity card widget (real fingerprint badge) — **device-manual** (private logic, provider-backed)
@@ -1019,8 +1021,12 @@ GitHub Actions runs the CI-able QA suites automatically:
   because they require a running stack / network / daemon and cannot run headless.
 
 The **LIVE legs** of the QA suite — the lane/spaces harness on `:8765`,
-two-party (two-agent) cross-party check, and the two-browser call test — need a
-running stack and **cannot run in GitHub CI**. They stay local: run them via
-`scripts/qa_suite.sh` against a running stack (see the LIVE sections above).
+two-party (two-agent) cross-party check, the two-browser call test, and the
+**headless two-browser data-channel lane test** (`scripts/qa_two_browser.py` —
+two browsers join one Space + round-trip a chat-lane message over the LiveKit
+WebRTC data channel; needs the live webui + a reachable SFU + full Chromium;
+QA matrix F-6) — need a running stack and **cannot run in GitHub CI**. They stay
+local: run them via `scripts/qa_suite.sh` against a running stack (see the LIVE
+sections above), or directly: `~/.skenv/bin/python scripts/qa_two_browser.py`.
 Flutter app tests likewise run locally on .41
 (`ssh 192.168.0.41 '~/flutter/bin/flutter test'` in `skchat-app`).
