@@ -341,3 +341,12 @@ near-misses, because those are the difference between "wired" and "works."
 - **F-4 (2026-06-14, skreachd + recording write-up — LIVE ✅):** Enabled both on the .158 webui (env in `webui-{lumina,opus}.env`: `SKREACHD_ENABLED=1` + `SKREACHD_OPERATORS`, `SKCHAT_SPACES_AUTO_WRITEUP=1`).
   - **skreachd terminal exec** verified live via `POST /spaces/{id}/lanes/term/run`: operator `whoami`→`cbrd21` exit 0; `echo`→real output; **non-allowlisted (`rm`)→denied**, **unauthorized identity→denied**, **shell-injection (`ls; rm -rf /`)→denied** (argv-only). All safety gates hold.
   - **Recording→Whisper→LLM→write-up** verified live: full chain on a 75s speech clip → whisper transcript → LLM (`:18783`, claude-haiku-4-5) structured write-up (Summary/Key Points/Action Items) → **posted to the Space chat lane**. Silent recordings post the honest "no transcript" note (graceful). Default whisper model `base`; auto-fires on `/record/stop`.
+
+- **F-5 (2026-06-14, TWO-AGENT cross-party lane round-trip — LIVE ✅):** Two independent
+  agents ran concurrently against the SAME Space (`twoagent-qa1`) on `:8765`. **Agent A**
+  posted chat + whiteboard(snapshot) + watch(load) (all HTTP 200) and saw **Agent B's** chat
+  reply; **Agent B** posted its reply and saw **Agent A on all 3 lanes** — chat & watch as
+  appended logs (both events present, ordered), whiteboard as a single latest-wins snapshot.
+  Real two-party communication through the live lane store verified (not self-echo). The
+  remaining un-verified leg is the real-time LiveKit **data-channel** peer path (needs actual
+  browser/SDK clients, not HTTP) — the persistence/catch-up/cross-party substrate is LIVE.
