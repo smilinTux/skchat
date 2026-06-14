@@ -15,6 +15,8 @@ echo "skcomms suite:"
 ( cd "$HOME" && $PY -m pytest "$SKCOMMS/tests/" -q 2>&1 | tail -1 )
 echo "recording write-up pipeline:"
 ( cd "$HOME" && $PY -m pytest "$SKCHAT/tests/test_recording_writeup.py" -q 2>&1 | tail -1 )
+echo "----- LIVE: two-party (two-agent) cross-party check -----"
+$PY "$SKCHAT/scripts/qa_two_party.py" 2>&1 | tail -3
 echo "----- LIVE: lane/spaces harness (:8765) -----"
 $PY "$SKCHAT/scripts/tier5_verify.py" 2>&1 | tail -15
 echo "========================================================="
