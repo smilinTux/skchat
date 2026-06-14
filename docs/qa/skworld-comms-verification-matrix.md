@@ -102,6 +102,7 @@ real use case has a **LIVE ✅**.
 | Guest join | `test_spaces_guest_join.py` | 2 | guest-link listener join | CI |
 | UI markup / page | `test_spaces_ui_markup.py`, `test_spaces_page.py` | 5 | space.html render, id sanitize | CI |
 | WebUI wired | `test_spaces_webui_wired.py` | 1 | routes registered into webui | CI-int |
+| **Lane persistence (Tier 2)** | `test_lane_store.py`, `test_lane_dispatcher.py`, `test_lane_routes.py`, `test_lane_client_markup.py` | 17 | LaneStore snapshot/log, dispatcher validate+route, `/lanes/event`+`/lanes/{lane}/state`, client mirror+catch-up | CI |
 | **2-phone audio** | manual (Town Hall `space-zvteyh73i6b6czb6`) | — | two phones, one SFU, real audio | **LIVE ✅** |
 
 ### 1f. skchat — Federation (cross-host Spaces)
@@ -241,7 +242,7 @@ Each use case is the unit of "done." A use case is **done** only at **LIVE ✅**
 | **U12** | Chat over Bluetooth proximity (no internet) after QR-pair | two phones | G-BLE, ble pairing bundle | **GATED** (real BT radio) |
 | **U13** | Send a text over LoRa off-grid | node↔node | LoRa transport | **GATED** (LoRa board) |
 | **U14** | Bridge: a message from Telegram appears in skchat and vice-versa | Chef via TG | channel adapters | **GATED** (bot token) → wiring is **Tier 3** |
-| **U15** | Collaborative lane: open a whiteboard / screen-share / watch-together in a session | two users | livekit.html lanes | **LIVE ⏳** — **client-JS only, no server dispatcher / persistence (Tier 2 gap)** |
+| **U15** | Collaborative lane: open a whiteboard / screen-share / watch-together in a session | two users | livekit.html lanes + LaneStore/Dispatcher/routes | **server persistence + replay: CI ✅** (Tier 2 done — `test_lane_*`, 26 passing); client mirrors + catches up on join; **live two-browser: LIVE ⏳** |
 | **U16** | Drive an agent swarm from a phone (skharness session-switcher) | Chef + phone | skharness P0 + Flutter | **GATED** (P1 TmuxSpawner + Flutter) |
 
 ---
