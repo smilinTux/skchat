@@ -92,6 +92,11 @@ try:
     _register_spaces_routes(app)
 except ImportError as _e:
     logger.warning("spaces routes not registered: %s", _e)
+try:
+    from .glossa_mesh.routes import register_glossa_routes as _register_glossa_routes
+    _register_glossa_routes(app)
+except ImportError as _e:
+    logger.warning("glossa routes not registered: %s", _e)
 
 
 @app.get("/health")
