@@ -862,7 +862,30 @@ let qpIdentity = null, qpToken = null;
 function publishLane(lanePayload) {
   if (!room || !room.localParticipant) return;
   const bytes = new TextEncoder().encode(JSON.stringify(lanePayload));
-  return room.localParticipant.publishData(bytes, { reliable: true });
+  const r = room.localParticipant.publishData(bytes, { reliable: true });
+  mirrorLaneToServer(lanePayload);   // fire-and-forget: persistence + late-joiner replay (do NOT await)
+  return r;
+}
+
+// Tier 2: mirror lane envelopes to the server for persistence + late-joiner replay.
+async function mirrorLaneToServer(lanePayload) {
+  try {
+    await fetch(`/spaces/${encodeURIComponent($('#room').value)}/lanes/event`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(lanePayload),
+    });
+  } catch (e) { log('lane mirror failed:', e.message); }
+}
+
+// Tier 2: fetch persisted lane state on join so a late joiner catches up.
+async function catchUpLane(lane, apply) {
+  try {
+    const r = await fetch(`/spaces/${encodeURIComponent($('#room').value)}/lanes/${lane}/state`);
+    if (!r.ok) return;
+    const { events } = await r.json();
+    for (const ev of events) { try { apply(ev); } catch (_) {} }
+  } catch (e) { log('lane catch-up failed:', e.message); }
 }
 
 function routeDataMessage(raw, participant) {
@@ -2025,6 +2048,11 @@ async function connect() {
     $('#watch-panel').style.display = 'flex';
     $('#doc-panel').style.display   = 'flex';
     $('#term-panel').style.display  = 'flex';   // F3: skreach terminal (collapsed)
+
+    // Tier 2: catch up persisted lane state for a late joiner. Dispatch mirrors
+    // routeDataMessage: chat → onChatReceived, whiteboard → onWhiteboardReceived.
+    catchUpLane('chat', ev => onChatReceived(ev, null));
+    catchUpLane('whiteboard', ev => onWhiteboardReceived(ev));
 
     await toggleMic(true);
     await toggleCam(true);
