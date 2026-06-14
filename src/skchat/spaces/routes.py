@@ -34,6 +34,37 @@ def _have_creds() -> bool:
                 os.getenv("SKCHAT_LIVEKIT_API_SECRET"))
 
 
+def _maybe_start_writeup(space_id: str, title: str) -> bool:
+    """Opt-in completion hook: when a recording stops, kick off the
+    transcript → write-up → chat-lane pipeline in a background thread.
+
+    Disabled by default; enable with ``SKCHAT_SPACES_AUTO_WRITEUP=1``. Runs in a
+    daemon thread (Whisper + LLM are slow) and never raises into the request
+    path — a failure to start is logged and reported as ``False``.
+    """
+    if os.getenv("SKCHAT_SPACES_AUTO_WRITEUP", "").lower() not in ("1", "true", "yes"):
+        return False
+    try:
+        import threading
+        from pathlib import Path as _P
+
+        from skchat.spaces.recording_writeup import RecordingWriteup
+
+        audio = _P.home() / ".skchat" / "spaces-recordings" / f"{space_id}.ogg"
+
+        def _run() -> None:
+            try:
+                RecordingWriteup().process(space_id, str(audio), title=title)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("auto write-up failed for %s: %s", space_id, exc)
+
+        threading.Thread(target=_run, name=f"writeup-{space_id}", daemon=True).start()
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("could not start auto write-up for %s: %s", space_id, exc)
+        return False
+
+
 def register_spaces_routes(app: FastAPI, *, registry: SpaceRegistry | None = None,
                            moderator=None, consent=None, recorder=None,
                            lane_store: "LaneStore | None" = None) -> None:
@@ -292,7 +323,8 @@ def register_spaces_routes(app: FastAPI, *, registry: SpaceRegistry | None = Non
         if space.egress_id:
             await _recorder().stop(space.egress_id)
         reg.set_recording(space_id, False, "")
-        return JSONResponse({"ok": True})
+        writeup_started = _maybe_start_writeup(space_id, space.title)
+        return JSONResponse({"ok": True, "writeup_started": writeup_started})
 
     @app.post("/sfu/get")
     async def sfu_get(request: Request) -> JSONResponse:
