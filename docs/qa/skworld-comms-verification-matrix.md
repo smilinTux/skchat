@@ -286,6 +286,14 @@ near-misses, because those are the difference between "wired" and "works."
   re-verify U1 with the real cross-machine case (.41 ↔ .158), which is the path that
   matters. Filed as a Tier-5 follow-up.
 
+- **F-2 (2026-06-13, Tier 2 lanes — LIVE ✅):** After landing LaneStore/Dispatcher/routes
+  and restarting `skchat-webui@{lumina,opus}`, smoke-tested the **live** endpoint on
+  `:8765`: `POST /spaces/qa-smoke/lanes/event {"lane":"chat",...}` → `{"ok":true}`;
+  `GET /spaces/qa-smoke/lanes/chat/state` → replayed the persisted event; unknown lane
+  → `400`. The lane persistence substrate works end-to-end against the running service,
+  not just in CI. Remaining for U15: the two-browser *visual* collab (whiteboard strokes
+  surviving a refresh) — LIVE ⏳.
+
 ## 6. Change log
 
 - **2026-06-13** — Matrix created. skcomms consolidated to `integration/skcomms-unified`
