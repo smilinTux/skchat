@@ -67,7 +67,8 @@ def _maybe_start_writeup(space_id: str, title: str) -> bool:
 
 def register_spaces_routes(app: FastAPI, *, registry: SpaceRegistry | None = None,
                            moderator=None, consent=None, recorder=None,
-                           lane_store: "LaneStore | None" = None) -> None:
+                           lane_store: "LaneStore | None" = None,
+                           skreach_executor=None) -> None:
     reg = registry or SpaceRegistry()
     _mod_holder = {"mod": moderator}
     from skchat.spaces.consent import ConsentLedger
@@ -75,6 +76,9 @@ def register_spaces_routes(app: FastAPI, *, registry: SpaceRegistry | None = Non
     _rec_holder = {"rec": recorder}
     _lane_store = lane_store or LaneStore(db_path=Path.home() / ".skchat" / "lanes.db")
     _lane_dispatch = LaneDispatcher(store=_lane_store)
+    # Injectable executor for the term-lane run route (tests pass a fake-runner
+    # executor here; None → a default SkreachExecutor built per-request).
+    _skreach_holder = {"ex": skreach_executor}
 
     def _moderator():
         if _mod_holder["mod"] is None:
@@ -289,6 +293,29 @@ def register_spaces_routes(app: FastAPI, *, registry: SpaceRegistry | None = Non
         if lane not in KNOWN_LANES:
             return JSONResponse({"error": f"unknown lane {lane!r}"}, status_code=400)
         return JSONResponse({"events": _lane_store.replay(space_id, lane)})
+
+    @app.post("/spaces/{space_id}/lanes/term/run")
+    async def lanes_term_run(space_id: str, request: Request) -> JSONResponse:
+        """Run a term-lane command through the sandboxed SkreachExecutor.
+
+        Gated by default: returns an ``exec_disabled`` event unless
+        ``SKREACHD_ENABLED`` is set. The existing ``lanes/event`` route does NOT
+        auto-execute — execution only happens through this explicit route.
+        """
+        from skchat.spaces.skreachd import SkreachExecutor
+
+        body = await request.json()
+        if not isinstance(body, dict):
+            return JSONResponse({"error": "body must be an object"}, status_code=400)
+        cmd = body.get("cmd")
+        if not isinstance(cmd, str):
+            return JSONResponse({"error": "missing 'cmd' string"}, status_code=400)
+        cmd_id = body.get("id", "")
+        identity = body.get("from", "")
+
+        executor = _skreach_holder.get("ex") or SkreachExecutor()
+        events = executor.run(cmd, identity=identity, cmd_id=cmd_id)
+        return JSONResponse({"events": events})
 
     @app.post("/spaces/{space_id}/record/start")
     async def record_start(space_id: str, request: Request) -> JSONResponse:
