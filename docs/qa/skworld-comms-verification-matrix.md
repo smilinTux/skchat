@@ -102,7 +102,8 @@ real use case has a **LIVE ✅**.
 | Guest join | `test_spaces_guest_join.py` | 2 | guest-link listener join | CI |
 | UI markup / page | `test_spaces_ui_markup.py`, `test_spaces_page.py` | 5 | space.html render, id sanitize | CI |
 | WebUI wired | `test_spaces_webui_wired.py` | 1 | routes registered into webui | CI-int |
-| **Lane persistence (Tier 2)** | `test_lane_store.py`, `test_lane_dispatcher.py`, `test_lane_routes.py`, `test_lane_client_markup.py` | 17 | LaneStore snapshot/log, dispatcher validate+route, `/lanes/event`+`/lanes/{lane}/state`, client mirror+catch-up | CI |
+| **Lane persistence (Tier 2)** | `test_lane_store.py`, `test_lane_dispatcher.py`, `test_lane_routes.py`, `test_lane_client_markup.py` | 17 | LaneStore snapshot/log, dispatcher validate+route, `/lanes/event`+`/lanes/{lane}/state`, client mirror+catch-up | **LIVE ✅** (all 5 lanes persist+replay live on `:8765` + unknown-lane→400; harness `scripts/tier5_verify.py`, F-3) |
+| **Recording write-up (transcript→chat lane)** | `test_recording_writeup.py` | 5 | transcribe→summarize→post-to-chat-lane orchestrator; graceful no-transcript note; injectable seams | CI |
 | **2-phone audio** | manual (Town Hall `space-zvteyh73i6b6czb6`) | — | two phones, one SFU, real audio | **LIVE ✅** |
 
 ### 1f. skchat — Federation (cross-host Spaces)
@@ -242,7 +243,7 @@ Each use case is the unit of "done." A use case is **done** only at **LIVE ✅**
 | **U12** | Chat over Bluetooth proximity (no internet) after QR-pair | two phones | G-BLE, ble pairing bundle | **GATED** (real BT radio) |
 | **U13** | Send a text over LoRa off-grid | node↔node | LoRa transport | **GATED** (LoRa board) |
 | **U14** | Bridge: a message from Telegram appears in skchat and vice-versa | Chef via TG | channel adapters | **GATED** (bot token) → wiring is **Tier 3** |
-| **U15** | Collaborative lane: chat/whiteboard/screen/watch/doc/term in a session | two users | livekit.html lanes + LaneStore/routes + **app LaneService** | **server persistence: CI ✅** (Tier 2, 26 tests); **web client** mirrors+catches-up; **app data-lane substrate (LaneService) + in-Space chat lane shipped** (Tier 4, `b1763c3`); rich app lanes (whiteboard/screen/watch/doc/term) + live two-browser/phone: **LIVE ⏳** |
+| **U15** | Collaborative lane: chat/whiteboard/screen/watch/doc/term in a session | two users | livekit.html lanes + LaneStore/routes + **app LaneService** | **server persistence: LIVE ✅** (Tier 2 — all 5 lanes persist+replay live on `:8765`, snapshot latest-wins for whiteboard, unknown-lane→400; harness F-3); **web client** mirrors+catches-up; **app data-lane substrate (LaneService) + in-Space chat lane shipped** (Tier 4, `b1763c3`); rich app lanes (whiteboard/screen/watch/doc/term) + live two-browser/phone *visual* collab: **LIVE ⏳** |
 | **U16** | Drive an agent swarm from a phone (skharness session-switcher) | Chef + phone | skharness P0 + Flutter | **GATED** (P1 TmuxSpawner + Flutter) |
 
 ---
@@ -294,6 +295,34 @@ near-misses, because those are the difference between "wired" and "works."
   not just in CI. Remaining for U15: the two-browser *visual* collab (whiteboard strokes
   surviving a refresh) — LIVE ⏳.
 
+- **F-3 (2026-06-14, Tier-5 live run — automated harness):** Authored a reusable
+  live verification harness (`scripts/tier5_verify.py`, stdlib-only urllib, no app
+  imports) and ran it against the running `skchat-webui@lumina` on `:8765`. Throwaway
+  space_id `tier5-<ts>`. **10/10 checks PASS, exit 0:**
+
+  | Check | Result | Detail |
+  |---|---|---|
+  | health endpoint | **PASS** | HTTP 200, `status=ok service=skchat-webui` |
+  | spaces directory (`GET /spaces`) | **PASS** | HTTP 200, JSON `{spaces:[…]}` (1 live: Town Hall) |
+  | spaces live page (`GET /spaces/live`) | **PASS** | HTTP 200 (HTML) |
+  | lane `chat` persist+replay (log) | **PASS** | POST 200; GET state latest == posted marker |
+  | lane `watch` persist+replay (log) | **PASS** | POST 200; GET state latest == posted marker |
+  | lane `doc` persist+replay (log) | **PASS** | POST 200; GET state latest == posted marker |
+  | lane `term` persist+replay (log) | **PASS** | POST 200; GET state latest == posted marker |
+  | lane `whiteboard` persist+replay (snapshot) | **PASS** | 2 snapshots posted; state returns 1 (latest-wins) |
+  | unknown-lane POST rejected | **PASS** | HTTP 400 `{"error":"unknown or missing lane 'bogus'"}` |
+  | unknown-lane GET rejected | **PASS** | HTTP 400 `{"error":"unknown lane 'bogus'"}` |
+
+  This extends F-2 (which smoke-tested only the `chat` lane) to **all five lanes**
+  (chat/watch/doc/term log-append + whiteboard snapshot latest-wins) plus both
+  unknown-lane rejection paths, run live against the service. **Recording write-up
+  CI** (`tests/test_recording_writeup.py`) also re-run green: **5/5 passed** (the
+  transcript→write-up→chat-lane orchestrator + graceful no-transcript path; seams
+  faked so no real Whisper/LLM/network). The recording *pipeline-to-live-Space*
+  (real OGG egress → Whisper → LLM → posted in a live Space) remains **LIVE ⏳**:
+  this pass verifies the unit seams + the lane endpoint the poster targets, not an
+  end-to-end recorded Space. Harness is rerunnable: `scripts/tier5_verify.py`.
+
 ## 6. Change log
 
 - **2026-06-13** — Matrix created. skcomms consolidated to `integration/skcomms-unified`
@@ -301,4 +330,10 @@ near-misses, because those are the difference between "wired" and "works."
   LIVE ✅ to date: U1 (receive leg), U6, U8 (token-mint leg). Everything else CI or
   LIVE ⏳/GATED. First live finding F-1 recorded (co-located syncthing = remote-only).
 - **2026-06-14** — Tier 4 (Flutter) progress: coord board routed + surfaced in Profile (`53ab100`); **data-lane substrate `LaneService`** (publish→data-channel+server-mirror, inbound stream, catch-up) + **in-Space text-chat lane** as first consumer (`b1763c3`). Remaining Tier 4: rich lane UIs (whiteboard/screen/watch/doc/term), Spaces/coord→bottom-nav, identity-card real data. skcomms failure-mode fixed (home→~/.skcapstone/skcomms + skcomm: config compat, 0.1.5).
+- **2026-06-14** — **Tier-5 live harness** added (`scripts/tier5_verify.py`) + first
+  automated live run: **10/10 PASS** against `:8765` (health, spaces dir + live page,
+  all 5 lanes persist+replay, snapshot latest-wins, unknown-lane→400). Recording
+  write-up CI re-run **5/5**. Flipped **U15 server-persistence** and the **Tier-2 lane**
+  row to **LIVE ✅** (all five lanes, not just chat). F-3 recorded. Still LIVE ⏳:
+  two-browser *visual* collab + recording-pipeline over a real recorded Space.
 - **2026-06-14** — Tier 4 lanes COMPLETE (app): all five collaborative lanes shipped on the LaneService substrate via a lane-chooser FAB in the Space — **chat** + **watch-together** (`2300e96`) + **whiteboard** + **docs** + **screen-share** (`2659fea`, built via swarm). Whiteboard=CustomPaint over snapshot lane; docs=shared last-write text; screen-share=LiveKit screen track + VideoTrackRenderer. Remaining Tier 4: terminal lane (gated on skreachd), Spaces/coord→bottom-nav, identity-card real data; Tier 5 = live two-client verification.
