@@ -242,7 +242,7 @@ Each use case is the unit of "done." A use case is **done** only at **LIVE ✅**
 | **U12** | Chat over Bluetooth proximity (no internet) after QR-pair | two phones | G-BLE, ble pairing bundle | **GATED** (real BT radio) |
 | **U13** | Send a text over LoRa off-grid | node↔node | LoRa transport | **GATED** (LoRa board) |
 | **U14** | Bridge: a message from Telegram appears in skchat and vice-versa | Chef via TG | channel adapters | **GATED** (bot token) → wiring is **Tier 3** |
-| **U15** | Collaborative lane: open a whiteboard / screen-share / watch-together in a session | two users | livekit.html lanes + LaneStore/Dispatcher/routes | **server persistence + replay: CI ✅** (Tier 2 done — `test_lane_*`, 26 passing); client mirrors + catches up on join; **live two-browser: LIVE ⏳** |
+| **U15** | Collaborative lane: chat/whiteboard/screen/watch/doc/term in a session | two users | livekit.html lanes + LaneStore/routes + **app LaneService** | **server persistence: CI ✅** (Tier 2, 26 tests); **web client** mirrors+catches-up; **app data-lane substrate (LaneService) + in-Space chat lane shipped** (Tier 4, `b1763c3`); rich app lanes (whiteboard/screen/watch/doc/term) + live two-browser/phone: **LIVE ⏳** |
 | **U16** | Drive an agent swarm from a phone (skharness session-switcher) | Chef + phone | skharness P0 + Flutter | **GATED** (P1 TmuxSpawner + Flutter) |
 
 ---
@@ -300,3 +300,4 @@ near-misses, because those are the difference between "wired" and "works."
   (glossa+BLE+LoRa, 497 passing). Baseline captured: skchat 1082, skcomms 497.
   LIVE ✅ to date: U1 (receive leg), U6, U8 (token-mint leg). Everything else CI or
   LIVE ⏳/GATED. First live finding F-1 recorded (co-located syncthing = remote-only).
+- **2026-06-14** — Tier 4 (Flutter) progress: coord board routed + surfaced in Profile (`53ab100`); **data-lane substrate `LaneService`** (publish→data-channel+server-mirror, inbound stream, catch-up) + **in-Space text-chat lane** as first consumer (`b1763c3`). Remaining Tier 4: rich lane UIs (whiteboard/screen/watch/doc/term), Spaces/coord→bottom-nav, identity-card real data. skcomms failure-mode fixed (home→~/.skcapstone/skcomms + skcomm: config compat, 0.1.5).
