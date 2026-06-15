@@ -922,8 +922,11 @@ class ChatDaemon:
             def log_message(self, fmt, *args) -> None:  # noqa: N802
                 pass  # suppress access log noise
 
+        import os as _os
+
+        host = _os.environ.get("SKCHAT_HEALTH_HOST", "127.0.0.1")
         try:
-            server = HTTPServer(("127.0.0.1", port), _HealthHandler)
+            server = HTTPServer((host, port), _HealthHandler)
         except OSError as exc:
             self._log(
                 f"Health server could not bind to port {port}: {exc} (continuing without health endpoint)",
@@ -936,7 +939,7 @@ class ChatDaemon:
             name="skchat-health",
         )
         thread.start()
-        self._log(f"Health endpoint listening on http://127.0.0.1:{port}/health")
+        self._log(f"Health endpoint listening on http://{host}:{port}/health")
 
     def _init_watchdog(self, skcomms: object) -> object:
         """Initialize the transport watchdog.
