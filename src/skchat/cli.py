@@ -1188,7 +1188,8 @@ def _watch_inbox(interval: float = 5.0, limit: int = 50) -> None:
 @main.command()
 @click.argument("participant", required=False, default=None)
 @click.option("--limit", "-n", default=20, help="Max messages to show (default: 20).")
-def history(participant: Optional[str], limit: int) -> None:
+@click.option("--json", "as_json", is_flag=True, help="Output raw JSON for scripting.")
+def history(participant: Optional[str], limit: int, as_json: bool) -> None:
     """Show conversation history with a peer, or all recent messages.
 
     Displays the message exchange between you and the specified
@@ -1235,6 +1236,12 @@ def history(participant: Optional[str], limit: int) -> None:
             else f"{participant} ({resolved_participant})"
         )
         header = f"Conversation with {display_participant}"
+
+    if as_json:
+        import json as _json
+
+        click.echo(_json.dumps(messages, default=str, indent=2))
+        return
 
     _print("")
     if not messages:
