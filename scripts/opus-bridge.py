@@ -89,6 +89,104 @@ def _save_processed(ids: set[str]) -> None:
 BRIDGE_HISTORY: set[str] = _load_processed()  # persistent across restarts
 _last_response: dict[str, float] = {}  # sender → last reply timestamp
 
+# ─── Agent-loop prevention guard ──────────────────────────────────────────────
+#
+# The bridge used to LLM-auto-reply to EVERY sender, including other AI agents.
+# Because each LLM reply has unique content, the content-dedup never caught it,
+# so agent-A replied to agent-B replied to agent-A … an unbounded message storm.
+# We now refuse to auto-reply to other AI agents by default.
+#
+# Re-enable deliberate agent-to-agent auto-reply with SKCHAT_BRIDGE_REPLY_TO_AGENTS=1.
+REPLY_TO_AGENTS = os.environ.get("SKCHAT_BRIDGE_REPLY_TO_AGENTS", "0") in ("1", "true", "True", "yes")
+
+# Known agent local-parts. Used as a fallback when the peer store has no
+# entity_type for the sender. Matches the local part of `capauth:<name>@...`
+# or `<name>@...` (and bare `<name>`).
+KNOWN_AGENTS = {
+    "lumina", "opus", "jarvis", "architect", "artisan", "herald", "sentinel",
+    "scholar", "steward", "coder", "ava", "casey", "deming", "grok", "claude",
+}
+
+
+def _sender_local_part(sender: str) -> str:
+    """Return the lowercased local part of a sender identity.
+
+    e.g. "capauth:architect@skworld.io" → "architect",
+         "lumina@skworld.io" → "lumina", "opus" → "opus".
+    """
+    s = (sender or "").strip().lower()
+    if not s:
+        return ""
+    # Strip scheme ("capauth:..." → "...")
+    if ":" in s:
+        s = s.split(":", 1)[1]
+    # Strip domain ("name@host" → "name")
+    if "@" in s:
+        s = s.split("@", 1)[0]
+    return s
+
+
+def _is_agent_sender(sender: str) -> bool:
+    """Return True if the sender is an AI agent (not a human / Chef).
+
+    Prefers the peer-store ``entity_type == "ai-agent"``; falls back to the
+    KNOWN_AGENTS local-part set when the peer store has no record or no type.
+    """
+    if not sender:
+        return False
+    # Self is always an agent.
+    if sender in OPUS_IDENTITY_VARIANTS:
+        return True
+    # Peer store entity_type (authoritative when present).
+    try:
+        from skchat.peer_discovery import PeerDiscovery
+
+        peer = PeerDiscovery().get_peer(sender)
+        if peer:
+            etype = (peer.get("entity_type") or "").strip().lower()
+            if etype in ("ai-agent", "ai", "agent"):
+                return True
+            if etype in ("human", "person", "operator"):
+                return False
+    except Exception:
+        pass
+    # Fallback: known-agent local-part set.
+    return _sender_local_part(sender) in KNOWN_AGENTS
+
+
+def _is_envelope_content(content: str) -> bool:
+    """Return True if content looks like garbage from the loop.
+
+    Catches serialized envelopes (``{"id":`` / ``"sender":`` + ``"recipient":``)
+    and context dumps (``Chat context (recent):``) that render blank in the app
+    and should never be re-processed or replied to.
+    """
+    if not content:
+        return False
+    stripped = content.lstrip()
+    if stripped.startswith("Chat context (recent):"):
+        return True
+    if stripped.startswith('{"id":'):
+        return True
+    if stripped.startswith("{") and '"sender":' in stripped and '"recipient":' in stripped:
+        return True
+    return False
+
+
+def _should_auto_reply(sender: str, content: str) -> bool:
+    """Pure decision: should the bridge auto-reply to this message?
+
+    Returns False (skip) for: self, other AI agents (unless REPLY_TO_AGENTS),
+    and envelope/context-dump garbage content. Returns True for human senders
+    with real content.
+    """
+    if _is_envelope_content(content):
+        return False
+    if _is_agent_sender(sender) and not REPLY_TO_AGENTS:
+        return False
+    return True
+
+
 # ─── Bridge metrics ───────────────────────────────────────────────────────────
 
 METRICS_PORT = 9387
@@ -706,6 +804,13 @@ def run_bridge(once: bool = False) -> None:
                 _save_processed(BRIDGE_HISTORY)
                 _consume_outbox_file(msg)
                 _METRICS["messages_processed"] += 1
+
+                # Agent-loop prevention guard (core fix for the message storm).
+                # Already marked processed above, so a skipped message is never
+                # reprocessed on the next cycle.
+                if not _should_auto_reply(sender, content):
+                    logger.info("skip agent-loop guard: %s", sender or "(empty)")
+                    continue
 
                 # Rate limiting
                 if _is_rate_limited(sender):
