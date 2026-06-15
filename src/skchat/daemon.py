@@ -824,6 +824,29 @@ class ChatDaemon:
                     self.wfile.write(body)
                     return
 
+                if self.path.split("?", 1)[0] == "/api/v1/agent/model":
+                    import os
+                    from urllib.parse import parse_qs, urlparse
+
+                    from .agent_model import default_model, get_model, list_models
+
+                    qs = parse_qs(urlparse(self.path).query)
+                    agent = (
+                        (qs.get("agent", [None])[0])
+                        or getattr(daemon_ref, "_agent", None)
+                        or os.environ.get("SKAGENT", "lumina")
+                    )
+                    self._respond_json(
+                        200,
+                        {
+                            "agent": agent,
+                            "model": get_model(agent),
+                            "default": default_model(),
+                            "available": list_models(),
+                        },
+                    )
+                    return
+
                 if self.path != "/health":
                     self.send_response(404)
                     self.end_headers()
@@ -848,6 +871,53 @@ class ChatDaemon:
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
+
+            def _respond_json(self, code: int, obj: object) -> None:
+                body = json.dumps(obj).encode()
+                self.send_response(code)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                # CORS — the Flutter web app (served on :8088) calls this
+                # endpoint cross-origin to drive the in-app model picker.
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+                self.send_header("Access-Control-Allow-Headers", "Content-Type")
+                self.end_headers()
+                self.wfile.write(body)
+
+            def do_OPTIONS(self) -> None:  # noqa: N802
+                self.send_response(204)
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+                self.send_header("Access-Control-Allow-Headers", "Content-Type")
+                self.end_headers()
+
+            def do_POST(self) -> None:  # noqa: N802
+                if self.path.split("?", 1)[0] != "/api/v1/agent/model":
+                    self.send_response(404)
+                    self.end_headers()
+                    return
+                import os
+
+                from .agent_model import get_model, list_models, set_model
+
+                try:
+                    length = int(self.headers.get("Content-Length", 0))
+                    data = json.loads(self.rfile.read(length).decode() or "{}")
+                except Exception:
+                    self._respond_json(400, {"error": "invalid JSON body"})
+                    return
+                agent = data.get("agent") or os.environ.get("SKAGENT", "lumina")
+                model = data.get("model")
+                try:
+                    set_model(agent, model)
+                except ValueError as exc:
+                    self._respond_json(400, {"error": str(exc)})
+                    return
+                self._respond_json(
+                    200,
+                    {"agent": agent, "model": get_model(agent), "available": list_models()},
+                )
 
             def log_message(self, fmt, *args) -> None:  # noqa: N802
                 pass  # suppress access log noise
