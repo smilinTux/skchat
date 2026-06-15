@@ -575,8 +575,9 @@ def call_consciousness(message: str, soul_prefix: str = "", classify_text: str =
         if os.environ.get("SKCHAT_LLM_URL"):
             logger.error("skgateway + fallback both failed — returning connectivity notice")
             return (
-                "I'm having trouble reaching my language model right now — "
-                "give me a moment and try again. 💛"
+                "⚠️ No models available through SKGateway right now — both the "
+                "selected model and the local fallback are unreachable. "
+                "Please try again shortly."
             )
 
         response = bridge.generate(system_prompt, message, signal, skip_cache=True)
