@@ -482,12 +482,32 @@ def _skgateway_reply(system_prompt: str, message: str) -> str | None:
     url = os.environ.get("SKCHAT_LLM_URL")
     if not url:
         return None
-    import urllib.request
 
     from skchat.agent_model import get_model
 
     agent = os.environ.get("SKAGENT", "lumina")
     model = get_model(agent)
+
+    out = _skgateway_call(url, model, system_prompt, message)
+    if out:
+        logger.info("skgateway reply via model=%s (%d chars)", model, len(out))
+        return out
+
+    # Fallback to the local, no-auth model so an expired/unreachable cloud model
+    # (e.g. a 401 on claude-opus) never drops us to the passthrough echo.
+    fallback = os.environ.get("SKCHAT_LLM_FALLBACK_MODEL", "qwen3.6-27b-abliterated")
+    if model != fallback:
+        out = _skgateway_call(url, fallback, system_prompt, message)
+        if out:
+            logger.info("skgateway reply via fallback model=%s (%d chars)", fallback, len(out))
+            return out
+    return None
+
+
+def _skgateway_call(url: str, model: str, system_prompt: str, message: str) -> str | None:
+    """POST one chat-completion to SKGateway; return content or None on failure."""
+    import urllib.request
+
     payload = json.dumps(
         {
             "model": model,
@@ -514,15 +534,9 @@ def _skgateway_reply(system_prompt: str, message: str) -> str | None:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = json.loads(resp.read().decode())
         content = (data["choices"][0]["message"]["content"] or "").strip()
-        if content:
-            logger.info("skgateway reply via model=%s (%d chars)", model, len(content))
-            return content
-        logger.warning("skgateway returned empty content for model=%s; falling back", model)
-        return None
+        return content or None
     except Exception as exc:
-        logger.warning(
-            "skgateway call failed (model=%s): %s — falling back to consciousness", model, exc
-        )
+        logger.warning("skgateway call failed (model=%s): %s", model, exc)
         return None
 
 
@@ -554,6 +568,16 @@ def call_consciousness(message: str, soul_prefix: str = "", classify_text: str =
         gateway_reply = _skgateway_reply(system_prompt, message)
         if gateway_reply is not None:
             return gateway_reply
+
+        # When a gateway IS configured but unreachable (and even the local qwen
+        # fallback failed), do NOT fall through to the consciousness cascade — its
+        # passthrough backend echoes the prompt back. Return a clean notice.
+        if os.environ.get("SKCHAT_LLM_URL"):
+            logger.error("skgateway + fallback both failed — returning connectivity notice")
+            return (
+                "I'm having trouble reaching my language model right now — "
+                "give me a moment and try again. 💛"
+            )
 
         response = bridge.generate(system_prompt, message, signal, skip_cache=True)
         logger.debug("consciousness response: %d chars", len(response))
