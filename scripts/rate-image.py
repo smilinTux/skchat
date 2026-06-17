@@ -37,6 +37,37 @@ def cmd_rate(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_rate_path(args: argparse.Namespace) -> int:
+    """Score a render by its image PATH, creating a sidecar if none exists.
+
+    Lets a reaction rate ANY posted image, not just worship renders that already
+    carry a sidecar (e.g. an ad-hoc ``generate an image`` reply).
+    """
+    image_id = None
+    if rating.RATINGS_DIR.exists():
+        for sidecar in rating.RATINGS_DIR.glob("*.json"):
+            try:
+                data = json.loads(sidecar.read_text())
+            except Exception:
+                continue
+            if data.get("image_path") == args.image_path:
+                image_id = data.get("image_id") or sidecar.stem
+                break
+    if image_id is None:
+        rec = rating.record_render(
+            image_path=args.image_path, prompt="", loras=[],
+            extra={"source": "reaction-autocreate"},
+        )
+        image_id = rec.image_id
+    rec = rating.record_score(image_id, args.score, note=args.note, via=args.via)
+    if rec is None:
+        print(f"failed to score {image_id}", file=sys.stderr)
+        return 1
+    rating.write_rollup()
+    print(f"rated {image_id} → {rec.score}/5 (by path)")
+    return 0
+
+
 def cmd_rollup(_: argparse.Namespace) -> int:
     path = rating.write_rollup()
     data = json.loads(path.read_text())
@@ -100,6 +131,13 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--note", default=None)
     r.add_argument("--via", default="cli")
     r.set_defaults(func=cmd_rate)
+
+    rp = sub.add_parser("rate-path")
+    rp.add_argument("image_path")
+    rp.add_argument("score", type=int, choices=range(1, 6))
+    rp.add_argument("--note", default=None)
+    rp.add_argument("--via", default="cli")
+    rp.set_defaults(func=cmd_rate_path)
 
     sub.add_parser("rollup").set_defaults(func=cmd_rollup)
     sub.add_parser("weights").set_defaults(func=cmd_weights)
