@@ -113,8 +113,12 @@ class ToolRegistry:
             return f"REFUSED: '{name}' is sacred-mode only — there are other people in this room."
         if tool.handler is None:
             return f"tool {name} has no handler"
+        # Thread the full ctx (including ctx['convo'], the live Conversation
+        # snapshot when supplied by the engine) through to the handler so tools
+        # can read live conversation context.
+        handler_ctx = ctx or {}
         try:
-            return await tool.handler(args, ctx or {})
+            return await tool.handler(args, handler_ctx)
         except Exception as exc:  # noqa: BLE001
             log.warning("tool %s failed: %r", name, exc)
             return f"{name} failed: {exc}"
