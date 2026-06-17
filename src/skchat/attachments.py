@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from .history import ChatHistory
-from .media import detect_mime, is_image, make_thumbnail
+from .media import detect_mime, is_image, make_thumbnail, make_video_thumbnail
 from .models import ChatMessage, FileRef
 
 logger = logging.getLogger(__name__)
@@ -59,6 +59,10 @@ class AttachmentService:
         if is_image(mime):
             dst = self._thumb_root / transfer_id / "thumb.webp"
             if make_thumbnail(path, dst):
+                thumb_id = transfer_id
+        elif mime.startswith("video/"):
+            dst = self._thumb_root / transfer_id / "thumb.webp"
+            if make_video_thumbnail(path, dst):
                 thumb_id = transfer_id
         return FileRef(
             transfer_id=transfer_id,

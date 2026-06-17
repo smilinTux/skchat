@@ -291,6 +291,39 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
+            name="list_media",
+            description=(
+                "List image/video attachments exchanged with a peer, newest-first. "
+                "Read-only gallery view over chat history; identifies media by MIME "
+                "prefix (no separate media message type)."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "peer": {
+                        "type": "string",
+                        "description": (
+                            "Peer identity URI (e.g. 'capauth:lumina@skworld.io') "
+                            "or short name (e.g. 'lumina')."
+                        ),
+                    },
+                    "kinds": {
+                        "type": "array",
+                        "description": ("Media kinds to include (default: ['image', 'video'])."),
+                        "items": {
+                            "type": "string",
+                            "enum": ["image", "video"],
+                        },
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum media entries to return (default: 200).",
+                    },
+                },
+                "required": ["peer"],
+            },
+        ),
+        Tool(
             name="create_group",
             description=(
                 "Create a new group chat with specified members. "
@@ -1498,6 +1531,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         "send_message": _handle_send_message,
         "check_inbox": _handle_check_inbox,
         "search_messages": _handle_search_messages,
+        "list_media": _handle_list_media,
         "create_group": _handle_create_group,
         "group_send": _handle_group_send,
         "group_members": _handle_group_members,
@@ -2366,6 +2400,36 @@ async def _handle_get_thread(args: dict) -> list[TextContent]:
             "thread_id": thread_id,
             "count": len(serialised),
             "messages": serialised,
+        }
+    )
+
+
+async def _handle_list_media(args: dict) -> list[TextContent]:
+    """List image/video attachments exchanged with a peer (gallery view).
+
+    Args:
+        args: peer (required), optional kinds (list) and limit (int).
+
+    Returns:
+        JSON with the peer, kinds, count, and a newest-first list of media dicts.
+    """
+    peer: str = args.get("peer", "")
+    if not peer:
+        return _error("peer is required")
+
+    kinds_arg = args.get("kinds")
+    kinds: tuple[str, ...] = tuple(kinds_arg) if kinds_arg else ("image", "video")
+    limit: int = args.get("limit", 200)
+
+    history = _get_history()
+    media = history.list_media(peer, kinds=kinds, limit=limit)
+
+    return _json(
+        {
+            "peer": peer,
+            "kinds": list(kinds),
+            "count": len(media),
+            "media": media,
         }
     )
 

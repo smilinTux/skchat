@@ -9,7 +9,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from skchat.history import ChatHistory
-from skchat.models import ChatMessage, ContentType, Thread
+from skchat.models import ChatMessage, ContentType, FileRef, Thread
 
 
 class FakeMemory:
@@ -464,6 +464,62 @@ class TestJsonlSaveLoad:
         assert [m.content for m in thread] == [f"msg-{i}" for i in range(4, 12)]
         # Still chronologically ascending for display.
         assert [m.timestamp for m in thread] == sorted(m.timestamp for m in thread)
+
+
+class TestListMedia:
+    """list_media() — gallery view over JSONL attachments (additive, read-only)."""
+
+    @staticmethod
+    def _img_ref() -> FileRef:
+        return FileRef(
+            transfer_id="t-img",
+            filename="cat.png",
+            size=1234,
+            mime_type="image/png",
+            sha256="abc",
+            thumbnail_id="t-img",
+            direction="received",
+        )
+
+    def test_returns_only_media_messages(self, jsonl_history) -> None:
+        hist, _ = jsonl_history
+        # One media message (image attachment) + one plain text message.
+        media_msg = ChatMessage(
+            sender="alice", recipient="me", content="", attachments=[self._img_ref()]
+        )
+        hist.save(media_msg)
+        hist.save(ChatMessage(sender="alice", recipient="me", content="just text"))
+
+        out = hist.list_media(peer="alice")
+        assert len(out) == 1
+        entry = out[0]
+        assert entry["message_id"] == media_msg.id
+        assert entry["transfer_id"] == "t-img"
+        assert entry["filename"] == "cat.png"
+        assert entry["mime_type"] == "image/png"
+        assert entry["size"] == 1234
+        assert entry["thumbnail_id"] == "t-img"
+        assert entry["direction"] == "received"
+        assert entry["sender"] == "alice"
+        assert isinstance(entry["timestamp"], str)  # ISO-8601
+
+    def test_kinds_filter_excludes_video(self, jsonl_history) -> None:
+        hist, _ = jsonl_history
+        vid = FileRef(
+            transfer_id="t-vid",
+            filename="clip.mp4",
+            size=99,
+            mime_type="video/mp4",
+            sha256="def",
+            direction="sent",
+        )
+        hist.save(ChatMessage(sender="me", recipient="alice", content="", attachments=[vid]))
+        hist.save(
+            ChatMessage(sender="alice", recipient="me", content="", attachments=[self._img_ref()])
+        )
+
+        images_only = hist.list_media(peer="alice", kinds=("image",))
+        assert [e["mime_type"] for e in images_only] == ["image/png"]
 
 
 class TestStoreBackedRetrieval:
