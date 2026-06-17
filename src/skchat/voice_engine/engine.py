@@ -14,6 +14,7 @@ import logging
 from typing import Literal
 
 from skchat.voice_engine.config import VoiceConfig
+from skchat.voice_engine.conversation import Conversation
 from skchat.voice_engine.llm import LLMClient
 from skchat.voice_engine.memory import MemoryBridge
 from skchat.voice_engine.persona import PersonaBuilder
@@ -65,6 +66,7 @@ class VoiceEngine:
         mode: str = "sacred",
         speaker_id: str = "",
         is_operator: bool = True,
+        conversation: Conversation | None = None,
     ) -> str:
         """Run one turn: persona + memory + forced-routing + LLM + tools.
 
@@ -76,6 +78,11 @@ class VoiceEngine:
             mode:       'sacred' (1-on-1 with operator), 'group', or 'private'.
             speaker_id: Identity of the speaker (used by the operator gate).
             is_operator: True when the speaker is the operator (Chef).
+            conversation: Optional immutable Conversation snapshot for this
+                        turn. When provided it is threaded into the tool ctx as
+                        ``ctx['convo']`` so tool handlers can read live
+                        conversation context. Backward-compatible default (None)
+                        leaves the legacy ctx shape unchanged.
 
         Returns:
             The LLM's reply as a plain string ready for TTS.
@@ -103,6 +110,10 @@ class VoiceEngine:
         # 4. Prepare tools from the registry (if any).
         tools = self.registry.openai_schemas() if self.registry else None
 
+        tool_ctx: dict = {"agent": self.agent}
+        if conversation is not None:
+            tool_ctx["convo"] = conversation
+
         def _run_tool(name: str, args: dict):
             return self.registry.dispatch(
                 name,
@@ -110,7 +121,7 @@ class VoiceEngine:
                 speaker_id=speaker_id,
                 mode=mode,
                 is_operator=is_operator,
-                ctx={"agent": self.agent},
+                ctx=tool_ctx,
             )
 
         run_tool = _run_tool if self.registry else None

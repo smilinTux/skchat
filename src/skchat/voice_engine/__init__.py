@@ -10,6 +10,7 @@ detectors, and build_default_registry.
 
 from skchat.voice_engine.builtin_tools import build_default_registry
 from skchat.voice_engine.config import VoiceConfig
+from skchat.voice_engine.conversation import Conversation
 from skchat.voice_engine.engine import VoiceEngine
 from skchat.voice_engine.llm import LLMClient, Msg
 from skchat.voice_engine.memory import MemoryBridge
@@ -27,6 +28,7 @@ __all__ = [
     "MemoryBridge",
     "PersonaBuilder",
     "VoiceEngine",
+    "Conversation",
     "ToolRegistry",
     "Tool",
     "wants_narrate",
