@@ -267,6 +267,55 @@ With both the `.158` host (Step 1) and the `.41` joiner (Step 7) connected to th
 
 ---
 
+## Federated join (in-browser discovery path)  *(U8 Phase-3 browser wiring)*
+
+Steps 7–8 above join with a **pre-minted `?token=`** against the page's own
+`cfg.url`. Phase-3 adds a second, discovery-driven browser path in
+`static/livekit.html`: the browser itself discovers the elected focus and
+connects to that **remote** SFU `sfu_ws_url` — no hand-carried token URL.
+
+**Deep link** (or check the **"Remote space"** box in the header, then Connect):
+```
+https://<webui-host>/livekit?federation=1&room=<SPACE_ID>&identity=<JOINER_FQID>
+# ?discovery=1 is accepted as an alias for ?federation=1
+# ?space=<SPACE_ID> may name the space explicitly (defaults to the room name)
+```
+
+**Exact browser steps** (all endpoints below are real, CI-tested routes):
+1. On load, `livekit.html` parses `?federation=1`/`?discovery=1` →
+   `qpFederation`, and `?space=` → `qpSpace`. With an `identity` present it
+   auto-`connect()`s (mirrors the existing `qpRoom && qpIdentity` auto-join).
+2. `connect()` calls `discoverFocus()` → **`GET /sfu/candidates`**
+   (`routes.py:412`, tested by `tests/test_fed_discovery_integration.py`),
+   which returns `{hosts:[{fqid, auth_url, sfu_ws_url}]}` built from the realm's
+   focus descriptors **in election order** (oldest-host-first — server-side
+   `federation/focus.py::select_focus`, `min` by `(issued_at, fqid)`).
+3. The browser elects the focus = **`hosts[0]`** (the server-provided ordering /
+   oldest host). Empty list ⇒ a clear "no federated focus advertised" error,
+   never a silent local fallback.
+4. A participant token is minted via the **existing** `POST /livekit/token`
+   flow (the same path a local call uses).
+5. `connect()` then **overrides the LiveKit URL** with the elected focus's
+   `sfu_ws_url` and runs the **unchanged** `room.connect(livekitUrl, token)`
+   path — so the browser lands on the **remote** SFU.
+
+**Honest scope / what the browser does NOT do:** the *cross-host signed
+redemption* at the focus's `auth_url` (`POST /sfu/get` with a capauth
+`{claim,sig}` assertion) is a **server-side** capauth-signed flow — the browser
+holds no capauth signing key, so it is not performed in-page. That redemption is
+the server-side `FederationDiscoveryClient.get_token` (`discovery.py`,
+unit-tested in `test_fed_discovery.py`) and the live `/sfu/get` authd
+(Steps 4–6 above). The in-browser path here reuses the local `/livekit/token`
+mint; tightening it to consume a federation-redeemed token end-to-end is a
+follow-up. **This browser path is verified by THIS live runbook, not a unit
+test** (JS is not unit-tested in this repo).
+
+**Verify:** load the deep link from `.41`, confirm the log shows
+`federated focus elected: …` and `federated: overriding SFU URL …`, the status
+reaches `connected`, and the Step-1 host appears in the participant list.
+
+---
+
 ## Pass / Fail criteria
 
 **PASS (U8 → LIVE ✅) requires ALL of:**

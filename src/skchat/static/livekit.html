@@ -622,6 +622,11 @@
   <h1>SKChat · LiveKit</h1>
   <div class="field"><label>Room</label><input id="room" placeholder="lumina-and-chef" size="18" /></div>
   <div class="field"><label>You</label><input id="identity" placeholder="chef" size="10" /></div>
+  <!-- U8: "join remote space" affordance — when checked, Connect discovers the
+       elected SFU focus via /sfu/candidates and connects to the REMOTE focus. -->
+  <label class="field" title="Join a federated space on its elected remote SFU focus">
+    <input type="checkbox" id="fed-join" /> Remote space
+  </label>
   <button id="connect" class="primary">Connect</button>
   <button id="leave" class="danger" disabled>Leave</button>
   <span id="status"><span class="dot"></span><span id="status-text">checking…</span></span>
@@ -850,6 +855,11 @@ let room = null;
 const tiles = new Map();
 let micTrack = null, camTrack = null;
 let qpIdentity = null, qpToken = null;
+// U8 federated join: when set, connect() routes to a REMOTE elected SFU focus
+// (discovered via GET /sfu/candidates) instead of the local default SFU.
+let qpFederation = null;   // truthy ?federation=1 / ?discovery=1 → remote-join mode
+let qpSpace = null;        // the federated space_id to join (defaults to room)
+let fedFocus = null;       // {fqid, auth_url, sfu_ws_url} — the elected remote focus
 
 // ── Data-lane envelope ────────────────────────────────────────────────────────
 // All data-channel messages: { lane, ...payload }
@@ -1985,6 +1995,40 @@ function showError(msg) {
   host.appendChild(b);
 }
 
+// ── U8 federated join ───────────────────────────────────────────────────────
+// Discover the elected SFU focus for a federated space and connect to that
+// REMOTE focus instead of the local SFU.
+//
+// Browser steps (Phase 3 wiring — every endpoint here is a real, tested route):
+//   1. GET /sfu/candidates  → {hosts:[{fqid, auth_url, sfu_ws_url}]}  (routes.py)
+//      The list is built from the focus descriptors advertised on the realm's
+//      Nostr relays; the server returns them in election order (oldest-host
+//      first — see federation/focus.py select_focus: min by (issued_at, fqid)).
+//   2. Pick the elected focus = hosts[0] (server-provided ordering / oldest).
+//   3. Mint a participant token via the existing /livekit/token flow, then
+//      connect to the elected focus's sfu_ws_url (the REMOTE SFU) — i.e. the
+//      same connect()/token path as a local call, but the LiveKit URL is the
+//      remote focus's wss endpoint rather than cfg.url.
+//
+// NOTE (honest scope): the *cross-host signed redemption* at the focus's
+// auth_url (POST /sfu/get with a capauth {claim,sig} assertion) is a
+// server-side capauth-signed flow — the browser has no capauth signing key, so
+// it is NOT performed here. That redemption is exercised by
+// FederationDiscoveryClient (discovery.py, unit-tested) on the server side. The
+// browser path below is verified by the live runbook, not a unit test.
+async function discoverFocus(spaceId) {
+  const r = await fetch('/sfu/candidates');
+  if (!r.ok) throw new Error(`candidates fetch failed (${r.status})`);
+  const hosts = (await r.json()).hosts || [];
+  if (!hosts.length) {
+    throw new Error(`no federated SFU focus advertised for "${spaceId}" (empty candidates)`);
+  }
+  // hosts[0] = server-elected focus (oldest-host-wins ordering).
+  const focus = hosts[0];
+  log('federated focus elected:', focus.fqid, '→', focus.sfu_ws_url);
+  return focus;
+}
+
 async function connect() {
   try {
     const cfg = await loadConfig();
@@ -1993,6 +2037,19 @@ async function connect() {
     const roomName = $('#room').value || cfg.default_room;
     const identity = $('#identity').value || `chef-${Math.random().toString(36).slice(2,7)}`;
     setStatus('connecting', `connecting to ${roomName}…`);
+
+    // U8: resolve the elected remote focus up front when in federated-join mode.
+    fedFocus = null;
+    if (qpFederation) {
+      try {
+        fedFocus = await discoverFocus(qpSpace || roomName);
+      } catch (e) {
+        log('federation discovery failed:', e.message);
+        showError(`Federated join failed: ${e.message}`);
+        setStatus('', 'disconnected');
+        return;
+      }
+    }
 
     let rtcConfig = {};
     try {
@@ -2012,6 +2069,13 @@ async function connect() {
       const t = await mintToken(identity, identity, roomName);
       log('token ok, ttl', t.ttl_seconds, 's; connecting', t.url);
       livekitUrl = t.url; livekitToken = t.token;
+    }
+    // U8: in federated-join mode, connect to the REMOTE elected focus's SFU
+    // (sfu_ws_url from /sfu/candidates) instead of the local SFU URL. The token
+    // minted above is reused for the room join on the remote focus.
+    if (fedFocus) {
+      log('federated: overriding SFU URL', livekitUrl, '→', fedFocus.sfu_ws_url);
+      livekitUrl = fedFocus.sfu_ws_url;
     }
 
     room = new Room({ adaptiveStream: true, dynacast: true, rtcConfiguration: rtcConfig });
@@ -2215,7 +2279,13 @@ async function toggleCam(force) {
 }
 
 // ── Event listeners ───────────────────────────────────────────────────────────
-$('#connect').addEventListener('click', connect);
+$('#connect').addEventListener('click', () => {
+  // U8: the "Remote space" checkbox opts this Connect into federated-join mode
+  // (discover the elected focus via /sfu/candidates, connect to the remote SFU).
+  // A ?federation=1 deep link sets qpFederation directly and bypasses the box.
+  if ($('#fed-join') && $('#fed-join').checked) qpFederation = '1';
+  connect();
+});
 $('#leave').addEventListener('click', leave);
 $('#mic-toggle').addEventListener('click', () => toggleMic());
 $('#cam-toggle').addEventListener('click', () => toggleCam());
@@ -2316,6 +2386,11 @@ setInterval(refreshRecordingState, 5000);
   const qpRoom = qp.get('room');
   qpIdentity   = qp.get('identity');
   qpToken      = qp.get('token');
+  // U8 federated join: ?federation=1 (or ?discovery=1) → connect to the elected
+  // REMOTE focus discovered via /sfu/candidates. ?space=<id> names the federated
+  // space (defaults to the room name).
+  qpFederation = qp.get('federation') || qp.get('discovery');
+  qpSpace      = qp.get('space');
   const path   = location.pathname.replace(/^\/livekit\/?/, '');
 
   $('#room').value     = qpRoom || path || cfg.default_room;
@@ -2323,6 +2398,9 @@ setInterval(refreshRecordingState, 5000);
   $('#identity').value = qpIdentity || storedIdentity;
   if (qpIdentity) localStorage.setItem('skchat.identity', qpIdentity);
   $('#identity').addEventListener('change', e => localStorage.setItem('skchat.identity', e.target.value));
+
+  // U8: reflect a ?federation=1 deep link in the "Remote space" checkbox.
+  if (qpFederation && $('#fed-join')) $('#fed-join').checked = true;
 
   if (!cfg.available) { setStatus('', 'server: livekit not configured'); $('#connect').disabled = true; return; }
   setStatus('', secure ? 'ready' : 'ready (no media — insecure context)');
@@ -2340,7 +2418,9 @@ setInterval(refreshRecordingState, 5000);
   // Wire up watch-together video element listeners
   setupWatchVideoListeners();
 
-  if (qpRoom && qpIdentity) await connect();
+  // Auto-connect on a deep link: a normal room+identity link, OR a federated
+  // join link (?federation=1) with an identity (room/space may come from qp).
+  if ((qpRoom && qpIdentity) || (qpFederation && qpIdentity)) await connect();
 })();
 </script>
 </body>
