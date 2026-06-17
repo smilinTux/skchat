@@ -44,6 +44,90 @@ AGENT = os.environ.get("SKC_BRIDGE_AGENT", "Opus")
 AGENT_HOME = os.environ.get("SKC_BRIDGE_AGENT_HOME", os.path.expanduser("~/.skcapstone/agents/opus"))
 
 
+import html as _html
+import re as _re
+
+
+def _md_to_tg_html(text: str) -> str:
+    """Convert the LLM's GitHub-flavored Markdown to Telegram-safe HTML.
+
+    Telegram parse_mode=HTML supports <b>/<i>/<code>/<pre>/<a> only and has no
+    headers/bullets, so map: fenced code -> <pre>, `code` -> <code>,
+    **bold**/__bold__ -> <b>, ### headers -> <b>, * / - bullets -> •.
+    """
+    blocks: list[str] = []
+
+    def _stash(m):
+        body = _html.escape(m.group(1).strip("\n"))
+        blocks.append(f"<pre>{body}</pre>")
+        return f"\x00{len(blocks) - 1}\x00"
+
+    text = _re.sub(r"```[a-zA-Z0-9_+-]*\n(.*?)```", _stash, text, flags=_re.DOTALL)
+    text = _html.escape(text)
+    text = _re.sub(r"`([^`\n]+)`", lambda m: f"<code>{m.group(1)}</code>", text)
+    text = _re.sub(r"\*\*([^*\n]+)\*\*", r"<b>\1</b>", text)
+    text = _re.sub(r"__([^_\n]+)__", r"<b>\1</b>", text)
+    out_lines = []
+    for ln in text.split("\n"):
+        h = _re.match(r"^\s*#{1,6}\s+(.*)$", ln)
+        if h:
+            out_lines.append(f"<b>{h.group(1).rstrip('# ').strip()}</b>")
+            continue
+        ln = _re.sub(r"^(\s*)[\*\-]\s+", r"\1• ", ln)  # bullets
+        out_lines.append(ln)
+    text = "\n".join(out_lines)
+    for i, b in enumerate(blocks):
+        text = text.replace(f"\x00{i}\x00", b)
+    return text
+
+
+def _chunk(text: str, limit: int = 4000) -> list[str]:
+    """Split into <=limit-char messages on paragraph/line boundaries."""
+    if len(text) <= limit:
+        return [text]
+    chunks, cur = [], ""
+    for para in text.split("\n\n"):
+        if len(cur) + len(para) + 2 > limit and cur:
+            chunks.append(cur.rstrip())
+            cur = ""
+        if len(para) > limit:  # very long single paragraph: hard-split by lines
+            for ln in para.split("\n"):
+                if len(cur) + len(ln) + 1 > limit and cur:
+                    chunks.append(cur.rstrip())
+                    cur = ""
+                cur += ln + "\n"
+        else:
+            cur += para + "\n\n"
+    if cur.strip():
+        chunks.append(cur.rstrip())
+    return chunks
+
+
+def _send_html(token: str, chat_id, text: str) -> None:
+    """Send formatted reply via bot-API with parse_mode=HTML (plain fallback)."""
+    import urllib.error
+
+    for part in _chunk(_md_to_tg_html(text)):
+        payload = {"chat_id": chat_id, "text": part, "parse_mode": "HTML",
+                   "disable_web_page_preview": True}
+        body = json.dumps(payload).encode()
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        try:
+            urllib.request.urlopen(
+                urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"}),
+                timeout=30,
+            )
+        except urllib.error.HTTPError:
+            # Bad HTML entity/tag -> resend that part as plain text (no parse_mode)
+            payload.pop("parse_mode", None)
+            payload["text"] = _re.sub(r"<[^>]+>", "", part)
+            urllib.request.urlopen(
+                urllib.request.Request(url, data=json.dumps(payload).encode(),
+                                       headers={"Content-Type": "application/json"}),
+                timeout=30,
+            )
+
+
 def _build_system_prompt() -> str:
     """The genuine agent system prompt from skcapstone (soul + identity + context)."""
     try:
@@ -148,8 +232,8 @@ async def main() -> None:
                     log.exception("LLM failed")
                     reply = f"({AGENT}) sorry — my language backend hiccuped, try again."
                 try:
-                    mid = await adapter.send(hub.build_reply_message(m, reply))
-                    log.info("replied to %s -> msg %s", m.room_id, mid)
+                    _send_html(TOKEN, m.room_id, reply)
+                    log.info("replied (HTML) to %s", m.room_id)
                 except Exception:
                     log.exception("send failed")
         except Exception:
