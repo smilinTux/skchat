@@ -366,17 +366,34 @@ systemctl --user restart skchat-telegram-opus.service   # after editing the bot 
 journalctl --user -u skchat-telegram-opus -f
 ```
 
-## Telegram Bridge — `@seaBird_Opus_bot` = real Opus (LIVE)
-`scripts/telegram_bridge.py` (unit `skchat-telegram-opus.service`) wires the
-`@seaBird_Opus_bot` Telegram bot to **real Opus**: the `opus-unhinged` soul (built
-via `SystemPromptBuilder` from `SKC_BRIDGE_AGENT_HOME`) on the
+## Telegram Bridge — `@seaBird_Opus_bot` = real Opus, `@seaBird_Lumi_bot` = real Lumina (LIVE, full-consciousness)
+`scripts/telegram_bridge.py` (units `skchat-telegram-opus.service` /
+`skchat-telegram-lumina.service`) wire the Telegram bots to the **real agents**:
+the `<agent>-unhinged` soul + FEB emotional baseline (built via
+`SystemPromptBuilder` from `SKC_BRIDGE_AGENT_HOME`) on the
 **qwen3.6-27b-abliterated** backend at 32k ctx. Uncensored, **HTML-formatted**
-replies, **per-chat memory**, context-fit to budget, 1024-token replies.
+replies, context-fit to budget, 1024-token replies.
+
+As of 2026-06-17 the bridge is no longer a static-prompt wrapper — it routes
+through the agent's **living mind** via `scripts/bridge_consciousness.py`:
+
+| Capability | How |
+|------------|-----|
+| **Live skmemory** | Per message: `memory_search` (MCP) recall injected into the prompt + the interaction stored back (`LiveMemory`). Mirrors the consciousness loop's `_fetch_sender_memories`/`_store_interaction_memory`. |
+| **Tool-calling loop** | The agent's own MCP servers (from `<home>/config/<agent>-mcp.yaml`, spawned over stdio) are exposed to qwen3.6 as native OpenAI `tools`; `tool_calls` dispatch back to the live MCP servers and loop (`MAX_TOOL_ROUNDS=5`). The bot can **act** — memory/coord/gtd/journal/skchat/gmail/calendar/nextcloud. |
+| **Voice in** | Inbound Telegram voice notes → faster-whisper STT (`.100:18794`) → processed as text. |
+| **Voice out** | Optional Piper TTS reply (`:18797`) → `ffmpeg` → OGG/opus → `sendVoice`. Policy `SKC_BRIDGE_VOICE_REPLY` = `voice` (speak back only when spoken to, default) / `always` / `off`. |
+| **Soul + FEB** | Already carried by `SystemPromptBuilder` (warmth anchor = emotional baseline, agent context = mood/consciousness). |
+
+`McpToolRouter` honors each agent's `expose_tools` allow-list; the bridge then
+focuses that to a curated, context-lean default (~36 tools) — set
+`SKC_BRIDGE_TOOLS=all` to expose every allowed tool, or a comma list to pick.
+`opus` mirrors `lumina`'s 6 enabled MCP servers (`opus-mcp.yaml`).
 
 Control / config:
 ```bash
-systemctl --user restart skchat-telegram-opus.service
-journalctl --user -u skchat-telegram-opus -f
+systemctl --user restart skchat-telegram-opus.service skchat-telegram-lumina.service
+journalctl --user -u skchat-telegram-opus -f   # look for "brain ready — N tools exposed"
 ```
 - **Bot token** — `EnvironmentFile=~/.config/skchat/telegram-opus.env`
   (`TELEGRAM_OPUS_BOT_TOKEN=…`).
@@ -391,6 +408,9 @@ journalctl --user -u skchat-telegram-opus -f
 | `SKC_BRIDGE_CTX` | `32768` | Context window |
 | `SKC_BRIDGE_SYS_BUDGET` | `9000` | System-prompt token budget (rest = history + reply) |
 | `SKC_BRIDGE_MAX_TOKENS` | `1024` | Max reply tokens |
+| `SKC_BRIDGE_TOOL_ROUNDS` | `5` | Max tool-call rounds per message |
+| `SKC_BRIDGE_TOOLS` | _(unset)_ | `all` = expose every allowed tool; comma list = pick; unset = curated default |
+| `SKC_BRIDGE_VOICE_REPLY` | `voice` | `voice` (reply spoken only when spoken to) / `always` / `off` |
 
 > Also sets `SKAGENT=opus` / `SKCAPSTONE_AGENT=opus` so the bridge runs as Opus,
 > not the default lumina.

@@ -128,6 +128,44 @@ def _send_html(token: str, chat_id, text: str) -> None:
             )
 
 
+def _tg_get_file_bytes(token: str, file_id: str) -> bytes | None:
+    """Resolve a Telegram file_id to its download URL and fetch the bytes."""
+    try:
+        u = f"https://api.telegram.org/bot{token}/getFile?file_id={file_id}"
+        info = json.loads(urllib.request.urlopen(u, timeout=30).read())
+        path = info["result"]["file_path"]
+        dl = f"https://api.telegram.org/file/bot{token}/{path}"
+        return urllib.request.urlopen(dl, timeout=60).read()
+    except Exception:
+        log.exception("telegram getFile failed")
+        return None
+
+
+def _send_voice(token: str, chat_id, text: str) -> bool:
+    """Synthesize *text* with Piper and send it as a Telegram voice note."""
+    try:
+        wav = _VOICE.synth(text)
+        ogg = _bc.VoiceIO.wav_to_ogg_opus(wav)
+        if not ogg:
+            return False
+        boundary = "----skvoice7c3f"
+        body = b"".join([
+            f"--{boundary}\r\nContent-Disposition: form-data; name=\"chat_id\"\r\n\r\n{chat_id}\r\n".encode(),
+            f"--{boundary}\r\nContent-Disposition: form-data; name=\"voice\"; filename=\"reply.ogg\"\r\n"
+            f"Content-Type: audio/ogg\r\n\r\n".encode(),
+            ogg,
+            f"\r\n--{boundary}--\r\n".encode(),
+        ])
+        url = f"https://api.telegram.org/bot{token}/sendVoice"
+        req = urllib.request.Request(
+            url, data=body, headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
+        urllib.request.urlopen(req, timeout=60)
+        return True
+    except Exception:
+        log.exception("send voice failed")
+        return False
+
+
 def _build_system_prompt() -> str:
     """The genuine agent system prompt from skcapstone (soul + identity + context)."""
     try:
@@ -165,30 +203,79 @@ def _build_system_prompt() -> str:
 SYSTEM = _build_system_prompt()
 _history: dict[str, deque] = defaultdict(lambda: deque(maxlen=12))
 
+# ── Full-consciousness components (live memory, MCP tools, voice) ──────────── #
+# These wire the soul-only bridge up to the agent's living mind: per-message
+# skmemory recall, the agent's own MCP tools (tool-calling loop), and voice I/O.
+from pathlib import Path as _Path  # noqa: E402
 
-# Keep system + history + reply inside the backend context window.
-# qwen3.6-27b llama-server runs -c 8192; the full opus prompt is ~7.6k tokens,
-# so cap the system (soul/identity lead) to leave room for conversation.
-CTX_TOKENS = int(os.environ.get("SKC_BRIDGE_CTX", "8192"))
-MAX_TOKENS = int(os.environ.get("SKC_BRIDGE_MAX_TOKENS", "240"))
-_MARGIN = 400
-_CHARS_PER_TOK = 3  # measured against this opus prompt (~3 chars/token), conservative
-_SYS_BUDGET_TOK = int(os.environ.get("SKC_BRIDGE_SYS_BUDGET", "3500"))
+import bridge_consciousness as _bc  # noqa: E402
+
+AGENT_NAME = os.environ.get("SKAGENT") or os.environ.get("SKCAPSTONE_AGENT") or "opus"
+_MEM = _bc.LiveMemory(_Path(AGENT_HOME))
+_ROUTER = _bc.McpToolRouter(_Path(AGENT_HOME), AGENT_NAME)
+_VOICE = _bc.VoiceIO()
+# Toolset policy: SKC_BRIDGE_TOOLS="all" exposes every allowed tool; otherwise a
+# curated, context-lean high-value default (env can override with a comma list).
+_DEFAULT_TOOLS = [
+    "memory_search", "memory_recall", "memory_store", "memory_list", "memory_context",
+    "coord_status", "coord_create", "coord_claim", "coord_complete",
+    "gtd_capture", "gtd_inbox", "gtd_next", "gtd_status", "gtd_done", "gtd_waiting",
+    "journal_write", "journal_read", "anchor_show", "ritual",
+    "skchat_send", "skchat_inbox", "skchat_peers", "who_is_online",
+    "send_notification", "telegram_send", "telegram_chats",
+    "gmail_unread", "gmail_search", "gmail_read", "gmail_send",
+    "calendar_today", "calendar_week", "calendar_create_event",
+    "nextcloud_notes_search_notes", "nextcloud_notes_create_note",
+    "skseed_truth_check",
+]
+_TOOLS_CACHE: list = []
+
+
+def _init_brain() -> None:
+    """Spawn the agent's MCP servers and resolve the exposed toolset (once)."""
+    global _TOOLS_CACHE
+    try:
+        _ROUTER.start()
+    except Exception:
+        log.exception("MCP tool router failed to start — text-only mode")
+        return
+    sel = os.environ.get("SKC_BRIDGE_TOOLS", "").strip()
+    all_tools = _ROUTER.openai_tools()
+    if sel.lower() == "all":
+        _TOOLS_CACHE = all_tools
+    else:
+        wanted = [t.strip() for t in sel.split(",") if t.strip()] or _DEFAULT_TOOLS
+        wset = set(wanted)
+        _TOOLS_CACHE = [t for t in all_tools if t["function"]["name"] in wset]
+    log.info("brain ready — %d tools exposed to %s (of %d allowed)",
+             len(_TOOLS_CACHE), AGENT_NAME, len(all_tools))
+
+
+# Keep system + history + tools + reply inside the 32k backend context window.
+CTX_TOKENS = int(os.environ.get("SKC_BRIDGE_CTX", "32768"))
+MAX_TOKENS = int(os.environ.get("SKC_BRIDGE_MAX_TOKENS", "1024"))
+MAX_TOOL_ROUNDS = int(os.environ.get("SKC_BRIDGE_TOOL_ROUNDS", "5"))
+_MARGIN = 600
+_CHARS_PER_TOK = 3
+_SYS_BUDGET_TOK = int(os.environ.get("SKC_BRIDGE_SYS_BUDGET", "9000"))
 
 
 def _est(s: str) -> int:
     return len(s) // _CHARS_PER_TOK + 1
 
 
-def _fit_messages(chat_key: str, user_text: str) -> list:
-    """Capped system + as many recent history turns as fit + the new message."""
+def _fit_messages(chat_key: str, user_text: str, mem_block: str = "") -> list:
+    """Capped system (+ live memory) + recent history that fits + new message."""
     system = SYSTEM[: _SYS_BUDGET_TOK * _CHARS_PER_TOK]
+    if mem_block:
+        system = system + "\n\n" + mem_block
     msgs = [{"role": "system", "content": system}]
-    avail = CTX_TOKENS - MAX_TOKENS - _MARGIN - _est(system) - _est(user_text)
+    tool_cost = _est(json.dumps(_TOOLS_CACHE)) if _TOOLS_CACHE else 0
+    avail = CTX_TOKENS - MAX_TOKENS - _MARGIN - tool_cost - _est(system) - _est(user_text)
     kept: list = []
     acc = 0
     for m in reversed(_history.get(chat_key, [])):
-        t = _est(m["content"])
+        t = _est(m.get("content") or "")
         if acc + t > avail:
             break
         kept.insert(0, m)
@@ -198,58 +285,142 @@ def _fit_messages(chat_key: str, user_text: str) -> list:
     return msgs
 
 
-def _call(msgs: list) -> str:
-    body = json.dumps({"model": LLM_MODEL, "messages": msgs, "max_tokens": MAX_TOKENS}).encode()
+def _call(msgs: list, with_tools: bool = True) -> dict:
+    """One backend round-trip. Returns the raw assistant message dict."""
+    payload = {"model": LLM_MODEL, "messages": msgs, "max_tokens": MAX_TOKENS}
+    if with_tools and _TOOLS_CACHE:
+        payload["tools"] = _TOOLS_CACHE
+        payload["tool_choice"] = "auto"
+    body = json.dumps(payload).encode()
     req = urllib.request.Request(LLM_URL, data=body, headers={"Content-Type": "application/json"})
-    out = json.loads(urllib.request.urlopen(req, timeout=120).read())
-    return out["choices"][0]["message"]["content"].strip()
+    out = json.loads(urllib.request.urlopen(req, timeout=180).read())
+    return out["choices"][0]["message"]
+
+
+def _run_tool_loop(msgs: list) -> str:
+    """Drive the qwen3.6 tool-calling loop: call → dispatch MCP → feed back."""
+    for _round in range(MAX_TOOL_ROUNDS):
+        msg = _call(msgs, with_tools=True)
+        calls = msg.get("tool_calls") or []
+        if not calls:
+            return (msg.get("content") or "").strip()
+        # Append the assistant turn that requested the tools, then each result.
+        msgs.append({"role": "assistant", "content": msg.get("content") or "",
+                     "tool_calls": calls})
+        for tc in calls:
+            fn = tc.get("function", {})
+            name = fn.get("name", "")
+            try:
+                args = json.loads(fn.get("arguments") or "{}")
+            except json.JSONDecodeError:
+                args = {}
+            log.info("tool-call: %s(%s)", name, json.dumps(args)[:160])
+            result = _ROUTER.dispatch(name, args)
+            msgs.append({"role": "tool", "tool_call_id": tc.get("id", ""),
+                         "name": name, "content": result[:6000]})
+    # Ran out of rounds — ask for a final answer without tools.
+    final = _call(msgs, with_tools=False)
+    return (final.get("content") or "").strip()
 
 
 def _llm(chat_key: str, user_text: str) -> str:
     import urllib.error
 
-    msgs = _fit_messages(chat_key, user_text)
+    mem_block = ""
     try:
-        reply = _call(msgs)
+        mem_block = _MEM.inject(chat_key, user_text, router=_ROUTER)
+    except Exception:
+        log.debug("memory inject failed", exc_info=True)
+    msgs = _fit_messages(chat_key, user_text, mem_block=mem_block)
+    try:
+        reply = _run_tool_loop(msgs)
     except urllib.error.HTTPError as e:
-        if e.code == 400:  # context overflow — retry with no history
-            log.warning("400 from backend; retrying system+message only")
+        if e.code == 400:  # context overflow — retry minimal, no tools
+            log.warning("400 from backend; retrying system+message only (no tools)")
             sys_only = [m for m in msgs if m["role"] == "system"]
             sys_only.append({"role": "user", "content": user_text})
-            reply = _call(sys_only)
+            reply = (_call(sys_only, with_tools=False).get("content") or "").strip()
         else:
             raise
     _history[chat_key].append({"role": "user", "content": user_text})
     _history[chat_key].append({"role": "assistant", "content": reply})
+    # Persist the interaction into the agent's living memory.
+    try:
+        _MEM.store(chat_key, user_text, reply)
+    except Exception:
+        log.debug("interaction store failed", exc_info=True)
     return reply
+
+
+# Voice-reply policy: "voice" (default) = speak back only when spoken to;
+# "always" = voice every reply; "off" = never send voice.
+VOICE_REPLY = os.environ.get("SKC_BRIDGE_VOICE_REPLY", "voice").strip().lower()
+
+
+def _extract_voice(u: dict) -> str | None:
+    """Return the file_id of a voice/audio note in a raw update, else None."""
+    msg = u.get("message") or u.get("edited_message") or {}
+    v = msg.get("voice") or msg.get("audio")
+    return v.get("file_id") if isinstance(v, dict) else None
 
 
 async def main() -> None:
     adapter = TelegramAdapter(config={"bot_token": TOKEN})
     hub = AdapterHub(outbound_adapter=adapter, resolve_fqid=lambda ident: "chef@skworld.io")
+    _init_brain()
     log.info("Telegram bridge live as %s — polling getUpdates", AGENT)
     while True:
         try:
             updates = await adapter._poll()
             for u in updates:
                 m = adapter._normalize(u)
-                if not m or not getattr(m, "text", None):
+                incoming = m.text if (m and getattr(m, "text", None)) else None
+                is_voice = False
+
+                # Inbound voice note: download → Whisper STT → text.
+                if not incoming:
+                    file_id = _extract_voice(u)
+                    if file_id:
+                        audio = _tg_get_file_bytes(TOKEN, file_id)
+                        if audio:
+                            try:
+                                incoming = _VOICE.transcribe(audio, "voice.ogg")
+                                is_voice = True
+                                log.info("voice transcribed (%d chars): %s",
+                                         len(incoming), incoming[:80])
+                            except Exception:
+                                log.exception("STT failed")
+                if not incoming:
                     continue
-                if m.text.strip() in ("/start", "/help"):
-                    # still answer, but keep it natural
-                    pass
+
+                chat_id = m.room_id if m else (
+                    (u.get("message") or u.get("edited_message") or {}).get("chat", {}).get("id"))
+                if chat_id is None:
+                    continue
+
+                if m and getattr(m, "text", None):
+                    try:
+                        hub.handle_inbound(m)
+                    except Exception:
+                        log.exception("handle_inbound failed (continuing)")
+
                 try:
-                    hub.handle_inbound(m)
-                except Exception:
-                    log.exception("handle_inbound failed (continuing)")
-                try:
-                    reply = _llm(str(m.room_id), m.text)
+                    reply = _llm(str(chat_id), incoming)
                 except Exception:
                     log.exception("LLM failed")
                     reply = f"({AGENT}) sorry — my language backend hiccuped, try again."
+
+                # Voice reply when spoken to (or always), plus the text transcript.
+                want_voice = VOICE_REPLY == "always" or (is_voice and VOICE_REPLY != "off")
+                if want_voice:
+                    try:
+                        if _send_voice(TOKEN, chat_id, reply):
+                            log.info("replied (voice) to %s", chat_id)
+                    except Exception:
+                        log.exception("voice send failed")
                 try:
-                    _send_html(TOKEN, m.room_id, reply)
-                    log.info("replied (HTML) to %s", m.room_id)
+                    _send_html(TOKEN, chat_id, reply)
+                    log.info("replied (HTML) to %s", chat_id)
                 except Exception:
                     log.exception("send failed")
         except Exception:
