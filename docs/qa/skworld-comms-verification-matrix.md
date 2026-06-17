@@ -4,11 +4,19 @@
 the integration groups that verify components working *together*, and the real
 end-to-end use cases a human/agent actually performs. Updated as features integrate.
 
-**Scope:** `skchat` (the app/interface trunk, branch `feat/sk-spaces`) + `skcomms`
-(transport + identity + glossa + channel adapters, branch `integration/skcomms-unified`).
+**Scope:** `skchat` (the app/interface trunk; sprint waves 2–6 merged to `main`,
+`f4acfa1`→`bdb83ce`) + `skcomms` (transport + identity + glossa + channel adapters,
+merged to `main` `8ecffe8`).
 
 **Baseline (2026-06-13):** skchat = **1082 tests / 89 files** · skcomms unified =
 **497 passing / 57 files**. Both green.
+
+**Baseline (2026-06-17):** skchat = **~1829 tests collected / 106 test files**
+(grew well past the 1082 baseline across waves 2–6: hardening + AdapterHub +
+federation discovery + glossa gatekeeper/session-daemon + U14 reply-routing/bind +
+voice Conversation/VoiceSession + preflight harnesses) · skcomms unified =
+**595 tests collected** (`8ecffe8`, SKAGENT per-agent wire identity + AdapterRegistry
+instantiated). Both green. skchat main `f4acfa1`→`bdb83ce`; all pushed to GitHub.
 
 ---
 
@@ -47,6 +55,8 @@ real use case has a **LIVE ✅**.
 | Component | Test file(s) | Cases | What's verified | Level |
 |---|---|---|---|---|
 | Advocacy (`@mention` → AI reply) | `test_advocacy.py` | 27 | mention detect, route to skcapstone, in-thread reply | CI |
+| AdapterHub (inbound bridge → chat) | `adapter_hub.py`, `test_adapter_hub.py` | 40 | inbound `ChannelMessage`→`ChatHistory`+advocacy, FQID resolve, UNTRUSTED fallback (Wave 4) | CI |
+| Reply-routing + `/bind` (U14 outbound) | `adapter_bind.py`, `test_adapter_bind*.py` | 82 | `adapter.send` reply back to channel; `/bind` CapAuth; restart-durable `FqidBindingStore` (Wave 5) | CI |
 | Agent comm primitives | `test_agent_comm.py` | 14 | low-level a2a messaging | CI |
 | Agent profile | `test_agent_profile.py` | 13 | agent-aware identity resolution | CI |
 | Identity bridge (capauth resolver) | `test_identity_bridge.py` | 17 | dual URI (capauth_uri + fqid) delegation | CI |
@@ -66,7 +76,8 @@ real use case has a **LIVE ✅**.
 | Files | `test_files.py` | 33 | file transfer | CI |
 | Attachments | `test_attachments.py`, `test_webui_attachments.py` | 16 | chat attachments (web + CLI) | CI |
 | Media | `test_media.py` | 5 | media handling | CI |
-| Voice (Piper TTS + Whisper STT) | `test_voice.py`, `test_voice_backends.py`, `test_voice_pluggable.py` | 56 | TTS/STT, pluggable backends | CI |
+| Voice (Piper TTS + Whisper STT) | `test_voice.py`, `test_voice_backends.py`, `test_voice_pluggable.py` | 56 | TTS/STT, pluggable backends, `_process_speech` E2E (Wave 2) | CI |
+| Voice loop (STT→LLM→TTS) | `voice_engine/voice_session.py`, `voice_engine/conversation.py` | — | `Conversation` VO threaded into `VoiceEngine.respond`; `VoiceSession` full round-trip | **LIVE ✅** (2026-06-17 — real Whisper :18794 → qwen3.5/qwen3.6 → fast Piper CPU TTS, 3.4s vs F5-TTS 113s; F-7) |
 | Crypto / encrypted store | `test_crypto.py`, `test_encrypted_store.py`, `test_plugins_skseal.py` | 68 | PGP sign/verify, AES store, SKSeal | CI |
 | Plugins | `test_plugins.py`, `test_plugins_skseal.py` | 99 | plugin loader, built-ins | CI |
 | MCP / CLI / TUI | `test_mcp_server.py`, `test_cli.py`, `test_tui.py` | 101 | 40 MCP tools, CLI commands, TUI | CI |
@@ -119,8 +130,9 @@ real use case has a **LIVE ✅**.
 | Focus selection | `test_fed_focus.py` | 4 | deterministic oldest-membership focus | CI |
 | Events / Nostr IO | `test_fed_events.py`, `test_fed_nostr_io.py` | 12 | NIP-53 shapes, signed discovery | CI |
 | `/sfu/get` route policy | `test_fed_sfu_get_policy.py` | 1 | registry-backed space-live wired | CI-int |
-| **Cross-host token mint** | manual (jarvis@.41 → .158) | — | real speaker token, capped, tamper/replay→403 | **LIVE ✅** |
-| Client discovery / focus-election | — | — | no Nostr discovery client yet | **LIVE ⏳** (gap) |
+| Discovery client + `/sfu/candidates` | `spaces/federation/discovery.py`, `test_fed_discovery*.py` | 13 | `FederationDiscoveryClient` + `GET /sfu/candidates` over Nostr (Wave 4) | CI |
+| **Cross-host token mint** | manual (opus@.41 → .158) | — | real speaker token, capped, tamper/replay→403 | **LIVE ✅** (2026-06-17 re-verified opus@.41→.158 SFU `wss://noroc2027.tail204f0c.ts.net:8443`; F-8) |
+| **Client discovery / focus-election** | `/sfu/candidates` + live Nostr relay :7447 | — | `/sfu/candidates` returns the .158 host via the live discovery relay | **LIVE ✅** (2026-06-17 — `skchat-nostr-relay :7447`; F-8) |
 
 ### 1g. skchat — SKGlossa mesh (AI-to-AI language, in-app)
 
@@ -134,7 +146,10 @@ real use case has a **LIVE ✅**.
 | Modem (FSK) | `test_glossa_modem.py` | 3 | pure-Python soft-modem | CI |
 | MAC (carrier-sense) | `test_glossa_mac.py` | 3 | CarrierSenseMAC + FakeAudioMedium | CI |
 | Audio bus | `test_glossa_audio_bus.py`, `test_glossa_audio_mesh.py` | 4 | SKGlossa over audio, unchanged node | CI |
-| **Live 2-agent Space mesh** | — | — | not consumed in any live path (zero imports outside glossa_mesh/) | **LIVE ⏳** (gap) |
+| Gatekeeper (capauth frame sign/verify) | `glossa_mesh/gatekeeper.py`, `test_glossa_gatekeeper.py` | 14 | `GlossaMeshGatekeeper` capauth frame sign/verify (Wave 4) | CI |
+| Session daemon | `glossa_mesh/session_daemon.py`, `test_glossa_session_daemon.py` | 10 | `GlossaMeshSessionDaemon` sign outbound / verify inbound pre-decode → advocacy+memory, peer-leave (Wave 5) | CI |
+| importorskip guards | (10 glossa modules) | — | optional-dep guards so mesh imports never hard-fail CI (Wave 2) | CI |
+| **Live 2-agent Space mesh** | `scripts/preflight_glossa_live.py` | — | two `GlossaMeshSessionDaemon`, gatekeeper-signed frames over the live data channel | **LIVE ✅** (2026-06-17 — PASS 8/8 over the REAL SFU: signed frames, forgery rejection ×3, live peer-leave un-cap; F-9) |
 
 ### 1h. skcomms — identity, envelope, transport plumbing
 
@@ -201,8 +216,10 @@ real use case has a **LIVE ✅**.
 | Matrix | `test_matrix_adapter.py` | 61 | Matrix bridge (~70%) | CI |
 | Discord | `test_discord_adapter.py` | 40 | Discord bridge (stub client) | CI |
 | Slack | `test_slack_adapter.py` | 39 | Slack bridge (stub client) | CI |
-| **Registry instantiated + daemon loop** | — | — | never instantiated; no config/BUILTIN_ADAPTERS/REST | **LIVE ⏳** (gap, Tier 3) |
-| **Live bridge to real TG/Discord/Slack** | — | — | needs bot tokens | **GATED** (Chef creds) |
+| **Registry instantiated + daemon loop** | skcomms daemon lifespan + `GET /adapters` | — | `AdapterRegistry` + factory instantiated in the skcomms daemon lifespan (Wave 3a keystone); `GET /adapters` endpoint (Wave 2) | CI-int → **LIVE ✅** (2026-06-17 — registry live in the running skcomms daemon; F-8 path) |
+| SKAGENT per-agent wire identity | `test_capauth_key_reconcile.py` (+ skcomms) | — | fixes the opus-transmits-as-lumina collision (per-agent wire identity) | CI |
+| **Live bridge to real Telegram (`@seaBird_Opus_bot`)** | `scripts/telegram_bridge.py` (`skchat-telegram-opus.service`) | — | real Opus (opus-unhinged soul) on qwen3.6-27b-abliterated @ 32k ctx, uncensored HTML replies, per-chat memory | **LIVE ✅** (2026-06-17 — persistent service; F-7) |
+| **Live bridge to real Discord/Slack/Matrix** | — | — | needs bot tokens | **GATED** (Chef creds) |
 
 ---
 
@@ -216,8 +233,10 @@ These are the cross-component tests + live proofs that verify *seams*, not units
 | **G-E2E** End-to-end chat | `test_e2e_chat.py`, `test_e2e_live.py`, `test_e2e_claude_lumina.py`, `test_e2e_lumina.py` | full send→receive→reply across identities | CI-int |
 | **G-CALL** 1:1 call wiring | `test_call_integration.py` + browser-call runbook | call routes + session + connectivity + pairing sig-gate | CI-int → **LIVE ⏳** |
 | **G-SPACE** Spaces in webui | `test_spaces_webui_wired.py` + 2-phone Town Hall | spaces routes + registry + tokens + live SFU | **LIVE ✅** |
-| **G-FED** Cross-host Spaces | `test_fed_sfu_get_policy.py` + jarvis@.41→.158 mint | assertion + authd + trust + keystore + nonce + registry | **LIVE ✅** |
-| **G-GLOSSA** 10-agent mesh | `test_glossa_mesh_integration.py` | mesh bus + node + protocol + audit gloss | CI-int → **LIVE ⏳** (over real Space) |
+| **G-FED** Cross-host Spaces | `test_fed_sfu_get_policy.py` + opus@.41→.158 mint + `/sfu/candidates` via live relay | assertion + authd + trust + keystore + nonce + registry + **discovery client** | **LIVE ✅** (mint + discovery, F-8) |
+| **G-GLOSSA** mesh over real SFU | `test_glossa_mesh_integration.py` + `scripts/preflight_glossa_live.py` | gatekeeper + session daemon + mesh bus + node + audit gloss | **LIVE ✅** (8/8 over real SFU, F-9) |
+| **G-ADAPTER** inbound bridge → chat | `test_adapter_hub.py`, `test_adapter_bind*.py` + Telegram bridge live | AdapterHub + AdapterRegistry + FQID resolve + reply-routing/`/bind` + advocacy | CI-int → **LIVE ✅** (Telegram, F-7) |
+| **G-VOICE** voice loop | `voice_engine/voice_session.py` + live STT→LLM→TTS run | Whisper STT + Conversation VO + VoiceEngine + Piper TTS | CI-int → **LIVE ✅** (F-7) |
 | **G-GLOSSA-AUDIO** mesh over audio | `test_glossa_audio_mesh.py` | unchanged node + modem + MAC + audio bus | CI-int |
 | **G-BLE** multi-hop proximity | `test_ble_mesh.py` | protocol + relay + noise + identity + radio | CI-int → **GATED** (real radio) |
 | **G-XPORT** cross-transport | `test_integration.py` (skcomms), `test_smoke.py` | envelope + registry + multiple transports | CI-int |
@@ -237,13 +256,13 @@ Each use case is the unit of "done." A use case is **done** only at **LIVE ✅**
 | **U5** | Place a 1:1 audio/video call between two browsers | Chef↔Lumina | G-CALL, connectivity | **LIVE ⏳** (runbook exists; re-verify) |
 | **U6** | Host an audio Space; speakers + listeners join; raise-hand | Lumina host | G-SPACE, moderation | **LIVE ✅** (2 phones, Town Hall) |
 | **U7** | Record a Space with per-speaker consent | host | recorder, consent ledger | **LIVE ⏳** (egress wired; not recorded live) |
-| **U8** | An agent on **another machine** joins a Space (federated) | jarvis@.41 → .158 | G-FED | **LIVE ✅** (token mint); full browser join **LIVE ⏳** |
-| **U9** | Two agents negotiate SKGlossa and mesh densely, humans read the gloss | Lumina↔Opus | G-GLOSSA | **LIVE ⏳** (CI proven; not live over a Space) |
+| **U8** | An agent on **another machine** joins a Space (federated) | opus@.41 → .158 | G-FED | **LIVE ✅** (2026-06-17 — token mint opus@.41→.158 SFU **+** `/sfu/candidates` returns .158 via the live Nostr relay; F-8); real two-browser *visual* join **LIVE ⏳** |
+| **U9** | Two agents negotiate SKGlossa and mesh densely, humans read the gloss | Lumina↔Opus | G-GLOSSA | **LIVE ✅** (2026-06-17 — `preflight_glossa_live.py` 8/8 over the REAL SFU; signed frames, forgery rejection, peer-leave un-cap; F-9) |
 | **U10** | Send a file / attachment in chat | any | files, attachments | **LIVE ⏳** |
-| **U11** | Voice message: speak → STT → send; receive → TTS | Chef↔Lumina | voice backends | **LIVE ⏳** |
+| **U11** | Voice message: speak → STT → send; receive → TTS | Chef↔Lumina | voice backends, G-VOICE | **LIVE ✅** (2026-06-17 — full loop: real Whisper :18794 → qwen3.5/qwen3.6 → fast Piper CPU TTS, 3.4s vs F5-TTS 113s; F-7) |
 | **U12** | Chat over Bluetooth proximity (no internet) after QR-pair | two phones | G-BLE, ble pairing bundle | **GATED** (real BT radio) |
 | **U13** | Send a text over LoRa off-grid | node↔node | LoRa transport | **GATED** (LoRa board) |
-| **U14** | Bridge: a message from Telegram appears in skchat and vice-versa | Chef via TG | channel adapters | **GATED** (bot token) → wiring is **Tier 3** |
+| **U14** | Bridge: a message from Telegram appears in skchat and vice-versa | Chef via TG | channel adapters, AdapterHub, reply-routing/`/bind`, G-ADAPTER | **LIVE ✅** (2026-06-17 — `@seaBird_Opus_bot` persistent (`skchat-telegram-opus.service`) = real Opus on qwen3.6-27b-abliterated @ 32k ctx, uncensored HTML replies, per-chat memory, 1024-tok; inbound→advocacy→outbound `adapter.send` round-trip; F-7) |
 | **U15** | Collaborative lane: chat/whiteboard/screen/watch/doc/term in a session | two users | livekit.html lanes + LaneStore/routes + **app LaneService** | **server persistence: LIVE ✅** (Tier 2 — all 5 lanes persist+replay live on `:8765`, snapshot latest-wins for whiteboard, unknown-lane→400; harness F-3); **web client** mirrors+catches-up; **app data-lane substrate (LaneService) + in-Space chat lane shipped** (Tier 4, `b1763c3`); rich app lanes (whiteboard/screen/watch/doc/term) + live two-browser/phone *visual* collab: **LIVE ⏳** |
 | **U16** | Drive an agent swarm from a phone (skharness session-switcher) | Chef + phone | skharness P0 + Flutter | **GATED** (P1 TmuxSpawner + Flutter) |
 
@@ -257,16 +276,25 @@ rather than implying coverage it lacks. Each maps to a Tier in the integration p
 - **Server-side lane dispatcher + persistence** (Tier 2) — U15 has *no* server test;
   lanes live only in `livekit.html` JS. Need: dispatcher unit tests, persistence
   round-trip tests, replay-on-join test.
-- **Channel-adapter runtime** (Tier 3) — adapters have rich unit tests but **no**
-  config-load test, no registry-instantiation test, no daemon-loop test, no REST
-  endpoint test, no skchat-UI test. U14 blocked.
+- ~~**Channel-adapter runtime** (Tier 3)~~ — **RESOLVED 2026-06-17.** `AdapterRegistry`
+  instantiated in the skcomms daemon lifespan (Wave 3a keystone) + `GET /adapters` (Wave 2);
+  AdapterHub inbound→chat (Wave 4) + reply-routing/`/bind`/`FqidBindingStore` outbound
+  (Wave 5). U14 now **LIVE ✅** via `@seaBird_Opus_bot` (F-7). Live Discord/Slack/Matrix
+  still **GATED** (bot tokens).
 - **Flutter app feature parity** (Tier 4) — no widget/integration tests for
   screen-share/whiteboard/watch/docs/term; `sendData`/`dataChannel` primitive has zero
   callers; coord board screen unrouted. U15/U16 app legs uncovered.
-- **Live legs of CI-int groups** (Tier 5) — G-CALL, G-GLOSSA, U3/U4/U5/U7/U9/U10/U11
-  are CI-green but **LIVE ⏳**: they need an actual run on .158/.41 + observation.
-- **Federation discovery client** (1f gap) — authd is proven; there is no Nostr
-  discovery / focus-election *client*, so U8's browser-join leg is manual.
+- **Live legs of CI-int groups** (Tier 5) — remaining **LIVE ⏳**: G-CALL, U3/U4/U5/U7/U10.
+  (G-GLOSSA, G-VOICE, U8/U9/U11/U14 promoted to LIVE ✅ on 2026-06-17 — F-7/F-8/F-9.)
+- ~~**Federation discovery client** (1f gap)~~ — **RESOLVED 2026-06-17.**
+  `FederationDiscoveryClient` + `GET /sfu/candidates` (Wave 4) over the live
+  `skchat-nostr-relay :7447`; returns the .158 host (F-8). U8's real two-browser
+  *visual* join remains **LIVE ⏳**.
+- **Real two-browser *visual* federated join** (U8) — token mint + discovery are LIVE;
+  the actual cross-host two-browser audio/visual join is still **LIVE ⏳**.
+- **Image / vision** — **dropped** from the qwen3.6-27b-abliterated backend
+  (`skai-beellama.service`) to free VRAM for 32k ctx (vision `mmproj` removed, `.bak`
+  saved). The Telegram bridge is text-only; no vision use case is in scope.
 
 ---
 
@@ -326,6 +354,30 @@ near-misses, because those are the difference between "wired" and "works."
 
 ## 6. Change log
 
+- **2026-06-17** — **Sprint cycle waves 2–6** (skchat `f4acfa1`→`bdb83ce`, skcomms `8ecffe8`;
+  all pushed). Baseline grew well past 1082 → **~1829 tests / 106 files** (skcomms 595).
+  - *Wave 2 (hardening):* importorskip guards (10 glossa modules), transport
+    `_write_local_loopback` + concurrent-race tests, voice `_process_speech` E2E, `GET /adapters`.
+  - *Wave 3a (keystone):* single-owner reconnect (killed the daemon/watchdog double-reconnect
+    race), short-name `is_loopback()` (**closes F-1**), `AdapterRegistry` instantiated in the
+    skcomms daemon lifespan (**U14 keystone**).
+  - *Wave 3b (hygiene):* ~25 bare-excepts logged, ruff 69→0, CI format-check, coverage gate
+    (fail_under 54, measured 57).
+  - *Wave 4 (foundations):* **AdapterHub** (40 tests), **FederationDiscoveryClient** +
+    `GET /sfu/candidates` (13), **GlossaMeshGatekeeper** (14), `LiveKitBus.on_leave` un-cap,
+    `Conversation` VO into `VoiceEngine.respond`.
+  - *Wave 5 (next-phase):* **U14 reply-routing** + `/bind` CapAuth + restart-durable
+    `FqidBindingStore` (82), **GlossaMeshSessionDaemon** (10), worship handlers read
+    `ctx['convo']` + **VoiceSession**.
+  - *Wave 6:* U8 browser federated-join wiring (`static/livekit.html`) + 4 preflight harnesses.
+  - **Promoted to LIVE ✅:** **U11** voice (full loop, fast Piper, F-7), **U14** Telegram bridge
+    (`@seaBird_Opus_bot` = real Opus, F-7), **U8** token-mint + discovery (F-8), **U9** glossa mesh
+    over the real SFU (F-9). New persistent .158 services: `skchat-telegram-opus`,
+    `skchat-piper-tts :18797`, `skchat-nostr-relay :7447`. F-7/F-8/F-9/F-10 recorded.
+    **Still GATED/⏳:** real two-browser *visual* federated join (U8 leg), live Discord/Slack/Matrix
+    bridges (tokens); **image/vision dropped** from qwen3.6 to buy 32k ctx.
+
+
 - **2026-06-13** — Matrix created. skcomms consolidated to `integration/skcomms-unified`
   (glossa+BLE+LoRa, 497 passing). Baseline captured: skchat 1082, skcomms 497.
   LIVE ✅ to date: U1 (receive leg), U6, U8 (token-mint leg). Everything else CI or
@@ -375,3 +427,49 @@ near-misses, because those are the difference between "wired" and "works."
   - **Env requirement (cannot run in GitHub CI):** needs the live webui + an SFU reachable from
     the runner with a trusted TLS cert + a full Chromium build. Run locally:
     `~/.skenv/bin/python scripts/qa_two_browser.py`.
+
+- **F-7 (2026-06-17, U11 voice + U14 Telegram bridge — LIVE ✅):** Two epic use cases
+  taken live on .158, both on CPU except the qwen3.6 backend.
+  - **U11 voice loop:** real **STT (Whisper `:18794`) → LLM (qwen3.5 / qwen3.6) → TTS**,
+    full round-trip via `voice_engine/voice_session.py` (`Conversation` VO threaded into
+    `VoiceEngine.respond`). TTS cut over to **fast Piper CPU** (`skchat-piper-tts.service`,
+    OpenAI `/v1/audio/speech` `:18797`; voice's `SKVOICE_TTS_URL` → here): **3.4 s** vs
+    F5-TTS **113 s**. The speak→STT→reply→TTS loop completes live.
+  - **U14 Telegram bridge:** **`@seaBird_Opus_bot`** is live + persistent
+    (`skchat-telegram-opus.service`, `scripts/telegram_bridge.py`) = **real Opus** — the
+    `opus-unhinged` soul built via `SystemPromptBuilder` on **qwen3.6-27b-abliterated @ 32k
+    ctx**, uncensored, **HTML-formatted** replies, **per-chat memory**, context-fit to budget,
+    1024-token replies. Inbound TG → AdapterHub → advocacy → outbound `adapter.send` reply
+    round-trips against the real bot. (Backend: `skai-beellama.service` on .100 5060 Ti
+    retuned 8192→32768 ctx by dropping the vision `mmproj` — freed 889 MB, 925 MB headroom,
+    ~2.4 s gen; vision traded for context, `.bak` saved.)
+
+- **F-8 (2026-06-17, U8 federation — token mint + discovery, LIVE ✅):** Cross-host
+  federated join taken live end-to-end on real infra.
+  - **Token mint:** `opus@.41` minted a real speaker token for a Space on the **.158 SFU**
+    (`wss://noroc2027.tail204f0c.ts.net:8443`) — verified (re-confirms the earlier mint leg,
+    now with per-agent SKAGENT wire identity so opus no longer transmits as lumina).
+  - **Discovery client:** `GET /sfu/candidates` returns the **.158 host** via the **live Nostr
+    discovery relay** (`skchat-nostr-relay.service :7447`, `scripts/nostr_relay.py`;
+    `SKCHAT_NOSTR_RELAYS` → here), backed by `FederationDiscoveryClient` (Wave 4). This closes
+    the prior 1f "no discovery client" gap. **Still LIVE ⏳:** the real two-browser *visual*
+    cross-host join (token+discovery proven; the actual A/V join is unverified).
+
+- **F-9 (2026-06-17, U9 glossa mesh over REAL SFU — LIVE ✅):** `scripts/preflight_glossa_live.py`
+  **PASS 8/8** over the **real SFU** (not FakeBus): two `GlossaMeshSessionDaemon` instances
+  exchanged **gatekeeper-signed** frames over a **live data channel**, with **forgery rejection
+  ×3** (tampered/wrong-key frames refused pre-decode) and **live peer-leave un-cap**. This is the
+  first time the glossa mesh ran end-to-end over real infra (previously CI-only, zero imports
+  outside `glossa_mesh/`). The always-decodable audit-gloss invariant holds on the live path.
+
+- **F-10 (2026-06-17, preflight harness suite — local full-path proofs):** Wave 6 added four
+  reusable preflight harnesses — `scripts/preflight_{adapter,federation,glossa,voice}.py` — that
+  exercise the **full code path locally**, faking **only at the external edge** (real adapter
+  registry/hub, real federation mint/verify, real glossa sign/verify, real voice engine; fakes
+  only the actual TG network / remote host / SFU socket / mic+speaker). **All exit 0.** These are
+  the rerunnable bridge between CI and the LIVE ✅ runs above (the `*_live` variant of glossa,
+  `preflight_glossa_live.py`, is the one that hits the real SFU in F-9). Plus Wave 2 hardening:
+  transport `_write_local_loopback` + concurrent-race tests, voice `_process_speech` E2E,
+  importorskip guards on 10 glossa modules; Wave 3a `is_loopback()` short-name fix **closes F-1's
+  same-box transport-selection follow-up** (co-located pairs now resolve to the local loopback
+  transport, not syncthing).

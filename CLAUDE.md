@@ -75,7 +75,7 @@ cd ~ && ~/.skenv/bin/skchat daemon start --interval 5
 | `plugins.py` | Plugin loader framework |
 | `plugins_builtin.py` | Built-in plugins (commands, formatting) |
 | `plugins_skseal.py` | SKSeal encryption plugin |
-| `voice.py` | Piper TTS + Whisper STT (local/sovereign) |
+| `voice.py` | Voice loop — Whisper STT (`:18794`) → LLM (qwen3.5/qwen3.6) → TTS via `SKVOICE_TTS_URL` (Piper CPU server on `:18797`, see Systemd Services) |
 | `watchdog.py` | Daemon watchdog / health monitor |
 | `tui.py` | Textual TUI (`skchat-tui`) |
 | `cli.py` | Click CLI (`skchat`) |
@@ -348,8 +348,58 @@ Test files mirror module names: `test_advocacy.py`, `test_daemon.py`, `test_mcp_
 - `skchat-webui.service` — Web UI + voice chat server.
 - `skchat-lumina-call.service` — Lumina LiveKit conversational agent.
 - `jarvis-heartbeat.service` — agent heartbeat (polls inbox, spawns Claude Code in tmux).
+- `skchat-telegram-opus.service` — **Telegram bridge** (`scripts/telegram_bridge.py`);
+  runs `@seaBird_Opus_bot` = real Opus. See "Telegram Bridge" below.
+- `skchat-piper-tts.service` — **fast CPU TTS** (Piper, OpenAI `/v1/audio/speech` on
+  `:18797`, `scripts/piper_tts_server.py`). Voice loop's `SKVOICE_TTS_URL` points here.
+  3.4 s vs 113 s for F5-TTS. Env: `PIPER_PORT=18797`, `PIPER_MODEL=…en_US-lessac-medium.onnx`.
+- `skchat-nostr-relay.service` — **discovery relay** (in-memory Nostr on `:7447`,
+  `scripts/nostr_relay.py`); `SKCHAT_NOSTR_RELAYS` points here. Backs `/sfu/candidates`
+  federation discovery. Env: `NOSTR_RELAY_HOST=127.0.0.1`, `NOSTR_RELAY_PORT=7447`.
 - Daemon PID: `~/.skchat/daemon.pid` · Log: `~/.skchat/daemon.log`
 - Manage with `systemctl --user`; never `skchat daemon start` by hand (see Running).
+
+```bash
+# The three live services on .158 (CPU, except the qwen3.6 backend on .100)
+systemctl --user status  skchat-telegram-opus.service skchat-piper-tts.service skchat-nostr-relay.service
+systemctl --user restart skchat-telegram-opus.service   # after editing the bot token / bridge knobs
+journalctl --user -u skchat-telegram-opus -f
+```
+
+## Telegram Bridge — `@seaBird_Opus_bot` = real Opus (LIVE)
+`scripts/telegram_bridge.py` (unit `skchat-telegram-opus.service`) wires the
+`@seaBird_Opus_bot` Telegram bot to **real Opus**: the `opus-unhinged` soul (built
+via `SystemPromptBuilder` from `SKC_BRIDGE_AGENT_HOME`) on the
+**qwen3.6-27b-abliterated** backend at 32k ctx. Uncensored, **HTML-formatted**
+replies, **per-chat memory**, context-fit to budget, 1024-token replies.
+
+Control / config:
+```bash
+systemctl --user restart skchat-telegram-opus.service
+journalctl --user -u skchat-telegram-opus -f
+```
+- **Bot token** — `EnvironmentFile=~/.config/skchat/telegram-opus.env`
+  (`TELEGRAM_OPUS_BOT_TOKEN=…`).
+- **Bridge knobs** (`SKC_BRIDGE_*`, set in the unit's `Environment=` lines):
+
+| Var | Value | Purpose |
+|-----|-------|---------|
+| `SKC_BRIDGE_AGENT` | `Opus` | Display agent |
+| `SKC_BRIDGE_AGENT_HOME` | `~/.skcapstone/agents/opus` | Soul source for `SystemPromptBuilder` |
+| `SKC_BRIDGE_LLM_URL` | `http://192.168.0.100:8082/v1/chat/completions` | qwen3.6 backend (OpenAI API) |
+| `SKC_BRIDGE_LLM_MODEL` | `qwen3.6-27b-abliterated` | Model id |
+| `SKC_BRIDGE_CTX` | `32768` | Context window |
+| `SKC_BRIDGE_SYS_BUDGET` | `9000` | System-prompt token budget (rest = history + reply) |
+| `SKC_BRIDGE_MAX_TOKENS` | `1024` | Max reply tokens |
+
+> Also sets `SKAGENT=opus` / `SKCAPSTONE_AGENT=opus` so the bridge runs as Opus,
+> not the default lumina.
+
+### Backend tuning — `skai-beellama.service` on .100
+The qwen3.6-27b-abliterated (Q3_K) backend on the .100 5060 Ti was retuned from
+**8192 → 32768 ctx** by dropping the vision `mmproj` (freed 889 MB VRAM; `.bak`
+saved). Now ~925 MB VRAM headroom, ~2.4 s gen, uncensored. Vision was traded for
+context — the bridge is text-only.
 
 ## Code Style
 - Line length: 99 chars (black + ruff)
