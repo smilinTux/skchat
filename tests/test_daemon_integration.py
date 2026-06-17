@@ -391,3 +391,66 @@ def test_daemon_empty_inbox_no_messages(inbox_dir):
     assert exc_holder == [], f"Daemon thread raised: {exc_holder[0]}"
     assert daemon.total_received == 0
     assert daemon.poll_count >= 5
+
+
+# ---------------------------------------------------------------------------
+# Test 4 — single reconnect owner: the poll loop must NOT reconnect on its own
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+def test_poll_loop_does_not_reconnect_on_transport_loss(inbox_dir):
+    """Under sustained transport loss, the daemon poll loop must NOT call
+    ``skcomms.reconnect()`` itself.
+
+    Reconnect is owned EXCLUSIVELY by ``TransportWatchdog`` (a single, rearming
+    trigger at failure_threshold=3).  Historically the poll loop had its own
+    inline auto-reconnect on the 2nd consecutive failure, racing the watchdog
+    and producing double-reconnects.  This test pins the contract that the only
+    reconnect path is the watchdog.
+
+    The watchdog is patched out by ``_start_patches`` (so it never fires), and
+    every ``poll_inbox()`` raises to drive ``_consecutive_failures`` well past
+    the old inline threshold (2) and the watchdog threshold (3).  We then assert
+    ``mock_skcomms.reconnect`` was never invoked.
+    """
+    mock_skcomms, mock_transport, mock_history, mock_advocacy = _build_mock_stack()
+
+    # Every poll fails → consecutive_failures climbs past any reconnect threshold.
+    mock_transport.poll_inbox.side_effect = ConnectionError("transport down")
+
+    patchers = _start_patches(mock_skcomms, mock_transport, mock_history, mock_advocacy)
+    daemon = ChatDaemon(interval=0.01, quiet=True)
+    exc_holder: list[BaseException] = []
+
+    def _run():
+        try:
+            with patch.object(daemon, "_start_health_server"):
+                daemon.start()
+        except DaemonShutdown:
+            pass
+        except Exception as exc:  # noqa: BLE001
+            exc_holder.append(exc)
+
+    thread = threading.Thread(target=_run, daemon=True, name="skchat-reconnect-integ")
+    thread.start()
+
+    try:
+        # Run enough failing cycles to exceed every historical threshold.
+        _wait_for(lambda: daemon._consecutive_failures >= 5, timeout=3.0)
+        daemon.running = False
+        thread.join(timeout=2.0)
+    finally:
+        for p in patchers:
+            p.stop()
+
+    assert not thread.is_alive(), "Daemon thread did not stop within 2 s"
+    assert exc_holder == [], f"Daemon thread raised: {exc_holder[0]}"
+    # Transport stayed down for many cycles ...
+    assert daemon._consecutive_failures >= 5, (
+        f"expected sustained failure, got {daemon._consecutive_failures}"
+    )
+    assert daemon._transport_ok is False
+    # ... yet the poll loop NEVER triggered its own reconnect. The watchdog
+    # (mocked here, real in production) is the single reconnect owner.
+    mock_skcomms.reconnect.assert_not_called()

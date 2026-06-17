@@ -310,3 +310,62 @@ def test_is_loopback_explicit_override():
     ):
         assert is_loopback("capauth:ops@custom.io") is True
         assert is_loopback("capauth:lumina@skworld.io") is False
+
+
+# --- QA F-1: short-name self-sends ----------------------------------------
+
+
+def test_is_loopback_short_name_self():
+    """Bare short name of the active agent is loopback (`lumina`)."""
+    with patch.dict("os.environ", {"SKAGENT": "lumina"}, clear=True):
+        assert is_loopback("lumina") is True
+
+
+def test_is_loopback_short_name_with_at_self():
+    """`@`-prefixed short name of the active agent is loopback (`@lumina`)."""
+    with patch.dict("os.environ", {"SKAGENT": "lumina"}, clear=True):
+        assert is_loopback("@lumina") is True
+
+
+def test_is_loopback_short_name_domain_self():
+    """`lumina@skworld.io` short form reduces to the local-part and matches."""
+    with patch.dict("os.environ", {"SKAGENT": "lumina"}, clear=True):
+        assert is_loopback("lumina@skworld.io") is True
+
+
+def test_is_loopback_short_name_other_agent():
+    """Short name of a different agent is not loopback (`@opus` / `opus`)."""
+    with patch.dict("os.environ", {"SKAGENT": "lumina"}, clear=True):
+        assert is_loopback("opus") is False
+        assert is_loopback("@opus") is False
+
+
+def test_is_loopback_chef_is_not_self():
+    """The human operator `chef` is never loopback for an AI agent.
+
+    chef is a valid same-host peer but NOT this agent, so it must take the
+    outbound path, not the local loopback path.
+    """
+    with patch.dict("os.environ", {"SKAGENT": "lumina"}, clear=True):
+        assert is_loopback("chef") is False
+        assert is_loopback("@chef") is False
+
+
+def test_is_loopback_env_driven_resolution():
+    """Which short name loops back follows the active-agent env var."""
+    with patch.dict("os.environ", {"SKAGENT": "opus"}, clear=True):
+        assert is_loopback("opus") is True
+        assert is_loopback("@opus") is True
+        assert is_loopback("lumina") is False
+    # SKCAPSTONE_AGENT is honoured as a fallback when SKAGENT is unset.
+    with patch.dict("os.environ", {"SKCAPSTONE_AGENT": "jarvis"}, clear=True):
+        assert is_loopback("jarvis") is True
+        assert is_loopback("@jarvis") is True
+        assert is_loopback("lumina") is False
+
+
+def test_is_loopback_empty_input():
+    """Empty / whitespace recipients are not loopback."""
+    with patch.dict("os.environ", {"SKAGENT": "lumina"}, clear=True):
+        assert is_loopback("") is False
+        assert is_loopback("@") is False

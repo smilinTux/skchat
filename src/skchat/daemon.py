@@ -402,19 +402,12 @@ class ChatDaemon:
                             " check SKComms connectivity",
                             self._consecutive_failures,
                         )
-                    # Attempt transport reconnect on the 2nd consecutive failure
-                    # so recovery is faster than waiting for the watchdog cycle.
-                    if self._consecutive_failures == 2 and self._skcomms is not None:
-                        reconnect_fn = getattr(self._skcomms, "reconnect", None)
-                        if reconnect_fn:
-                            try:
-                                logger.info(
-                                    "Transport: attempting reconnect after %d failures",
-                                    self._consecutive_failures,
-                                )
-                                reconnect_fn()
-                            except Exception as rc_exc:
-                                logger.warning("Transport reconnect failed: %s", rc_exc)
+                    # NOTE: reconnect is owned EXCLUSIVELY by TransportWatchdog
+                    # (watchdog.check(), every ~30s, threshold=3, rearmed via
+                    # _reconnect_pending). The daemon poll loop deliberately does
+                    # NOT trigger its own reconnect here — two uncoordinated
+                    # reconnect paths could race / double-reconnect under
+                    # transport loss. Keep the watchdog as the single owner.
                     # Cap the sleep at the configured poll interval so
                     # low-interval daemons (e.g. tests with interval=0.1s)
                     # can still cycle promptly. For the default interval=5s

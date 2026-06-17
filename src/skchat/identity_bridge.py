@@ -196,24 +196,55 @@ def resolve_peer_name(name: str) -> str:
 
 
 def is_loopback(recipient_uri: str) -> bool:
-    """Return True when *recipient_uri* matches the running agent's own identity.
+    """Return True when *recipient_uri* addresses the running agent itself.
 
     T5 (coord f93f5db6): closes the same-host loopback delivery bug class.
     A message addressed to ``capauth:lumina@skworld.io`` when the daemon IS
     lumina must be detected as loopback and delivered to the local inbox
     rather than going through the outbound transport.
 
+    QA F-1 (loopback-shortname): short-name self-sends are also recognised.
+    A CLI recipient like ``lumina`` or ``@lumina`` (with or without the
+    leading ``@``) is a loopback when it names the active agent
+    (``SKAGENT`` / ``SKCAPSTONE_AGENT`` / ``SKMEMORY_AGENT``).  Names that
+    are *not* this agent — including the human operator ``chef`` — are not
+    loopback, even though they may be valid peers on the same host.
+
     Args:
-        recipient_uri: CapAuth URI of the intended recipient.
+        recipient_uri: CapAuth URI or friendly short name of the recipient.
 
     Returns:
         bool: True when sender == recipient (same agent on same host).
     """
+    if not recipient_uri:
+        return False
+
     try:
         self_uri = get_sovereign_identity()
-        return recipient_uri == self_uri
     except Exception:
         return False
+
+    # 1. Exact wire-URI match (the canonical loopback path).
+    if recipient_uri == self_uri:
+        return True
+
+    # 2. Short-name match: ``lumina`` / ``@lumina`` resolve against the active
+    #    agent. We compare the bare local-part of self_uri (e.g. "lumina" from
+    #    "capauth:lumina@skworld.io") to the normalised recipient short name.
+    candidate = recipient_uri.lstrip("@").strip()
+    if not candidate or candidate.startswith("capauth:"):
+        # An explicit (non-matching) capauth URI is a different agent — not us.
+        return False
+
+    self_local = self_uri
+    if self_local.startswith("capauth:"):
+        self_local = self_local[len("capauth:") :]
+    self_local = self_local.split("@", 1)[0]
+
+    # ``lumina@skworld.io`` short forms also reduce to the local-part.
+    candidate_local = candidate.split("@", 1)[0]
+
+    return bool(self_local) and candidate_local == self_local
 
 
 def resolve_display_name(uri: str) -> str:
