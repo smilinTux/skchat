@@ -228,27 +228,74 @@ _DEFAULT_TOOLS = [
     "nextcloud_notes_search_notes", "nextcloud_notes_create_note",
     "skseed_truth_check",
 ]
+# Tools that render media and deliver it back into the chat get the chat_id
+# injected (so the model can't misroute delivery). Resolved generically at brain
+# init from each tool's schema: any tool declaring a `deliver_chat_id` parameter.
+# Per-agent tools (e.g. a private media server) are added via profile.yaml
+# `bridge.extra_tools` — kept OUT of this repo by design.
+_DELIVERY_TOOLS: set = set()
 _TOOLS_CACHE: list = []
+
+
+def _load_profile_manifest() -> dict:
+    """Read the agent's profile.yaml bridge-curation block (if present).
+
+    This is the unified per-agent capability manifest written by
+    `skcapstone agent profile --init`; the bridge reads its `bridge:` block so
+    tool/voice policy lives in one file rather than scattered env vars. Env
+    (SKC_BRIDGE_*) still wins when explicitly set.
+    """
+    try:
+        import yaml
+
+        p = _Path(AGENT_HOME) / "profile.yaml"
+        if p.exists():
+            return (yaml.safe_load(p.read_text()) or {}).get("bridge", {}) or {}
+    except Exception:
+        log.debug("profile.yaml load failed", exc_info=True)
+    return {}
 
 
 def _init_brain() -> None:
     """Spawn the agent's MCP servers and resolve the exposed toolset (once)."""
-    global _TOOLS_CACHE
+    global _TOOLS_CACHE, VOICE_REPLY, _DELIVERY_TOOLS
     try:
         _ROUTER.start()
     except Exception:
         log.exception("MCP tool router failed to start — text-only mode")
         return
-    sel = os.environ.get("SKC_BRIDGE_TOOLS", "").strip()
+    manifest = _load_profile_manifest()
+    # Toolset: env SKC_BRIDGE_TOOLS wins; else profile.yaml bridge.tools; else default.
+    env_sel = os.environ.get("SKC_BRIDGE_TOOLS", "").strip()
+    sel: object = env_sel or manifest.get("tools") or ""
     all_tools = _ROUTER.openai_tools()
-    if sel.lower() == "all":
+    if isinstance(sel, str) and sel.lower() == "all":
         _TOOLS_CACHE = all_tools
     else:
-        wanted = [t.strip() for t in sel.split(",") if t.strip()] or _DEFAULT_TOOLS
+        if isinstance(sel, list):
+            wanted = [str(t) for t in sel]
+        elif isinstance(sel, str) and sel and sel.lower() != "default":
+            wanted = [t.strip() for t in sel.split(",") if t.strip()]
+        else:
+            wanted = _DEFAULT_TOOLS
         wset = set(wanted)
+        # Per-agent additions (e.g. a private media server) live in profile.yaml,
+        # NOT this repo — generic merge, no tool names hardcoded here.
+        wset |= {str(t) for t in (manifest.get("extra_tools") or [])}
         _TOOLS_CACHE = [t for t in all_tools if t["function"]["name"] in wset]
-    log.info("brain ready — %d tools exposed to %s (of %d allowed)",
-             len(_TOOLS_CACHE), AGENT_NAME, len(all_tools))
+    # Delivery tools = any exposed tool whose schema declares deliver_chat_id;
+    # the bridge injects the chat_id for these (generic, schema-driven).
+    _DELIVERY_TOOLS = {
+        t["function"]["name"] for t in _TOOLS_CACHE
+        if "deliver_chat_id" in (
+            t["function"].get("parameters", {}).get("properties", {}))
+    }
+    log.info("delivery tools (chat-id injected): %s", sorted(_DELIVERY_TOOLS) or "none")
+    # Voice policy: env wins, else profile.yaml.
+    if not os.environ.get("SKC_BRIDGE_VOICE_REPLY") and manifest.get("voice_reply"):
+        VOICE_REPLY = str(manifest["voice_reply"]).strip().lower()
+    log.info("brain ready — %d tools exposed to %s (of %d allowed); voice_reply=%s",
+             len(_TOOLS_CACHE), AGENT_NAME, len(all_tools), VOICE_REPLY)
 
 
 # Keep system + history + tools + reply inside the 32k backend context window.
@@ -297,7 +344,7 @@ def _call(msgs: list, with_tools: bool = True) -> dict:
     return out["choices"][0]["message"]
 
 
-def _run_tool_loop(msgs: list) -> str:
+def _run_tool_loop(msgs: list, chat_id: str = "") -> str:
     """Drive the qwen3.6 tool-calling loop: call → dispatch MCP → feed back."""
     for _round in range(MAX_TOOL_ROUNDS):
         msg = _call(msgs, with_tools=True)
@@ -314,6 +361,10 @@ def _run_tool_loop(msgs: list) -> str:
                 args = json.loads(fn.get("arguments") or "{}")
             except json.JSONDecodeError:
                 args = {}
+            # Inject delivery context for tools that send media back to the chat —
+            # the model never sees the chat_id; the bridge owns routing.
+            if name in _DELIVERY_TOOLS and chat_id:
+                args["deliver_chat_id"] = chat_id
             log.info("tool-call: %s(%s)", name, json.dumps(args)[:160])
             result = _ROUTER.dispatch(name, args)
             msgs.append({"role": "tool", "tool_call_id": tc.get("id", ""),
@@ -333,7 +384,7 @@ def _llm(chat_key: str, user_text: str) -> str:
         log.debug("memory inject failed", exc_info=True)
     msgs = _fit_messages(chat_key, user_text, mem_block=mem_block)
     try:
-        reply = _run_tool_loop(msgs)
+        reply = _run_tool_loop(msgs, chat_id=chat_key)
     except urllib.error.HTTPError as e:
         if e.code == 400:  # context overflow — retry minimal, no tools
             log.warning("400 from backend; retrying system+message only (no tools)")
@@ -364,8 +415,36 @@ def _extract_voice(u: dict) -> str | None:
     return v.get("file_id") if isinstance(v, dict) else None
 
 
+def _handle_reaction(u: dict) -> None:
+    """A user reacted to one of the bot's images/videos → record it as a rating.
+
+    👎=1 🤷=2 👍=3 ❤️=4 🔥=5 (skchat.rating_reactions.EMOJI_SCORE); other emojis
+    ignored. Anonymous/channel reactions (no user) are dropped.
+    """
+    mr = u.get("message_reaction") or {}
+    if not mr.get("user"):
+        return
+    new = mr.get("new_reaction") or []
+    if not new:
+        return
+    emoji = (new[-1] or {}).get("emoji")
+    chat_id = (mr.get("chat") or {}).get("id")
+    message_id = mr.get("message_id")
+    try:
+        from skchat import rating_reactions as _RR
+        score = _RR.record_telegram_reaction(chat_id, message_id, emoji)
+        if score is not None:
+            log.info("reaction → rating: chat=%s msg=%s emoji=%s score=%d",
+                     chat_id, message_id, emoji, score)
+    except Exception:
+        log.debug("reaction handling failed", exc_info=True)
+
+
 async def main() -> None:
     adapter = TelegramAdapter(config={"bot_token": TOKEN})
+    # Receive emoji reactions (excluded from getUpdates by default) so the image
+    # rating loop works — see _handle_reaction.
+    adapter._allowed_updates = ["message", "edited_message", "message_reaction"]
     hub = AdapterHub(outbound_adapter=adapter, resolve_fqid=lambda ident: "chef@skworld.io")
     _init_brain()
     log.info("Telegram bridge live as %s — polling getUpdates", AGENT)
@@ -373,6 +452,10 @@ async def main() -> None:
         try:
             updates = await adapter._poll()
             for u in updates:
+                # Emoji reaction on a bot image/video → rating loop (no reply).
+                if u.get("message_reaction"):
+                    _handle_reaction(u)
+                    continue
                 m = adapter._normalize(u)
                 incoming = m.text if (m and getattr(m, "text", None)) else None
                 is_voice = False

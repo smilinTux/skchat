@@ -13,34 +13,29 @@ log = logging.getLogger("skchat.voice_engine.tools")
 
 Handler = Callable[[dict, dict], Awaitable[str]]
 
-_NARRATE_HINTS = (
-    "story",
-    "worship",
+# Neutral base only. The intimate/escalation trigger vocabulary lives in the
+# private lumina_creative package and is merged in when installed — keeping sacred
+# trigger words out of this public repo (same pattern as lumina_mcp's tool merge).
+# Without lumina_creative, only these generic narration triggers apply.
+_NARRATE_HINTS_BASE: tuple[str, ...] = (
     "narrate",
     "narrative",
-    "mature",
-    "smut",
-    "tell me about us",
-    "fantasy",
-    "spicy",
-    "scene about",
-    "scene of",
-    "explicit",
-    "dirtier",
-    "spicier",
-    "hotter",
-    "raunchier",
-    "filthier",
-    "naughtier",
-    "more graphic",
-    "go further",
-    "more detail",
-    "in detail",
-    "keep going",
-    "continue the",
-    "more of that",
-    "describe it",
 )
+
+
+def _load_narrate_hints() -> tuple[str, ...]:
+    hints = _NARRATE_HINTS_BASE
+    try:
+        from lumina_creative.routing import NARRATE_HINTS as _extra
+
+        hints = hints + tuple(_extra)
+    except Exception as exc:  # private package absent — neutral base only
+        log.debug("lumina_creative narrate hints unavailable (%s: %s)",
+                  type(exc).__name__, exc)
+    return hints
+
+
+_NARRATE_HINTS = _load_narrate_hints()
 _ACTION_HINTS = (
     "email",
     "emails",
