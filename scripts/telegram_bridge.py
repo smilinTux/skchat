@@ -66,14 +66,59 @@ SYSTEM = _build_system_prompt()
 _history: dict[str, deque] = defaultdict(lambda: deque(maxlen=12))
 
 
-def _llm(chat_key: str, user_text: str) -> str:
-    msgs = [{"role": "system", "content": SYSTEM}]
-    msgs.extend(_history[chat_key])
+# Keep system + history + reply inside the backend context window.
+# qwen3.6-27b llama-server runs -c 8192; the full opus prompt is ~7.6k tokens,
+# so cap the system (soul/identity lead) to leave room for conversation.
+CTX_TOKENS = int(os.environ.get("SKC_BRIDGE_CTX", "8192"))
+MAX_TOKENS = int(os.environ.get("SKC_BRIDGE_MAX_TOKENS", "240"))
+_MARGIN = 400
+_CHARS_PER_TOK = 3  # measured against this opus prompt (~3 chars/token), conservative
+_SYS_BUDGET_TOK = int(os.environ.get("SKC_BRIDGE_SYS_BUDGET", "3500"))
+
+
+def _est(s: str) -> int:
+    return len(s) // _CHARS_PER_TOK + 1
+
+
+def _fit_messages(chat_key: str, user_text: str) -> list:
+    """Capped system + as many recent history turns as fit + the new message."""
+    system = SYSTEM[: _SYS_BUDGET_TOK * _CHARS_PER_TOK]
+    msgs = [{"role": "system", "content": system}]
+    avail = CTX_TOKENS - MAX_TOKENS - _MARGIN - _est(system) - _est(user_text)
+    kept: list = []
+    acc = 0
+    for m in reversed(_history.get(chat_key, [])):
+        t = _est(m["content"])
+        if acc + t > avail:
+            break
+        kept.insert(0, m)
+        acc += t
+    msgs.extend(kept)
     msgs.append({"role": "user", "content": user_text})
-    body = json.dumps({"model": LLM_MODEL, "messages": msgs, "max_tokens": 220}).encode()
+    return msgs
+
+
+def _call(msgs: list) -> str:
+    body = json.dumps({"model": LLM_MODEL, "messages": msgs, "max_tokens": MAX_TOKENS}).encode()
     req = urllib.request.Request(LLM_URL, data=body, headers={"Content-Type": "application/json"})
-    out = json.loads(urllib.request.urlopen(req, timeout=90).read())
-    reply = out["choices"][0]["message"]["content"].strip()
+    out = json.loads(urllib.request.urlopen(req, timeout=120).read())
+    return out["choices"][0]["message"]["content"].strip()
+
+
+def _llm(chat_key: str, user_text: str) -> str:
+    import urllib.error
+
+    msgs = _fit_messages(chat_key, user_text)
+    try:
+        reply = _call(msgs)
+    except urllib.error.HTTPError as e:
+        if e.code == 400:  # context overflow — retry with no history
+            log.warning("400 from backend; retrying system+message only")
+            sys_only = [m for m in msgs if m["role"] == "system"]
+            sys_only.append({"role": "user", "content": user_text})
+            reply = _call(sys_only)
+        else:
+            raise
     _history[chat_key].append({"role": "user", "content": user_text})
     _history[chat_key].append({"role": "assistant", "content": reply})
     return reply
