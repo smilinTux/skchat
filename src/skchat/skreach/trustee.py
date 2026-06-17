@@ -376,9 +376,7 @@ class TrusteeOps:
             current_replicas: Current replica count (for scale-down detection).
             confirm_token:    Required for scale-down (destructive path).
         """
-        is_scale_down = (
-            current_replicas is not None and replicas < current_replicas
-        )
+        is_scale_down = current_replicas is not None and replicas < current_replicas
         cmd_class = CommandClass.DESTRUCTIVE if is_scale_down else CommandClass.DEPLOY
 
         return self._dispatch(

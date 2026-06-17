@@ -18,7 +18,7 @@ def test_snapshot_lane_keeps_only_latest(tmp_path):
     s.snapshot("space-1", "whiteboard", {"lane": "whiteboard", "elements": [1]})
     s.snapshot("space-1", "whiteboard", {"lane": "whiteboard", "elements": [1, 2]})
     out = s.replay("space-1", "whiteboard")
-    assert out == [{"lane": "whiteboard", "elements": [1, 2]}]   # only latest
+    assert out == [{"lane": "whiteboard", "elements": [1, 2]}]  # only latest
 
 
 def test_replay_scoped_per_space_and_lane(tmp_path):
@@ -33,7 +33,7 @@ def test_log_replay_respects_limit(tmp_path):
     for i in range(10):
         s.append("space-1", "watch", {"i": i})
     out = s.replay("space-1", "watch", limit=3)
-    assert [e["i"] for e in out] == [7, 8, 9]   # most-recent 3, chronological
+    assert [e["i"] for e in out] == [7, 8, 9]  # most-recent 3, chronological
 
 
 def test_empty_replay_is_empty_list(tmp_path):

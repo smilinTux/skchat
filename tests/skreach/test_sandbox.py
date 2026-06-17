@@ -14,23 +14,18 @@ Covers acceptance criteria:
 
 from __future__ import annotations
 
-import os
-import subprocess
 from pathlib import Path
 from unittest import mock
 
 import pytest
 
 from skchat.skreach.sandbox import (
-    HARDCODED_DENYLIST,
     ExecDisabled,
-    ExecResult,
     SandboxConfig,
     ValidationError,
     _scrub_env,
     run,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -79,9 +74,7 @@ def test_exec_disabled_no_subprocess_spawn(
         mock_popen.assert_not_called()
 
 
-def test_exec_disabled_explicitly_zero(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_exec_disabled_explicitly_zero(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """SKREACH_EXEC_ENABLED=0 explicitly also gates exec."""
     monkeypatch.setenv("SKREACH_EXEC_ENABLED", "0")
     cfg = _make_config(tmp_path)
@@ -123,6 +116,7 @@ def test_shell_true_never_used_in_source() -> None:
     """
     import ast
     import inspect
+
     import skchat.skreach.sandbox as _sandbox_module
 
     src = inspect.getsource(_sandbox_module)
@@ -137,9 +131,7 @@ def test_shell_true_never_used_in_source() -> None:
                     and isinstance(kw.value, ast.Constant)
                     and kw.value.value is True
                 ):
-                    violations.append(
-                        (getattr(node, "lineno", 0), ast.unparse(node))
-                    )
+                    violations.append((getattr(node, "lineno", 0), ast.unparse(node)))
 
     assert not violations, (
         "SAND-1 VIOLATION: shell=True keyword argument found in sandbox.py!\n"
@@ -152,9 +144,7 @@ def test_shell_true_never_used_in_source() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_cwd_outside_allowed_rejected(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_cwd_outside_allowed_rejected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """SAND-3: cwd outside all allowed_cwd prefixes → ValidationError."""
     monkeypatch.delenv("SKREACH_EXEC_ENABLED", raising=False)
     cfg = _make_config(tmp_path)
@@ -166,9 +156,7 @@ def test_cwd_outside_allowed_rejected(
     assert exc_info.value.outcome in ("allowlist_denied", "error")
 
 
-def test_cwd_traversal_attempt_rejected(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_cwd_traversal_attempt_rejected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """SAND-3: cwd using .. traversal that lands outside allowed prefix → rejected."""
     monkeypatch.delenv("SKREACH_EXEC_ENABLED", raising=False)
     cfg = _make_config(tmp_path)
@@ -295,9 +283,7 @@ def test_secret_env_keys_stripped() -> None:
     assert "ghp_xxx" not in scrubbed
 
 
-def test_scrubbed_keys_not_in_child_env(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_scrubbed_keys_not_in_child_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """SAND-7: child process env never contains scrubbed keys (via ExecDisabled check)."""
     monkeypatch.delenv("SKREACH_EXEC_ENABLED", raising=False)
     cfg = _make_config(tmp_path)
@@ -315,9 +301,7 @@ def test_scrubbed_keys_not_in_child_env(
 # ---------------------------------------------------------------------------
 
 
-def test_nonexistent_cwd_raises(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_nonexistent_cwd_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """cwd that does not exist → ValidationError(outcome='error')."""
     monkeypatch.delenv("SKREACH_EXEC_ENABLED", raising=False)
     cfg = _make_config(tmp_path)
@@ -333,9 +317,7 @@ def test_nonexistent_cwd_raises(
 # ---------------------------------------------------------------------------
 
 
-def test_empty_argv_raises(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_empty_argv_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Empty argv raises ValidationError before any other check."""
     monkeypatch.delenv("SKREACH_EXEC_ENABLED", raising=False)
     cfg = _make_config(tmp_path)
@@ -350,9 +332,7 @@ def test_empty_argv_raises(
 # ---------------------------------------------------------------------------
 
 
-def test_allowed_cwd_passes(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_allowed_cwd_passes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A cwd inside allowed_cwd passes validation and returns ExecDisabled."""
     monkeypatch.delenv("SKREACH_EXEC_ENABLED", raising=False)
     cfg = _make_config(tmp_path)

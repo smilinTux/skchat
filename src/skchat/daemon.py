@@ -659,12 +659,16 @@ class ChatDaemon:
         if self._file_service is None:
             return False
         content = getattr(msg, "content", "") or ""
-        if "FILE_TRANSFER_INIT" not in content and "FILE_CHUNK" not in content \
-                and "FILE_TRANSFER_DONE" not in content:
+        if (
+            "FILE_TRANSFER_INIT" not in content
+            and "FILE_CHUNK" not in content
+            and "FILE_TRANSFER_DONE" not in content
+        ):
             return False
         try:
             payload = json.loads(content)
-        except Exception:
+        except Exception as exc:
+            logger.debug("file-transfer payload not valid JSON (%s: %s)", type(exc).__name__, exc)
             return False
         if not isinstance(payload, dict):
             return False
@@ -897,7 +901,12 @@ class ChatDaemon:
                 try:
                     length = int(self.headers.get("Content-Length", 0))
                     data = json.loads(self.rfile.read(length).decode() or "{}")
-                except Exception:
+                except Exception as exc:
+                    logger.warning(
+                        "rejecting request with invalid JSON body (%s: %s)",
+                        type(exc).__name__,
+                        exc,
+                    )
                     self._respond_json(400, {"error": "invalid JSON body"})
                     return
                 agent = data.get("agent") or os.environ.get("SKAGENT", "lumina")
@@ -1164,8 +1173,8 @@ def _live_daemon_pids() -> list[int]:
         if pid == self_pid:
             continue
         try:
-            cmdline = (entry / "cmdline").read_bytes().replace(b"\x00", b" ").decode(
-                "utf-8", "ignore"
+            cmdline = (
+                (entry / "cmdline").read_bytes().replace(b"\x00", b" ").decode("utf-8", "ignore")
             )
         except OSError:
             continue  # process vanished or unreadable — skip
@@ -1352,16 +1361,13 @@ def start_daemon(
         raise RuntimeError(f"Daemon already running (PID {_read_pid()})")
     if _singleton_lock_held():
         others = _live_daemon_pids()
-        raise RuntimeError(
-            f"Daemon already running (PID {others[0] if others else 'unknown'})"
-        )
+        raise RuntimeError(f"Daemon already running (PID {others[0] if others else 'unknown'})")
 
     if not background:
         if not _acquire_singleton_lock():
             others = _live_daemon_pids()
             raise RuntimeError(
-                "Daemon already running "
-                f"(PID {others[0] if others else 'unknown'})"
+                f"Daemon already running (PID {others[0] if others else 'unknown'})"
             )
         log_path = Path(log_file).expanduser() if log_file else None
         d = ChatDaemon(interval=interval, log_file=log_path, quiet=quiet)

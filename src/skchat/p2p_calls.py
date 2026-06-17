@@ -26,11 +26,13 @@ _incoming: list[str] = []
 # -- monkeypatchable seams ----------------------------------------------------
 def _list_peers() -> dict:
     from skcomms.peers import list_peers
+
     return list_peers()
 
 
 def _self_agent() -> Optional[str]:
     from capauth import resolve_agent_identity
+
     return resolve_agent_identity().agent
 
 

@@ -23,13 +23,13 @@ def test_consent_is_scoped_per_space(tmp_path):
     led.add("space-x", "alice@x.y")
     ok, missing = can_record(["alice@x.y"], "space-other", led)
     assert ok is False
-    assert missing == ["alice@x.y"]      # consent in space-x doesn't carry over
+    assert missing == ["alice@x.y"]  # consent in space-x doesn't carry over
 
 
 def test_empty_speaker_list_can_record(tmp_path):
     led = ConsentLedger(path=tmp_path / "consent.json")
     ok, missing = can_record([], "space-x", led)
-    assert ok is True                    # nobody on stage → nothing to consent to
+    assert ok is True  # nobody on stage → nothing to consent to
 
 
 def test_consent_persists(tmp_path):

@@ -292,8 +292,14 @@ class TestSweepMalformedInput:
         """A non-numeric ttl ("soon") is skipped, not deleted (counted scanned)."""
         s = FakeStore()
         old = (datetime.now(timezone.utc) - timedelta(seconds=999)).isoformat()
-        s.add(FakeMemory(id="bad-ttl", tags=["skchat", "skchat:message"],
-                         metadata={"ttl": "soon"}, created_at=old))
+        s.add(
+            FakeMemory(
+                id="bad-ttl",
+                tags=["skchat", "skchat:message"],
+                metadata={"ttl": "soon"},
+                created_at=old,
+            )
+        )
         reaper = MessageReaper(store=s)
         result = reaper.sweep()
         assert result.scanned == 1
@@ -303,8 +309,14 @@ class TestSweepMalformedInput:
     def test_unparseable_created_at_skipped(self) -> None:
         """A garbage created_at means we can't date the msg → skip, never delete."""
         s = FakeStore()
-        s.add(FakeMemory(id="bad-date", tags=["skchat", "skchat:message"],
-                         metadata={"ttl": 1}, created_at="not-a-date"))
+        s.add(
+            FakeMemory(
+                id="bad-date",
+                tags=["skchat", "skchat:message"],
+                metadata={"ttl": 1},
+                created_at="not-a-date",
+            )
+        )
         reaper = MessageReaper(store=s)
         result = reaper.sweep()
         assert result.scanned == 1
@@ -314,8 +326,11 @@ class TestSweepMalformedInput:
         """When forget() raises, the sweep records an error and keeps going."""
         s = FakeStore()
         old = (datetime.now(timezone.utc) - timedelta(seconds=120)).isoformat()
-        s.add(FakeMemory(id="boom", tags=["skchat", "skchat:message"],
-                         metadata={"ttl": 60}, created_at=old))
+        s.add(
+            FakeMemory(
+                id="boom", tags=["skchat", "skchat:message"], metadata={"ttl": 60}, created_at=old
+            )
+        )
 
         def _boom(_id: str) -> bool:
             raise RuntimeError("store offline")
@@ -330,8 +345,11 @@ class TestSweepMalformedInput:
         """created_at supplied as a real datetime (not ISO string) is handled."""
         s = FakeStore()
         dt = datetime.now(timezone.utc) - timedelta(seconds=120)
-        s.add(FakeMemory(id="dt", tags=["skchat", "skchat:message"],
-                         metadata={"ttl": 60}, created_at=dt))
+        s.add(
+            FakeMemory(
+                id="dt", tags=["skchat", "skchat:message"], metadata={"ttl": 60}, created_at=dt
+            )
+        )
         reaper = MessageReaper(store=s)
         result = reaper.sweep(create_tombstones=False)
         assert result.expired == 1
@@ -340,8 +358,9 @@ class TestSweepMalformedInput:
 class TestTagEphemeralPreservesMetadata:
     def test_existing_metadata_preserved(self, reaper: MessageReaper) -> None:
         """tag_ephemeral keeps existing metadata keys when adding the flag."""
-        msg = ChatMessage(sender="a@test", recipient="b@test", content="x",
-                          ttl=60, metadata={"existing": "keep"})
+        msg = ChatMessage(
+            sender="a@test", recipient="b@test", content="x", ttl=60, metadata={"existing": "keep"}
+        )
         tagged = reaper.tag_ephemeral(msg)
         assert tagged.metadata["existing"] == "keep"
         assert tagged.metadata["ephemeral"] is True

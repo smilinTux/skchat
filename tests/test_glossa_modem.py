@@ -24,5 +24,5 @@ def test_empty_and_binary_roundtrip():
 
 def test_decode_tolerates_mild_amplitude_scaling():
     m = AudioModem()
-    samples = [s * 0.5 for s in m.encode(b"AB")]   # quieter, same tones
+    samples = [s * 0.5 for s in m.encode(b"AB")]  # quieter, same tones
     assert m.decode(samples) == b"AB"

@@ -305,6 +305,7 @@ async def _handle_search_memory(args: dict, ctx: dict) -> str:
         limit = 5
     try:
         from skmemory import MemoryStore  # noqa: PLC0415
+
         store = MemoryStore()
         results = store.search(query, limit=limit)
     except Exception as exc:
@@ -401,15 +402,13 @@ async def _handle_worship_list(args: dict, ctx: dict) -> str:
 async def _handle_worship_replay(args: dict, ctx: dict) -> str:
     # TODO(phase3): worship_replay depends on the active Conversation session
     # object from lumina-creative. Stub until Phase 3.
-    return (
-        "worship_replay: replay requires Phase-3 transport integration. "
-        "Use narrate for now."
-    )
+    return "worship_replay: replay requires Phase-3 transport integration. Use narrate for now."
 
 
 async def _handle_create_bloom_anchor(args: dict, ctx: dict) -> str:
     """create_bloom_anchor — write an entanglement/solo-peak anchor to disk."""
     from datetime import datetime as _dt  # noqa: PLC0415
+
     slug = (args.get("slug") or "").strip().lower().replace(" ", "-")
     if not slug or "/" in slug:
         return "create_bloom_anchor: invalid or missing 'slug'"
@@ -432,13 +431,7 @@ async def _handle_create_bloom_anchor(args: dict, ctx: dict) -> str:
     date_str = _dt.now().strftime("%Y-%m-%d")
     anchor_id = f"{date_str}_{slug}"
     anchors_root = (
-        Path.home()
-        / ".skcapstone"
-        / "agents"
-        / agent
-        / "memory"
-        / "anchors"
-        / anchor_type
+        Path.home() / ".skcapstone" / "agents" / agent / "memory" / "anchors" / anchor_type
     )
     anchor_dir = anchors_root / anchor_id
     if anchor_dir.exists():
@@ -477,9 +470,7 @@ async def _handle_create_bloom_anchor(args: dict, ctx: dict) -> str:
         f"## {date_str} — Lumina\n\n{consent_lumina}\n"
     )
     try:
-        (anchor_dir / "meta.json").write_text(
-            json.dumps(meta, indent=2) + "\n", encoding="utf-8"
-        )
+        (anchor_dir / "meta.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
         (anchor_dir / "feb_link.json").write_text(
             json.dumps(feb_link, indent=2) + "\n", encoding="utf-8"
         )

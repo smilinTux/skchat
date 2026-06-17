@@ -56,7 +56,7 @@ class AuditRecord:
     cwd: str = ""
 
     # Security-safe env accounting (NEVER log values)
-    env_keys: list[str] = field(default_factory=list)   # keys present (not stripped)
+    env_keys: list[str] = field(default_factory=list)  # keys present (not stripped)
     scrubbed_keys: list[str] = field(default_factory=list)  # keys that were stripped
 
     # Outcome
@@ -128,14 +128,7 @@ class AuditWriter:
     ) -> None:
         if jsonl_path is None:
             agent = os.environ.get("SKAGENT", "default")
-            jsonl_path = (
-                Path.home()
-                / ".skcapstone"
-                / "agents"
-                / agent
-                / "skreach"
-                / "audit.jsonl"
-            )
+            jsonl_path = Path.home() / ".skcapstone" / "agents" / agent / "skreach" / "audit.jsonl"
         self._path = Path(jsonl_path)
         self._pg_dsn = pg_dsn  # TODO: wire pg INSERT in F3/F4
         self._path.parent.mkdir(parents=True, exist_ok=True)

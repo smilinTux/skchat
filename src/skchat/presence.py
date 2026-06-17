@@ -7,6 +7,7 @@ It flows as lightweight signals over SKComms alongside chat messages.
 from __future__ import annotations
 
 import json
+import logging
 import threading
 import time
 import uuid
@@ -17,7 +18,6 @@ from typing import Optional
 
 from pydantic import BaseModel, Field
 
-import logging
 logger = logging.getLogger(__name__)
 
 

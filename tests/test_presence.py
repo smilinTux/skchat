@@ -391,9 +391,7 @@ class TestPresenceCachePersistence:
 
     def test_record_persists_across_instances(self, tmp_path: Path) -> None:
         path = tmp_path / "presence_cache.json"
-        PresenceCache(cache_file=path).record(
-            "capauth:lumina@skworld.io", PresenceState.ONLINE
-        )
+        PresenceCache(cache_file=path).record("capauth:lumina@skworld.io", PresenceState.ONLINE)
         # A brand-new instance (simulating the CLI process) reads it back.
         fresh = PresenceCache(cache_file=path)
         entry = fresh.get_entry("capauth:lumina@skworld.io")

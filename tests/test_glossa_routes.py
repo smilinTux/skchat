@@ -42,8 +42,7 @@ def test_caps_surfaces_codebook_version(client):
 
 
 def test_encode_returns_wire_gloss_tier_lexicon(client):
-    r = client.post("/glossa/encode",
-                    json={"intent": "coord.claim", "args": {"task": "abc"}})
+    r = client.post("/glossa/encode", json={"intent": "coord.claim", "args": {"task": "abc"}})
     assert r.status_code == 200
     body = r.json()
     assert set(body) >= {"wire", "gloss", "tier", "lexicon_version"}
@@ -58,9 +57,10 @@ def test_encode_returns_wire_gloss_tier_lexicon(client):
 
 
 def test_encode_decode_round_trip(client):
-    enc = client.post("/glossa/encode", json={
-        "intent": "status.report", "args": {"svc": "skmem-pg"},
-        "text": "all green"}).json()
+    enc = client.post(
+        "/glossa/encode",
+        json={"intent": "status.report", "args": {"svc": "skmem-pg"}, "text": "all green"},
+    ).json()
     dec = client.post("/glossa/decode", json={"wire": enc["wire"]}).json()
     assert dec["intent"] == "status.report"
     assert dec["args"] == {"svc": "skmem-pg"}
@@ -84,8 +84,7 @@ def test_weakest_peer_caps_tier_to_english(client):
     """A weak peer (L0-only) caps the negotiated tier to English; the gloss still
     holds and the round-trip works at L0."""
     weak = {"fqid": "weak@x.y", "max_level": codec.L0_ENGLISH}
-    enc = client.post("/glossa/encode", json={
-        "intent": "ack", "peer_caps": [weak]}).json()
+    enc = client.post("/glossa/encode", json={"intent": "ack", "peer_caps": [weak]}).json()
     assert enc["tier"] == codec.L0_ENGLISH
     assert "intent 'ack'" in enc["gloss"]
     dec = client.post("/glossa/decode", json={"wire": enc["wire"]}).json()
@@ -107,13 +106,17 @@ def test_decode_rejects_non_message_frame(client):
     """An ANNOUNCE frame (kind 0) is not a glossa MESSAGE — decode must 422, never
     leak an un-glossable frame as if it were a message."""
     from skchat.glossa_mesh import protocol
+
     cb = default_codebook()
-    d = CapabilityDescriptor(fqid="a@x.y", model_tier="large",
-                             max_level=codec.L2_CODEBOOK,
-                             codebook_version=cb.version, lexicon_version="")
+    d = CapabilityDescriptor(
+        fqid="a@x.y",
+        model_tier="large",
+        max_level=codec.L2_CODEBOOK,
+        codebook_version=cb.version,
+        lexicon_version="",
+    )
     announce = protocol.frame_announce(d)
-    r = client.post("/glossa/decode",
-                    json={"wire": base64.b64encode(announce).decode()})
+    r = client.post("/glossa/decode", json={"wire": base64.b64encode(announce).decode()})
     assert r.status_code == 422
 
 
@@ -121,15 +124,18 @@ def test_session_wire_interops_with_mesh_node():
     """A wire frame produced by the REST-path GlossaMeshSession is decodable by a
     live GlossaMeshNode over FakeBus — the surfaces share protocol framing."""
     cb = default_codebook()
-    desc = CapabilityDescriptor(fqid="api@x.y", model_tier="large",
-                                max_level=codec.L2_CODEBOOK,
-                                codebook_version=cb.version, lexicon_version="")
+    desc = CapabilityDescriptor(
+        fqid="api@x.y",
+        model_tier="large",
+        max_level=codec.L2_CODEBOOK,
+        codebook_version=cb.version,
+        lexicon_version="",
+    )
     session = GlossaMeshSession(descriptor=desc, codebook=cb)
     out = session.encode(Message(intent="coord.claim", args={"task": "z"}))
 
     medium = FakeBusMedium()
-    node = GlossaMeshNode(descriptor=desc, bus=FakeBus("node@x.y", medium),
-                          codebook=cb)
+    node = GlossaMeshNode(descriptor=desc, bus=FakeBus("node@x.y", medium), codebook=cb)
     received = []
     node.on_message(lambda src, m: received.append(m))
     # inject the session's wire frame as if it arrived on the bus

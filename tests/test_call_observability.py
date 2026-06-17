@@ -1,4 +1,5 @@
 """Operator call observability — sk-alert with topic + one-press join link (e8651a65)."""
+
 import skchat.call_observability as co
 
 
@@ -14,8 +15,10 @@ def test_alert_operator_includes_topic_and_link(monkeypatch):
     monkeypatch.setattr(co, "_mint_chef_token", lambda room: "TOK")
     monkeypatch.setattr(co, "_sk_alert", lambda msg: sent.append(msg))
     co.alert_operator(
-        from_fqid="opus@chef.skworld", to_fqid="lumina@chef.skworld",
-        room="call-abc", topic="debugging the ingest pipeline",
+        from_fqid="opus@chef.skworld",
+        to_fqid="lumina@chef.skworld",
+        room="call-abc",
+        topic="debugging the ingest pipeline",
     )
     assert len(sent) == 1
     msg = sent[0]
@@ -35,6 +38,8 @@ def test_alert_operator_without_topic(monkeypatch):
 
 
 def test_alert_operator_never_raises(monkeypatch):
-    monkeypatch.setattr(co, "_mint_chef_token", lambda room: (_ for _ in ()).throw(RuntimeError("boom")))
+    monkeypatch.setattr(
+        co, "_mint_chef_token", lambda room: (_ for _ in ()).throw(RuntimeError("boom"))
+    )
     # must swallow the error
     co.alert_operator(from_fqid="a@x.y", to_fqid="b@x.y", room="r")

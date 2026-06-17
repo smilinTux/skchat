@@ -937,8 +937,9 @@ class TestCallPeer:
 
     def test_prepare_call_for_translates_httpexception(self, monkeypatch):
         """HTTPException from the route layer surfaces as a plain ValueError."""
-        import skchat.mcp_server as m
         from fastapi import HTTPException
+
+        import skchat.mcp_server as m
 
         def _raise(peer):
             raise HTTPException(status_code=404, detail="peer not paired: stranger")
@@ -946,6 +947,7 @@ class TestCallPeer:
         monkeypatch.setattr(m, "_prepare_call", _raise, raising=False)
         # patch the imported symbol inside _prepare_call_for via call_routes
         import skchat.call_routes as cr
+
         monkeypatch.setattr(cr, "_prepare_call", _raise)
         with pytest.raises(ValueError, match="404"):
             m._prepare_call_for("stranger")

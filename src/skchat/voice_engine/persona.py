@@ -67,18 +67,25 @@ def _default_load_feb(agent: str) -> str:
     try:
         from skmemory.agents import get_agent_paths
         from skmemory.febs import load_strongest_feb
+
         feb_dir = str(get_agent_paths(agent_name=agent)["base"] / "trust" / "febs")
         feb = load_strongest_feb(feb_dir=feb_dir)
         if not feb:
             return ""
         return _feb_summary(feb)
-    except Exception:
+    except Exception as exc:
+        log.debug(
+            "FEB summary unavailable (%s: %s); using empty persona tilt", type(exc).__name__, exc
+        )
         return ""
 
 
 class PersonaBuilder:
-    def __init__(self, _load_soul: Callable[[str], dict] | None = None,
-                 _load_feb: Callable[[str], str] | None = None):
+    def __init__(
+        self,
+        _load_soul: Callable[[str], dict] | None = None,
+        _load_feb: Callable[[str], str] | None = None,
+    ):
         self._load_soul = _load_soul or _default_load_soul
         self._load_feb = _load_feb or _default_load_feb
 
@@ -87,16 +94,17 @@ class PersonaBuilder:
             soul = self._load_soul(agent)
         except Exception as e:
             log.warning("soul load failed for %s: %s — using default", agent, e)
-            soul = {"display_name": agent.capitalize(),
-                    "vibe": "warm", "philosophy": "be helpful and kind"}
+            soul = {
+                "display_name": agent.capitalize(),
+                "vibe": "warm",
+                "philosophy": "be helpful and kind",
+            }
 
         name = soul.get("display_name", agent.capitalize())
         vibe = soul.get("vibe", "")
         philosophy = soul.get("philosophy", "")
         traits = ", ".join(soul.get("core_traits", []))
-        phrases = ", ".join(
-            soul.get("communication_style", {}).get("signature_phrases", [])
-        )
+        phrases = ", ".join(soul.get("communication_style", {}).get("signature_phrases", []))
 
         lines = [f"You are {name}."]
         if vibe:

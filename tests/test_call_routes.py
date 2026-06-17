@@ -14,12 +14,12 @@ from skchat.call_session import build_invite_body, derive_room
 
 @pytest.fixture
 def client(monkeypatch):
-    monkeypatch.setattr(
-        cr, "_list_peers", lambda: {"lumina@chef.skworld": {"fingerprint": "FP"}}
-    )
+    monkeypatch.setattr(cr, "_list_peers", lambda: {"lumina@chef.skworld": {"fingerprint": "FP"}})
     monkeypatch.setattr(cr, "_self_fqid", lambda: "opus@chef.skworld")
     monkeypatch.setattr(cr, "_have_creds", lambda: True)
-    monkeypatch.setattr(cr, "_mint_token", lambda identity, name, room, ttl: f"tok::{identity}::{room}")
+    monkeypatch.setattr(
+        cr, "_mint_token", lambda identity, name, room, ttl: f"tok::{identity}::{room}"
+    )
     sent = []
     monkeypatch.setattr(cr, "_send_invite", lambda **kw: sent.append(kw))
     monkeypatch.setattr(cr, "_alert_operator", lambda **kw: None)
@@ -59,7 +59,9 @@ def test_call_answer_mints_same_room_without_ringing(client):
 
 def _env(subject, from_fqid, to_fqid, room):
     body = build_invite_body(
-        from_fqid=from_fqid, to_fqid=to_fqid, room=room,
+        from_fqid=from_fqid,
+        to_fqid=to_fqid,
+        room=room,
         livekit_url="wss://x:8443",
     )
     return SimpleNamespace(subject=subject, from_fqid=from_fqid, to_fqid=to_fqid, body=body)
@@ -67,9 +69,18 @@ def _env(subject, from_fqid, to_fqid, room):
 
 def test_incoming_returns_only_invites_for_self(client, monkeypatch):
     inbox = [
-        (_env("CALL_INVITE", "lumina@chef.skworld", "opus@chef.skworld", "call-r1"), SimpleNamespace(valid=True)),
-        (_env("text/plain note", "lumina@chef.skworld", "opus@chef.skworld", "call-x"), SimpleNamespace(valid=True)),
-        (_env("CALL_INVITE", "stranger@x.y", "someone@else.z", "call-r2"), SimpleNamespace(valid=True)),
+        (
+            _env("CALL_INVITE", "lumina@chef.skworld", "opus@chef.skworld", "call-r1"),
+            SimpleNamespace(valid=True),
+        ),
+        (
+            _env("text/plain note", "lumina@chef.skworld", "opus@chef.skworld", "call-x"),
+            SimpleNamespace(valid=True),
+        ),
+        (
+            _env("CALL_INVITE", "stranger@x.y", "someone@else.z", "call-r2"),
+            SimpleNamespace(valid=True),
+        ),
     ]
     monkeypatch.setattr(cr, "_read_inbox", lambda: inbox)
     r = client.get("/call/incoming")
@@ -103,7 +114,8 @@ def test_call_start_503_no_creds(client, monkeypatch):
 
 def test_call_start_rejects_ambiguous_bare_name(client, monkeypatch):
     monkeypatch.setattr(
-        cr, "_list_peers",
+        cr,
+        "_list_peers",
         lambda: {"lumina@chef.skworld": {}, "lumina@other.world": {}},
     )
     r = client.post("/call/start", json={"peer": "lumina"})
@@ -125,11 +137,14 @@ def test_call_start_missing_peer_400(client):
 def test_incoming_skips_malformed_invite(client, monkeypatch):
     good = _env("CALL_INVITE", "lumina@chef.skworld", "opus@chef.skworld", "call-good")
     bad = SimpleNamespace(
-        subject="CALL_INVITE", from_fqid="lumina@chef.skworld",
-        to_fqid="opus@chef.skworld", body="{not json",
+        subject="CALL_INVITE",
+        from_fqid="lumina@chef.skworld",
+        to_fqid="opus@chef.skworld",
+        body="{not json",
     )
     monkeypatch.setattr(
-        cr, "_read_inbox",
+        cr,
+        "_read_inbox",
         lambda: [(bad, SimpleNamespace(valid=True)), (good, SimpleNamespace(valid=True))],
     )
     r = client.get("/call/incoming")
@@ -147,6 +162,7 @@ def test_incoming_empty_inbox(client, monkeypatch):
 
 def test_incoming_skips_unverified_invite(client, monkeypatch):
     from types import SimpleNamespace
+
     env = _env("CALL_INVITE", "lumina@chef.skworld", "opus@chef.skworld", "call-unsigned")
     monkeypatch.setattr(cr, "_read_inbox", lambda: [(env, SimpleNamespace(valid=False))])
     r = client.get("/call/incoming")
@@ -155,6 +171,7 @@ def test_incoming_skips_unverified_invite(client, monkeypatch):
 
 def test_webui_registers_call_routes():
     from skchat.webui import app
+
     paths = {r.path for r in app.routes}
     assert "/call/start" in paths
     assert "/call/answer" in paths
@@ -178,5 +195,5 @@ def test_call_start_threads_topic_and_alerts(client, monkeypatch):
         "/call/start", json={"peer": "lumina@chef.skworld", "topic": "ingest debugging"}
     )
     assert r.status_code == 200
-    assert client._sent[0]["topic"] == "ingest debugging"   # invite carried the topic
+    assert client._sent[0]["topic"] == "ingest debugging"  # invite carried the topic
     assert len(alerts) == 1 and alerts[0]["topic"] == "ingest debugging"

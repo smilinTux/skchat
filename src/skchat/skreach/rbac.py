@@ -128,9 +128,7 @@ class NodeGrants:
 # ---------------------------------------------------------------------------
 
 # Member read-only set
-_MEMBER_CLASSES = frozenset(
-    [CommandClass.STATUS, CommandClass.LOG_READ, CommandClass.FILE_READ]
-)
+_MEMBER_CLASSES = frozenset([CommandClass.STATUS, CommandClass.LOG_READ, CommandClass.FILE_READ])
 
 # Agent base set (before per-node grants)
 _AGENT_BASE_CLASSES = frozenset([CommandClass.STATUS, CommandClass.LOG_READ])
@@ -216,9 +214,7 @@ def authorize(
     if r == Role.MEMBER:
         if cc in _MEMBER_CLASSES:
             return Decision.allow("member role; read-only class permitted")
-        return Decision.deny(
-            f"member role cannot issue '{cmd_class}' commands (read-only)"
-        )
+        return Decision.deny(f"member role cannot issue '{cmd_class}' commands (read-only)")
 
     # --- Agent: status + scoped log_read, plus explicit per-node grants ---
     if r == Role.AGENT:
@@ -229,9 +225,7 @@ def authorize(
         # Check per-node grant
         if node_grants.agent_has_grant(issuer_fqid, cmd_class):
             # Agent exec grants ALWAYS require confirm (§2.3)
-            return Decision.confirm(
-                f"agent granted '{cmd_class}' on this node; confirm required"
-            )
+            return Decision.confirm(f"agent granted '{cmd_class}' on this node; confirm required")
         return Decision.deny(
             f"agent role cannot issue '{cmd_class}' without an explicit per-node grant"
         )

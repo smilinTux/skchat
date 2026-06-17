@@ -43,7 +43,9 @@ async def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", required=True, help="Output WAV file path")
     parser.add_argument("--room", default=DEFAULT_ROOM)
-    parser.add_argument("--target", default=DEFAULT_TARGET, help="Identity to record (default: lumina)")
+    parser.add_argument(
+        "--target", default=DEFAULT_TARGET, help="Identity to record (default: lumina)"
+    )
     parser.add_argument("--webui", default=WEBUI_URL)
     parser.add_argument("--identity", default="recorder")
     args = parser.parse_args()
@@ -79,7 +81,9 @@ async def main() -> int:
 
         async def consume() -> None:
             nonlocal bytes_written
-            stream = rtc.AudioStream.from_track(track=track, sample_rate=SAMPLE_RATE, num_channels=1)
+            stream = rtc.AudioStream.from_track(
+                track=track, sample_rate=SAMPLE_RATE, num_channels=1
+            )
             async for ev in stream:
                 data = bytes(ev.frame.data)
                 wav.writeframes(data)
@@ -90,7 +94,7 @@ async def main() -> int:
     await room.connect(t["url"], t["token"])
     print(f"recording {args.target} → {out_path}")
     await stop.wait()
-    print(f"\nstopping — wrote {bytes_written} bytes ({bytes_written/(SAMPLE_RATE*2):.1f}s)")
+    print(f"\nstopping — wrote {bytes_written} bytes ({bytes_written / (SAMPLE_RATE * 2):.1f}s)")
     if consumer_task is not None:
         consumer_task.cancel()
     await room.disconnect()

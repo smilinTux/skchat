@@ -203,18 +203,33 @@ class TestReaction:
 
 
 def test_fileref_round_trip():
-    ref = FileRef(transfer_id="t1", filename="a.png", size=12,
-                  mime_type="image/png", sha256="ab"*32, thumbnail_id="th1",
-                  direction="sent")
+    ref = FileRef(
+        transfer_id="t1",
+        filename="a.png",
+        size=12,
+        mime_type="image/png",
+        sha256="ab" * 32,
+        thumbnail_id="th1",
+        direction="sent",
+    )
     assert FileRef(**ref.model_dump()) == ref
 
 
 def test_message_with_attachment_allows_empty_content():
     msg = ChatMessage(
-        sender="capauth:a@skworld.io", recipient="capauth:b@skworld.io",
+        sender="capauth:a@skworld.io",
+        recipient="capauth:b@skworld.io",
         content="",
-        attachments=[FileRef(transfer_id="t1", filename="a.png", size=1,
-                             mime_type="image/png", sha256="x", direction="sent")],
+        attachments=[
+            FileRef(
+                transfer_id="t1",
+                filename="a.png",
+                size=1,
+                mime_type="image/png",
+                sha256="x",
+                direction="sent",
+            )
+        ],
     )
     assert msg.attachments[0].filename == "a.png"
     assert msg.content == ""
@@ -222,14 +237,13 @@ def test_message_with_attachment_allows_empty_content():
 
 def test_message_empty_content_and_no_attachments_rejected():
     import pytest
+
     with pytest.raises(ValueError):
-        ChatMessage(sender="capauth:a@skworld.io",
-                    recipient="capauth:b@skworld.io", content="   ")
+        ChatMessage(sender="capauth:a@skworld.io", recipient="capauth:b@skworld.io", content="   ")
 
 
 def test_old_message_json_without_attachments_loads():
-    data = {"sender": "capauth:a@skworld.io", "recipient": "capauth:b@skworld.io",
-            "content": "hi"}
+    data = {"sender": "capauth:a@skworld.io", "recipient": "capauth:b@skworld.io", "content": "hi"}
     msg = ChatMessage(**data)
     assert msg.attachments == []
 

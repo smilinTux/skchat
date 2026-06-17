@@ -411,8 +411,7 @@ class TestGetInboxFiltering:
             mem.content = content
             mem.created_at = ts
             mem.tags = ["skchat:message"]
-            mem.metadata = {"agent_comm": True, "message_type": "text",
-                            "sender": "capauth:peer@x"}
+            mem.metadata = {"agent_comm": True, "message_type": "text", "sender": "capauth:peer@x"}
             return mem
 
         history._store.list_memories.return_value = [

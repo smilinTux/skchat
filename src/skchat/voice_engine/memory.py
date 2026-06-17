@@ -17,6 +17,7 @@ SnapshotFn = Callable[[str, str, str], Awaitable[bool]]
 
 async def _sdk_search(query: str, agent: str, limit: int) -> list[str]:
     from skmemory import MemoryStore  # imported lazily — optional dep
+
     # MemoryStore() resolves the agent from SKAGENT/SKCAPSTONE_AGENT env vars;
     # the `agent` parameter is kept for interface symmetry with the injected fakes.
     store = MemoryStore()
@@ -26,6 +27,7 @@ async def _sdk_search(query: str, agent: str, limit: int) -> list[str]:
 
 async def _sdk_snapshot(content: str, agent: str, tags: str) -> bool:
     from skmemory import MemoryStore
+
     # MemoryStore() resolves the agent from SKAGENT/SKCAPSTONE_AGENT env vars.
     store = MemoryStore()
     store.snapshot(content[:60], content, tags=[tags])
@@ -33,8 +35,7 @@ async def _sdk_snapshot(content: str, agent: str, tags: str) -> bool:
 
 
 class MemoryBridge:
-    def __init__(self, _search: SearchFn | None = None,
-                 _snapshot: SnapshotFn | None = None):
+    def __init__(self, _search: SearchFn | None = None, _snapshot: SnapshotFn | None = None):
         self._search = _search or _sdk_search
         self._snapshot = _snapshot or _sdk_snapshot
 

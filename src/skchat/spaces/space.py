@@ -9,8 +9,8 @@ from enum import Enum
 
 
 class SpaceStatus(str, Enum):
-    OPEN = "open"      # created, not necessarily anyone live yet
-    LIVE = "live"      # at least one speaker publishing
+    OPEN = "open"  # created, not necessarily anyone live yet
+    LIVE = "live"  # at least one speaker publishing
     ENDED = "ended"
 
 

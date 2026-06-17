@@ -29,7 +29,6 @@ from skchat.voice_backends import (
     register_tts_backend,
 )
 
-
 # ---------------------------------------------------------------------------
 # ABC conformance
 # ---------------------------------------------------------------------------
@@ -304,8 +303,9 @@ def test_whisper_backend_transcribe_uses_whisper_api():
     fake_whisper.load_model.return_value = fake_model
 
     backend = WhisperSTTBackend(whisper_model="base")
-    with patch.object(backend, "_probe", return_value=True), patch.dict(
-        "sys.modules", {"whisper": fake_whisper}
+    with (
+        patch.object(backend, "_probe", return_value=True),
+        patch.dict("sys.modules", {"whisper": fake_whisper}),
     ):
         result = backend.transcribe("/tmp/audio.wav")
 
@@ -323,8 +323,9 @@ def test_stt_record_returns_none_when_unavailable():
 def test_stt_record_returns_none_when_arecord_fails():
     """record() returns None if the ALSA capture (_arecord) fails, not raising."""
     backend = WhisperSTTBackend()
-    with patch.object(backend, "is_available", return_value=True), patch.object(
-        vb, "_arecord", return_value=False
+    with (
+        patch.object(backend, "is_available", return_value=True),
+        patch.object(vb, "_arecord", return_value=False),
     ):
         assert backend.record(duration=1) is None
 
@@ -332,9 +333,11 @@ def test_stt_record_returns_none_when_arecord_fails():
 def test_stt_record_transcribes_after_successful_capture():
     """A successful arecord feeds the temp WAV into transcribe()."""
     backend = WhisperSTTBackend()
-    with patch.object(backend, "is_available", return_value=True), patch.object(
-        vb, "_arecord", return_value=True
-    ), patch.object(backend, "transcribe", return_value="hi there") as tr:
+    with (
+        patch.object(backend, "is_available", return_value=True),
+        patch.object(vb, "_arecord", return_value=True),
+        patch.object(backend, "transcribe", return_value="hi there") as tr,
+    ):
         result = backend.record(duration=2)
     assert result == "hi there"
     tr.assert_called_once_with(vb._VOICE_TMP_WAV)
@@ -362,8 +365,9 @@ def test_whisper_transcribe_empty_text_returns_none():
     fake_model.transcribe.return_value = {"text": "   "}
     fake_whisper.load_model.return_value = fake_model
     backend = WhisperSTTBackend()
-    with patch.object(backend, "_probe", return_value=True), patch.dict(
-        "sys.modules", {"whisper": fake_whisper}
+    with (
+        patch.object(backend, "_probe", return_value=True),
+        patch.dict("sys.modules", {"whisper": fake_whisper}),
     ):
         assert backend.transcribe("/tmp/a.wav") is None
 

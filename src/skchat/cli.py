@@ -2515,8 +2515,8 @@ def _speak_message(sender: str, sender_short: str, preview: str) -> None:
         voice = LUMINA_VOICE if sender == _LUMINA_ID else DEFAULT_VOICE
         player = VoicePlayer(voice=voice)
         player.speak(f"Message from {sender_short}: {preview}")
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("TTS speak failed (%s: %s); degrading silently", type(exc).__name__, exc)
 
 
 def _highlight_mentions(text: str) -> str:
@@ -3711,6 +3711,7 @@ def _collect_bridge_statuses(bridges: list, fetch=_default_bridge_fetch) -> list
             row.update(_parse_bridge_metrics(body))
             row["up"] = True
         except Exception as exc:  # noqa: BLE001 — any failure means "down"
+            logger.debug("bridge probe failed (%s: %s); marking down", type(exc).__name__, exc)
             row["error"] = str(exc)
         rows.append(row)
     return rows

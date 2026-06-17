@@ -18,16 +18,45 @@ log = logging.getLogger("skchat.voice_engine.stt")
 # Whisper's well-known low-SNR hallucinations (YouTube corpus). Match on the
 # normalized FULL string (equals), not substring — a real reply may contain
 # "thank you".
-_HALLUCINATIONS = frozenset(s.lower() for s in (
-    "thank you", "thank you.", "thanks.", "thank you very much.",
-    "thank you very much", "thank you so much.", "thanks for watching",
-    "thanks for watching!", "thank you for watching", "thank you for watching.",
-    "bye.", "bye bye.", "goodbye.", "good bye.", "okay.", "ok.",
-    "you", "you.", "yeah.", "uh huh.", "mhm.", "mhmm.", "hmm.",
-    ".", "...", "..", "subscribe.", "like and subscribe.",
-    "please subscribe.", "thanks!", "thank you!", "thanks for listening.",
-    "i'll see you later.", "see you later.",
-))
+_HALLUCINATIONS = frozenset(
+    s.lower()
+    for s in (
+        "thank you",
+        "thank you.",
+        "thanks.",
+        "thank you very much.",
+        "thank you very much",
+        "thank you so much.",
+        "thanks for watching",
+        "thanks for watching!",
+        "thank you for watching",
+        "thank you for watching.",
+        "bye.",
+        "bye bye.",
+        "goodbye.",
+        "good bye.",
+        "okay.",
+        "ok.",
+        "you",
+        "you.",
+        "yeah.",
+        "uh huh.",
+        "mhm.",
+        "mhmm.",
+        "hmm.",
+        ".",
+        "...",
+        "..",
+        "subscribe.",
+        "like and subscribe.",
+        "please subscribe.",
+        "thanks!",
+        "thank you!",
+        "thanks for listening.",
+        "i'll see you later.",
+        "see you later.",
+    )
+)
 
 
 def is_hallucination(text: str) -> bool:

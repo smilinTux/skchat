@@ -19,7 +19,6 @@ import pytest
 
 from skchat.skreach.audit import AuditRecord, AuditWriter
 
-
 # ---------------------------------------------------------------------------
 # AuditRecord unit tests
 # ---------------------------------------------------------------------------

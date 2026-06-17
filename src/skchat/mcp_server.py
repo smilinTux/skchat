@@ -548,7 +548,10 @@ async def list_tools() -> list[Tool]:
                 "type": "object",
                 "properties": {
                     "peer": {"type": "string", "description": "Paired peer FQID or bare name."},
-                    "text": {"type": "string", "description": "Message to send over the data channel."},
+                    "text": {
+                        "type": "string",
+                        "description": "Message to send over the data channel.",
+                    },
                 },
                 "required": ["peer", "text"],
             },
@@ -2256,6 +2259,7 @@ async def _handle_p2p_call(args: dict) -> list[TextContent]:
         return _error("peer is required")
     try:
         from .p2p_calls import p2p_call
+
         return _json(await p2p_call(peer))
     except Exception as exc:
         logger.warning("p2p_call failed: %s", exc)
@@ -2265,6 +2269,7 @@ async def _handle_p2p_call(args: dict) -> list[TextContent]:
 async def _handle_p2p_listen(args: dict) -> list[TextContent]:
     try:
         from .p2p_calls import p2p_listen
+
         return _json(await p2p_listen())
     except Exception as exc:
         logger.warning("p2p_listen failed: %s", exc)
@@ -2274,6 +2279,7 @@ async def _handle_p2p_listen(args: dict) -> list[TextContent]:
 async def _handle_p2p_status(args: dict) -> list[TextContent]:
     try:
         from .p2p_calls import p2p_status
+
         return _json(p2p_status())
     except Exception as exc:
         logger.warning("p2p_status failed: %s", exc)
@@ -2287,6 +2293,7 @@ async def _handle_p2p_send(args: dict) -> list[TextContent]:
         return _error("peer and text are required")
     try:
         from .p2p_calls import p2p_send
+
         return _json(await p2p_send(peer, text))
     except Exception as exc:
         logger.warning("p2p_send failed: %s", exc)
@@ -2299,6 +2306,7 @@ async def _handle_call_auto(args: dict) -> list[TextContent]:
         return _error("peer is required")
     try:
         from .call_orchestrator import connect_with_fallback
+
         return _json(await connect_with_fallback(peer))
     except Exception as exc:
         logger.warning("call_auto failed: %s", exc)

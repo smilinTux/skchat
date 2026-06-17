@@ -148,9 +148,7 @@ def build_app(
                     if len(history) > 40:
                         history[:] = history[-30:]
                     log.info("Session injected: %d messages", len(history))
-                    await ws.send_json(
-                        {"type": "session_restored", "message_count": len(history)}
-                    )
+                    await ws.send_json({"type": "session_restored", "message_count": len(history)})
                     continue
 
                 # ── END_OF_SPEECH (voice path) ─────────────────────────────
@@ -162,8 +160,13 @@ def build_app(
                     pcm_buffer.clear()
                     try:
                         await _process_speech(
-                            ws, pcm_data, history, engine, agent_name,
-                            group_suffix=group_suffix, conn_id=conn_id,
+                            ws,
+                            pcm_data,
+                            history,
+                            engine,
+                            agent_name,
+                            group_suffix=group_suffix,
+                            conn_id=conn_id,
                             pending_group=pending_group,
                         )
                     except Exception as exc:
@@ -178,8 +181,13 @@ def build_app(
                 if parsed.get("type") == "text_message" and parsed.get("text"):
                     try:
                         await _process_text(
-                            ws, parsed["text"], history, engine, agent_name,
-                            group_suffix=group_suffix, conn_id=conn_id,
+                            ws,
+                            parsed["text"],
+                            history,
+                            engine,
+                            agent_name,
+                            group_suffix=group_suffix,
+                            conn_id=conn_id,
                             pending_group=pending_group,
                         )
                     except Exception as exc:
@@ -225,8 +233,10 @@ async def _process_speech(
     #    a direct call so the transport works with a bare engine stub.
     try:
         from skchat.voice_engine.audio_codec import pcm_to_wav  # noqa: PLC0415
+
         wav_data = pcm_to_wav(pcm_data)
-    except Exception:
+    except Exception as exc:
+        log.debug("pcm_to_wav failed (%s: %s); using raw PCM", type(exc).__name__, exc)
         wav_data = pcm_data  # best effort
 
     transcript = ""

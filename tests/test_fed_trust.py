@@ -3,6 +3,7 @@ from skchat.spaces.federation.trust import AccessLevel, TrustPolicy
 
 def _policy(tmp_path, data):
     import json
+
     p = tmp_path / "trust.json"
     p.write_text(json.dumps(data))
     return TrustPolicy(path=p)

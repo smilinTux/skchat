@@ -31,9 +31,7 @@ class LaneStore:
                        ts REAL NOT NULL,
                        kind TEXT NOT NULL)"""
             )
-            c.execute(
-                "CREATE INDEX IF NOT EXISTS idx_lane ON lane_events(space_id, lane, id)"
-            )
+            c.execute("CREATE INDEX IF NOT EXISTS idx_lane ON lane_events(space_id, lane, id)")
 
     def _conn(self) -> sqlite3.Connection:
         return sqlite3.connect(self._db)
@@ -41,8 +39,7 @@ class LaneStore:
     def append(self, space_id: str, lane: str, payload: dict) -> None:
         with self._conn() as c:
             c.execute(
-                "INSERT INTO lane_events(space_id, lane, payload, ts, kind) "
-                "VALUES (?,?,?,?,?)",
+                "INSERT INTO lane_events(space_id, lane, payload, ts, kind) VALUES (?,?,?,?,?)",
                 (space_id, lane, json.dumps(payload), time.time(), "log"),
             )
 
@@ -53,8 +50,7 @@ class LaneStore:
                 (space_id, lane),
             )
             c.execute(
-                "INSERT INTO lane_events(space_id, lane, payload, ts, kind) "
-                "VALUES (?,?,?,?,?)",
+                "INSERT INTO lane_events(space_id, lane, payload, ts, kind) VALUES (?,?,?,?,?)",
                 (space_id, lane, json.dumps(payload), time.time(), "snapshot"),
             )
 

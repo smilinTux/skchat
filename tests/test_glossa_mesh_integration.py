@@ -16,10 +16,14 @@ from skchat.glossa_mesh.node import GlossaMeshNode
 
 
 def _node(fqid, medium):
-    d = CapabilityDescriptor(fqid=fqid, model_tier="large", max_level=codec.L2_CODEBOOK,
-                             codebook_version=default_codebook().version, lexicon_version="")
-    return GlossaMeshNode(descriptor=d, bus=FakeBus(fqid, medium),
-                          codebook=default_codebook())
+    d = CapabilityDescriptor(
+        fqid=fqid,
+        model_tier="large",
+        max_level=codec.L2_CODEBOOK,
+        codebook_version=default_codebook().version,
+        lexicon_version="",
+    )
+    return GlossaMeshNode(descriptor=d, bus=FakeBus(fqid, medium), codebook=default_codebook())
 
 
 @pytest.mark.asyncio

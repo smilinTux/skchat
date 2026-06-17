@@ -28,7 +28,8 @@ class ConsentLedger:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.write_text(
             json.dumps({k: sorted(v) for k, v in self._by_space.items()}, indent=2),
-            encoding="utf-8")
+            encoding="utf-8",
+        )
 
     def add(self, space_id: str, identity: str) -> None:
         self._by_space.setdefault(space_id, set()).add(identity)
@@ -42,8 +43,9 @@ class ConsentLedger:
         return identity in self._by_space.get(space_id, set())
 
 
-def can_record(speakers: list[str], space_id: str,
-               ledger: ConsentLedger) -> tuple[bool, list[str]]:
+def can_record(
+    speakers: list[str], space_id: str, ledger: ConsentLedger
+) -> tuple[bool, list[str]]:
     """Return (ok, missing). ok iff every speaker has consented in this space."""
     missing = [s for s in speakers if not ledger.has(space_id, s)]
     return (not missing, missing)

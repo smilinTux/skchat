@@ -25,10 +25,10 @@ class FakeAudioMedium:
 
     async def transmit_raw(self, src: str, samples: list) -> None:
         if self._busy:
-            self.had_collision = True       # someone else is already transmitting
+            self.had_collision = True  # someone else is already transmitting
         self._busy = True
         try:
-            await asyncio.sleep(0)           # yield — lets a concurrent tx overlap
+            await asyncio.sleep(0)  # yield — lets a concurrent tx overlap
             self.transmissions += 1
             for cb in self._listeners:
                 cb(src, samples)
@@ -45,5 +45,5 @@ class CarrierSenseMAC:
         self._lock = asyncio.Lock()
 
     async def send(self, src: str, samples: list) -> None:
-        async with self._lock:              # acquire the channel
+        async with self._lock:  # acquire the channel
             await self._medium.transmit_raw(src, samples)

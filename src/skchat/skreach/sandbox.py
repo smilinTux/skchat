@@ -101,9 +101,7 @@ HARDCODED_DENYLIST: frozenset[str] = frozenset(
 # Any key name matching this pattern (case-insensitive) is stripped.
 # ---------------------------------------------------------------------------
 
-_SECRET_KEY_RE = re.compile(
-    r"(?i).*(?:key|secret|token|password|credential).*"
-)
+_SECRET_KEY_RE = re.compile(r"(?i).*(?:key|secret|token|password|credential).*")
 
 # Minimum safe env injected into every child process (§5.3)
 _SAFE_ENV_BASE = {

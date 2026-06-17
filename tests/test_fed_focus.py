@@ -1,5 +1,3 @@
-import pytest
-
 from skchat.spaces.federation.focus import Membership, select_focus
 
 
@@ -22,7 +20,7 @@ def test_tie_breaks_deterministically_by_fqid():
 
 def test_ignores_memberships_without_a_focus():
     ms = [
-        Membership(fqid="a@h", foci_preferred="", issued_at=50),     # no focus
+        Membership(fqid="a@h", foci_preferred="", issued_at=50),  # no focus
         Membership(fqid="b@h", foci_preferred="sfu-b", issued_at=80),
     ]
     assert select_focus(ms) == "sfu-b"
@@ -62,7 +60,7 @@ def test_focusless_oldest_is_skipped_for_younger_with_focus():
     # An older membership with NO focus must be ignored in favour of a younger
     # one that does declare a focus (the oldest VALID membership wins).
     ms = [
-        Membership(fqid="a@h", foci_preferred="", issued_at=1),       # oldest, invalid
+        Membership(fqid="a@h", foci_preferred="", issued_at=1),  # oldest, invalid
         Membership(fqid="b@h", foci_preferred="sfu-b", issued_at=50),
         Membership(fqid="c@h", foci_preferred="sfu-c", issued_at=60),
     ]

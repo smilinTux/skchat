@@ -6,7 +6,9 @@ SK = staycuriousANDkeepsmilin
 """
 
 try:
-    from importlib.metadata import PackageNotFoundError, version as _pkg_version
+    from importlib.metadata import PackageNotFoundError
+    from importlib.metadata import version as _pkg_version
+
     __version__ = _pkg_version("skchat-sovereign")
 except (ImportError, PackageNotFoundError):
     try:
@@ -17,6 +19,7 @@ except (ImportError, PackageNotFoundError):
 __author__ = "smilinTux Team"
 __license__ = "GPL-3.0-or-later"
 
+from . import integration  # noqa: F401 — optional skcapstone backbone (ADR adapter)
 from .agent_comm import AgentMessenger
 from .crypto import (
     ChatCrypto,
@@ -62,7 +65,6 @@ from .presence import (
 )
 from .reactions import ReactionEvent, ReactionManager, ReactionSummary
 from .transport import ChatTransport
-from . import integration  # noqa: F401 — optional skcapstone backbone (ADR adapter)
 
 __all__ = [
     "ChatMessage",

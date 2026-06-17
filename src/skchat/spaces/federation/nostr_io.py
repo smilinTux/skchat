@@ -11,6 +11,7 @@ relay transport.
 
 from __future__ import annotations
 
+import logging
 from typing import Callable, Iterable, Optional
 
 from skchat.spaces.federation.events import (
@@ -22,6 +23,8 @@ from skchat.spaces.federation.events import (
     parse_membership,
 )
 from skchat.spaces.federation.focus import Membership
+
+logger = logging.getLogger(__name__)
 
 # A publish seam takes a built event dict and returns whether it landed.
 PublishFn = Callable[[dict], bool]
@@ -70,31 +73,32 @@ class FederationNostr:
         self._query = query or _default_query(self.relays)
 
     def publish_focus(self, *, host_fqid: str, auth_url: str, sfu_ws_url: str) -> bool:
-        ev = build_focus_descriptor(host_fqid=host_fqid, auth_url=auth_url,
-                                    sfu_ws_url=sfu_ws_url)
+        ev = build_focus_descriptor(host_fqid=host_fqid, auth_url=auth_url, sfu_ws_url=sfu_ws_url)
         return self._publish(ev)
 
-    def publish_space(self, *, space_id: str, title: str, host_fqid: str,
-                      status: str) -> bool:
-        ev = build_space_state(space_id=space_id, title=title,
-                               host_fqid=host_fqid, status=status)
+    def publish_space(self, *, space_id: str, title: str, host_fqid: str, status: str) -> bool:
+        ev = build_space_state(space_id=space_id, title=title, host_fqid=host_fqid, status=status)
         return self._publish(ev)
 
-    def publish_membership(self, *, fqid: str, space_id: str, foci_preferred: str,
-                           issued_at: int) -> bool:
-        ev = build_membership(fqid=fqid, space_id=space_id,
-                              foci_preferred=foci_preferred, issued_at=issued_at)
+    def publish_membership(
+        self, *, fqid: str, space_id: str, foci_preferred: str, issued_at: int
+    ) -> bool:
+        ev = build_membership(
+            fqid=fqid, space_id=space_id, foci_preferred=foci_preferred, issued_at=issued_at
+        )
         return self._publish(ev)
 
     def query_memberships(self, space_id: str) -> list[Membership]:
-        filters = {"kinds": [MEMBERSHIP_KIND],
-                   "#a": [f"{SPACE_KIND}:{space_id}"]}
+        filters = {"kinds": [MEMBERSHIP_KIND], "#a": [f"{SPACE_KIND}:{space_id}"]}
         events = self._query(filters)
         # M2: a single hostile/malformed event must not kill the whole batch.
         out: list[Membership] = []
         for ev in events:
             try:
                 out.append(parse_membership(ev))
-            except Exception:
+            except Exception as exc:
+                logger.warning(
+                    "skipping malformed membership event (%s: %s)", type(exc).__name__, exc
+                )
                 continue
         return out

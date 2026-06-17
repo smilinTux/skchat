@@ -88,8 +88,8 @@ def _resolve_peer(peer: str) -> str:
 
 
 def _prepare_call(peer: str) -> dict:
-    peer_fqid = _resolve_peer(peer)          # 404 if not paired (resolve first)
-    if not _have_creds():                    # 503 only once the peer is valid
+    peer_fqid = _resolve_peer(peer)  # 404 if not paired (resolve first)
+    if not _have_creds():  # 503 only once the peer is valid
         raise HTTPException(status_code=503, detail="livekit not configured")
     local_fqid = _self_fqid()
     room = derive_room(local_fqid, peer_fqid)

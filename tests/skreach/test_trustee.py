@@ -20,13 +20,11 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock
 
 import pytest
 
 from skchat.skreach.audit import AuditWriter
-from skchat.skreach.trustee import OpResult, TrusteeOps
-
+from skchat.skreach.trustee import TrusteeOps
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -171,9 +169,7 @@ class TestScale:
     def test_scale_up_operator_no_confirm_needed(self):
         """Scale-up (current=1 → 3) is DEPLOY class — no confirm needed."""
         mcp = FakeMcp({"scaled": True})
-        res = _ops("operator", mcp=mcp).scale(
-            "skingest", 3, current_replicas=1
-        )
+        res = _ops("operator", mcp=mcp).scale("skingest", 3, current_replicas=1)
         assert res.ok
         assert res.outcome == "dispatched"
         assert len(mcp.calls) == 1
@@ -182,9 +178,7 @@ class TestScale:
     def test_scale_down_operator_no_token_confirm_required(self):
         """Scale-down (current=3 → 1) is DESTRUCTIVE — confirm required."""
         mcp = FakeMcp()
-        res = _ops("operator", mcp=mcp).scale(
-            "skingest", 1, current_replicas=3
-        )
+        res = _ops("operator", mcp=mcp).scale("skingest", 1, current_replicas=3)
         assert not res.ok
         assert res.confirm_required
         assert len(mcp.calls) == 0
@@ -265,7 +259,7 @@ class TestAudit:
             audit_writer=AuditWriter(jsonl_path=audit_path),
         )
         ops.deploy_status("skchat-daemon")
-        lines = [l for l in audit_path.read_text().strip().split("\n") if l]
+        lines = [line for line in audit_path.read_text().strip().split("\n") if line]
         assert len(lines) >= 1
 
     def test_audit_written_on_confirm_required(self, tmp_path: Path):
@@ -278,7 +272,7 @@ class TestAudit:
             audit_writer=AuditWriter(jsonl_path=audit_path),
         )
         ops.restart("skchat-daemon")  # no confirm_token
-        lines = [l for l in audit_path.read_text().strip().split("\n") if l]
+        lines = [line for line in audit_path.read_text().strip().split("\n") if line]
         assert len(lines) >= 1
 
 

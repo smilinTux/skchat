@@ -20,4 +20,4 @@ def test_sfu_get_unknown_space_is_403(client):
     # (malformed body still 400; this asserts the route passes a registry-backed
     # _space_live so a non-existent space is rejected before minting)
     r = client.post("/sfu/get", json={"claim": "{}", "sig": "x"})
-    assert r.status_code in (400, 403)   # malformed/empty → 400; never 200/500
+    assert r.status_code in (400, 403)  # malformed/empty → 400; never 200/500

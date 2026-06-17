@@ -30,8 +30,7 @@ def _url() -> str:
 
 
 def _have_creds() -> bool:
-    return bool(os.getenv("SKCHAT_LIVEKIT_API_KEY") and
-                os.getenv("SKCHAT_LIVEKIT_API_SECRET"))
+    return bool(os.getenv("SKCHAT_LIVEKIT_API_KEY") and os.getenv("SKCHAT_LIVEKIT_API_SECRET"))
 
 
 def _maybe_start_writeup(space_id: str, title: str) -> bool:
@@ -65,13 +64,20 @@ def _maybe_start_writeup(space_id: str, title: str) -> bool:
         return False
 
 
-def register_spaces_routes(app: FastAPI, *, registry: SpaceRegistry | None = None,
-                           moderator=None, consent=None, recorder=None,
-                           lane_store: "LaneStore | None" = None,
-                           skreach_executor=None) -> None:
+def register_spaces_routes(
+    app: FastAPI,
+    *,
+    registry: SpaceRegistry | None = None,
+    moderator=None,
+    consent=None,
+    recorder=None,
+    lane_store: "LaneStore | None" = None,
+    skreach_executor=None,
+) -> None:
     reg = registry or SpaceRegistry()
     _mod_holder = {"mod": moderator}
     from skchat.spaces.consent import ConsentLedger
+
     led = consent or ConsentLedger()
     _rec_holder = {"rec": recorder}
     _lane_store = lane_store or LaneStore(db_path=Path.home() / ".skchat" / "lanes.db")
@@ -83,17 +89,23 @@ def register_spaces_routes(app: FastAPI, *, registry: SpaceRegistry | None = Non
     def _moderator():
         if _mod_holder["mod"] is None:
             from skchat.spaces.moderation import Moderator
+
             _mod_holder["mod"] = Moderator(
-                _url(), os.getenv("SKCHAT_LIVEKIT_API_KEY", ""),
-                os.getenv("SKCHAT_LIVEKIT_API_SECRET", ""))
+                _url(),
+                os.getenv("SKCHAT_LIVEKIT_API_KEY", ""),
+                os.getenv("SKCHAT_LIVEKIT_API_SECRET", ""),
+            )
         return _mod_holder["mod"]
 
     def _recorder():
         if _rec_holder["rec"] is None:
             from skchat.spaces.recording import Recorder
+
             _rec_holder["rec"] = Recorder(
-                _url(), os.getenv("SKCHAT_LIVEKIT_API_KEY", ""),
-                os.getenv("SKCHAT_LIVEKIT_API_SECRET", ""))
+                _url(),
+                os.getenv("SKCHAT_LIVEKIT_API_KEY", ""),
+                os.getenv("SKCHAT_LIVEKIT_API_SECRET", ""),
+            )
         return _rec_holder["rec"]
 
     def _require_host(space, requester: str) -> None:
@@ -103,8 +115,13 @@ def register_spaces_routes(app: FastAPI, *, registry: SpaceRegistry | None = Non
     def _token_response(identity: str, name: str, role: Role, space: Space) -> dict:
         token = mint_space_token(identity, name, role, space.space_id, _DEFAULT_TTL)
         return {
-            "space_id": space.space_id, "room": space.room, "url": _url(),
-            "identity": identity, "name": name, "role": role.value, "token": token,
+            "space_id": space.space_id,
+            "room": space.room,
+            "url": _url(),
+            "identity": identity,
+            "name": name,
+            "role": role.value,
+            "token": token,
             "title": space.title,
         }
 
@@ -126,8 +143,7 @@ def register_spaces_routes(app: FastAPI, *, registry: SpaceRegistry | None = Non
         if len(title) > 120:
             raise HTTPException(400, "title too long (max 120 chars)")
         sid = derive_space_id(host, slug)
-        space = Space(space_id=sid, host_fqid=host, title=title, slug=slug,
-                      created_at=time.time())
+        space = Space(space_id=sid, host_fqid=host, title=title, slug=slug, created_at=time.time())
         reg.add(space)
         return JSONResponse(_token_response(host, host.split("@")[0], Role.HOST, space))
 
@@ -152,8 +168,7 @@ def register_spaces_routes(app: FastAPI, *, registry: SpaceRegistry | None = Non
         body = await request.json()
         requester = (body.get("requester") or "").strip()
         _require_host(space, requester)
-        return JSONResponse(_token_response(requester, requester.split("@")[0],
-                                            Role.HOST, space))
+        return JSONResponse(_token_response(requester, requester.split("@")[0], Role.HOST, space))
 
     @app.post("/spaces/{space_id}/join-guest")
     async def join_space_guest(space_id: str, request: Request) -> JSONResponse:
@@ -167,22 +182,32 @@ def register_spaces_routes(app: FastAPI, *, registry: SpaceRegistry | None = Non
         if not invite:
             raise HTTPException(400, "invite_token required")
         from skchat.guest import GuestJoinError, InviteVerifier
+
         try:
-            guest = InviteVerifier().verify(invite, expected_room=space_id,
-                                            display_name=display)
+            guest = InviteVerifier().verify(invite, expected_room=space_id, display_name=display)
         except GuestJoinError as exc:
             raise HTTPException(403, f"invalid invite: {exc}") from exc
-        return JSONResponse(_token_response(guest.identity, guest.display or display,
-                                            Role.LISTENER, space))
+        return JSONResponse(
+            _token_response(guest.identity, guest.display or display, Role.LISTENER, space)
+        )
 
     @app.get("/spaces")
     async def list_spaces() -> JSONResponse:
-        return JSONResponse({"spaces": [
-            {"space_id": s.space_id, "title": s.title, "host_fqid": s.host_fqid,
-             "status": s.status.value, "speakers": s.speakers,
-             "recording": s.recording}
-            for s in reg.live()
-        ]})
+        return JSONResponse(
+            {
+                "spaces": [
+                    {
+                        "space_id": s.space_id,
+                        "title": s.title,
+                        "host_fqid": s.host_fqid,
+                        "status": s.status.value,
+                        "speakers": s.speakers,
+                        "recording": s.recording,
+                    }
+                    for s in reg.live()
+                ]
+            }
+        )
 
     @app.post("/spaces/{space_id}/end")
     async def end_space(space_id: str, request: Request) -> JSONResponse:
@@ -254,8 +279,9 @@ def register_spaces_routes(app: FastAPI, *, registry: SpaceRegistry | None = Non
             raise HTTPException(404, "space not found")
         body = await request.json()
         _require_host(space, (body.get("requester") or "").strip())
-        await _moderator().mute(space.room, (body.get("identity") or "").strip(),
-                                (body.get("track_sid") or "").strip())
+        await _moderator().mute(
+            space.room, (body.get("identity") or "").strip(), (body.get("track_sid") or "").strip()
+        )
         return JSONResponse({"ok": True})
 
     @app.post("/spaces/{space_id}/kick")
@@ -322,6 +348,7 @@ def register_spaces_routes(app: FastAPI, *, registry: SpaceRegistry | None = Non
         from pathlib import Path as _P
 
         from skchat.spaces.consent import can_record
+
         space = reg.get(space_id)
         if space is None:
             raise HTTPException(404, "space not found")
@@ -331,8 +358,7 @@ def register_spaces_routes(app: FastAPI, *, registry: SpaceRegistry | None = Non
         # body (a client could omit/forge `speakers` to bypass consent).
         ok, missing = can_record(space.speakers, space_id, led)
         if not ok:
-            return JSONResponse({"ok": False, "missing_consent": missing},
-                                status_code=409)
+            return JSONResponse({"ok": False, "missing_consent": missing}, status_code=409)
         rec_dir = _P.home() / ".skchat" / "spaces-recordings"
         rec_dir.mkdir(parents=True, exist_ok=True)
         filepath = str(rec_dir / f"{space_id}.ogg")
@@ -363,15 +389,18 @@ def register_spaces_routes(app: FastAPI, *, registry: SpaceRegistry | None = Non
             AssertionError as FedAssertionError,
         )
         from skchat.spaces.federation.authd import AuthDenied, authorize
+
         try:
             signed = await request.json()
         except Exception as exc:  # malformed / non-JSON body
             raise HTTPException(400, "malformed body: expected JSON") from exc
         if not isinstance(signed, dict) or "claim" not in signed or "sig" not in signed:
             raise HTTPException(400, "body must be {claim, sig}")
+
         def _space_live(sid: str) -> bool:
             s = reg.get(sid)
             return s is not None and s.status.value != "ended"
+
         try:
             out = authorize(signed, sfu_ws_url=_url(), _space_live=_space_live)
         except AuthDenied as exc:

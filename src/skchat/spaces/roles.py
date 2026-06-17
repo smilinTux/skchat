@@ -35,10 +35,13 @@ def grant_for(role: "Role | str", space_id: str) -> RoleGrant:
         raise ValueError(f"unknown space role: {role!r}") from exc
 
     if role is Role.HOST:
-        return RoleGrant(room=space_id, can_publish=True, can_publish_data=True,
-                         room_admin=True)
+        return RoleGrant(room=space_id, can_publish=True, can_publish_data=True, room_admin=True)
     if role is Role.SPEAKER:
-        return RoleGrant(room=space_id, can_publish=True, can_publish_data=True,
-                         can_publish_sources=["microphone"])
+        return RoleGrant(
+            room=space_id,
+            can_publish=True,
+            can_publish_data=True,
+            can_publish_sources=["microphone"],
+        )
     # LISTENER
     return RoleGrant(room=space_id, can_publish=False, can_publish_data=True)

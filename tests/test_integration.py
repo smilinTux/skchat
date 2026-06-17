@@ -262,7 +262,9 @@ def test_group_send(test_dir: Path) -> None:
     # Lumina polls the shared inbox — must receive the group message
     lumina_history = _InMemoryHistory()
     lumina_skcomms = _FileSKComms(outbox_dir=shared_dir, inbox_dir=shared_dir)
-    lumina_transport = ChatTransport(skcomms=lumina_skcomms, history=lumina_history, identity=LUMINA)
+    lumina_transport = ChatTransport(
+        skcomms=lumina_skcomms, history=lumina_history, identity=LUMINA
+    )
 
     received = lumina_transport.poll_inbox()
 

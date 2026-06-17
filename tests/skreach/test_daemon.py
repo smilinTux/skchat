@@ -15,7 +15,6 @@ Covers the end-to-end F1 pipeline through Skreachd.handle_one():
 
 from __future__ import annotations
 
-import secrets
 import time
 from pathlib import Path
 from typing import Optional
@@ -31,7 +30,6 @@ from skchat.skreach.sandbox import ExecDisabled, SandboxConfig
 
 from .conftest import (
     _make_envelope,
-    _role_agent,
     _role_guest,
     _role_member,
     _role_operator,
@@ -87,11 +85,7 @@ def _read_audit(path: Path) -> list[dict]:
 
     if not path.exists():
         return []
-    return [
-        json.loads(line)
-        for line in path.read_text().strip().split("\n")
-        if line.strip()
-    ]
+    return [json.loads(line) for line in path.read_text().strip().split("\n") if line.strip()]
 
 
 # ---------------------------------------------------------------------------
@@ -356,7 +350,7 @@ def test_every_rejection_produces_audit_record(
     for d, env, expected in scenarios:
         d.handle_one(env)
 
-    records = [json.loads(l) for l in audit_path.read_text().strip().split("\n") if l]
+    records = [json.loads(line) for line in audit_path.read_text().strip().split("\n") if line]
     outcome_set = {r["outcome"] for r in records}
 
     assert "sig_invalid" in outcome_set

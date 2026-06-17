@@ -14,7 +14,7 @@ def _png(p: Path):
 
 def _service(tmp_path):
     fake_transfer = MagicMock()
-    fake_transfer.send_file.return_value = "tid-123"     # transfer_id
+    fake_transfer.send_file.return_value = "tid-123"  # transfer_id
     history = ChatHistory(history_dir=tmp_path / "history")
     svc = AttachmentService(
         identity="capauth:me@skworld.io",
@@ -27,7 +27,8 @@ def _service(tmp_path):
 
 def test_send_attachment_posts_message_with_fileref(tmp_path):
     svc, fake_transfer, history = _service(tmp_path)
-    f = tmp_path / "doc.pdf"; f.write_bytes(b"%PDF-1.4 hello")
+    f = tmp_path / "doc.pdf"
+    f.write_bytes(b"%PDF-1.4 hello")
     msg = svc.send_attachment("capauth:peer@skworld.io", f, caption="see this")
     fake_transfer.send_file.assert_called_once()
     assert msg.sender == "capauth:me@skworld.io"
@@ -45,7 +46,8 @@ def test_send_attachment_posts_message_with_fileref(tmp_path):
 
 def test_send_image_attachment_generates_thumbnail(tmp_path):
     svc, _, _ = _service(tmp_path)
-    f = tmp_path / "pic.png"; _png(f)
+    f = tmp_path / "pic.png"
+    _png(f)
     msg = svc.send_attachment("capauth:peer@skworld.io", f)
     ref = msg.attachments[0]
     assert ref.mime_type == "image/png"
@@ -55,7 +57,8 @@ def test_send_image_attachment_generates_thumbnail(tmp_path):
 
 def test_send_attachment_sha256_matches_file(tmp_path):
     svc, _, _ = _service(tmp_path)
-    f = tmp_path / "doc.bin"; f.write_bytes(b"abc123")
+    f = tmp_path / "doc.bin"
+    f.write_bytes(b"abc123")
     msg = svc.send_attachment("capauth:peer@skworld.io", f)
     assert msg.attachments[0].sha256 == hashlib.sha256(b"abc123").hexdigest()
 
@@ -68,10 +71,10 @@ def test_on_transfer_complete_posts_inbound_message(tmp_path):
     fake_transfer = MagicMock()
     fake_transfer.receive_file.return_value = received
     history = ChatHistory(history_dir=tmp_path / "h")
-    svc = AttachmentService("capauth:me@skworld.io", history, fake_transfer,
-                            thumb_root=tmp_path / "t")
-    msg = svc.on_transfer_complete(
-        transfer_id="tid-9", sender="capauth:peer@skworld.io")
+    svc = AttachmentService(
+        "capauth:me@skworld.io", history, fake_transfer, thumb_root=tmp_path / "t"
+    )
+    msg = svc.on_transfer_complete(transfer_id="tid-9", sender="capauth:peer@skworld.io")
     assert msg is not None
     assert msg.sender == "capauth:peer@skworld.io"
     assert msg.recipient == "capauth:me@skworld.io"
@@ -84,33 +87,45 @@ def test_on_transfer_complete_posts_inbound_message(tmp_path):
 
 def test_files_fires_on_complete_callback():
     from skchat.files import FileTransferService
+
     called = {}
     svc = FileTransferService("capauth:me@skworld.io")
     svc.on_complete = lambda transfer_id, sender: called.setdefault("args", (transfer_id, sender))
     # simulate a DONE message arriving
-    svc.store_incoming_chunk({"type": "FILE_TRANSFER_DONE", "transfer_id": "tid-7",
-                              "sender": "capauth:peer@skworld.io"})
+    svc.store_incoming_chunk(
+        {"type": "FILE_TRANSFER_DONE", "transfer_id": "tid-7", "sender": "capauth:peer@skworld.io"}
+    )
     assert called.get("args", (None, None))[0] == "tid-7"
 
 
 def test_transport_auto_falls_back_to_skcomms_when_no_fastpath(tmp_path):
     svc, fake_transfer, _ = _service(tmp_path)
-    f = tmp_path / "d.bin"; f.write_bytes(b"x")
+    f = tmp_path / "d.bin"
+    f.write_bytes(b"x")
     # no webrtc, no tailscale available
-    chosen = svc._select_transport("capauth:peer@skworld.io", "auto",
-                                    webrtc_ok=lambda r: False, tailscale_ok=lambda r: False)
+    chosen = svc._select_transport(
+        "capauth:peer@skworld.io", "auto", webrtc_ok=lambda r: False, tailscale_ok=lambda r: False
+    )
     assert chosen == "skcomms"
 
 
 def test_transport_auto_prefers_webrtc_then_tailscale(tmp_path):
     svc, _, _ = _service(tmp_path)
-    assert svc._select_transport("r", "auto", webrtc_ok=lambda r: True,
-                                 tailscale_ok=lambda r: True) == "webrtc"
-    assert svc._select_transport("r", "auto", webrtc_ok=lambda r: False,
-                                 tailscale_ok=lambda r: True) == "tailscale"
+    assert (
+        svc._select_transport("r", "auto", webrtc_ok=lambda r: True, tailscale_ok=lambda r: True)
+        == "webrtc"
+    )
+    assert (
+        svc._select_transport("r", "auto", webrtc_ok=lambda r: False, tailscale_ok=lambda r: True)
+        == "tailscale"
+    )
 
 
 def test_transport_explicit_override(tmp_path):
     svc, _, _ = _service(tmp_path)
-    assert svc._select_transport("r", "skcomms", webrtc_ok=lambda r: True,
-                                 tailscale_ok=lambda r: True) == "skcomms"
+    assert (
+        svc._select_transport(
+            "r", "skcomms", webrtc_ok=lambda r: True, tailscale_ok=lambda r: True
+        )
+        == "skcomms"
+    )

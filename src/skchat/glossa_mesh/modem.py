@@ -11,8 +11,8 @@ from __future__ import annotations
 import math
 
 SAMPLE_RATE = 8000
-MARK_HZ = 1200       # bit = 1
-SPACE_HZ = 800       # bit = 0
+MARK_HZ = 1200  # bit = 1
+SPACE_HZ = 800  # bit = 0
 SAMPLES_PER_BIT = 40  # 200 baud — generous for clean decode
 
 
@@ -44,7 +44,7 @@ class AudioModem:
         nbits = len(samples) // self.spb
         bits: list[int] = []
         for b in range(nbits):
-            win = samples[b * self.spb:(b + 1) * self.spb]
+            win = samples[b * self.spb : (b + 1) * self.spb]
             bits.append(1 if _energy(win, MARK_HZ) >= _energy(win, SPACE_HZ) else 0)
         out = bytearray()
         for i in range(0, len(bits) - 7, 8):

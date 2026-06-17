@@ -59,8 +59,7 @@ async def test_raise_hand_sets_metadata_but_not_publish(mod, fake):
 
 @pytest.mark.asyncio
 async def test_invite_after_raise_promotes_to_publisher(mod, fake):
-    fake.set_participant("alice", json.dumps({"hand_raised": True,
-                                              "invited_to_stage": False}))
+    fake.set_participant("alice", json.dumps({"hand_raised": True, "invited_to_stage": False}))
     cp = await mod.stage_action("space-x", "alice", "invite")
     assert cp is True
     assert fake.updates[-1].permission.can_publish is True
@@ -68,8 +67,7 @@ async def test_invite_after_raise_promotes_to_publisher(mod, fake):
 
 @pytest.mark.asyncio
 async def test_remove_from_stage_demotes(mod, fake):
-    fake.set_participant("alice", json.dumps({"hand_raised": True,
-                                              "invited_to_stage": True}))
+    fake.set_participant("alice", json.dumps({"hand_raised": True, "invited_to_stage": True}))
     cp = await mod.stage_action("space-x", "alice", "remove")
     assert cp is False
     assert fake.updates[-1].permission.can_publish is False
@@ -106,7 +104,7 @@ async def test_concurrent_raise_and_invite_converge(mod, fake, monkeypatch):
     )
     final = json.loads(fake.updates[-1].metadata)
     assert final["hand_raised"] is True
-    assert final["invited_to_stage"] is True   # neither write clobbered the other
+    assert final["invited_to_stage"] is True  # neither write clobbered the other
 
 
 @pytest.mark.asyncio

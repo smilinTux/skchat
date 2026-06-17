@@ -16,13 +16,9 @@ import pytest
 
 from skchat.skreach.rbac import (
     CommandClass,
-    Decision,
-    DecisionKind,
     NodeGrants,
-    Role,
     authorize,
 )
-
 
 # ---------------------------------------------------------------------------
 # RBAC-1: Guest is denied everything

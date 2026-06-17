@@ -3,8 +3,9 @@ from skchat.spaces.space import Space, SpaceStatus
 
 
 def _space(sid="space-aaaa1111aaaa1111"):
-    return Space(space_id=sid, host_fqid="lumina@chef.skworld",
-                 title="Town Hall", slug="town-hall")
+    return Space(
+        space_id=sid, host_fqid="lumina@chef.skworld", title="Town Hall", slug="town-hall"
+    )
 
 
 def test_register_and_list_live(tmp_path):

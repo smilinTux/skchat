@@ -87,7 +87,13 @@ class AttachmentService:
         try:
             checker = self._real_method("webrtc_channel_open")
             return bool(checker(recipient)) if checker is not None else False
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "webrtc availability check failed for %s (%s: %s); assuming unavailable",
+                recipient,
+                type(exc).__name__,
+                exc,
+            )
             return False
 
     def _tailscale_available(self, recipient: str) -> bool:
@@ -98,7 +104,13 @@ class AttachmentService:
         try:
             checker = self._real_method("tailscale_addr")
             return bool(checker(recipient)) if checker is not None else False
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "tailscale availability check failed for %s (%s: %s); assuming unavailable",
+                recipient,
+                type(exc).__name__,
+                exc,
+            )
             return False
 
     def _select_transport(self, recipient, transport="auto", webrtc_ok=None, tailscale_ok=None):

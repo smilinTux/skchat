@@ -13,9 +13,7 @@ import pathlib
 
 import pytest
 
-_BRIDGE_PATH = (
-    pathlib.Path(__file__).resolve().parent.parent / "scripts" / "lumina-bridge.py"
-)
+_BRIDGE_PATH = pathlib.Path(__file__).resolve().parent.parent / "scripts" / "lumina-bridge.py"
 
 
 @pytest.fixture()

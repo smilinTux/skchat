@@ -29,8 +29,9 @@ def setup(tmp_path, monkeypatch):
     rec = FakeRecorder()
     register_spaces_routes(app, registry=reg, consent=led, recorder=rec)
     c = TestClient(app)
-    sid = c.post("/spaces/create", json={
-        "host_fqid": "lumina@chef.skworld", "title": "T", "slug": "s"}).json()["space_id"]
+    sid = c.post(
+        "/spaces/create", json={"host_fqid": "lumina@chef.skworld", "title": "T", "slug": "s"}
+    ).json()["space_id"]
     return c, sid, rec, led, reg
 
 
@@ -41,7 +42,7 @@ def test_record_blocked_until_speakers_consent(setup):
     r = c.post(f"/spaces/{sid}/record/start", json={"requester": "lumina@chef.skworld"})
     assert r.status_code == 409
     assert r.json()["missing_consent"] == ["alice@x.y"]
-    assert rec.started == []                       # not started
+    assert rec.started == []  # not started
 
 
 def test_record_starts_after_consent(setup):

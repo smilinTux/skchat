@@ -15,8 +15,13 @@ class FakeEngine:
     """Fake VoiceEngine that echoes its transcript as a reply."""
 
     async def respond(
-        self, transcript: str, history: list, *, mode: str = "sacred",
-        speaker_id: str = "", is_operator: bool = True,
+        self,
+        transcript: str,
+        history: list,
+        *,
+        mode: str = "sacred",
+        speaker_id: str = "",
+        is_operator: bool = True,
     ) -> str:
         return f"echo: {transcript}"
 

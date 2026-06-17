@@ -13,8 +13,8 @@ from skchat.daemon import (
     _acquire_singleton_lock,
     _live_daemon_pids,
     _read_pid,
-    _singleton_lock_held,
     _remove_pid,
+    _singleton_lock_held,
     _write_pid,
     daemon_status,
     is_running,
@@ -602,7 +602,7 @@ class TestSingletonLock:
         monkeypatch.setattr(daemon_mod, "_daemon_lock_handle", None)
         try:
             # retries=0 → no retry delay; the second holder is denied immediately.
-            assert _acquire_singleton_lock(retries=0) is True   # first holder wins
+            assert _acquire_singleton_lock(retries=0) is True  # first holder wins
             assert _acquire_singleton_lock(retries=0) is False  # second is denied
         finally:
             # Release so the lock file handle doesn't leak into other tests.
@@ -644,13 +644,15 @@ class TestSingletonLock:
         assert _singleton_lock_held() is False  # nobody holds it yet
         try:
             assert _acquire_singleton_lock(retries=0) is True  # now we hold it
-            assert _singleton_lock_held() is True              # probe sees the holder
+            assert _singleton_lock_held() is True  # probe sees the holder
         finally:
             if daemon_mod._daemon_lock_handle is not None:
                 daemon_mod._daemon_lock_handle.close()
                 daemon_mod._daemon_lock_handle = None
 
-    def test_background_start_refused_by_lock_probe_when_pidfile_stale(self, tmp_path, monkeypatch):
+    def test_background_start_refused_by_lock_probe_when_pidfile_stale(
+        self, tmp_path, monkeypatch
+    ):
         """The desync fix: a clobbered PID file does NOT let a duplicate fork —
         the lock probe refuses in the parent before any child is spawned."""
         import skchat.daemon as daemon_mod
@@ -710,8 +712,7 @@ class TestRouteFileMessage:
 
         daemon = ChatDaemon(interval=5, quiet=True)
         daemon._file_service = None
-        msg = ChatMessage(sender="a", recipient="b",
-                          content='{"type": "FILE_TRANSFER_INIT"}')
+        msg = ChatMessage(sender="a", recipient="b", content='{"type": "FILE_TRANSFER_INIT"}')
         assert daemon._route_file_message(msg) is False
 
     def test_plain_chat_message_not_routed(self):
@@ -730,7 +731,8 @@ class TestRouteFileMessage:
         fs = MagicMock()
         daemon._file_service = fs
         msg = ChatMessage(
-            sender="capauth:peer@x", recipient="capauth:me@x",
+            sender="capauth:peer@x",
+            recipient="capauth:me@x",
             content='{"type": "FILE_TRANSFER_INIT", "transfer_id": "t1"}',
         )
         assert daemon._route_file_message(msg) is True
@@ -746,8 +748,9 @@ class TestRouteFileMessage:
         daemon = ChatDaemon(interval=5, quiet=True)
         fs = MagicMock()
         daemon._file_service = fs
-        msg = ChatMessage(sender="a", recipient="b",
-                          content='{"type": "SOMETHING_ELSE", "note": "FILE_CHUNK"}')
+        msg = ChatMessage(
+            sender="a", recipient="b", content='{"type": "SOMETHING_ELSE", "note": "FILE_CHUNK"}'
+        )
         assert daemon._route_file_message(msg) is False
         fs.store_incoming_chunk.assert_not_called()
 
@@ -759,8 +762,7 @@ class TestRouteFileMessage:
         fs = MagicMock()
         fs.store_incoming_chunk.side_effect = RuntimeError("disk full")
         daemon._file_service = fs
-        msg = ChatMessage(sender="a", recipient="b",
-                          content='{"type": "FILE_CHUNK", "seq": 1}')
+        msg = ChatMessage(sender="a", recipient="b", content='{"type": "FILE_CHUNK", "seq": 1}')
         # Returns True (recognised + handed off) even though the store raised.
         assert daemon._route_file_message(msg) is True
 

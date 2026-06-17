@@ -289,9 +289,7 @@ class TestDefaultPeersDir:
         monkeypatch.delenv("SKCHAT_PEERS_DIR", raising=False)
         assert default_peers_dir().name == "peers"
 
-    def test_discovery_uses_env_override_when_no_arg(
-        self, tmp_path: Path, monkeypatch
-    ) -> None:
+    def test_discovery_uses_env_override_when_no_arg(self, tmp_path: Path, monkeypatch) -> None:
         """PeerDiscovery() with no peers_dir picks up the env override."""
         d = tmp_path / "envpeers"
         d.mkdir()

@@ -35,17 +35,24 @@ logger = logging.getLogger("skchat.glossa_mesh.routes")
 
 
 def _local_fqid() -> str:
-    return (os.getenv("SKCHAT_GLOSSA_FQID")
-            or os.getenv("SKCHAT_IDENTITY")
-            or f"{os.getenv('SKAGENT', 'agent')}@skworld.io")
+    return (
+        os.getenv("SKCHAT_GLOSSA_FQID")
+        or os.getenv("SKCHAT_IDENTITY")
+        or f"{os.getenv('SKAGENT', 'agent')}@skworld.io"
+    )
 
 
-def _local_descriptor(model_tier: str = "large",
-                      max_level: int = codec.L2_CODEBOOK) -> CapabilityDescriptor:
+def _local_descriptor(
+    model_tier: str = "large", max_level: int = codec.L2_CODEBOOK
+) -> CapabilityDescriptor:
     cb = default_codebook()
     return CapabilityDescriptor(
-        fqid=_local_fqid(), model_tier=model_tier, max_level=max_level,
-        codebook_version=cb.version, lexicon_version="")
+        fqid=_local_fqid(),
+        model_tier=model_tier,
+        max_level=max_level,
+        codebook_version=cb.version,
+        lexicon_version="",
+    )
 
 
 def _parse_peer_caps(raw: list | None) -> list[CapabilityDescriptor]:
@@ -57,13 +64,15 @@ def _parse_peer_caps(raw: list | None) -> list[CapabilityDescriptor]:
     for item in raw or []:
         if not isinstance(item, dict):
             raise HTTPException(400, "each peer_caps entry must be an object")
-        peers.append(CapabilityDescriptor(
-            fqid=str(item.get("fqid", "peer@unknown")),
-            model_tier=str(item.get("model_tier", "large")),
-            max_level=int(item.get("max_level", codec.L2_CODEBOOK)),
-            codebook_version=str(item.get("codebook_version", cb_version)),
-            lexicon_version=str(item.get("lexicon_version", "")),
-        ))
+        peers.append(
+            CapabilityDescriptor(
+                fqid=str(item.get("fqid", "peer@unknown")),
+                model_tier=str(item.get("model_tier", "large")),
+                max_level=int(item.get("max_level", codec.L2_CODEBOOK)),
+                codebook_version=str(item.get("codebook_version", cb_version)),
+                lexicon_version=str(item.get("lexicon_version", "")),
+            )
+        )
     return peers
 
 
@@ -90,11 +99,15 @@ def register_glossa_routes(app: FastAPI) -> None:
     @app.get("/glossa/caps")
     async def glossa_caps() -> JSONResponse:
         d = _local_descriptor()
-        return JSONResponse({
-            "fqid": d.fqid, "model_tier": d.model_tier, "max_level": d.max_level,
-            "codebook_version": d.codebook_version,
-            "lexicon_version": d.lexicon_version,
-        })
+        return JSONResponse(
+            {
+                "fqid": d.fqid,
+                "model_tier": d.model_tier,
+                "max_level": d.max_level,
+                "codebook_version": d.codebook_version,
+                "lexicon_version": d.lexicon_version,
+            }
+        )
 
     @app.post("/glossa/encode")
     async def glossa_encode(request: Request) -> JSONResponse:
@@ -109,18 +122,20 @@ def register_glossa_routes(app: FastAPI) -> None:
         max_level = int(body.get("max_level", codec.L2_CODEBOOK))
         model_tier = str(body.get("model_tier", "large"))
         session = GlossaMeshSession(
-            descriptor=_local_descriptor(model_tier=model_tier, max_level=max_level),
-            peers=peers)
+            descriptor=_local_descriptor(model_tier=model_tier, max_level=max_level), peers=peers
+        )
         try:
             out = session.encode(msg)
         except ValueError as exc:  # un-glossable / codec failure → never emit
             raise HTTPException(422, f"not encodable with audit gloss: {exc}") from exc
-        return JSONResponse({
-            "wire": base64.b64encode(out["wire"]).decode(),
-            "gloss": out["gloss"],
-            "tier": out["tier"],
-            "lexicon_version": out["lexicon_version"],
-        })
+        return JSONResponse(
+            {
+                "wire": base64.b64encode(out["wire"]).decode(),
+                "gloss": out["gloss"],
+                "tier": out["tier"],
+                "lexicon_version": out["lexicon_version"],
+            }
+        )
 
     @app.post("/glossa/decode")
     async def glossa_decode(request: Request) -> JSONResponse:
@@ -140,10 +155,14 @@ def register_glossa_routes(app: FastAPI) -> None:
         except ValueError as exc:
             raise HTTPException(422, f"undecodable glossa frame: {exc}") from exc
         m: Message = out["message"]
-        return JSONResponse({
-            "text": out["gloss"],   # the always-available human gloss (audit view)
-            "gloss": out["gloss"],
-            "tier": out["tier"],
-            "intent": m.intent, "args": m.args, "refs": m.refs,
-            "message_text": m.text,
-        })
+        return JSONResponse(
+            {
+                "text": out["gloss"],  # the always-available human gloss (audit view)
+                "gloss": out["gloss"],
+                "tier": out["tier"],
+                "intent": m.intent,
+                "args": m.args,
+                "refs": m.refs,
+                "message_text": m.text,
+            }
+        )

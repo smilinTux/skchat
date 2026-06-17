@@ -1,6 +1,8 @@
 from pathlib import Path
 
-HTML = Path("/home/cbrd21/clawd/skcapstone-repos/skchat/src/skchat/static/livekit.html").read_text()
+HTML = Path(
+    "/home/cbrd21/clawd/skcapstone-repos/skchat/src/skchat/static/livekit.html"
+).read_text()
 
 
 def test_publishlane_mirrors_to_server_endpoint():

@@ -14,11 +14,8 @@ from __future__ import annotations
 import secrets
 import time
 
-import pytest
-
 from skchat.skreach.protocol import (
     DropReason,
-    VerifyResult,
     _ReplayCache,
     verify_envelope,
 )

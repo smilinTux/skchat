@@ -25,6 +25,7 @@ class AuthDenied(Exception):
 
 def _default_mint(identity: str, role: Role, space_id: str) -> str:
     from skchat.spaces.tokens import mint_space_token
+
     return mint_space_token(identity, identity.split("@")[0], role, space_id, 3600)
 
 
@@ -60,5 +61,10 @@ def authorize(
         role = Role.LISTENER
     mint = _mint or _default_mint
     token = mint(assertion.fqid, role, assertion.space_id)
-    return {"sfu_ws_url": sfu_ws_url, "token": token, "role": role.value,
-            "identity": assertion.fqid, "space_id": assertion.space_id}
+    return {
+        "sfu_ws_url": sfu_ws_url,
+        "token": token,
+        "role": role.value,
+        "identity": assertion.fqid,
+        "space_id": assertion.space_id,
+    }

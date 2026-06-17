@@ -255,9 +255,7 @@ class Skreachd:
             )
         except ValidationError as ve:
             outcome = ve.outcome
-            logger.warning(
-                "skreachd: validation_error id=%s reason=%s", envelope.id, ve.message
-            )
+            logger.warning("skreachd: validation_error id=%s reason=%s", envelope.id, ve.message)
             audit_rec.finalise(outcome=outcome, stderr=ve.message.encode())
             self._audit.write(audit_rec)
             return DispatchResult(

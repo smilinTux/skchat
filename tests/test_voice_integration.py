@@ -67,8 +67,8 @@ def _run_turn(engine, pcm_in: bytes) -> _FakeWS:
 
 
 def test_voice_turn_returns_pcm_and_calls_each_stage_once():
-    pcm_in = b"\x00\x01" * 800          # fake 16-bit PCM input
-    pcm_out = b"\x10\x20" * 1200         # fake synthesized audio out
+    pcm_in = b"\x00\x01" * 800  # fake 16-bit PCM input
+    pcm_out = b"\x10\x20" * 1200  # fake synthesized audio out
     engine = _make_engine("hello there", "hi back", pcm_out)
 
     ws = _run_turn(engine, pcm_in)
