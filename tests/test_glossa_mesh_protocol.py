@@ -1,3 +1,9 @@
+import pytest
+
+# skcomms (also pulled in transitively by skchat.glossa_mesh) is an optional dep
+# — skip the whole module if it is absent so collection stays clean.
+pytest.importorskip("skcomms.glossa", reason="skcomms not installed")
+
 from skcomms.glossa.handshake import CapabilityDescriptor
 
 from skchat.glossa_mesh import protocol

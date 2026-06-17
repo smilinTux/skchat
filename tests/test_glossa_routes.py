@@ -10,6 +10,11 @@ import base64
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+
+# skcomms (pulled in transitively by skchat.glossa_mesh) is an optional dep —
+# skip the whole module if it is absent so collection stays clean.
+pytest.importorskip("skcomms.glossa", reason="skcomms not installed")
+
 from skcomms.glossa import codec
 from skcomms.glossa.codebook import default_codebook
 from skcomms.glossa.handshake import CapabilityDescriptor
