@@ -32,4 +32,4 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: pip install -e ".[dev]"
-      - run: python -m pytest tests/ -v --tb=short -m "not integration and not e2e_live and not e2e_3way"
+      - run: python -m pytest tests/ -v --tb=short --cov=src --cov-report=term-missing -m "not integration and not e2e_live and not e2e_3way"

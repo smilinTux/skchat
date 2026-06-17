@@ -15,9 +15,9 @@ _DEFAULT_PATH = Path.home() / ".skchat" / "federation-trust.json"
 
 
 class AccessLevel(str, Enum):
-    FULL = "full"          # may publish (speaker/host per role)
+    FULL = "full"  # may publish (speaker/host per role)
     SUBSCRIBE = "subscribe"  # listen-only
-    DENY = "deny"          # rejected
+    DENY = "deny"  # rejected
 
 
 class TrustPolicy:

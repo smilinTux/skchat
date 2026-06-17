@@ -62,7 +62,10 @@ DEFAULT_PID_FILE = str(Path("~/.skchat/daemon.pid").expanduser())
 # Optional import — never a hard dependency.
 try:
     from skcapstone import sdk as _sdk
-except Exception:  # ImportError, or a broken partial install
+except Exception as exc:  # ImportError, or a broken partial install
+    logger.debug(
+        "skcapstone sdk unavailable (%s: %s); using native fallback", type(exc).__name__, exc
+    )
     _sdk = None  # type: ignore[assignment]
 
 #: severity → logging method name (native fallback)

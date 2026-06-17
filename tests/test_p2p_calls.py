@@ -1,4 +1,5 @@
 """skchat P2P glue: resolve + dial + status delegate to the session manager."""
+
 import asyncio
 
 import pytest

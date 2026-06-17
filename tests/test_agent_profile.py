@@ -13,7 +13,6 @@ from pathlib import Path
 
 import pytest
 
-
 # ── shared test scaffolding ──────────────────────────────────────────────────
 
 
@@ -70,9 +69,7 @@ def _write_minimal_agent(base: Path, name: str, *, with_feb: bool = True) -> Non
             },
             "rehydration_hints": {},
         }
-        (agent_dir / "trust" / "febs" / "test.feb").write_text(
-            json.dumps(feb), encoding="utf-8"
-        )
+        (agent_dir / "trust" / "febs" / "test.feb").write_text(json.dumps(feb), encoding="utf-8")
 
 
 @pytest.fixture
@@ -154,9 +151,7 @@ class TestIdentityResolution:
         # resolver to the no-agent result (None). skchat.agent_profile does
         # `from skmemory.agents import get_active_agent` at call time, so
         # patching the module attribute takes effect.
-        monkeypatch.setattr(
-            "skmemory.agents.get_active_agent", lambda: None, raising=False
-        )
+        monkeypatch.setattr("skmemory.agents.get_active_agent", lambda: None, raising=False)
 
         import skchat.agent_profile as ap
 
@@ -200,9 +195,7 @@ class TestFebState:
             f"OOF level {feb.oof_level} suggests defaulted-100 or 0; "
             "should reflect the moderate FEB we wrote"
         )
-        assert feb.oof_level != 100, (
-            "If OOF=100 the loader is hitting the legacy default-max bug"
-        )
+        assert feb.oof_level != 100, "If OOF=100 the loader is hitting the legacy default-max bug"
         assert feb.primary_emotion == "warmth"
 
     def test_load_feb_no_febs_present(
@@ -416,8 +409,14 @@ class TestFebSummaryToDict:
         assert d["oof_level"] == 0
         assert d["primary_emotion"] == "unknown"
         assert set(d) == {
-            "oof_level", "primary_emotion", "intensity", "valence",
-            "cloud9_achieved", "source_path", "age_seconds", "has_feb",
+            "oof_level",
+            "primary_emotion",
+            "intensity",
+            "valence",
+            "cloud9_achieved",
+            "source_path",
+            "age_seconds",
+            "has_feb",
         }
 
     def test_populated_feb_summary_to_dict(self) -> None:
@@ -468,8 +467,10 @@ class TestLoadSoulResolution:
 
         monkeypatch.setenv("SKCAPSTONE_HOME", str(base))
         import skmemory.agents as sa
+
         importlib.reload(sa)
         import skchat.agent_profile as ap
+
         importlib.reload(ap)
 
         soul_dict, mtime = ap._load_soul("alpha")
@@ -487,8 +488,10 @@ class TestLoadSoulResolution:
 
         monkeypatch.setenv("SKCAPSTONE_HOME", str(base))
         import skmemory.agents as sa
+
         importlib.reload(sa)
         import skchat.agent_profile as ap
+
         importlib.reload(ap)
 
         soul_dict, _ = ap._load_soul("beta")
@@ -501,8 +504,10 @@ class TestLoadSoulResolution:
         (base / "agents" / "ghost" / "soul").mkdir(parents=True)
         monkeypatch.setenv("SKCAPSTONE_HOME", str(base))
         import skmemory.agents as sa
+
         importlib.reload(sa)
         import skchat.agent_profile as ap
+
         importlib.reload(ap)
 
         soul_dict, mtime = ap._load_soul("ghost")

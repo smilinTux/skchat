@@ -26,8 +26,9 @@ StreamFn = Callable[[str, dict], AsyncIterator[bytes]]
 
 
 class TTSClient:
-    def __init__(self, cfg: VoiceConfig, _post: PostFn | None = None,
-                 _stream: StreamFn | None = None):
+    def __init__(
+        self, cfg: VoiceConfig, _post: PostFn | None = None, _stream: StreamFn | None = None
+    ):
         self.cfg = cfg
         self._post = _post or self._http_post
         self._stream = _stream or self._http_stream
@@ -48,8 +49,7 @@ class TTSClient:
 
     async def synthesize(self, text: str, *, voice: str) -> bytes:
         """Full WAV bytes, or b'' on failure."""
-        payload = {"model": "tts-1", "input": text, "voice": voice,
-                   "response_format": "wav"}
+        payload = {"model": "tts-1", "input": text, "voice": voice, "response_format": "wav"}
         try:
             return await self._post(self.cfg.tts_url, payload)
         except Exception as e:
@@ -58,8 +58,7 @@ class TTSClient:
 
     async def stream(self, text: str, *, voice: str) -> AsyncIterator[bytes]:
         """Yield raw int16 PCM chunks from the streaming endpoint."""
-        payload = {"model": "tts-1", "input": text, "voice": voice,
-                   "response_format": "pcm"}
+        payload = {"model": "tts-1", "input": text, "voice": voice, "response_format": "pcm"}
         url = stream_url_for(self.cfg.tts_url)
         try:
             async for chunk in self._stream(url, payload):

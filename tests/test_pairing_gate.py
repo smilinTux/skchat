@@ -1,4 +1,5 @@
 """PairingGate — operator window + nonce + rate limit (Funnel hardening)."""
+
 from skchat.pairing_gate import PairingGate
 
 
@@ -106,9 +107,9 @@ def test_reopening_window_resets_accept_count():
     clk = _Clock()
     g = PairingGate(max_accepts_per_window=1, now=clk)
     g.open_window()
-    g.consume()                 # hits cap → auto-close
+    g.consume()  # hits cap → auto-close
     assert not g.is_open()
-    info = g.open_window()      # fresh window resets accepts
+    info = g.open_window()  # fresh window resets accepts
     assert g.check(info["nonce"])[0] is True
 
 

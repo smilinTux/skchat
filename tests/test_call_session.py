@@ -18,7 +18,7 @@ def test_derive_room_is_stable_and_well_formed():
     assert room.startswith("call-")
     assert room == derive_room("lumina@chef.skworld", "opus@chef.skworld")
     assert "lumina" not in room and "opus" not in room
-    suffix = room[len("call-"):]
+    suffix = room[len("call-") :]
     assert len(suffix) == 16 and suffix == suffix.lower()
 
 
@@ -68,26 +68,28 @@ def test_parse_invite_rejects_missing_type():
 
 
 def test_each_invite_gets_a_unique_nonce():
-    b1 = build_invite_body(from_fqid="a@b", to_fqid="c@d", room="call-x",
-                           livekit_url="wss://h")
-    b2 = build_invite_body(from_fqid="a@b", to_fqid="c@d", room="call-x",
-                           livekit_url="wss://h")
+    b1 = build_invite_body(from_fqid="a@b", to_fqid="c@d", room="call-x", livekit_url="wss://h")
+    b2 = build_invite_body(from_fqid="a@b", to_fqid="c@d", room="call-x", livekit_url="wss://h")
     assert parse_invite_body(b1)["nonce"] != parse_invite_body(b2)["nonce"]
 
 
 def test_invite_carries_topic_when_supplied():
-    body = build_invite_body(from_fqid="a@b", to_fqid="c@d", room="call-x",
-                             livekit_url="wss://h", topic="ingest debugging")
+    body = build_invite_body(
+        from_fqid="a@b",
+        to_fqid="c@d",
+        room="call-x",
+        livekit_url="wss://h",
+        topic="ingest debugging",
+    )
     assert parse_invite_body(body)["topic"] == "ingest debugging"
 
 
 def test_invite_topic_defaults_empty():
-    body = build_invite_body(from_fqid="a@b", to_fqid="c@d", room="call-x",
-                             livekit_url="wss://h")
+    body = build_invite_body(from_fqid="a@b", to_fqid="c@d", room="call-x", livekit_url="wss://h")
     assert parse_invite_body(body)["topic"] == ""
 
 
 def test_self_pair_room_is_deterministic():
     # degenerate self-call: deterministic + well-formed (no crash)
     room = derive_room("solo@chef.skworld", "solo@chef.skworld")
-    assert room.startswith("call-") and len(room[len("call-"):]) == 16
+    assert room.startswith("call-") and len(room[len("call-") :]) == 16

@@ -47,6 +47,7 @@ def opus(tmp_path, monkeypatch):
 
 # ── shared parametrized behaviour ───────────────────────────────────────────
 
+
 @pytest.fixture(params=["lumina", "opus"])
 def bridge(request):
     return request.getfixturevalue(request.param)

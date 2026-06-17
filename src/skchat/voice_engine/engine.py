@@ -41,9 +41,9 @@ class VoiceEngine:
         cfg: VoiceConfig,
         agent: str = "lumina",
         *,
-        stt=None,   # STTClient — not used by the brain; transport calls STT
+        stt=None,  # STTClient — not used by the brain; transport calls STT
         llm: LLMClient | None = None,
-        tts=None,   # TTSClient — not used by the brain; transport calls TTS
+        tts=None,  # TTSClient — not used by the brain; transport calls TTS
         memory: MemoryBridge | None = None,
         persona: PersonaBuilder | None = None,
         registry: ToolRegistry | None = None,

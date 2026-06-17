@@ -21,13 +21,14 @@ def client(tmp_path, monkeypatch):
 
 
 def _video(token):
-    return jwt.decode(token, _SECRET, algorithms=["HS256"],
-                      options={"verify_aud": False})["video"]
+    return jwt.decode(token, _SECRET, algorithms=["HS256"], options={"verify_aud": False})["video"]
 
 
 def test_create_returns_host_token_and_registers(client):
-    r = client.post("/spaces/create", json={
-        "host_fqid": "lumina@chef.skworld", "title": "Town Hall", "slug": "town-hall"})
+    r = client.post(
+        "/spaces/create",
+        json={"host_fqid": "lumina@chef.skworld", "title": "Town Hall", "slug": "town-hall"},
+    )
     assert r.status_code == 200
     body = r.json()
     assert body["space_id"].startswith("space-")
@@ -40,20 +41,24 @@ def test_create_returns_host_token_and_registers(client):
 
 def test_create_rejects_overlong_title(client):
     """C1 defense-in-depth: cap title length server-side (cheap XSS-blast guard)."""
-    r = client.post("/spaces/create", json={
-        "host_fqid": "lumina@chef.skworld", "title": "x" * 121, "slug": "long"})
+    r = client.post(
+        "/spaces/create",
+        json={"host_fqid": "lumina@chef.skworld", "title": "x" * 121, "slug": "long"},
+    )
     assert r.status_code == 400
     # a 120-char title is still accepted
-    ok = client.post("/spaces/create", json={
-        "host_fqid": "lumina@chef.skworld", "title": "x" * 120, "slug": "ok"})
+    ok = client.post(
+        "/spaces/create",
+        json={"host_fqid": "lumina@chef.skworld", "title": "x" * 120, "slug": "ok"},
+    )
     assert ok.status_code == 200
 
 
 def test_member_join_gets_listener_token(client):
-    sid = client.post("/spaces/create", json={
-        "host_fqid": "lumina@chef.skworld", "title": "T", "slug": "s"}).json()["space_id"]
-    r = client.post(f"/spaces/{sid}/join", json={
-        "identity": "opus@chef.skworld", "name": "Opus"})
+    sid = client.post(
+        "/spaces/create", json={"host_fqid": "lumina@chef.skworld", "title": "T", "slug": "s"}
+    ).json()["space_id"]
+    r = client.post(f"/spaces/{sid}/join", json={"identity": "opus@chef.skworld", "name": "Opus"})
     assert r.status_code == 200
     v = _video(r.json()["token"])
     assert v.get("canPublish", False) is False
@@ -66,24 +71,28 @@ def test_join_unknown_space_404(client):
 
 
 def test_end_marks_not_live(client):
-    sid = client.post("/spaces/create", json={
-        "host_fqid": "lumina@chef.skworld", "title": "T", "slug": "s"}).json()["space_id"]
-    assert client.post(f"/spaces/{sid}/end",
-                       json={"requester": "lumina@chef.skworld"}).status_code == 200
+    sid = client.post(
+        "/spaces/create", json={"host_fqid": "lumina@chef.skworld", "title": "T", "slug": "s"}
+    ).json()["space_id"]
+    assert (
+        client.post(f"/spaces/{sid}/end", json={"requester": "lumina@chef.skworld"}).status_code
+        == 200
+    )
     live = client.get("/spaces").json()["spaces"]
     assert all(s["space_id"] != sid for s in live)
 
 
 def test_non_host_cannot_end(client):
-    sid = client.post("/spaces/create", json={
-        "host_fqid": "lumina@chef.skworld", "title": "T", "slug": "s"}).json()["space_id"]
-    assert client.post(f"/spaces/{sid}/end",
-                       json={"requester": "rando@x.y"}).status_code == 403
+    sid = client.post(
+        "/spaces/create", json={"host_fqid": "lumina@chef.skworld", "title": "T", "slug": "s"}
+    ).json()["space_id"]
+    assert client.post(f"/spaces/{sid}/end", json={"requester": "rando@x.y"}).status_code == 403
 
 
 def test_join_host_mints_host_token_for_host_only(client):
-    sid = client.post("/spaces/create", json={
-        "host_fqid": "lumina@chef.skworld", "title": "T", "slug": "s"}).json()["space_id"]
+    sid = client.post(
+        "/spaces/create", json={"host_fqid": "lumina@chef.skworld", "title": "T", "slug": "s"}
+    ).json()["space_id"]
     # host gets a host token (roomAdmin + publish)
     r = client.post(f"/spaces/{sid}/join-host", json={"requester": "lumina@chef.skworld"})
     assert r.status_code == 200

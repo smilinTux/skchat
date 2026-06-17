@@ -100,6 +100,22 @@ ignore = [
 line-length = 99
 target-version = ["py311"]
 
+[tool.coverage.run]
+branch = true
+source = ["src"]
+omit = [
+    "tests/*",
+    "*/tests/*",
+    "src/skchat/static/*",
+]
+
+[tool.coverage.report]
+# Measured branch coverage was ~57% on 2026-06-17; gate sits a few points
+# below so CI passes today and can be ratcheted up as coverage improves.
+fail_under = 54
+show_missing = true
+skip_covered = false
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]

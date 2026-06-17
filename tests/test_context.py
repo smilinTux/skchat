@@ -44,9 +44,7 @@ def _build_history(tmp_path: Path):
 
 
 class TestMemoryContextInjection:
-    def test_memory_snippets_injected_when_source_returns_hits(
-        self, tmp_path: Path
-    ) -> None:
+    def test_memory_snippets_injected_when_source_returns_hits(self, tmp_path: Path) -> None:
         from skchat.context import fetch_context
 
         history, chef, lumina, group = _build_history(tmp_path)
@@ -177,8 +175,11 @@ class TestFormatMessage:
         from skchat.context import _format_message
 
         line = _format_message(
-            {"sender": "capauth:chef@skworld.io", "content": "hi",
-             "recipient": "capauth:lumina@skworld.io"},
+            {
+                "sender": "capauth:chef@skworld.io",
+                "content": "hi",
+                "recipient": "capauth:lumina@skworld.io",
+            },
             "capauth:lumina@skworld.io",
             False,
         )
@@ -188,8 +189,11 @@ class TestFormatMessage:
         from skchat.context import _format_message
 
         line = _format_message(
-            {"sender": "capauth:jarvis@skworld.io", "content": "infra green",
-             "recipient": "abcdef01-2345-6789-abcd-ef0123456789"},
+            {
+                "sender": "capauth:jarvis@skworld.io",
+                "content": "infra green",
+                "recipient": "abcdef01-2345-6789-abcd-ef0123456789",
+            },
             "capauth:lumina@skworld.io",
             True,
         )
@@ -237,8 +241,13 @@ class TestMemoryQueryOverride:
             return ["snippet"]
 
         fetch_context(
-            self_identity=lumina, sender=chef, thread_id=group, limit=10,
-            history=history, memory_source=source, memory_query="explicit query",
+            self_identity=lumina,
+            sender=chef,
+            thread_id=group,
+            limit=10,
+            history=history,
+            memory_source=source,
+            memory_query="explicit query",
         )
         assert seen == ["explicit query"]
 
@@ -249,8 +258,12 @@ class TestMemoryQueryOverride:
         called = []
 
         ctx = fetch_context(
-            self_identity=lumina, sender=chef, thread_id=group, limit=10,
-            history=history, memory_source=lambda q, n: called.append(q) or ["x"],
+            self_identity=lumina,
+            sender=chef,
+            thread_id=group,
+            limit=10,
+            history=history,
+            memory_source=lambda q, n: called.append(q) or ["x"],
             memory_hits=0,
         )
         assert "Relevant memories" not in ctx

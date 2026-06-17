@@ -159,9 +159,7 @@ async def _handle_skreach_status(args: dict, ctx: dict) -> str:
     status_res = ops.deploy_status(service)
     health_res = ops.health(service)
     if not status_res.ok and not health_res.ok:
-        return (
-            f"skreach_status denied: {status_res.deny_reason or health_res.deny_reason}"
-        )
+        return f"skreach_status denied: {status_res.deny_reason or health_res.deny_reason}"
     return (
         f"deploy_status({service}): {status_res.outcome} data={status_res.data} | "
         f"health({service}): {health_res.outcome} data={health_res.data}"
@@ -295,10 +293,7 @@ async def _handle_skreach_deploy(args: dict, ctx: dict) -> str:
         return f"error: unknown action '{action}' (must be restart or scale)"
 
     if res.confirm_required:
-        return (
-            f"confirm_required: {res.deny_reason} — "
-            "re-call with confirm_token to proceed"
-        )
+        return f"confirm_required: {res.deny_reason} — re-call with confirm_token to proceed"
     if not res.ok:
         return f"skreach_deploy denied: {res.deny_reason or res.error}"
     return f"deploy({action} {service}): {res.outcome} data={res.data}"
@@ -330,9 +325,7 @@ _EXEC_SCHEMA: dict = {
                 "argv": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": (
-                        "Command + arguments as a list (no shell interpolation)."
-                    ),
+                    "description": ("Command + arguments as a list (no shell interpolation)."),
                 },
                 "cwd": {
                     "type": "string",

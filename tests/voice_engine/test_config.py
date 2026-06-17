@@ -15,10 +15,12 @@ def test_defaults_reflect_working_endpoints():
 
 
 def test_env_overrides_take_precedence():
-    cfg = VoiceConfig.from_env(env={
-        "SKVOICE_MODEL": "claude-opus-4-7",
-        "SKVOICE_STT_MIN_RMS": "350",
-    })
+    cfg = VoiceConfig.from_env(
+        env={
+            "SKVOICE_MODEL": "claude-opus-4-7",
+            "SKVOICE_STT_MIN_RMS": "350",
+        }
+    )
     assert cfg.model == "claude-opus-4-7"
     assert cfg.stt_min_rms == 350
 

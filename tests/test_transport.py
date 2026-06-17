@@ -454,8 +454,9 @@ class TestSendTypingIndicator:
 
 class TestHandleHeartbeat:
     def test_no_presence_cache_is_noop(self, mock_skcomms, mock_history):
-        ct = ChatTransport(skcomms=mock_skcomms, history=mock_history,
-                           identity="capauth:me@x")  # no presence_cache
+        ct = ChatTransport(
+            skcomms=mock_skcomms, history=mock_history, identity="capauth:me@x"
+        )  # no presence_cache
         # Should silently return without error.
         ct._handle_heartbeat(MagicMock())
 
@@ -463,10 +464,13 @@ class TestHandleHeartbeat:
         from skchat.presence import PresenceCache, PresenceIndicator, PresenceState
 
         cache = MagicMock(spec=PresenceCache)
-        ct = ChatTransport(skcomms=mock_skcomms, history=mock_history,
-                           identity="capauth:me@x", presence_cache=cache)
-        ind = PresenceIndicator(identity_uri="capauth:peer@x",
-                                state=PresenceState.TYPING)
+        ct = ChatTransport(
+            skcomms=mock_skcomms,
+            history=mock_history,
+            identity="capauth:me@x",
+            presence_cache=cache,
+        )
+        ind = PresenceIndicator(identity_uri="capauth:peer@x", state=PresenceState.TYPING)
         env = MagicMock()
         env.payload.content = ind.model_dump_json()
         ct._handle_heartbeat(env)
@@ -476,10 +480,13 @@ class TestHandleHeartbeat:
         from skchat.presence import PresenceCache, PresenceIndicator, PresenceState
 
         cache = MagicMock(spec=PresenceCache)
-        ct = ChatTransport(skcomms=mock_skcomms, history=mock_history,
-                           identity="capauth:me@x", presence_cache=cache)
-        ind = PresenceIndicator(identity_uri="capauth:peer@x",
-                                state=PresenceState.ONLINE)
+        ct = ChatTransport(
+            skcomms=mock_skcomms,
+            history=mock_history,
+            identity="capauth:me@x",
+            presence_cache=cache,
+        )
+        ind = PresenceIndicator(identity_uri="capauth:peer@x", state=PresenceState.ONLINE)
         env = MagicMock()
         env.payload.content = ind.model_dump_json()
         ct._handle_heartbeat(env)
@@ -503,8 +510,11 @@ class TestFileInboxRawFallback:
         inbox = ct._file_inbox_root / "TESTFP"  # type: ignore[attr-defined]
         inbox.mkdir(parents=True)
 
-        msg = ChatMessage(sender="capauth:peer@skworld.io",
-                          recipient="capauth:test@skchat", content="raw bare msg")
+        msg = ChatMessage(
+            sender="capauth:peer@skworld.io",
+            recipient="capauth:test@skchat",
+            content="raw bare msg",
+        )
         # Write the ChatMessage JSON directly (no {"payload": ...} wrapper).
         (inbox / "raw.skc.json").write_text(msg.model_dump_json(), encoding="utf-8")
 
@@ -663,9 +673,7 @@ class TestConcurrentWriteAndPollRace:
                 collected.extend(ct._poll_file_inbox())
             collected.extend(ct._poll_file_inbox())
 
-        writer_threads = [
-            threading.Thread(target=writer, args=(w,)) for w in range(n_writers)
-        ]
+        writer_threads = [threading.Thread(target=writer, args=(w,)) for w in range(n_writers)]
         poll_thread = threading.Thread(target=poller)
         poll_thread.start()
         for t in writer_threads:

@@ -290,8 +290,7 @@ class TestFileReceiver:
 
         output = tmp_path / "tamper_out.bin"
         with pytest.raises(InvalidTag):
-            receiver.assemble(transfer.transfer_id, output,
-                              transfer_key_hex=transfer.transfer_key)
+            receiver.assemble(transfer.transfer_id, output, transfer_key_hex=transfer.transfer_key)
 
     def test_wrong_transfer_key_fails_to_decrypt(self, tmp_path: Path) -> None:
         """Assembling with the wrong AES key fails the GCM auth tag."""
@@ -309,8 +308,9 @@ class TestFileReceiver:
 
         wrong_key = os.urandom(32).hex()
         with pytest.raises(InvalidTag):
-            receiver.assemble(transfer.transfer_id, tmp_path / "out.bin",
-                              transfer_key_hex=wrong_key)
+            receiver.assemble(
+                transfer.transfer_id, tmp_path / "out.bin", transfer_key_hex=wrong_key
+            )
 
     def test_sha256_mismatch_reports_unverified(self, tmp_path: Path) -> None:
         """If the declared sha256 doesn't match the assembled bytes, verified=False."""
@@ -326,8 +326,9 @@ class TestFileReceiver:
         for chunk in chunks:
             receiver.receive_chunk(chunk)
 
-        result = receiver.assemble(transfer.transfer_id, tmp_path / "out.bin",
-                                   transfer_key_hex=transfer.transfer_key)
+        result = receiver.assemble(
+            transfer.transfer_id, tmp_path / "out.bin", transfer_key_hex=transfer.transfer_key
+        )
         assert result["verified"] is False
 
     def test_assemble_missing_chunks_raises(self, tmp_path: Path) -> None:
@@ -342,8 +343,9 @@ class TestFileReceiver:
         receiver.receive_chunk(chunks[0])  # only one of several
 
         with pytest.raises(ValueError, match="Missing chunks"):
-            receiver.assemble(transfer.transfer_id, tmp_path / "out.bin",
-                              transfer_key_hex=transfer.transfer_key)
+            receiver.assemble(
+                transfer.transfer_id, tmp_path / "out.bin", transfer_key_hex=transfer.transfer_key
+            )
 
 
 class TestFileChunkSerialization:
@@ -612,7 +614,9 @@ class _FlakySKComms:
 
     def chunk_indices(self) -> list[int]:
         """Return chunk_idx values for every FILE_CHUNK actually sent."""
-        return [c["message"]["chunk_idx"] for c in self.calls if c["message"]["type"] == "FILE_CHUNK"]
+        return [
+            c["message"]["chunk_idx"] for c in self.calls if c["message"]["type"] == "FILE_CHUNK"
+        ]
 
 
 class TestResumeSend:
@@ -709,7 +713,9 @@ class TestResumeSend:
                 recv.store_incoming_chunk(json.loads(message))
 
         relay = _Relay()
-        sender = FileTransferService(identity="capauth:alice@test", skcomms=relay, base_dir=send_base)
+        sender = FileTransferService(
+            identity="capauth:alice@test", skcomms=relay, base_dir=send_base
+        )
         tid = sender.send_file("capauth:bob@test", original)
 
         # Resume over a clean relay that always delivers.

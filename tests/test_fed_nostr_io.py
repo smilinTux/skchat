@@ -26,8 +26,9 @@ class _Recorder:
 def test_publish_focus_uses_focus_kind():
     rec = _Recorder()
     fn = FederationNostr(publish=rec.publish, query=rec.query)
-    ok = fn.publish_focus(host_fqid="lumina@chef.skworld",
-                          auth_url="https://h/sfu/get", sfu_ws_url="wss://h:8443")
+    ok = fn.publish_focus(
+        host_fqid="lumina@chef.skworld", auth_url="https://h/sfu/get", sfu_ws_url="wss://h:8443"
+    )
     assert ok is True
     assert len(rec.published) == 1
     assert rec.published[0]["kind"] == FOCUS_KIND
@@ -36,22 +37,26 @@ def test_publish_focus_uses_focus_kind():
 def test_publish_space_uses_space_kind():
     rec = _Recorder()
     fn = FederationNostr(publish=rec.publish, query=rec.query)
-    fn.publish_space(space_id="space-x", title="Town Hall",
-                     host_fqid="lumina@chef.skworld", status="live")
+    fn.publish_space(
+        space_id="space-x", title="Town Hall", host_fqid="lumina@chef.skworld", status="live"
+    )
     assert rec.published[0]["kind"] == SPACE_KIND
 
 
 def test_publish_membership_uses_membership_kind():
     rec = _Recorder()
     fn = FederationNostr(publish=rec.publish, query=rec.query)
-    fn.publish_membership(fqid="opus@chef.skworld", space_id="space-x",
-                          foci_preferred="lumina@chef.skworld", issued_at=123)
+    fn.publish_membership(
+        fqid="opus@chef.skworld",
+        space_id="space-x",
+        foci_preferred="lumina@chef.skworld",
+        issued_at=123,
+    )
     assert rec.published[0]["kind"] == MEMBERSHIP_KIND
 
 
 def test_query_memberships_drops_unparseable_events():
-    good = build_membership(fqid="a@h", space_id="space-x",
-                            foci_preferred="sfu-a", issued_at=100)
+    good = build_membership(fqid="a@h", space_id="space-x", foci_preferred="sfu-a", issued_at=100)
     # a hostile/malformed event (not even a dict) that crashes a naive parse
     bad = "this is not an event"
     rec = _Recorder(query_result=[bad, good])
@@ -63,10 +68,8 @@ def test_query_memberships_drops_unparseable_events():
 
 
 def test_query_memberships_filters_kind_and_space_and_parses():
-    ev1 = build_membership(fqid="a@h", space_id="space-x",
-                           foci_preferred="sfu-a", issued_at=100)
-    ev2 = build_membership(fqid="b@h", space_id="space-x",
-                           foci_preferred="sfu-b", issued_at=200)
+    ev1 = build_membership(fqid="a@h", space_id="space-x", foci_preferred="sfu-a", issued_at=100)
+    ev2 = build_membership(fqid="b@h", space_id="space-x", foci_preferred="sfu-b", issued_at=200)
     rec = _Recorder(query_result=[ev1, ev2])
     fn = FederationNostr(publish=rec.publish, query=rec.query)
     members = fn.query_memberships("space-x")

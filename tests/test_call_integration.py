@@ -1,5 +1,6 @@
 """Cross-agent invariant: opus (start) and lumina (answer) land in the SAME room
 with DISTINCT identities — driven through the real route handlers with stubbed I/O."""
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -34,8 +35,8 @@ def test_opus_starts_lumina_answers_same_room(monkeypatch):
     answer = r_ans.json()
 
     # Same room, distinct identities, exactly one CALL_INVITE (from start, not answer).
-    assert start["room"] == answer["room"] == derive_room(
-        "opus@chef.skworld", "lumina@chef.skworld"
+    assert (
+        start["room"] == answer["room"] == derive_room("opus@chef.skworld", "lumina@chef.skworld")
     )
     assert start["identity"] != answer["identity"]
     assert len(sent) == 1

@@ -7,6 +7,7 @@ English gloss (the audit view)."""
 
 from __future__ import annotations
 
+import logging
 from typing import Callable
 
 from skcomms.glossa import codec, gloss
@@ -17,12 +18,15 @@ from skcomms.glossa.message import Message
 from skchat.glossa_mesh import protocol
 from skchat.glossa_mesh.bus import MeshBus
 
-MessageCb = Callable[[str, Message], None]   # (sender_fqid, message)
+logger = logging.getLogger(__name__)
+
+MessageCb = Callable[[str, Message], None]  # (sender_fqid, message)
 
 
 class GlossaMeshNode:
-    def __init__(self, *, descriptor: CapabilityDescriptor, bus: MeshBus,
-                 codebook: Codebook) -> None:
+    def __init__(
+        self, *, descriptor: CapabilityDescriptor, bus: MeshBus, codebook: Codebook
+    ) -> None:
         self.descriptor = descriptor
         self.bus = bus
         self.codebook = codebook
@@ -71,13 +75,25 @@ class GlossaMeshNode:
         if kind == protocol.ANNOUNCE:
             try:
                 self._peers[src] = protocol.read_announce(payload)
-            except Exception:
+            except Exception as exc:
+                logger.warning(
+                    "dropping malformed ANNOUNCE from %s (%s: %s)",
+                    src,
+                    type(exc).__name__,
+                    exc,
+                )
                 return
         elif kind == protocol.MESSAGE:
             try:
                 level, body = protocol.read_message(payload)
                 m = codec.decode(body, level, self.codebook)
-            except Exception:
+            except Exception as exc:
+                logger.warning(
+                    "dropping undecodable MESSAGE from %s (%s: %s)",
+                    src,
+                    type(exc).__name__,
+                    exc,
+                )
                 return
             self.audit_log.append(f"[rx L{level}] {src}: {gloss.to_english(m)}")
             if self._on_message is not None:

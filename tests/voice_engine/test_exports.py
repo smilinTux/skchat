@@ -36,7 +36,9 @@ def test_phase2_api_is_importable_from_package_root():
 
     # ToolRegistry + Tool
     reg = ToolRegistry()
-    reg.register(Tool(name="test_tool", schema={"type": "function", "function": {"name": "test_tool"}}))
+    reg.register(
+        Tool(name="test_tool", schema={"type": "function", "function": {"name": "test_tool"}})
+    )
     assert reg.openai_schemas()[0]["function"]["name"] == "test_tool"
 
     # Intent detectors

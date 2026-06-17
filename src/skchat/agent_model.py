@@ -26,9 +26,24 @@ from pathlib import Path
 # SKGateway (``/v1/chat/completions``).  Order = display order in the picker.
 AVAILABLE_MODELS: list[dict] = [
     {"id": "claude-opus-4-8", "label": "Claude Opus 4.8", "provider": "anthropic", "local": False},
-    {"id": "claude-sonnet-4-6", "label": "Claude Sonnet 4.6", "provider": "anthropic", "local": False},
-    {"id": "claude-haiku-4-5", "label": "Claude Haiku 4.5", "provider": "anthropic", "local": False},
-    {"id": "qwen3.6-27b-abliterated", "label": "Qwen 3.6 27B (local)", "provider": "local", "local": True},
+    {
+        "id": "claude-sonnet-4-6",
+        "label": "Claude Sonnet 4.6",
+        "provider": "anthropic",
+        "local": False,
+    },
+    {
+        "id": "claude-haiku-4-5",
+        "label": "Claude Haiku 4.5",
+        "provider": "anthropic",
+        "local": False,
+    },
+    {
+        "id": "qwen3.6-27b-abliterated",
+        "label": "Qwen 3.6 27B (local)",
+        "provider": "local",
+        "local": True,
+    },
 ]
 
 _VALID_IDS = {m["id"] for m in AVAILABLE_MODELS}
@@ -75,9 +90,7 @@ def set_model(agent: str, model: str) -> str:
         ValueError: if *model* is not one of AVAILABLE_MODELS.
     """
     if model not in _VALID_IDS:
-        raise ValueError(
-            f"unknown model {model!r}; valid: {sorted(_VALID_IDS)}"
-        )
+        raise ValueError(f"unknown model {model!r}; valid: {sorted(_VALID_IDS)}")
     with _lock:
         path = _state_path()
         data = _read()

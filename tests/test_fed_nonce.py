@@ -42,8 +42,8 @@ def test_expired_entry_is_evicted_from_store():
     # guard). After re-accept under ttl=0 the store holds exactly one live key.
     nc = NonceCache()
     nc.check_and_add("a@h", "n1", ttl=0)
-    nc.check_and_add("b@h", "n2", ttl=0)   # triggers eviction sweep of n1 too
-    assert len(nc._seen) <= 1              # only the most-recent (n2) may remain
+    nc.check_and_add("b@h", "n2", ttl=0)  # triggers eviction sweep of n1 too
+    assert len(nc._seen) <= 1  # only the most-recent (n2) may remain
 
 
 def test_replay_rejected_repeatedly_within_ttl():

@@ -19,9 +19,7 @@ _JOIN_TTL = 21600  # 6h
 
 
 def _webui_base() -> str:
-    return os.getenv(
-        "SKCHAT_WEBUI_PUBLIC_URL", "https://noroc2027.tail204f0c.ts.net"
-    ).rstrip("/")
+    return os.getenv("SKCHAT_WEBUI_PUBLIC_URL", "https://noroc2027.tail204f0c.ts.net").rstrip("/")
 
 
 def _mint_chef_token(room: str) -> str:
@@ -45,9 +43,7 @@ def operator_join_url(room: str, *, token: str | None = None) -> str:
     return f"{base}/livekit?room={room}&identity=chef&token={tok}"
 
 
-def alert_operator(
-    *, from_fqid: str, to_fqid: str, room: str, topic: str = ""
-) -> None:
+def alert_operator(*, from_fqid: str, to_fqid: str, room: str, topic: str = "") -> None:
     """Notify the operator that a call started, with topic + a one-press join link.
 
     Never raises — observability must not block the call.

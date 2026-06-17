@@ -12,8 +12,7 @@ def _http_url(ws_url: str) -> str:
 
 
 class Recorder:
-    def __init__(self, ws_url: str, api_key: str, api_secret: str,
-                 *, _egress=None) -> None:
+    def __init__(self, ws_url: str, api_key: str, api_secret: str, *, _egress=None) -> None:
         self._ws_url = ws_url
         self._key = api_key
         self._secret = api_secret
@@ -24,8 +23,8 @@ class Recorder:
         if self._eg is not None:
             return self._eg
         from livekit import api
-        self._client = api.LiveKitAPI(_http_url(self._ws_url), self._key,
-                                      self._secret)
+
+        self._client = api.LiveKitAPI(_http_url(self._ws_url), self._key, self._secret)
         self._eg = self._client.egress
         return self._eg
 
@@ -39,15 +38,18 @@ class Recorder:
     async def start(self, room: str, filepath: str) -> str:
         """Start an audio-only room-composite recording; return the egress id."""
         from livekit import api
+
         req = api.RoomCompositeEgressRequest(
             room_name=room,
             audio_only=True,
-            file_outputs=[api.EncodedFileOutput(
-                file_type=api.EncodedFileType.OGG, filepath=filepath)],
+            file_outputs=[
+                api.EncodedFileOutput(file_type=api.EncodedFileType.OGG, filepath=filepath)
+            ],
         )
         info = await self._egress().start_room_composite_egress(req)
         return info.egress_id
 
     async def stop(self, egress_id: str) -> None:
         from livekit import api
+
         await self._egress().stop_egress(api.StopEgressRequest(egress_id=egress_id))

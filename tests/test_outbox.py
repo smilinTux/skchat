@@ -270,9 +270,7 @@ class _FakeMessenger:
         self.calls: list[dict] = []
 
     def send(self, recipient: str, content, thread_id=None) -> dict:
-        self.calls.append(
-            {"recipient": recipient, "content": content, "thread_id": thread_id}
-        )
+        self.calls.append({"recipient": recipient, "content": content, "thread_id": thread_id})
         if self.raise_exc:
             raise RuntimeError("messenger offline")
         return {"delivered": self.delivered}

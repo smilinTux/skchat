@@ -389,9 +389,7 @@ def test_path_traversal_arg_reaches_runner_but_cwd_is_scoped(tmp_path):
     """
     runner = FakeRunner()
     sandbox = tmp_path / "sandbox"
-    policy = SandboxPolicy(
-        enabled=True, operators=frozenset({OPERATOR}), cwd=sandbox
-    )
+    policy = SandboxPolicy(enabled=True, operators=frozenset({OPERATOR}), cwd=sandbox)
     ex = SkreachExecutor(policy, runner=runner)
 
     ex.run("cat ../../etc/passwd", identity=OPERATOR, cmd_id="trav")

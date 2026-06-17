@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re as _re
 import uuid as _uuid
@@ -34,7 +35,6 @@ from fastapi.responses import (
 
 from . import __version__
 
-import logging
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="SKChat Web UI")
@@ -79,21 +79,25 @@ except ImportError:
 # LiveKit routes — primary video stack (token endpoint + room signalling helper).
 try:
     from .livekit_routes import register_livekit_routes as _register_livekit_routes
+
     _register_livekit_routes(app)
 except ImportError as _e:
     logger.warning("livekit routes not registered: %s", _e)
 try:
     from .call_routes import register_call_routes as _register_call_routes
+
     _register_call_routes(app)
 except ImportError as _e:
     logger.warning("call routes not registered: %s", _e)
 try:
     from .spaces.routes import register_spaces_routes as _register_spaces_routes
+
     _register_spaces_routes(app)
 except ImportError as _e:
     logger.warning("spaces routes not registered: %s", _e)
 try:
     from .glossa_mesh.routes import register_glossa_routes as _register_glossa_routes
+
     _register_glossa_routes(app)
 except ImportError as _e:
     logger.warning("glossa routes not registered: %s", _e)
@@ -124,9 +128,7 @@ async def health() -> JSONResponse:
         )
     except Exception as e:
         logger.warning("webui.py: %s", e)
-        return JSONResponse(
-            {"status": "ok", "service": "skchat-webui", "version": __version__}
-        )
+        return JSONResponse({"status": "ok", "service": "skchat-webui", "version": __version__})
 
 
 @app.get("/agent/state")
@@ -168,8 +170,8 @@ def _get_adapter_registry():
         reg = getattr(_integration, "adapter_registry", None)
         if reg is not None:
             return reg
-    except Exception:  # pragma: no cover - defensive import guard
-        pass
+    except Exception as exc:  # pragma: no cover - defensive import guard
+        logger.debug("adapter registry unavailable (%s: %s)", type(exc).__name__, exc)
     return None
 
 
@@ -180,6 +182,7 @@ def _adapter_health(adapter) -> dict:
     field is read defensively so a partially-initialised or duck-typed
     adapter never breaks the endpoint.
     """
+
     def _attr(obj, *names, default=None):
         for n in names:
             if hasattr(obj, n):
@@ -442,7 +445,7 @@ button:hover{background:#2563eb}
   </select>
   <input type="text" name="content" placeholder="Message\u2026" autofocus autocomplete="off">
   <input type="file" id="file-input" multiple style="display:none">
-  <button type="button" id="attach-btn" title="Attach">\U0001F4CE</button>
+  <button type="button" id="attach-btn" title="Attach">\U0001f4ce</button>
   <button type="submit">Send</button>
 </form>
 <div id="upload-progress" style="display:none"><progress id="up-bar" max="100" value="0"></progress> <span id="up-label"></span></div>
@@ -575,7 +578,7 @@ def _render_messages(history, identity: str) -> str:
                 kb = max(1, att.size // 1024)
                 att_html += (
                     f'<a class="att-file" href="/file/{att.transfer_id}">'
-                    f'\U0001F4C4 {fname} · {kb} KB · {att.mime_type}</a>'
+                    f"\U0001f4c4 {fname} · {kb} KB · {att.mime_type}</a>"
                 )
 
         parts.append(
@@ -605,15 +608,21 @@ async def legacy_index() -> HTMLResponse:
 @app.get("/pair/qr")
 def pair_qr(sy: str = "1", ts: str = "1", https: str = "1", embed: str = "0"):
     import io
+
     import segno
     from skcomms import pairing
-    def _on(v): return str(v).lower() not in ("0", "false", "no", "off", "")
+
+    def _on(v):
+        return str(v).lower() not in ("0", "false", "no", "off", "")
 
     def _build(embed_key: bool):
         b = pairing.bundle_from_self(embed_key=embed_key)
-        if not _on(sy): b.syncthing_device_id = None
-        if not _on(ts): b.tailscale = None
-        if not _on(https): b.https = None
+        if not _on(sy):
+            b.syncthing_device_id = None
+        if not _on(ts):
+            b.tailscale = None
+        if not _on(https):
+            b.https = None
         return b, pairing.to_skp_uri(b)
 
     bundle, uri = _build(_on(embed))
@@ -621,15 +630,24 @@ def pair_qr(sy: str = "1", ts: str = "1", https: str = "1", embed: str = "0"):
     try:
         # error="l" = max data capacity (a QR tops out ~2953 bytes).
         qr = segno.make(uri, error="l")
-    except Exception:  # segno.encoder.DataOverflowError — key too big to embed
-        bundle, uri = _build(False)            # fall back to a compact QR
+    except Exception as exc:  # segno.encoder.DataOverflowError — key too big to embed
+        logger.debug("QR encode overflowed (%s: %s); using compact QR", type(exc).__name__, exc)
+        bundle, uri = _build(False)  # fall back to a compact QR
         qr = segno.make(uri, error="l")
-        warning = ("Public key too large to embed in a QR — using a compact "
-                   "code (the peer fetches + verifies the key on accept).")
-    buf = io.BytesIO(); qr.save(buf, kind="svg", scale=5)
-    return {"uri": uri, "svg": buf.getvalue().decode("utf-8"),
-            "fqid": bundle.fqid, "fingerprint": bundle.fingerprint,
-            "embedded": bundle.pubkey is not None, "warning": warning}
+        warning = (
+            "Public key too large to embed in a QR — using a compact "
+            "code (the peer fetches + verifies the key on accept)."
+        )
+    buf = io.BytesIO()
+    qr.save(buf, kind="svg", scale=5)
+    return {
+        "uri": uri,
+        "svg": buf.getvalue().decode("utf-8"),
+        "fqid": bundle.fqid,
+        "fingerprint": bundle.fingerprint,
+        "embedded": bundle.pubkey is not None,
+        "warning": warning,
+    }
 
 
 _PAIR_HTML = """<!DOCTYPE html><html><head><meta charset="utf-8"><title>skchat — Pair</title>
@@ -875,9 +893,7 @@ async def upload(
 @app.get("/file/{transfer_id}")
 def download_file(transfer_id: str) -> FileResponse:
     """Download the file for a completed transfer (path-traversal guarded)."""
-    d = _safe_transfer_dir(transfer_id, "received") or _safe_transfer_dir(
-        transfer_id, "uploads"
-    )
+    d = _safe_transfer_dir(transfer_id, "received") or _safe_transfer_dir(transfer_id, "uploads")
     if d is None:
         raise HTTPException(status_code=404, detail="not found")
     files = [p for p in d.rglob("*") if p.is_file() and p.name != "thumb.webp"]
@@ -961,9 +977,7 @@ async def groups() -> JSONResponse:
             peer = discovery.get_peer(m.identity_uri) or {}
             entity_type = peer.get("entity_type") or m.participant_type.value
             display_name = (
-                m.display_name
-                or peer.get("name")
-                or m.identity_uri.split(":")[-1].split("@")[0]
+                m.display_name or peer.get("name") or m.identity_uri.split(":")[-1].split("@")[0]
             )
             members_out.append(
                 {

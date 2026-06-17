@@ -48,9 +48,7 @@ _DEFAULT_AGENT = os.environ.get("SKAGENT", "lumina")
 # Base URL of the skchat spaces server (where /spaces/{id}/lanes/event lives).
 _SPACES_BASE = os.environ.get("SKCHAT_SPACES_URL", "http://127.0.0.1:9385")
 # Local OpenAI-compatible LLM endpoint (same convention as voice_stream.py).
-_LLM_URL = os.environ.get(
-    "SKCHAT_LLM_URL", "http://127.0.0.1:11434/v1/chat/completions"
-)
+_LLM_URL = os.environ.get("SKCHAT_LLM_URL", "http://127.0.0.1:11434/v1/chat/completions")
 _LLM_MODEL = os.environ.get("SKCHAT_LLM_MODEL", "qwen3.5:4b")
 
 
@@ -63,8 +61,7 @@ _LLM_MODEL = os.environ.get("SKCHAT_LLM_MODEL", "qwen3.5:4b")
 class Transcriber(Protocol):
     """Turn an audio file into a transcript string (or None if it can't)."""
 
-    def transcribe(self, audio_path: str) -> Optional[str]:
-        ...
+    def transcribe(self, audio_path: str) -> Optional[str]: ...
 
 
 class WhisperTranscriber:
@@ -119,8 +116,7 @@ _SUMMARY_SYSTEM = (
 class Summarizer(Protocol):
     """Turn a transcript into a markdown meeting write-up."""
 
-    def summarize(self, transcript: str, *, title: str) -> str:
-        ...
+    def summarize(self, transcript: str, *, title: str) -> str: ...
 
 
 class LLMSummarizer:
@@ -229,9 +225,7 @@ def chat_lane_poster(
     url = f"{base}/spaces/{space_id}/lanes/event"
     envelope = {"lane": "chat", "from": agent or _DEFAULT_AGENT, "text": text}
     data = json.dumps(envelope).encode("utf-8")
-    req = urllib.request.Request(
-        url, data=data, headers={"Content-Type": "application/json"}
-    )
+    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=timeout):  # noqa: S310 (local tailnet)
         pass
 

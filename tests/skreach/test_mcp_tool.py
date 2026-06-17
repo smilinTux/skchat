@@ -16,16 +16,11 @@ Covers:
 from __future__ import annotations
 
 import asyncio
-import os
 from pathlib import Path
 from typing import Any
 
-import pytest
-
 from skchat.skreach.audit import AuditWriter
 from skchat.skreach.mcp_tool import (
-    Tool,
-    ToolRegistry,
     _handle_skreach_deploy,
     _handle_skreach_exec,
     _handle_skreach_logs,
@@ -33,7 +28,6 @@ from skchat.skreach.mcp_tool import (
     build_registry,
     default_registry,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -102,9 +96,7 @@ class TestSkreachStatus:
     def test_member_can_read_status(self):
         """Member has STATUS access."""
         mcp = FakeMcp()
-        result = run(
-            _handle_skreach_status({"service": "skingest"}, _ctx(role="member", mcp=mcp))
-        )
+        result = run(_handle_skreach_status({"service": "skingest"}, _ctx(role="member", mcp=mcp)))
         assert "dispatched" in result
 
 
@@ -116,11 +108,7 @@ class TestSkreachStatus:
 class TestSkreachLogs:
     def test_operator_dispatched_with_tail(self):
         mcp = FakeMcp({"lines": []})
-        result = run(
-            _handle_skreach_logs(
-                {"service": "skchat-daemon", "tail": 20}, _ctx(mcp=mcp)
-            )
-        )
+        result = run(_handle_skreach_logs({"service": "skchat-daemon", "tail": 20}, _ctx(mcp=mcp)))
         assert "dispatched" in result
         assert len(mcp.calls) == 1
         assert mcp.calls[0][1]["tail"] == 20
@@ -129,18 +117,14 @@ class TestSkreachLogs:
         """Agents have LOG_READ access."""
         mcp = FakeMcp()
         result = run(
-            _handle_skreach_logs(
-                {"service": "skchat-daemon"}, _ctx(role="agent", mcp=mcp)
-            )
+            _handle_skreach_logs({"service": "skchat-daemon"}, _ctx(role="agent", mcp=mcp))
         )
         assert "dispatched" in result
 
     def test_guest_denied(self):
         mcp = FakeMcp()
         result = run(
-            _handle_skreach_logs(
-                {"service": "skchat-daemon"}, _ctx(role="guest", mcp=mcp)
-            )
+            _handle_skreach_logs({"service": "skchat-daemon"}, _ctx(role="guest", mcp=mcp))
         )
         assert "denied" in result.lower()
         assert len(mcp.calls) == 0
@@ -259,16 +243,12 @@ class TestSkreachDeploy:
 
     def test_unknown_action_error(self):
         result = run(
-            _handle_skreach_deploy(
-                {"action": "nuke", "service": "skchat-daemon"}, _ctx()
-            )
+            _handle_skreach_deploy({"action": "nuke", "service": "skchat-daemon"}, _ctx())
         )
         assert "unknown action" in result.lower()
 
     def test_scale_missing_replicas_error(self):
-        result = run(
-            _handle_skreach_deploy({"action": "scale", "service": "skingest"}, _ctx())
-        )
+        result = run(_handle_skreach_deploy({"action": "scale", "service": "skingest"}, _ctx()))
         assert "replicas" in result.lower() and "required" in result.lower()
 
 
@@ -367,6 +347,7 @@ class TestSkreachExec:
     def test_exec_popen_not_called(self, monkeypatch):
         """Direct version: Popen must not be called."""
         import subprocess
+
         monkeypatch.setenv("SKREACH_EXEC_ENABLED", "0")
         popen_calls = []
 
@@ -426,9 +407,7 @@ class TestRegistryDispatch:
 
     def test_unknown_tool_name(self):
         registry = build_registry()
-        result = run(
-            registry.dispatch("skreach_nonexistent", {}, is_operator=True, ctx=_ctx())
-        )
+        result = run(registry.dispatch("skreach_nonexistent", {}, is_operator=True, ctx=_ctx()))
         assert "unknown" in result.lower()
 
 
@@ -492,9 +471,7 @@ class TestRbacAnnotations:
     def test_all_tools_operator_only(self):
         registry = build_registry()
         for tool in registry._tools.values():
-            assert tool.operator_only is True, (
-                f"Tool {tool.name!r} must have operator_only=True"
-            )
+            assert tool.operator_only is True, f"Tool {tool.name!r} must have operator_only=True"
 
 
 # ---------------------------------------------------------------------------

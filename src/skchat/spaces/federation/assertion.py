@@ -35,9 +35,11 @@ def _default_sign(payload: bytes) -> str:
     # capauth.crypto.get_backend both resolve.
     from capauth import resolve_agent_identity
     from capauth.crypto import get_backend
+
     ident = resolve_agent_identity()
     # private key armor + passphrase resolved from the agent's capauth dir
     from pathlib import Path
+
     base = Path.home() / ".skcapstone" / "agents" / ident.agent / "capauth" / "identity"
     priv = (base / "private.asc").read_text()
     passphrase = ""  # agent keys are passphrase-less in this deployment
@@ -46,6 +48,7 @@ def _default_sign(payload: bytes) -> str:
 
 def _default_verify(payload: bytes, sig: str, pub: str) -> bool:
     from capauth.crypto import get_backend
+
     return get_backend().verify(payload, sig, pub)
 
 
@@ -57,6 +60,7 @@ def _default_resolve_pubkey(fqid: str) -> Optional[str]:
     # discards the realm, so `lumina@chef.skworld` and `lumina@evil.attacker`
     # would collide → impersonation (S5 review C1).
     from skchat.spaces.federation.keystore import federation_pubkey
+
     return federation_pubkey(fqid)
 
 
@@ -76,8 +80,9 @@ def verify_signed(
     sig = signed.get("sig") or ""
     try:
         d = json.loads(claim)
-        a = Assertion(fqid=d["fqid"], space_id=d["space_id"],
-                      issued_at=int(d["issued_at"]), nonce=d["nonce"])
+        a = Assertion(
+            fqid=d["fqid"], space_id=d["space_id"], issued_at=int(d["issued_at"]), nonce=d["nonce"]
+        )
     except Exception as exc:
         raise AssertionError(f"malformed claim: {exc}") from exc
     # M1: a fqid must be a strict `agent@host` — exactly one `@`, both halves

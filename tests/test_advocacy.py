@@ -271,12 +271,12 @@ class TestMemoryContext:
         engine = AdvocacyEngine()
         import json as _json
 
-        mem_blocks = _json.dumps([{"content": "Chef likes brevity"},
-                                  {"text": "release v1.2 shipped"}])
+        mem_blocks = _json.dumps(
+            [{"content": "Chef likes brevity"}, {"text": "release v1.2 shipped"}]
+        )
         rpc = _json.dumps({"result": {"content": [{"type": "text", "text": mem_blocks}]}})
 
-        with patch("skchat.advocacy.subprocess.run",
-                   return_value=self._mcp_result(0, rpc)):
+        with patch("skchat.advocacy.subprocess.run", return_value=self._mcp_result(0, rpc)):
             ctx = engine._get_memory_context("release status")
 
         assert "Relevant context:" in ctx
@@ -285,14 +285,18 @@ class TestMemoryContext:
 
     def test_memory_context_returns_empty_on_nonzero_exit(self):
         engine = AdvocacyEngine()
-        with patch("skchat.advocacy.subprocess.run",
-                   return_value=self._mcp_result(returncode=1, stdout="")):
+        with patch(
+            "skchat.advocacy.subprocess.run",
+            return_value=self._mcp_result(returncode=1, stdout=""),
+        ):
             assert engine._get_memory_context("q") == ""
 
     def test_memory_context_returns_empty_on_subprocess_error(self):
         engine = AdvocacyEngine()
-        with patch("skchat.advocacy.subprocess.run",
-                   side_effect=FileNotFoundError("skcapstone-mcp not found")):
+        with patch(
+            "skchat.advocacy.subprocess.run",
+            side_effect=FileNotFoundError("skcapstone-mcp not found"),
+        ):
             assert engine._get_memory_context("q") == ""
 
     def test_memory_context_empty_when_no_memories(self):
@@ -300,8 +304,7 @@ class TestMemoryContext:
         import json as _json
 
         rpc = _json.dumps({"result": {"content": [{"type": "text", "text": "[]"}]}})
-        with patch("skchat.advocacy.subprocess.run",
-                   return_value=self._mcp_result(0, rpc)):
+        with patch("skchat.advocacy.subprocess.run", return_value=self._mcp_result(0, rpc)):
             assert engine._get_memory_context("q") == ""
 
     def test_process_message_prepends_memory_context(self):
@@ -310,10 +313,13 @@ class TestMemoryContext:
         msg = _msg(content="@opus what shipped?")
         captured: list[str] = []
 
-        with patch.object(engine, "_get_memory_context",
-                          return_value="Relevant context:\n- v1.2 shipped"):
-            with patch("skchat.advocacy._call_consciousness",
-                       side_effect=lambda p: captured.append(p) or "ok"):
+        with patch.object(
+            engine, "_get_memory_context", return_value="Relevant context:\n- v1.2 shipped"
+        ):
+            with patch(
+                "skchat.advocacy._call_consciousness",
+                side_effect=lambda p: captured.append(p) or "ok",
+            ):
                 engine.process_message(msg)
 
         assert captured

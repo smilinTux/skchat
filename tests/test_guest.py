@@ -60,6 +60,7 @@ def _make_verifier(clock: _FixedClock):
 
 # ── InviteIssuer ──────────────────────────────────────────────────────────────
 
+
 class TestInviteIssuer:
     def test_create_returns_expected_keys(self):
         clk = _FixedClock()
@@ -74,9 +75,7 @@ class TestInviteIssuer:
 
         clk = _FixedClock()
         result = _make_issuer(clk).create_invite(_ROOM)
-        payload = _jwt.decode(
-            result["invite_token"], _SECRET, algorithms=["HS256"]
-        )
+        payload = _jwt.decode(result["invite_token"], _SECRET, algorithms=["HS256"])
         assert payload["room"] == _ROOM
         assert payload["tier"] == "invite"
         assert "jti" in payload
@@ -88,7 +87,9 @@ class TestInviteIssuer:
         result = _make_issuer(clk).create_invite(_ROOM)
         # Decode without expiry verification so the test is clock-independent.
         payload = _jwt.decode(
-            result["invite_token"], _SECRET, algorithms=["HS256"],
+            result["invite_token"],
+            _SECRET,
+            algorithms=["HS256"],
             options={"verify_exp": False},
         )
         default_ttl = 14400
@@ -102,7 +103,9 @@ class TestInviteIssuer:
         clk = _FixedClock()
         result = _make_issuer(clk).create_invite(_ROOM, ttl=999_999)
         payload = _jwt.decode(
-            result["invite_token"], _SECRET, algorithms=["HS256"],
+            result["invite_token"],
+            _SECRET,
+            algorithms=["HS256"],
             options={"verify_exp": False},
         )
         assert payload["exp"] <= clk.t + _MAX_INVITE_TTL + 1
@@ -135,6 +138,7 @@ class TestInviteIssuer:
 
 
 # ── InviteVerifier ────────────────────────────────────────────────────────────
+
 
 class TestInviteVerifier:
     def _create_token(self, clock, room=_ROOM, ttl=3600, display=_DISPLAY):
@@ -176,9 +180,7 @@ class TestInviteVerifier:
     def test_display_name_defaults_to_guest(self):
         clk = _FixedClock()
         info = self._create_token(clk, display="")
-        gt = _make_verifier(clk).verify(
-            info["invite_token"], expected_room=_ROOM, display_name=""
-        )
+        gt = _make_verifier(clk).verify(info["invite_token"], expected_room=_ROOM, display_name="")
         assert gt.display == "Guest"
 
     def test_display_name_truncated_to_40(self):
@@ -315,6 +317,7 @@ class TestInviteVerifier:
         finally:
             # Clean up module-level state so other tests are unaffected.
             from skchat.guest import _revoked_jtis
+
             _revoked_jtis.discard(jti)
 
     def test_different_jti_not_affected_by_revocation(self):
@@ -330,10 +333,12 @@ class TestInviteVerifier:
             assert gt.jti == info_b["jti"]
         finally:
             from skchat.guest import _revoked_jtis
+
             _revoked_jtis.discard(info_a["jti"])
 
 
 # ── guest_join_page_html ──────────────────────────────────────────────────────
+
 
 class TestGuestJoinPageHtml:
     def test_contains_room_name(self):
@@ -352,7 +357,7 @@ class TestGuestJoinPageHtml:
         """A room name with HTML chars must be escaped wherever it appears in the page."""
         from skchat.guest import guest_join_page_html
 
-        page = guest_join_page_html('<img src=x onerror=alert(1)>', "tok")
+        page = guest_join_page_html("<img src=x onerror=alert(1)>", "tok")
         # The literal tag must not appear unescaped in the output.
         assert "<img src=x" not in page
         # The escaped form must be present (appears in <title> and <h1> and value=).
@@ -388,9 +393,8 @@ class TestGuestJoinPageHtml:
         # Check: no <p> element appears right before the <form>.
         # The static section between agents and form must be whitespace-only.
         import re
-        between = re.search(
-            r'<p class="agents">.*?</p>(.*?)<form', page, re.DOTALL
-        )
+
+        between = re.search(r'<p class="agents">.*?</p>(.*?)<form', page, re.DOTALL)
         assert between is not None, "Expected agents paragraph and form in page"
         between_text = between.group(1).strip()
         assert between_text == "", (
@@ -406,6 +410,7 @@ class TestGuestJoinPageHtml:
 
 
 # ── build_livekit_token ───────────────────────────────────────────────────────
+
 
 class TestBuildLivekitToken:
     @pytest.mark.skipif(
@@ -460,6 +465,7 @@ class TestBuildLivekitToken:
 
 
 # ── GuestToken identity invariant (identity spoofing guard) ──────────────────
+
 
 class TestIdentitySpoofingGuard:
     def test_guest_cannot_claim_operator_identity(self):

@@ -15,13 +15,16 @@ def _signed(fqid, space):
 def _verify_to(fqid):
     # inject a verifier that always returns this fqid as verified
     def _v(signed, **kw):
-        return Assertion(fqid=fqid, space_id=signed_space(signed),
-                         issued_at=int(time.time()), nonce="n")
+        return Assertion(
+            fqid=fqid, space_id=signed_space(signed), issued_at=int(time.time()), nonce="n"
+        )
+
     return _v
 
 
 def signed_space(signed):
     import json
+
     return json.loads(signed["claim"])["space_id"]
 
 
@@ -65,8 +68,12 @@ def test_replay_same_nonce_is_rejected():
 
     nc = NonceCache()
     # a verifier that always returns the SAME fqid+nonce (a replayed assertion)
-    fixed = Assertion(fqid="lumina@chef.skworld", space_id="space-x",
-                      issued_at=int(time.time()), nonce="replay-nonce")
+    fixed = Assertion(
+        fqid="lumina@chef.skworld",
+        space_id="space-x",
+        issued_at=int(time.time()),
+        nonce="replay-nonce",
+    )
 
     def _v(signed, **kw):
         return fixed
@@ -116,9 +123,12 @@ def test_verify_failure_aborts_before_minting():
 
     with pytest.raises(FedAssertionError):
         authorize(
-            _signed("lumina@chef.skworld", "space-x"), sfu_ws_url="wss://h",
-            _verify=_bad_verify, _access=lambda f: AccessLevel.FULL,
-            _mint=lambda *a: minted.append(a) or "TOKEN", _nonce=NonceCache(),
+            _signed("lumina@chef.skworld", "space-x"),
+            sfu_ws_url="wss://h",
+            _verify=_bad_verify,
+            _access=lambda f: AccessLevel.FULL,
+            _mint=lambda *a: minted.append(a) or "TOKEN",
+            _nonce=NonceCache(),
         )
     assert minted == []  # mint was never reached
 
@@ -129,12 +139,16 @@ def test_replay_checked_before_space_and_access():
     from skchat.spaces.federation.nonce import NonceCache
 
     nc = NonceCache()
-    fixed = Assertion(fqid="lumina@chef.skworld", space_id="space-x",
-                      issued_at=int(time.time()), nonce="rn")
+    fixed = Assertion(
+        fqid="lumina@chef.skworld", space_id="space-x", issued_at=int(time.time()), nonce="rn"
+    )
     kwargs = dict(
-        sfu_ws_url="wss://h", _verify=lambda s, **k: fixed,
-        _access=lambda f: AccessLevel.FULL, _space_live=lambda sid: True,
-        _mint=lambda i, r, s: "TOKEN", _nonce=nc,
+        sfu_ws_url="wss://h",
+        _verify=lambda s, **k: fixed,
+        _access=lambda f: AccessLevel.FULL,
+        _space_live=lambda sid: True,
+        _mint=lambda i, r, s: "TOKEN",
+        _nonce=nc,
     )
     authorize(_signed("lumina@chef.skworld", "space-x"), **kwargs)  # first ok
     with pytest.raises(AuthDenied, match="replay"):
@@ -147,18 +161,30 @@ def test_denied_access_does_not_consume_nonce_slot_for_other_fqid():
     from skchat.spaces.federation.nonce import NonceCache
 
     nc = NonceCache()
-    denied = Assertion(fqid="ghost@nowhere", space_id="space-x",
-                       issued_at=int(time.time()), nonce="shared")
-    allowed = Assertion(fqid="lumina@chef.skworld", space_id="space-x",
-                        issued_at=int(time.time()), nonce="shared")
+    denied = Assertion(
+        fqid="ghost@nowhere", space_id="space-x", issued_at=int(time.time()), nonce="shared"
+    )
+    allowed = Assertion(
+        fqid="lumina@chef.skworld", space_id="space-x", issued_at=int(time.time()), nonce="shared"
+    )
     with pytest.raises(AuthDenied):
-        authorize(_signed("ghost@nowhere", "space-x"), sfu_ws_url="wss://h",
-                  _verify=lambda s, **k: denied, _access=lambda f: AccessLevel.DENY,
-                  _mint=lambda *a: "X", _nonce=nc)
+        authorize(
+            _signed("ghost@nowhere", "space-x"),
+            sfu_ws_url="wss://h",
+            _verify=lambda s, **k: denied,
+            _access=lambda f: AccessLevel.DENY,
+            _mint=lambda *a: "X",
+            _nonce=nc,
+        )
     # the trusted fqid (different key) still works with the same nonce string
-    out = authorize(_signed("lumina@chef.skworld", "space-x"), sfu_ws_url="wss://h",
-                    _verify=lambda s, **k: allowed, _access=lambda f: AccessLevel.FULL,
-                    _mint=lambda i, r, s: "TOKEN", _nonce=nc)
+    out = authorize(
+        _signed("lumina@chef.skworld", "space-x"),
+        sfu_ws_url="wss://h",
+        _verify=lambda s, **k: allowed,
+        _access=lambda f: AccessLevel.FULL,
+        _mint=lambda i, r, s: "TOKEN",
+        _nonce=nc,
+    )
     assert out["role"] == "speaker"
 
 
@@ -168,10 +194,13 @@ def test_remote_max_role_listener_does_not_affect_subscribe():
     from skchat.spaces.federation.nonce import NonceCache
 
     out = authorize(
-        _signed("rando@other", "space-x"), sfu_ws_url="wss://h",
-        _verify=_verify_to("rando@other"), _access=lambda f: AccessLevel.SUBSCRIBE,
+        _signed("rando@other", "space-x"),
+        sfu_ws_url="wss://h",
+        _verify=_verify_to("rando@other"),
+        _access=lambda f: AccessLevel.SUBSCRIBE,
         _remote_max_role="listener",
-        _mint=lambda i, r, s: f"TOKEN:{r.value}", _nonce=NonceCache(),
+        _mint=lambda i, r, s: f"TOKEN:{r.value}",
+        _nonce=NonceCache(),
     )
     assert out["role"] == "listener"
 
@@ -180,9 +209,12 @@ def test_identity_and_space_echoed_in_response():
     from skchat.spaces.federation.nonce import NonceCache
 
     out = authorize(
-        _signed("lumina@chef.skworld", "space-x"), sfu_ws_url="wss://h:8443",
-        _verify=_verify_to("lumina@chef.skworld"), _access=lambda f: AccessLevel.FULL,
-        _mint=lambda i, r, s: "T", _nonce=NonceCache(),
+        _signed("lumina@chef.skworld", "space-x"),
+        sfu_ws_url="wss://h:8443",
+        _verify=_verify_to("lumina@chef.skworld"),
+        _access=lambda f: AccessLevel.FULL,
+        _mint=lambda i, r, s: "T",
+        _nonce=NonceCache(),
     )
     assert out["identity"] == "lumina@chef.skworld"
     assert out["space_id"] == "space-x"

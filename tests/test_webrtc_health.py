@@ -17,29 +17,17 @@ from skchat.daemon import (
 
 class TestWebRTCSignalingHealth:
     def test_ok_when_active_and_signaling_connected(self) -> None:
-        assert (
-            webrtc_signaling_health(webrtc_active=True, signaling_connected=True)
-            == "ok"
-        )
+        assert webrtc_signaling_health(webrtc_active=True, signaling_connected=True) == "ok"
 
     def test_degraded_when_active_but_signaling_down(self) -> None:
         # Transport is wired (LAN / local fallback possible) but the
         # signaling server is unreachable — relayed calls won't connect.
-        assert (
-            webrtc_signaling_health(webrtc_active=True, signaling_connected=False)
-            == "degraded"
-        )
+        assert webrtc_signaling_health(webrtc_active=True, signaling_connected=False) == "degraded"
 
     def test_down_when_transport_not_active(self) -> None:
-        assert (
-            webrtc_signaling_health(webrtc_active=False, signaling_connected=False)
-            == "down"
-        )
+        assert webrtc_signaling_health(webrtc_active=False, signaling_connected=False) == "down"
         # Even a stale "connected" flag is "down" when the transport isn't wired.
-        assert (
-            webrtc_signaling_health(webrtc_active=False, signaling_connected=True)
-            == "down"
-        )
+        assert webrtc_signaling_health(webrtc_active=False, signaling_connected=True) == "down"
 
 
 class TestTurnSecretPresence:

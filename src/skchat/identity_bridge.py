@@ -160,7 +160,11 @@ def resolve_peer_name(name: str) -> str:
 
                 # Prefer the explicit `identity` field (written by T4)
                 identity = peer_data.get("identity")
-                if isinstance(identity, str) and identity.startswith("capauth:") and "@" in identity:
+                if (
+                    isinstance(identity, str)
+                    and identity.startswith("capauth:")
+                    and "@" in identity
+                ):
                     return identity
 
                 contact_uris = peer_data.get("contact_uris", [])
@@ -221,7 +225,12 @@ def is_loopback(recipient_uri: str) -> bool:
 
     try:
         self_uri = get_sovereign_identity()
-    except Exception:
+    except Exception as exc:
+        logger.debug(
+            "could not resolve sovereign identity (%s: %s); treating as non-loopback",
+            type(exc).__name__,
+            exc,
+        )
         return False
 
     # 1. Exact wire-URI match (the canonical loopback path).

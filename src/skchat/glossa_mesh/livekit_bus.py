@@ -8,8 +8,9 @@ from skchat.glossa_mesh.bus import MeshBus, ReceiveCb
 
 
 class LiveKitBus(MeshBus):
-    def __init__(self, *, member_id: str, room_url: str, token: str,
-                 topic: str = "skglossa.mesh") -> None:
+    def __init__(
+        self, *, member_id: str, room_url: str, token: str, topic: str = "skglossa.mesh"
+    ) -> None:
         self.member_id = member_id
         self.room_url = room_url
         self.token = token
@@ -20,6 +21,7 @@ class LiveKitBus(MeshBus):
 
     async def start(self) -> None:
         from livekit import rtc  # lazy
+
         self._room = rtc.Room()
 
         # TODO(live): wire on_leave to room 'participant_disconnected'; verify
@@ -43,8 +45,7 @@ class LiveKitBus(MeshBus):
     async def broadcast(self, data: bytes) -> None:
         if self._room is None:
             raise RuntimeError("bus not started")
-        await self._room.local_participant.publish_data(
-            data, reliable=True, topic=self.topic)
+        await self._room.local_participant.publish_data(data, reliable=True, topic=self.topic)
 
     def on_receive(self, cb: ReceiveCb) -> None:
         self._cb = cb

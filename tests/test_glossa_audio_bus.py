@@ -26,7 +26,7 @@ async def test_frame_survives_the_acoustic_round_trip():
     await b.start()
     await a.broadcast(b"sk-over-audio")
     await asyncio.sleep(0.01)
-    assert got == [(b"sk-over-audio", "a")]   # modulated, transmitted, demodulated
+    assert got == [(b"sk-over-audio", "a")]  # modulated, transmitted, demodulated
 
 
 @pytest.mark.asyncio

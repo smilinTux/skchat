@@ -48,14 +48,14 @@ from pathlib import Path
 from typing import Optional, Union
 
 from .voice_backends import (
+    _PIPER_SEARCH_PATHS,
+    _VOICE_TMP_WAV,
+    _VOICES_DIRS,
     DEFAULT_VOICE,
     LUMINA_VOICE,
     STTBackend,
     TTSBackend,
     WhisperSTTBackend,
-    _PIPER_SEARCH_PATHS,
-    _VOICE_TMP_WAV,
-    _VOICES_DIRS,
     get_stt_backend,
     get_tts_backend,
 )
@@ -113,9 +113,7 @@ class VoicePlayer:
     # Backend selection
     # ------------------------------------------------------------------
 
-    def _resolve_backend(
-        self, backend: Optional[Union[str, TTSBackend]]
-    ) -> Optional[TTSBackend]:
+    def _resolve_backend(self, backend: Optional[Union[str, TTSBackend]]) -> Optional[TTSBackend]:
         """Return a delegate backend, or ``None`` for the in-class Piper path.
 
         An unknown name (param or ``SKCHAT_TTS_BACKEND``) degrades to the Piper
@@ -286,8 +284,8 @@ class VoicePlayer:
         for proc in self._current_procs:
             try:
                 proc.terminate()
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("failed to terminate voice proc (%s: %s)", type(exc).__name__, exc)
         self._current_procs = []
 
 
@@ -402,7 +400,7 @@ class VoiceRecorder:
             try:
                 proc.terminate()
                 proc.wait(timeout=5)
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("failed to stop recorder proc (%s: %s)", type(exc).__name__, exc)
 
         return self.backend.transcribe(_VOICE_TMP_WAV)

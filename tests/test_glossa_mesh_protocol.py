@@ -10,8 +10,13 @@ from skchat.glossa_mesh import protocol
 
 
 def test_announce_frame_roundtrip():
-    d = CapabilityDescriptor(fqid="a@x.y", model_tier="large", max_level=2,
-                             codebook_version="cb1", lexicon_version="lx1")
+    d = CapabilityDescriptor(
+        fqid="a@x.y",
+        model_tier="large",
+        max_level=2,
+        codebook_version="cb1",
+        lexicon_version="lx1",
+    )
     raw = protocol.frame_announce(d)
     kind, payload = protocol.parse_frame(raw)
     assert kind == protocol.ANNOUNCE
@@ -30,6 +35,7 @@ def test_message_frame_carries_level():
 
 def test_parse_rejects_empty():
     import pytest
+
     with pytest.raises(ValueError):
         protocol.parse_frame(b"")
 
@@ -41,6 +47,7 @@ def test_parse_rejects_empty():
 
 def test_read_message_rejects_empty_payload():
     import pytest
+
     with pytest.raises(ValueError):
         protocol.read_message(b"")
 
@@ -82,8 +89,9 @@ def test_announce_roundtrip_preserves_all_fields():
 
 def test_announce_and_message_kinds_are_distinct():
     a = protocol.frame_announce(
-        CapabilityDescriptor(fqid="a@x", model_tier="large", max_level=2,
-                             codebook_version="c", lexicon_version="l")
+        CapabilityDescriptor(
+            fqid="a@x", model_tier="large", max_level=2, codebook_version="c", lexicon_version="l"
+        )
     )
     m = protocol.frame_message(level=2, body=b"x")
     assert protocol.parse_frame(a)[0] == protocol.ANNOUNCE

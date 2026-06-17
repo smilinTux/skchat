@@ -33,11 +33,11 @@ class AudioMeshBus(MeshBus):
     def on_receive(self, cb: ReceiveCb) -> None:
         self._cb = cb
 
-    def on_leave(self, cb) -> None:   # G3 seam; audio medium has no presence yet
+    def on_leave(self, cb) -> None:  # G3 seam; audio medium has no presence yet
         pass
 
     def _on_samples(self, src: str, samples: list) -> None:
         if src == self.member_id or not self.running:
-            return                      # don't demodulate our own transmission
+            return  # don't demodulate our own transmission
         if self._cb is not None:
             self._cb(self._modem.decode(samples), src)

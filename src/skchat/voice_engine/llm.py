@@ -239,11 +239,13 @@ class LLMClient:
 
             if tool_calls:
                 # Append assistant's tool-call message, run each tool, then loop.
-                msgs.append({
-                    "role": "assistant",
-                    "content": text or None,
-                    "tool_calls": tool_calls,
-                })
+                msgs.append(
+                    {
+                        "role": "assistant",
+                        "content": text or None,
+                        "tool_calls": tool_calls,
+                    }
+                )
                 narrate_result = None
                 for tc in tool_calls:
                     fn = tc.get("function") or {}
@@ -253,7 +255,13 @@ class LLMClient:
                         args = (
                             json.loads(raw_args) if isinstance(raw_args, str) else (raw_args or {})
                         )
-                    except Exception:
+                    except Exception as exc:
+                        log.warning(
+                            "tool-call args for %s not valid JSON (%s: %s); using empty args",
+                            name,
+                            type(exc).__name__,
+                            exc,
+                        )
                         args = {}
                     log.info("tool %s(%s)", name, json.dumps(args)[:80])
                     if run_tool is not None:
@@ -273,11 +281,13 @@ class LLMClient:
                         and not result_str.lower().startswith("narrate")
                     ):
                         narrate_result = result_str
-                    msgs.append({
-                        "role": "tool",
-                        "tool_call_id": tc.get("id") or "",
-                        "content": result_str,
-                    })
+                    msgs.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tc.get("id") or "",
+                            "content": result_str,
+                        }
+                    )
                 if narrate_result is not None:
                     return narrate_result
                 continue  # next round: model reads tool results + produces final reply

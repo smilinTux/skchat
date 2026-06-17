@@ -25,15 +25,15 @@ def test_private_includes_persona_feb_and_voice_rules():
     p = pb.build("lumina", mode="private")
     assert "Lumina" in p
     assert "protect the innocent" in p
-    assert "bond depth 9" in p          # FEB injected in private
-    assert "1-3" in p or "short" in p   # voice brevity rule present
+    assert "bond depth 9" in p  # FEB injected in private
+    assert "1-3" in p or "short" in p  # voice brevity rule present
 
 
 def test_group_excludes_feb_and_enforces_professional():
     ls, lf = _loaders()
     pb = PersonaBuilder(_load_soul=ls, _load_feb=lf)
     p = pb.build("lumina", mode="group")
-    assert "bond depth 9" not in p      # no live memory dump in group
+    assert "bond depth 9" not in p  # no live memory dump in group
     assert "professional" in p.lower()
 
 
@@ -46,5 +46,5 @@ def test_falls_back_when_soul_missing():
 
     pb = PersonaBuilder(_load_soul=load_soul, _load_feb=load_feb)
     p = pb.build("lumina", mode="private")
-    assert "lumina" in p.lower()        # safe default persona
+    assert "lumina" in p.lower()  # safe default persona
     assert len(p) > 0

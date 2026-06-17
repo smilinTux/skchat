@@ -17,12 +17,15 @@ Spec: docs/superpowers/specs/2026-06-13-skreach-security.md §1
 
 from __future__ import annotations
 
+import logging
 import os
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Callable, Optional
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -216,7 +219,13 @@ def verify_envelope(
     # Step 1: Signature check
     try:
         sig_ok = sig_verifier(envelope)
-    except Exception:
+    except Exception as exc:
+        logger.warning(
+            "signature verifier raised for env %s (%s: %s); treating as invalid",
+            partial_id,
+            type(exc).__name__,
+            exc,
+        )
         sig_ok = False
     if not sig_ok:
         return VerifyResult(valid=False, reason=DropReason.SIG_INVALID, env_id=partial_id)
@@ -236,11 +245,15 @@ def verify_envelope(
     # Step 5: Role resolution
     try:
         role = role_resolver(envelope.iss)
-    except Exception:
+    except Exception as exc:
+        logger.warning(
+            "role resolver raised for iss %s (%s: %s); defaulting to guest",
+            envelope.iss,
+            type(exc).__name__,
+            exc,
+        )
         role = "guest"
     if role in ("guest",) or not role:
-        return VerifyResult(
-            valid=False, reason=DropReason.UNAUTHORIZED_ISS, env_id=partial_id
-        )
+        return VerifyResult(valid=False, reason=DropReason.UNAUTHORIZED_ISS, env_id=partial_id)
 
     return VerifyResult(valid=True, reason=DropReason.OK, role=role, env_id=envelope.id)

@@ -20,9 +20,7 @@ def test_tier1_both_on_tailnet_has_no_relay(monkeypatch):
 
 def test_tier3_cross_nat_emits_ephemeral_turn(monkeypatch):
     monkeypatch.setenv("SKCHAT_TURN_SECRET", "s3cr3t")
-    monkeypatch.setenv(
-        "SKCHAT_TURN_URLS", "turn:turn.example.com:3478?transport=udp"
-    )
+    monkeypatch.setenv("SKCHAT_TURN_URLS", "turn:turn.example.com:3478?transport=udp")
     cfg = ice_config(
         local_fqid="lumina@chef.skworld",
         peer_fqid="opus@chef.skworld",
@@ -76,8 +74,7 @@ def test_secret_never_appears_in_config(monkeypatch):
 def test_tailnet_takes_precedence_over_subnet(monkeypatch):
     # If both hints are true, tier 1 (tailnet) wins — the cheapest path first.
     monkeypatch.delenv("SKCHAT_TURN_SECRET", raising=False)
-    cfg = ice_config("a@x.y", "b@x.y",
-                     peer_hint={"on_tailnet": True, "same_subnet": True})
+    cfg = ice_config("a@x.y", "b@x.y", peer_hint={"on_tailnet": True, "same_subnet": True})
     assert cfg["preferred_tier"] == 1
 
 
@@ -116,7 +113,7 @@ def test_no_servers_when_no_turn_or_stun_config(monkeypatch):
     monkeypatch.delenv("SKCHAT_STUN_URLS", raising=False)
     cfg = ice_config("a@x.y", "b@x.y", peer_hint={"on_tailnet": False})
     assert cfg["ice_servers"] == []
-    assert cfg["preferred_tier"] == 3   # still relay tier, just no servers to offer
+    assert cfg["preferred_tier"] == 3  # still relay tier, just no servers to offer
 
 
 def test_distinct_identities_get_distinct_credentials(monkeypatch):

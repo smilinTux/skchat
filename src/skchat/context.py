@@ -213,9 +213,7 @@ def fetch_context(
             # store filtered by peer when no SKMemory store is present
             # (test environments, file-only deployments).
             try:
-                messages = history.get_conversation(
-                    self_identity, sender, limit=limit * 2
-                )
+                messages = history.get_conversation(self_identity, sender, limit=limit * 2)
             except Exception as exc:
                 logger.debug("get_conversation failed: %s", exc)
                 messages = []
@@ -265,9 +263,7 @@ def fetch_context(
                 "",
             )
 
-        memory_block = _fetch_memory_block(
-            query or "", memory_source, memory_hits
-        )
+        memory_block = _fetch_memory_block(query or "", memory_source, memory_hits)
 
         sections = [s for s in (memory_block, history_block) if s]
         return "\n\n".join(sections)

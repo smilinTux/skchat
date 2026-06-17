@@ -21,7 +21,6 @@ from skchat.skreach.protocol import (
 from skchat.skreach.rbac import AgentGrant, NodeGrants
 from skchat.skreach.sandbox import SandboxConfig
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

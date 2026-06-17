@@ -7,6 +7,7 @@ A rollup of LoRA / checkpoint / beat scores feeds back into gen-time selection.
 Pure metadata layer — no opinion on what the images contain. Works for any
 ComfyUI render (worship, daily-look, AI LIFE, etc.).
 """
+
 from __future__ import annotations
 
 import json
@@ -29,9 +30,7 @@ RATINGS_DIR = Path(
 ROLLUP_PATH = Path(
     os.environ.get(
         "SKCHAT_RATING_ROLLUP",
-        os.path.expanduser(
-            "~/.skcapstone/agents/lumina/memory/long-term/render_scores.json"
-        ),
+        os.path.expanduser("~/.skcapstone/agents/lumina/memory/long-term/render_scores.json"),
     )
 )
 
@@ -92,7 +91,7 @@ def record_render(
         image_path=str(image_path),
         created_at=time.time(),
         prompt=prompt,
-        loras=[list(l) for l in loras],
+        loras=[list(lora) for lora in loras],
         checkpoint=checkpoint,
         beat=beat,
         seed=seed,
@@ -135,14 +134,18 @@ def iter_rated() -> Iterable[dict[str, Any]]:
     for p in RATINGS_DIR.glob("*.json"):
         try:
             data = json.loads(p.read_text())
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "skipping unreadable rating file %s (%s: %s)", p, type(exc).__name__, exc
+            )
             continue
         if data.get("score") is not None:
             yield data
 
 
-def _bayesian_mean(scores: list[int], prior_mean: float = SCORE_NEUTRAL,
-                   prior_weight: float = 3.0) -> float:
+def _bayesian_mean(
+    scores: list[int], prior_mean: float = SCORE_NEUTRAL, prior_weight: float = 3.0
+) -> float:
     """Shrink small samples toward neutral. Stops 1 lucky 5 from doubling weight."""
     if not scores:
         return prior_mean
@@ -218,7 +221,13 @@ def load_rollup() -> dict[str, Any]:
         return {"loras": {}, "checkpoints": {}, "beats": {}}
     try:
         return json.loads(ROLLUP_PATH.read_text())
-    except Exception:
+    except Exception as exc:
+        logger.warning(
+            "rollup file %s unreadable (%s: %s); returning empty rollup",
+            ROLLUP_PATH,
+            type(exc).__name__,
+            exc,
+        )
         return {"loras": {}, "checkpoints": {}, "beats": {}}
 
 
@@ -249,7 +258,10 @@ def weighted_choice(
     for opt in options:
         try:
             name = keyfn(opt)
-        except Exception:
+        except Exception as exc:
+            logger.debug(
+                "keyfn failed for option (%s: %s); using neutral weight", type(exc).__name__, exc
+            )
             name = None
         weights.append(lora_weight(name, rollup) if name else 1.0)
     if sum(weights) <= 0:

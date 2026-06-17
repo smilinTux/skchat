@@ -352,9 +352,7 @@ def load_agent_profile(agent: Optional[str] = None) -> AgentProfile:
         profile = cached[1]
     else:
         identity = get_agent_identity(name)
-        display_name = (
-            soul.get("display_name") or soul.get("name") or name.capitalize()
-        )
+        display_name = soul.get("display_name") or soul.get("name") or name.capitalize()
         title = soul.get("title", "") or soul.get("category", "")
 
         base = _agent_base(name)

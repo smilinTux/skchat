@@ -38,8 +38,9 @@ def parse_meta(metadata: str) -> StageState:
 
 
 def dump_meta(state: StageState) -> str:
-    return json.dumps({"hand_raised": state.hand_raised,
-                       "invited_to_stage": state.invited_to_stage})
+    return json.dumps(
+        {"hand_raised": state.hand_raised, "invited_to_stage": state.invited_to_stage}
+    )
 
 
 def apply_action(state: StageState, action: str) -> tuple[StageState, bool]:
@@ -65,6 +66,7 @@ def apply_action(state: StageState, action: str) -> tuple[StageState, bool]:
 
 # --- LiveKit moderation wrapper ---------------------------------------------
 
+
 def _http_url(ws_url: str) -> str:
     return ws_url.replace("ws://", "http://").replace("wss://", "https://")
 
@@ -76,8 +78,7 @@ class Moderator:
     `api.LiveKitAPI(...).room`.
     """
 
-    def __init__(self, ws_url: str, api_key: str, api_secret: str,
-                 *, _room_service=None) -> None:
+    def __init__(self, ws_url: str, api_key: str, api_secret: str, *, _room_service=None) -> None:
         self._ws_url = ws_url
         self._key = api_key
         self._secret = api_secret
@@ -92,8 +93,8 @@ class Moderator:
         if self._svc is not None:
             return self._svc
         from livekit import api
-        self._client = api.LiveKitAPI(_http_url(self._ws_url), self._key,
-                                      self._secret)
+
+        self._client = api.LiveKitAPI(_http_url(self._ws_url), self._key, self._secret)
         self._svc = self._client.room
         return self._svc
 
@@ -109,6 +110,7 @@ class Moderator:
         + can_publish permission. Serialized per (room, identity) so concurrent
         raise_hand + invite cannot lose an update."""
         from livekit import api
+
         key = (room, identity)
         lock = self._locks.setdefault(key, asyncio.Lock())
         self._lock_users[key] = self._lock_users.get(key, 0) + 1
@@ -116,15 +118,20 @@ class Moderator:
             async with lock:
                 svc = self._service()
                 current = await svc.get_participant(
-                    api.RoomParticipantIdentity(room=room, identity=identity))
+                    api.RoomParticipantIdentity(room=room, identity=identity)
+                )
                 state = parse_meta(getattr(current, "metadata", "") or "")
                 new_state, can_publish = apply_action(state, action)
-                await svc.update_participant(api.UpdateParticipantRequest(
-                    room=room, identity=identity, metadata=dump_meta(new_state),
-                    permission=api.ParticipantPermission(
-                        can_publish=can_publish, can_subscribe=True,
-                        can_publish_data=True),
-                ))
+                await svc.update_participant(
+                    api.UpdateParticipantRequest(
+                        room=room,
+                        identity=identity,
+                        metadata=dump_meta(new_state),
+                        permission=api.ParticipantPermission(
+                            can_publish=can_publish, can_subscribe=True, can_publish_data=True
+                        ),
+                    )
+                )
                 return can_publish
         finally:
             # evict the lock once nobody else is holding or waiting for it, so the
@@ -136,10 +143,14 @@ class Moderator:
 
     async def kick(self, room: str, identity: str) -> None:
         from livekit import api
+
         await self._service().remove_participant(
-            api.RoomParticipantIdentity(room=room, identity=identity))
+            api.RoomParticipantIdentity(room=room, identity=identity)
+        )
 
     async def mute(self, room: str, identity: str, track_sid: str) -> None:
         from livekit import api
-        await self._service().mute_published_track(api.MuteRoomTrackRequest(
-            room=room, identity=identity, track_sid=track_sid, muted=True))
+
+        await self._service().mute_published_track(
+            api.MuteRoomTrackRequest(room=room, identity=identity, track_sid=track_sid, muted=True)
+        )

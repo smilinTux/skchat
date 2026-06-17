@@ -20,29 +20,39 @@ def client(tmp_path, monkeypatch):
 
 
 def test_guest_invite_joins_as_listener_only(client):
-    sid = client.post("/spaces/create", json={
-        "host_fqid": "lumina@chef.skworld", "title": "T", "slug": "s"}).json()["space_id"]
+    sid = client.post(
+        "/spaces/create", json={"host_fqid": "lumina@chef.skworld", "title": "T", "slug": "s"}
+    ).json()["space_id"]
 
     # host mints a guest invite bound to THIS space id (room == space_id)
     from skchat.guest import InviteIssuer
-    invite = InviteIssuer().create_invite(room=sid, display="Visitor", ttl=3600,
-                                          issuer="lumina@chef.skworld")
-    r = client.post(f"/spaces/{sid}/join-guest", json={
-        "invite_token": invite["invite_token"], "display": "Visitor"})
+
+    invite = InviteIssuer().create_invite(
+        room=sid, display="Visitor", ttl=3600, issuer="lumina@chef.skworld"
+    )
+    r = client.post(
+        f"/spaces/{sid}/join-guest",
+        json={"invite_token": invite["invite_token"], "display": "Visitor"},
+    )
     assert r.status_code == 200
-    v = jwt.decode(r.json()["token"], _SECRET, algorithms=["HS256"],
-                   options={"verify_aud": False})["video"]
-    assert v.get("canPublish", False) is False   # guest cannot publish
+    v = jwt.decode(
+        r.json()["token"], _SECRET, algorithms=["HS256"], options={"verify_aud": False}
+    )["video"]
+    assert v.get("canPublish", False) is False  # guest cannot publish
     assert v["canSubscribe"] is True
     assert r.json()["role"] == "listener"
 
 
 def test_guest_invite_for_other_space_rejected(client):
-    sid = client.post("/spaces/create", json={
-        "host_fqid": "lumina@chef.skworld", "title": "T", "slug": "s"}).json()["space_id"]
+    sid = client.post(
+        "/spaces/create", json={"host_fqid": "lumina@chef.skworld", "title": "T", "slug": "s"}
+    ).json()["space_id"]
     from skchat.guest import InviteIssuer
-    other = InviteIssuer().create_invite(room="space-someotherroom0", display="X",
-                                         ttl=3600, issuer="lumina@chef.skworld")
-    r = client.post(f"/spaces/{sid}/join-guest", json={
-        "invite_token": other["invite_token"], "display": "X"})
-    assert r.status_code == 403   # invite bound to a different room
+
+    other = InviteIssuer().create_invite(
+        room="space-someotherroom0", display="X", ttl=3600, issuer="lumina@chef.skworld"
+    )
+    r = client.post(
+        f"/spaces/{sid}/join-guest", json={"invite_token": other["invite_token"], "display": "X"}
+    )
+    assert r.status_code == 403  # invite bound to a different room

@@ -38,9 +38,7 @@ from fastapi.responses import FileResponse, HTMLResponse
 logger = logging.getLogger("skchat.facetime")
 
 # SKVoice FaceTime endpoint on GPU box
-SKVOICE_FACETIME_URL = os.getenv(
-    "SKCHAT_SKVOICE_FACETIME_URL", "ws://127.0.0.1:18800/ws/facetime"
-)
+SKVOICE_FACETIME_URL = os.getenv("SKCHAT_SKVOICE_FACETIME_URL", "ws://127.0.0.1:18800/ws/facetime")
 DEFAULT_AGENT = os.getenv("SKCHAT_FACETIME_AGENT", "lumina")
 
 

@@ -5,8 +5,10 @@ from skchat.voice_engine.tts import TTSClient, stream_url_for
 
 
 def test_stream_url_derivation():
-    assert stream_url_for("http://localhost:15091/audio/speech") == \
-        "http://localhost:15091/audio/speech/stream"
+    assert (
+        stream_url_for("http://localhost:15091/audio/speech")
+        == "http://localhost:15091/audio/speech/stream"
+    )
 
 
 @pytest.mark.asyncio

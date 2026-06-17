@@ -13,8 +13,7 @@ from skchat.glossa_mesh.mac import CarrierSenseMAC, FakeAudioMedium
 async def test_two_transmits_collide_without_mac():
     med = FakeAudioMedium()
     # raw concurrent transmits overlap → medium marks a collision window
-    await asyncio.gather(med.transmit_raw("a", [1.0] * 10),
-                         med.transmit_raw("b", [1.0] * 10))
+    await asyncio.gather(med.transmit_raw("a", [1.0] * 10), med.transmit_raw("b", [1.0] * 10))
     assert med.had_collision is True
 
 
@@ -22,10 +21,9 @@ async def test_two_transmits_collide_without_mac():
 async def test_mac_serializes_transmits_no_collision():
     med = FakeAudioMedium()
     mac = CarrierSenseMAC(med)
-    await asyncio.gather(mac.send("a", [1.0] * 10),
-                         mac.send("b", [1.0] * 10))
-    assert med.had_collision is False        # MAC made them take turns
-    assert med.transmissions == 2            # both still got through
+    await asyncio.gather(mac.send("a", [1.0] * 10), mac.send("b", [1.0] * 10))
+    assert med.had_collision is False  # MAC made them take turns
+    assert med.transmissions == 2  # both still got through
 
 
 def test_carrier_sense_reports_busy():

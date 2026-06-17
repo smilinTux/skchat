@@ -108,13 +108,9 @@ class ToolRegistry:
         # Chef-only gate: powerful/operator tools require the operator AND
         # (for operator_only ones) sacred mode.
         if not is_operator:
-            return (
-                f"PERMISSION DENIED: '{name}' can only be run when the operator asks."
-            )
+            return f"PERMISSION DENIED: '{name}' can only be run when the operator asks."
         if tool.operator_only and mode != "sacred":
-            return (
-                f"REFUSED: '{name}' is sacred-mode only — there are other people in this room."
-            )
+            return f"REFUSED: '{name}' is sacred-mode only — there are other people in this room."
         if tool.handler is None:
             return f"tool {name} has no handler"
         try:

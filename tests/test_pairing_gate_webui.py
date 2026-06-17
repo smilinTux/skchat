@@ -1,4 +1,5 @@
 """Webui /pair/accept gate enforcement (Funnel hardening)."""
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -6,13 +7,17 @@ from fastapi.testclient import TestClient
 @pytest.fixture
 def client(monkeypatch):
     import skchat.pairing_gate as pg
+
     pg._gate = None  # fresh gate per test
     from skcomms import pairing
+
     monkeypatch.setattr(
-        pairing, "accept_pairing",
+        pairing,
+        "accept_pairing",
         lambda uri: {"fqid": "lumina@chef.skworld", "fingerprint": "FP"},
     )
     import skchat.webui as webui
+
     yield TestClient(webui.app)
     pg._gate = None
 

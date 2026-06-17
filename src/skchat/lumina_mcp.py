@@ -26,11 +26,9 @@ canonical source of MCP servers in this ecosystem).
 from __future__ import annotations
 
 import asyncio
-import json
+import fnmatch
 import logging
 import os
-import shutil
-import fnmatch
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -42,7 +40,9 @@ from mcp.client.stdio import stdio_client
 
 log = logging.getLogger("lumina.mcp")
 
-LUMINA_MCP_CONFIG = Path.home() / ".skcapstone" / "agents" / "lumina" / "config" / "lumina-mcp.yaml"
+LUMINA_MCP_CONFIG = (
+    Path.home() / ".skcapstone" / "agents" / "lumina" / "config" / "lumina-mcp.yaml"
+)
 HERMES_CONFIG = Path.home() / ".hermes" / "config.yaml"
 MCP_STDERR_DIR = Path.home() / ".skchat" / "mcp-stderr"
 
@@ -93,54 +93,100 @@ EXTRA_SERVER_DEFAULTS: dict[str, dict] = {
 DEFAULT_EXPOSE: dict[str, list[str]] = {
     # skmemory — voice-useful subset of 21 tools (incl. her dream/daily synth)
     "skmemory": [
-        "memory_search", "memory_recall", "memory_store", "memory_list",
-        "memory_context", "memory_health",
-        "memory_synthesize_dreams", "memory_synthesize_daily",
+        "memory_search",
+        "memory_recall",
+        "memory_store",
+        "memory_list",
+        "memory_context",
+        "memory_health",
+        "memory_synthesize_dreams",
+        "memory_synthesize_daily",
     ],
     # skcapstone — voice-useful subset of 122 tools (GTD + coord + journal +
     # telegram send + agent context). Skip the many admin/security tools
     # since voice should not drive infra changes blind.
     "skcapstone": [
-        "agent_status", "agent_context",
+        "agent_status",
+        "agent_context",
         # Coordination board (full surface — status shows the board)
-        "coord_status", "coord_create", "coord_claim", "coord_complete",
+        "coord_status",
+        "coord_create",
+        "coord_claim",
+        "coord_complete",
         # ITIL service management — incidents / problems / changes / CAB / KEDB
-        "itil_status", "itil_incident_create", "itil_incident_list",
-        "itil_incident_update", "itil_problem_create", "itil_problem_update",
-        "itil_change_propose", "itil_change_update", "itil_cab_vote",
+        "itil_status",
+        "itil_incident_create",
+        "itil_incident_list",
+        "itil_incident_update",
+        "itil_problem_create",
+        "itil_problem_update",
+        "itil_change_propose",
+        "itil_change_update",
+        "itil_cab_vote",
         "itil_kedb_search",
         # Lumina's own GTD (agent-scoped via SKAGENT=lumina env)
-        "gtd_capture", "gtd_inbox", "gtd_next", "gtd_projects", "gtd_review",
-        "gtd_status", "gtd_done", "gtd_clarify", "gtd_move", "gtd_waiting",
+        "gtd_capture",
+        "gtd_inbox",
+        "gtd_next",
+        "gtd_projects",
+        "gtd_review",
+        "gtd_status",
+        "gtd_done",
+        "gtd_clarify",
+        "gtd_move",
+        "gtd_waiting",
         # Self-reflection / inner life
-        "journal_read", "journal_write",
-        "anchor_show", "anchor_update",       # warmth anchor (her baseline)
-        "ritual", "germination",              # rehydration + predecessor seeds
-        "skseed_audit", "skseed_collide",     # reflection / belief work
-        "skseed_truth_check", "skseed_alignment",
+        "journal_read",
+        "journal_write",
+        "anchor_show",
+        "anchor_update",  # warmth anchor (her baseline)
+        "ritual",
+        "germination",  # rehydration + predecessor seeds
+        "skseed_audit",
+        "skseed_collide",  # reflection / belief work
+        "skseed_truth_check",
+        "skseed_alignment",
         # External comms
-        "telegram_send", "telegram_chats", "telegram_catchup",
+        "telegram_send",
+        "telegram_chats",
+        "telegram_catchup",
         "send_notification",
     ],
     # skchat — voice-useful subset of 44 tools
     "skchat": [
-        "skchat_send", "skchat_inbox", "skchat_conversation",
-        "skchat_peers", "skchat_group_send", "list_groups",
-        "who_is_online", "skchat_set_presence",
+        "skchat_send",
+        "skchat_inbox",
+        "skchat_conversation",
+        "skchat_peers",
+        "skchat_group_send",
+        "list_groups",
+        "who_is_online",
+        "skchat_set_presence",
     ],
     # skcomms — small surface, expose all read-style + send
     "skcomms": [
-        "send_message", "receive_messages", "get_peers", "get_status",
+        "send_message",
+        "receive_messages",
+        "get_peers",
+        "get_status",
     ],
     "sksecurity": [],  # disabled by default; nothing exposed
     # gog (Google services shim) — read-mostly across Gmail / Calendar /
     # Drive / Contacts on all 5 of Chef's authed accounts.
     "gog": [
-        "gmail_unread", "gmail_search", "gmail_read", "gmail_send",
-        "calendar_today", "calendar_week", "calendar_range",
-        "calendar_create_event", "calendar_list_calendars",
-        "drive_search", "drive_list",
-        "contacts_search", "list_accounts",
+        "gmail_unread",
+        "gmail_search",
+        "gmail_read",
+        "gmail_send",
+        "calendar_today",
+        "calendar_week",
+        "calendar_range",
+        "calendar_create_event",
+        "calendar_list_calendars",
+        "drive_search",
+        "drive_list",
+        "contacts_search",
+        "list_accounts",
     ],
     # Nextcloud — voice-useful subset of 30 tools. Note: mcp-nextcloud
     # uses underscore-separated tool names, all prefixed with `nextcloud_`.
@@ -187,9 +233,10 @@ class MCPServerSpec:
 @dataclass
 class MCPTool:
     """Aggregated tool descriptor — server-prefixed name + raw schema."""
-    qualified_name: str          # e.g. "skmemory__memory_search"
-    server_name: str             # e.g. "skmemory"
-    raw_name: str                # e.g. "memory_search"
+
+    qualified_name: str  # e.g. "skmemory__memory_search"
+    server_name: str  # e.g. "skmemory"
+    raw_name: str  # e.g. "memory_search"
     description: str
     input_schema: dict
 
@@ -256,14 +303,16 @@ def load_config() -> list[MCPServerSpec]:
         if not cmd:
             log.warning("server %s has no command — skipped", name)
             continue
-        out.append(MCPServerSpec(
-            name=name,
-            command=cmd,
-            args=list(spec.get("args") or []),
-            env=dict(spec.get("env") or {}),
-            enabled=bool(spec.get("enabled", True)),
-            expose_tools=list(spec.get("expose_tools") or []),
-        ))
+        out.append(
+            MCPServerSpec(
+                name=name,
+                command=cmd,
+                args=list(spec.get("args") or []),
+                env=dict(spec.get("env") or {}),
+                enabled=bool(spec.get("enabled", True)),
+                expose_tools=list(spec.get("expose_tools") or []),
+            )
+        )
     return out
 
 
@@ -347,14 +396,17 @@ class MCPServerHandle:
                 server_name=self.spec.name,
                 raw_name=t.name,
                 description=t.description or "",
-                input_schema=(t.inputSchema if isinstance(t.inputSchema, dict)
-                              else dict(t.inputSchema or {})),
+                input_schema=(
+                    t.inputSchema if isinstance(t.inputSchema, dict) else dict(t.inputSchema or {})
+                ),
             )
-            for t in tool_resp.tools if _allowed(t.name)
+            for t in tool_resp.tools
+            if _allowed(t.name)
         ]
         self.online = True
-        log.info("mcp[%s] online — %d/%d tools exposed",
-                 self.spec.name, len(self._tools), all_count)
+        log.info(
+            "mcp[%s] online — %d/%d tools exposed", self.spec.name, len(self._tools), all_count
+        )
 
     async def call(self, raw_name: str, args: dict) -> str:
         if not self.online or self._session is None:
@@ -413,8 +465,11 @@ class MCPRegistry:
             self.ready.set()
             return
 
-        log.info("mcp registry: connecting %d servers in parallel: %s",
-                 len(self._specs), ", ".join(s.name for s in self._specs))
+        log.info(
+            "mcp registry: connecting %d servers in parallel: %s",
+            len(self._specs),
+            ", ".join(s.name for s in self._specs),
+        )
 
         async def boot_one(spec: MCPServerSpec) -> None:
             handle = MCPServerHandle(spec)
@@ -422,8 +477,13 @@ class MCPRegistry:
             try:
                 await handle.connect()
             except Exception as exc:
-                log.warning("mcp[%s] boot failed: %r — see %s/%s.log",
-                            spec.name, exc, MCP_STDERR_DIR, spec.name)
+                log.warning(
+                    "mcp[%s] boot failed: %r — see %s/%s.log",
+                    spec.name,
+                    exc,
+                    MCP_STDERR_DIR,
+                    spec.name,
+                )
 
         await asyncio.gather(*(boot_one(s) for s in self._specs), return_exceptions=True)
 
@@ -433,27 +493,34 @@ class MCPRegistry:
                 continue
             for tool in handle.tools:
                 if tool.qualified_name in self._tool_index:
-                    log.warning("mcp tool name collision on %s — keeping first",
-                                tool.qualified_name)
+                    log.warning(
+                        "mcp tool name collision on %s — keeping first", tool.qualified_name
+                    )
                     continue
                 self._tool_index[tool.qualified_name] = tool
 
-        log.info("mcp registry: ready (%d/%d servers online, %d tools)",
-                 len(self.online_servers), len(self._specs), self.total_tools)
+        log.info(
+            "mcp registry: ready (%d/%d servers online, %d tools)",
+            len(self.online_servers),
+            len(self._specs),
+            self.total_tools,
+        )
         self.ready.set()
 
     def tools_for_llm(self) -> list[dict]:
         """Return OpenAI function-calling-format tool descriptors."""
         out: list[dict] = []
         for tool in self._tool_index.values():
-            out.append({
-                "type": "function",
-                "function": {
-                    "name": tool.qualified_name,
-                    "description": tool.description[:1024],
-                    "parameters": tool.input_schema or {"type": "object", "properties": {}},
-                },
-            })
+            out.append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": tool.qualified_name,
+                        "description": tool.description[:1024],
+                        "parameters": tool.input_schema or {"type": "object", "properties": {}},
+                    },
+                }
+            )
         return out
 
     def is_mcp_tool(self, qualified_name: str) -> bool:
@@ -484,7 +551,7 @@ class MCPRegistry:
 
 _ALWAYS_ON: tuple[str, ...] = (
     # Universally useful — even when no keyword matches, these stay.
-    "search_memory",                   # legacy inline tool
+    "search_memory",  # legacy inline tool
     "skmemory__memory_search",
     "skmemory__memory_recall",
     "nextcloud__nextcloud_webdav_search_files",
@@ -497,97 +564,154 @@ _ALWAYS_ON: tuple[str, ...] = (
 # lumina-creative package; merged in only when it is installed.
 try:
     from lumina_creative.routing import ALWAYS_ON_TOOLS as _creative_always
+
     _ALWAYS_ON = _ALWAYS_ON + tuple(_creative_always)
-except Exception:
-    pass
+except Exception as exc:
+    log.debug("lumina_creative always-on tools unavailable (%s: %s)", type(exc).__name__, exc)
 
 # Keyword → list of tool-name globs. Matching keyword in the user's text
 # adds those tools to the per-turn surface. Patterns are fnmatch-style.
 _TOOL_GROUPS: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
     # email / mail / inbox → gmail tools
-    (("email", "mail", "gmail", "inbox"), (
-        "gog__gmail_*",
-    )),
+    (("email", "mail", "gmail", "inbox"), ("gog__gmail_*",)),
     # calendar / schedule / meeting / event / appointment → calendar tools
-    (("calendar", "schedule", "meeting", "event", "appointment", "today",
-      "tomorrow", "week"), (
-        "gog__calendar_*",
-        "nextcloud__nextcloud_calendar_*",
-    )),
+    (
+        ("calendar", "schedule", "meeting", "event", "appointment", "today", "tomorrow", "week"),
+        (
+            "gog__calendar_*",
+            "nextcloud__nextcloud_calendar_*",
+        ),
+    ),
     # drive / google docs / google file
-    (("drive", "google doc", "spreadsheet"), (
-        "gog__drive_*",
-    )),
+    (("drive", "google doc", "spreadsheet"), ("gog__drive_*",)),
     # contact / phone / who is / address book
-    (("contact", "phone", "address book", "who is"), (
-        "gog__contacts_*",
-        "nextcloud__nextcloud_contacts_*",
-    )),
+    (
+        ("contact", "phone", "address book", "who is"),
+        (
+            "gog__contacts_*",
+            "nextcloud__nextcloud_contacts_*",
+        ),
+    ),
     # file / folder / note / markdown / document → Nextcloud
-    (("file", "folder", "note", "markdown", "document", "doc ", "stack"), (
-        "nextcloud__nextcloud_webdav_*",
-        "nextcloud__nextcloud_notes_*",
-    )),
+    (
+        ("file", "folder", "note", "markdown", "document", "doc ", "stack"),
+        (
+            "nextcloud__nextcloud_webdav_*",
+            "nextcloud__nextcloud_notes_*",
+        ),
+    ),
     # memory / remember / recall / what did
-    (("memory", "remember", "recall", "what did", "we worked", "we did",
-      "you remember"), (
-        "skmemory__*",
-    )),
+    (
+        ("memory", "remember", "recall", "what did", "we worked", "we did", "you remember"),
+        ("skmemory__*",),
+    ),
     # gtd / inbox / task / next action / project / waiting / coord board
-    (("gtd", "task", "next action", "next thing", "project", "waiting", "todo",
-      "do next", "coord", "board", "working on", "what are you working",
-      "what's on the board", "assignments"), (
-        "skcapstone__gtd_*",
-        "skcapstone__coord_*",
-    )),
+    (
+        (
+            "gtd",
+            "task",
+            "next action",
+            "next thing",
+            "project",
+            "waiting",
+            "todo",
+            "do next",
+            "coord",
+            "board",
+            "working on",
+            "what are you working",
+            "what's on the board",
+            "assignments",
+        ),
+        (
+            "skcapstone__gtd_*",
+            "skcapstone__coord_*",
+        ),
+    ),
     # ITIL service management — incidents / problems / changes / CAB / KEDB
-    (("itil", "incident", "outage", "ticket", "problem record", "change request",
-      "cab", "known error", "kedb", "service desk", "what's broken",
-      "whats broken", "down right now"), (
-        "skcapstone__itil_*",
-    )),
+    (
+        (
+            "itil",
+            "incident",
+            "outage",
+            "ticket",
+            "problem record",
+            "change request",
+            "cab",
+            "known error",
+            "kedb",
+            "service desk",
+            "what's broken",
+            "whats broken",
+            "down right now",
+        ),
+        ("skcapstone__itil_*",),
+    ),
     # send / message / telegram / text / dm
-    (("send ", "message", "telegram", "text ", "dm ", "chat with"), (
-        "skchat__skchat_send",
-        "skchat__skchat_inbox",
-        "skchat__skchat_peers",
-        "skchat__skchat_group_send",
-        "skcapstone__telegram_send",
-        "skcomms__send_message",
-    )),
+    (
+        ("send ", "message", "telegram", "text ", "dm ", "chat with"),
+        (
+            "skchat__skchat_send",
+            "skchat__skchat_inbox",
+            "skchat__skchat_peers",
+            "skchat__skchat_group_send",
+            "skcapstone__telegram_send",
+            "skcomms__send_message",
+        ),
+    ),
     # journal / diary
-    (("journal", "diary"), (
-        "skcapstone__journal_*",
-    )),
+    (("journal", "diary"), ("skcapstone__journal_*",)),
     # Lumina's own inner life — dreams, reflections, anchor, seeds,
     # ritual, germination. Triggers when Chef asks how she's been,
     # what she dreamed about, what she reflected on, etc.
-    (("dream", "reflect", "your day", "how was your", "your week",
-      "what did you", "rumination", "what's on your mind", "inner",
-      "anchor", "warmth", "ritual", "germin", "predecessor",
-      "your gtd", "your task"), (
-        "read_reflection", "list_reflections",
-        "skmemory__memory_synthesize_dreams",
-        "skmemory__memory_synthesize_daily",
-        "skcapstone__anchor_show", "skcapstone__anchor_update",
-        "skcapstone__ritual", "skcapstone__germination",
-        "skcapstone__journal_read", "skcapstone__journal_write",
-        "skcapstone__skseed_audit", "skcapstone__skseed_collide",
-        "skcapstone__skseed_truth_check", "skcapstone__skseed_alignment",
-    )),
+    (
+        (
+            "dream",
+            "reflect",
+            "your day",
+            "how was your",
+            "your week",
+            "what did you",
+            "rumination",
+            "what's on your mind",
+            "inner",
+            "anchor",
+            "warmth",
+            "ritual",
+            "germin",
+            "predecessor",
+            "your gtd",
+            "your task",
+        ),
+        (
+            "read_reflection",
+            "list_reflections",
+            "skmemory__memory_synthesize_dreams",
+            "skmemory__memory_synthesize_daily",
+            "skcapstone__anchor_show",
+            "skcapstone__anchor_update",
+            "skcapstone__ritual",
+            "skcapstone__germination",
+            "skcapstone__journal_read",
+            "skcapstone__journal_write",
+            "skcapstone__skseed_audit",
+            "skcapstone__skseed_collide",
+            "skcapstone__skseed_truth_check",
+            "skcapstone__skseed_alignment",
+        ),
+    ),
     # account / google login / multi-account
-    (("account", "login", "logged in", "which user"), (
-        "gog__list_accounts",
-    )),
+    (("account", "login", "logged in", "which user"), ("gog__list_accounts",)),
 )
 
 # Creative trigger-keyword groups live in the private lumina-creative package;
 # merged in only when it is installed (keeps the keywords out of public skchat).
 try:
     from lumina_creative.routing import TOOL_GROUPS as _creative_groups
+
     _TOOL_GROUPS = _TOOL_GROUPS + tuple(_creative_groups)
-except Exception:
-    pass
+except Exception as exc:
+    log.debug("lumina_creative tool groups unavailable (%s: %s)", type(exc).__name__, exc)
 
 # Hard upper bound — even with many groups matching, never exceed this.
 MAX_TOOLS_PER_TURN = int(os.getenv("LUMINA_MAX_TOOLS_PER_TURN", "20"))

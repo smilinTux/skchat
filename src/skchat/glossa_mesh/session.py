@@ -35,9 +35,13 @@ class GlossaMeshSession:
             the weakest participant caps the room. Empty → our own max_level.
     """
 
-    def __init__(self, *, descriptor: CapabilityDescriptor,
-                 codebook: Codebook | None = None,
-                 peers: list[CapabilityDescriptor] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        descriptor: CapabilityDescriptor,
+        codebook: Codebook | None = None,
+        peers: list[CapabilityDescriptor] | None = None,
+    ) -> None:
         self.descriptor = descriptor
         self.codebook = codebook or default_codebook()
         self._peers: list[CapabilityDescriptor] = list(peers or [])

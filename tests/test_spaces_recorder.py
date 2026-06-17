@@ -10,8 +10,10 @@ class FakeEgress:
 
     async def start_room_composite_egress(self, req):
         self.started.append(req)
+
         class _R:  # minimal egress-info stand-in
             egress_id = "EG_test123"
+
         return _R()
 
     async def stop_egress(self, req):

@@ -9,6 +9,7 @@ Browser ↔ skchat (Traefik/TLS) ↔ SKVoice (.100 GPU)
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from pathlib import Path
 
@@ -16,7 +17,6 @@ import websockets
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse
 
-import logging
 logger = logging.getLogger(__name__)
 
 # SKVoice service on GPU box — handles the entire voice pipeline

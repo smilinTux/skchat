@@ -8,6 +8,7 @@ Launch with:
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from datetime import datetime
 from typing import Optional
@@ -18,7 +19,6 @@ from textual.binding import Binding
 from textual.containers import ScrollableContainer
 from textual.widgets import Input, Label, Static
 
-import logging
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -66,7 +66,7 @@ def parse_file_command(text: str):
         recipient = parts[0][1:]
         t = parts[1].strip() if len(parts) > 1 else ""
     if t.startswith("/file "):
-        path = t[len("/file "):].strip()
+        path = t[len("/file ") :].strip()
         if path:
             return (recipient, path)
     return None
@@ -76,8 +76,10 @@ def format_attachment_label(attachments) -> str:
     """One-line indicator for a message's attachments (TUI message list)."""
     if not attachments:
         return ""
-    names = [a.get("filename", "file") if isinstance(a, dict) else getattr(a, "filename", "file")
-             for a in attachments]
+    names = [
+        a.get("filename", "file") if isinstance(a, dict) else getattr(a, "filename", "file")
+        for a in attachments
+    ]
     return "📎 " + ", ".join(names)
 
 
@@ -327,8 +329,7 @@ class SKChatTUI(App):
         fname = os.path.basename(path)
         container = self.query_one("#messages", ScrollableContainer)
         label_text = (
-            f"\\[{ts_str}] you → {_markup_escape(recipient)}: "
-            f"📎 {_markup_escape(fname)}{suffix}"
+            f"\\[{ts_str}] you → {_markup_escape(recipient)}: 📎 {_markup_escape(fname)}{suffix}"
         )
         container.mount(Label(label_text, classes="msg-self"))
         container.scroll_end(animate=False)

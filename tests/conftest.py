@@ -5,7 +5,6 @@ from __future__ import annotations
 # skmemory is resolved via the editable install in the project venv.
 # No sys.path manipulation needed — see [tool.pytest.ini_options] pythonpath
 # in pyproject.toml and `pip install -e` in the dev environment.
-
 import os
 
 # Suppress REAL desktop notifications during the test suite. Several code paths

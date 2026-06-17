@@ -301,8 +301,8 @@ class PiperTTSBackend(TTSBackend):
         for proc in self._current_procs:
             try:
                 proc.terminate()
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("failed to terminate audio proc (%s: %s)", type(exc).__name__, exc)
         self._current_procs = []
 
 

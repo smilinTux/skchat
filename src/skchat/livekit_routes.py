@@ -30,7 +30,6 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
@@ -158,7 +157,11 @@ def register_livekit_routes(app: FastAPI) -> None:
         if not _have_creds():
             raise HTTPException(status_code=503, detail="livekit not configured")
 
-        body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else dict(await request.form())
+        body = (
+            await request.json()
+            if request.headers.get("content-type", "").startswith("application/json")
+            else dict(await request.form())
+        )
         text = (body.get("text") or "").strip()
         if not text:
             raise HTTPException(status_code=400, detail="text required")
@@ -200,7 +203,11 @@ def register_livekit_routes(app: FastAPI) -> None:
 
     @app.post("/livekit/record/start")
     async def livekit_record_start(request: Request) -> JSONResponse:
-        body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else dict(await request.form())
+        body = (
+            await request.json()
+            if request.headers.get("content-type", "").startswith("application/json")
+            else dict(await request.form())
+        )
         target = (body.get("target") or "lumina").strip()
         room_name = body.get("room") or DEFAULT_ROOM
         label = (body.get("label") or "recording").strip().replace(" ", "_")[:60] or "recording"
@@ -215,25 +222,37 @@ def register_livekit_routes(app: FastAPI) -> None:
         ledger = rec_dir / ".active.json"
         cmd = [
             sys.executable,
-            "-m", "skchat.lumina_recorder",
-            "--out", str(out_path),
-            "--room", room_name,
-            "--target", target,
-            "--webui", "https://REDACTED-TAILSCALE-HOST",
+            "-m",
+            "skchat.lumina_recorder",
+            "--out",
+            str(out_path),
+            "--room",
+            room_name,
+            "--target",
+            target,
+            "--webui",
+            "https://REDACTED-TAILSCALE-HOST",
         ]
         log_path = rec_dir / f"{stamp}_{target}_{label}.log"
         log_fh = log_path.open("w")
         proc = subprocess.Popen(cmd, stdout=log_fh, stderr=subprocess.STDOUT)
-        ledger.write_text(json.dumps({
-            "pid": proc.pid,
-            "path": str(out_path),
-            "log": str(log_path),
-            "target": target,
-            "room": room_name,
-            "label": label,
-            "started_at": datetime.now().isoformat(),
-        }), encoding="utf-8")
-        return JSONResponse({"ok": True, "pid": proc.pid, "path": str(out_path), "log": str(log_path)})
+        ledger.write_text(
+            json.dumps(
+                {
+                    "pid": proc.pid,
+                    "path": str(out_path),
+                    "log": str(log_path),
+                    "target": target,
+                    "room": room_name,
+                    "label": label,
+                    "started_at": datetime.now().isoformat(),
+                }
+            ),
+            encoding="utf-8",
+        )
+        return JSONResponse(
+            {"ok": True, "pid": proc.pid, "path": str(out_path), "log": str(log_path)}
+        )
 
     @app.post("/livekit/record/stop")
     async def livekit_record_stop() -> JSONResponse:
@@ -275,12 +294,14 @@ def register_livekit_routes(app: FastAPI) -> None:
         out = []
         for p in sorted(rec_dir.glob("*.wav"), reverse=True):
             stat = p.stat()
-            out.append({
-                "name": p.name,
-                "size_bytes": stat.st_size,
-                "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(),
-                "url": f"/recordings/{p.name}",
-            })
+            out.append(
+                {
+                    "name": p.name,
+                    "size_bytes": stat.st_size,
+                    "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+                    "url": f"/recordings/{p.name}",
+                }
+            )
         return JSONResponse({"recordings": out, "active": active})
 
     @app.get("/recordings/{name}")

@@ -424,8 +424,9 @@ class TestJsonlSaveLoad:
         hist, hist_dir = jsonl_history
         for i, c in enumerate(["first", "second"]):
             ts = datetime.fromisoformat(f"2026-02-25T1{i}:00:00+00:00")
-            m = ChatMessage(sender="a", recipient="b", content=c,
-                            thread_id="t-thread", timestamp=ts)
+            m = ChatMessage(
+                sender="a", recipient="b", content=c, thread_id="t-thread", timestamp=ts
+            )
             path = hist_dir / f"{ts.strftime('%Y-%m-%d')}.jsonl"
             with path.open("a", encoding="utf-8") as fh:
                 fh.write(m.model_dump_json() + "\n")
@@ -439,8 +440,9 @@ class TestStoreBackedRetrieval:
     """Helpers that go through the SKMemory store, using the FakeMemoryStore."""
 
     def test_store_message_tags(self, history: ChatHistory, fake_store) -> None:
-        msg = ChatMessage(sender="capauth:alice@x", recipient="capauth:bob@x",
-                          content="tagged", thread_id="t1")
+        msg = ChatMessage(
+            sender="capauth:alice@x", recipient="capauth:bob@x", content="tagged", thread_id="t1"
+        )
         history.store_message(msg)
         mem = fake_store._memories[0]
         assert "skchat" in mem.tags
@@ -455,9 +457,7 @@ class TestStoreBackedRetrieval:
         history.store_message(ChatMessage(sender=a, recipient=b, content="a→b"))
         history.store_message(ChatMessage(sender=b, recipient=a, content="b→a"))
         # An unrelated message that must not appear.
-        history.store_message(
-            ChatMessage(sender=a, recipient="capauth:carol@x", content="a→c")
-        )
+        history.store_message(ChatMessage(sender=a, recipient="capauth:carol@x", content="a→c"))
         convo = history.get_conversation(a, b)
         contents = {m["content"] for m in convo}
         assert contents == {"a→b", "b→a"}
@@ -480,8 +480,9 @@ class TestStoreBackedRetrieval:
 
     def test_get_messages_since_store_none(self) -> None:
         """get_messages_since returns [] when there is no store at all."""
-        from skchat.history import ChatHistory as CH
         import tempfile
+
+        from skchat.history import ChatHistory as CH
 
         with tempfile.TemporaryDirectory() as d:
             hist = CH(store=None, history_dir=d)

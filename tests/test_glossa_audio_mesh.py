@@ -17,10 +17,14 @@ from skchat.glossa_mesh.node import GlossaMeshNode
 
 
 def _node(fqid, med):
-    d = CapabilityDescriptor(fqid=fqid, model_tier="large", max_level=codec.L1_SCHEMA,
-                             codebook_version=default_codebook().version, lexicon_version="")
-    return GlossaMeshNode(descriptor=d, bus=AudioMeshBus(fqid, med),
-                          codebook=default_codebook())
+    d = CapabilityDescriptor(
+        fqid=fqid,
+        model_tier="large",
+        max_level=codec.L1_SCHEMA,
+        codebook_version=default_codebook().version,
+        lexicon_version="",
+    )
+    return GlossaMeshNode(descriptor=d, bus=AudioMeshBus(fqid, med), codebook=default_codebook())
 
 
 @pytest.mark.asyncio
@@ -36,4 +40,4 @@ async def test_skglossa_message_over_the_audio_mesh():
     await asyncio.sleep(0.02)
     await a.say(Message(intent="ack"))
     await asyncio.sleep(0.02)
-    assert inbox == [Message(intent="ack")]    # SKGlossa, modulated to tones, decoded
+    assert inbox == [Message(intent="ack")]  # SKGlossa, modulated to tones, decoded

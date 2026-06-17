@@ -122,9 +122,7 @@ class RunnerResult:
 Runner = Callable[[list[str], str, float, int], RunnerResult]
 
 
-def subprocess_runner(
-    argv: list[str], cwd: str, timeout: float, max_bytes: int
-) -> RunnerResult:
+def subprocess_runner(argv: list[str], cwd: str, timeout: float, max_bytes: int) -> RunnerResult:
     """The real runner — argv-list subprocess, ``shell=False``, scrubbed env.
 
     Output is captured and truncated to *max_bytes* per stream. A wall-clock
@@ -291,18 +289,12 @@ class SkreachExecutor:
             return [self._ev("denied", cmd_id, reason=f"sandbox cwd unavailable: {exc}")]
 
         # 6. Execute via the (injectable) runner.
-        result = self._runner(
-            argv, str(cwd), self.policy.timeout_s, self.policy.max_output_bytes
-        )
+        result = self._runner(argv, str(cwd), self.policy.timeout_s, self.policy.max_output_bytes)
 
         events: list[dict] = []
         if result.stdout:
-            events.append(
-                self._ev("output", cmd_id, chunk=result.stdout, stream="stdout")
-            )
+            events.append(self._ev("output", cmd_id, chunk=result.stdout, stream="stdout"))
         if result.stderr:
-            events.append(
-                self._ev("output", cmd_id, chunk=result.stderr, stream="stderr")
-            )
+            events.append(self._ev("output", cmd_id, chunk=result.stderr, stream="stderr"))
         events.append(self._ev("exit", cmd_id, code=result.exit_code))
         return events

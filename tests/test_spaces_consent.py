@@ -19,19 +19,19 @@ def test_both_flags_required_for_stage():
 def test_raise_hand_alone_does_not_publish():
     state, can_publish = apply_action(StageState(), "raise_hand")
     assert state.hand_raised is True
-    assert can_publish is False                 # host hasn't invited yet
+    assert can_publish is False  # host hasn't invited yet
 
 
 def test_invite_then_already_raised_goes_live():
     raised, _ = apply_action(StageState(), "raise_hand")
     state, can_publish = apply_action(raised, "invite")
     assert state.on_stage is True
-    assert can_publish is True                   # mutual consent reached
+    assert can_publish is True  # mutual consent reached
 
 
 def test_invite_first_then_raise_goes_live():
     invited, cp1 = apply_action(StageState(), "invite")
-    assert cp1 is False                          # user hasn't consented yet
+    assert cp1 is False  # user hasn't consented yet
     state, can_publish = apply_action(invited, "raise_hand")
     assert can_publish is True
 
@@ -39,7 +39,8 @@ def test_invite_first_then_raise_goes_live():
 def test_remove_resets_both_and_demotes():
     on, _ = apply_action(StageState(hand_raised=True, invited_to_stage=True), "noop")
     state, can_publish = apply_action(
-        StageState(hand_raised=True, invited_to_stage=True), "remove")
+        StageState(hand_raised=True, invited_to_stage=True), "remove"
+    )
     assert state.hand_raised is False
     assert state.invited_to_stage is False
     assert can_publish is False
@@ -55,7 +56,7 @@ def test_lower_hand_and_uninvite():
 def test_meta_round_trip():
     s = StageState(hand_raised=True, invited_to_stage=False)
     assert parse_meta(dump_meta(s)) == s
-    assert parse_meta("") == StageState()        # empty metadata → default
+    assert parse_meta("") == StageState()  # empty metadata → default
     assert parse_meta("not json") == StageState()
 
 

@@ -64,6 +64,7 @@ def _is_revoked(jti: str) -> bool:
 
 # ── Errors ───────────────────────────────────────────────────────────────────
 
+
 class GuestJoinError(Exception):
     """Raised when invite validation fails for any reason.
 
@@ -74,13 +75,13 @@ class GuestJoinError(Exception):
 
 # ── Token helpers ─────────────────────────────────────────────────────────────
 
+
 def _secret() -> str:
     """Return the signing secret; raise clearly if unset."""
     s = os.getenv(_GUEST_SECRET_ENV, "")
     if not s:
         raise RuntimeError(
-            f"{_GUEST_SECRET_ENV} is not set. "
-            "Generate one with: openssl rand -hex 32"
+            f"{_GUEST_SECRET_ENV} is not set. Generate one with: openssl rand -hex 32"
         )
     return s
 
@@ -96,6 +97,7 @@ def _invite_ttl() -> int:
 
 # ── Dataclasses ───────────────────────────────────────────────────────────────
 
+
 @dataclass
 class GuestToken:
     """Server-side object representing a validated guest invite.
@@ -106,13 +108,14 @@ class GuestToken:
 
     jti: str
     room: str
-    identity: str          # "guest:<jti[:8]>"
-    display: str           # display name to show in the room
-    exp: float             # Unix timestamp matching the invite token's exp
+    identity: str  # "guest:<jti[:8]>"
+    display: str  # display name to show in the room
+    exp: float  # Unix timestamp matching the invite token's exp
     perms: list[str] = field(default_factory=lambda: list(_GUEST_PERMS))
 
 
 # ── Invite issuer ─────────────────────────────────────────────────────────────
+
 
 class InviteIssuer:
     """Operator-facing: create signed invite tokens + shareable URLs."""
@@ -180,7 +183,11 @@ class InviteIssuer:
         token = _jwt.encode(payload, self._get_secret(), algorithm="HS256")
 
         funnel_base = os.getenv(_FUNNEL_URL_ENV, "").rstrip("/")
-        invite_url = f"{funnel_base}/join/{room}?invite={token}" if funnel_base else f"/join/{room}?invite={token}"
+        invite_url = (
+            f"{funnel_base}/join/{room}?invite={token}"
+            if funnel_base
+            else f"/join/{room}?invite={token}"
+        )
 
         return {
             "invite_token": token,
@@ -193,6 +200,7 @@ class InviteIssuer:
 
 
 # ── Invite verifier ───────────────────────────────────────────────────────────
+
 
 class InviteVerifier:
     """Guest-facing: validate an invite token and produce a ``GuestToken``."""
@@ -261,9 +269,7 @@ class InviteVerifier:
 
         # Display name: body > token hint > fallback.
         effective_display = (
-            display_name.strip()[:40]
-            or payload.get("display", "").strip()[:40]
-            or "Guest"
+            display_name.strip()[:40] or payload.get("display", "").strip()[:40] or "Guest"
         )
 
         # exp is already validated by PyJWT; extract as float for TTL calc.
@@ -279,6 +285,7 @@ class InviteVerifier:
 
 
 # ── LiveKit token builder ─────────────────────────────────────────────────────
+
 
 def build_livekit_token(
     guest: GuestToken,
@@ -336,6 +343,7 @@ def build_livekit_token(
 
 # ── Join page HTML ────────────────────────────────────────────────────────────
 
+
 def guest_join_page_html(room: str, invite_token: str, error: str = "") -> str:
     """Return a minimal HTML join page for the given room + invite token.
 
@@ -350,9 +358,7 @@ def guest_join_page_html(room: str, invite_token: str, error: str = "") -> str:
     safe_room = html.escape(room)
     safe_token = html.escape(invite_token)
     safe_error = html.escape(error) if error else ""
-    error_block = (
-        f'<p class="err">{safe_error}</p>' if safe_error else ""
-    )
+    error_block = f'<p class="err">{safe_error}</p>' if safe_error else ""
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -437,6 +443,7 @@ async function join(e) {{
 
 # ── FastAPI route registration (TODO wire route) ──────────────────────────────
 
+
 def register_guest_routes(app: object) -> None:  # app: FastAPI
     """Register guest join + invite endpoints on the FastAPI app.
 
@@ -487,7 +494,8 @@ def register_guest_routes(app: object) -> None:  # app: FastAPI
         """
         try:
             body = await request.json()
-        except Exception:
+        except Exception as exc:
+            logger.debug("guest request body not valid JSON (%s: %s)", type(exc).__name__, exc)
             body = {}
         room = (body.get("room") or "").strip()
         if not room:
@@ -534,7 +542,8 @@ def register_guest_routes(app: object) -> None:  # app: FastAPI
         """
         try:
             body = await request.json()
-        except Exception:
+        except Exception as exc:
+            logger.debug("guest request body not valid JSON (%s: %s)", type(exc).__name__, exc)
             body = {}
 
         room = (body.get("room") or "").strip()

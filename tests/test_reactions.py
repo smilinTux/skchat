@@ -184,15 +184,17 @@ class TestApplyEventEdges:
     def test_apply_remove_event(self, manager: ReactionManager) -> None:
         """A remote 'remove' event removes an existing local reaction."""
         manager.add_reaction("m1", "star", "capauth:peer@test")
-        ev = ReactionEvent(message_id="m1", emoji="star",
-                           sender="capauth:peer@test", action="remove")
+        ev = ReactionEvent(
+            message_id="m1", emoji="star", sender="capauth:peer@test", action="remove"
+        )
         assert manager.apply_event(ev) is True
         assert not manager.has_reaction("m1", "star", "capauth:peer@test")
 
     def test_apply_unknown_action_returns_false(self, manager: ReactionManager) -> None:
         """An event with an unrecognised action is a no-op returning False."""
-        ev = ReactionEvent(message_id="m1", emoji="x",
-                           sender="capauth:peer@test", action="frobnicate")
+        ev = ReactionEvent(
+            message_id="m1", emoji="x", sender="capauth:peer@test", action="frobnicate"
+        )
         assert manager.apply_event(ev) is False
         assert manager.total_reactions() == 0
 
@@ -202,6 +204,7 @@ class TestBackwardCompatAliases:
 
     def test_reaction_store_is_manager(self) -> None:
         from skchat.reactions import ReactionStore
+
         assert ReactionStore is ReactionManager
 
     def test_add_alias(self, manager: ReactionManager) -> None:

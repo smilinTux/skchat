@@ -16,14 +16,19 @@ from skchat.glossa_mesh.node import GlossaMeshNode
 
 
 def _desc(fqid, max_level):
-    return CapabilityDescriptor(fqid=fqid, model_tier="large", max_level=max_level,
-                                codebook_version=default_codebook().version,
-                                lexicon_version="")
+    return CapabilityDescriptor(
+        fqid=fqid,
+        model_tier="large",
+        max_level=max_level,
+        codebook_version=default_codebook().version,
+        lexicon_version="",
+    )
 
 
 def _node(fqid, medium, max_level=codec.L2_CODEBOOK):
-    return GlossaMeshNode(descriptor=_desc(fqid, max_level),
-                          bus=FakeBus(fqid, medium), codebook=default_codebook())
+    return GlossaMeshNode(
+        descriptor=_desc(fqid, max_level), bus=FakeBus(fqid, medium), codebook=default_codebook()
+    )
 
 
 @pytest.mark.asyncio
@@ -61,7 +66,7 @@ async def test_weakest_peer_caps_group_level():
     assert a.group_level == codec.L0_ENGLISH  # capped to the weak peer
     await a.say(Message(intent="ack"))
     await asyncio.sleep(0.02)
-    assert inbox_b == [Message(intent="ack")]   # the weak peer still decodes
+    assert inbox_b == [Message(intent="ack")]  # the weak peer still decodes
     assert inbox_c == [Message(intent="ack")]
 
 
@@ -77,7 +82,7 @@ async def test_forget_peer_uncaps_group_level():
         await n.announce()
     await asyncio.sleep(0.03)
     assert a.group_level == codec.L0_ENGLISH  # capped to the weak peer
-    a.forget_peer("b@x.y")                     # weak peer left
+    a.forget_peer("b@x.y")  # weak peer left
     assert a.group_level == codec.L2_CODEBOOK  # un-capped by remaining strong peers
 
 
@@ -149,9 +154,9 @@ async def test_malformed_frames_are_ignored_not_crashing():
     a = _node("a@x.y", medium)
     await a.start()
 
-    a._on_frame(b"", "junk@x.y")            # empty frame → parse error
+    a._on_frame(b"", "junk@x.y")  # empty frame → parse error
     a._on_frame(bytes([99]) + b"xx", "junk@x.y")  # unknown kind byte
-    a._on_frame(bytes([1]), "junk@x.y")     # MESSAGE with empty payload
+    a._on_frame(bytes([1]), "junk@x.y")  # MESSAGE with empty payload
 
     assert "junk@x.y" not in a._peers
     assert a.audit_log == []  # nothing was decoded/glossed
