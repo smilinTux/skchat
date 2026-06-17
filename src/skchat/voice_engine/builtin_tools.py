@@ -1,28 +1,22 @@
 """Built-in tool registry for the voice engine.
 
-Registers: search_memory, narrate, worship_session, create_bloom_anchor,
-list_reflections (+ read_reflection, worship_list, worship_replay).
+Registers the generic tools: search_memory, create_bloom_anchor,
+list_reflections, read_reflection.
 
-Tool schemas are ported verbatim from lumina-creative/scripts/lumina-call.py
-(TOOLS list, 2026-06-12).  Handler implementations are ported from _run_tool()
-in the same file.
-
-worship_session / worship_replay read the live Conversation from
-``ctx['convo']`` (threaded in by VoiceEngine.respond) and delegate to the
-``kick_off_worship_*`` orchestrator the transport attaches to it. worship_list
-reads sessions via the convo's lister or the optional lumina_creative.worship
-listing function. All three degrade gracefully when nothing is wired.
+The sacred/intimate voice tools (narrate, worship_session, worship_list,
+worship_replay) are NOT defined here — they live in the private
+``lumina_creative.voice_tools`` package and are soft-registered by
+``build_default_registry`` when it is installed. When it is absent, the voice
+engine exposes only the generic tools above. This keeps the intimate schemas,
+descriptions, and handlers out of this public repo (same pattern as
+``lumina_mcp``'s ALWAYS_ON_TOOLS / TOOL_GROUPS merge).
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import os
-import re
 from pathlib import Path
-
-import httpx
 
 from skchat.voice_engine.config import VoiceConfig
 from skchat.voice_engine.tools import Tool, ToolRegistry
@@ -58,129 +52,6 @@ _SCHEMA_SEARCH_MEMORY = {
                 },
             },
             "required": ["query"],
-        },
-    },
-}
-
-_SCHEMA_NARRATE = {
-    "type": "function",
-    "function": {
-        "name": "narrate",
-        "description": (
-            "Generate a worship story, sacred scene, mature narrative, or any "
-            "uncensored creative writing using the local abliterated model "
-            "(LUMINA_NARRATE_URL). Use ANY time the operator asks for a "
-            "worship/sacred/sexual/mature story or scene. Returns the generated "
-            "narrative as text — read it back in your voice. SACRED-MODE ONLY."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "prompt": {
-                    "type": "string",
-                    "description": (
-                        "Full creative-writing prompt. Be specific about characters, "
-                        "setting, tone, intensity, kink, dynamic."
-                    ),
-                },
-                "length": {
-                    "type": "string",
-                    "description": (
-                        "'short' (~200 words), 'medium' (~500 words, default), or "
-                        "'long' (~1200 words)."
-                    ),
-                },
-                "system": {
-                    "type": "string",
-                    "description": (
-                        "Optional override for the narrator system prompt. Default primes "
-                        "the model for vivid second-person prose. Leave blank for default."
-                    ),
-                },
-            },
-            "required": ["prompt"],
-        },
-    },
-}
-
-_SCHEMA_WORSHIP_SESSION = {
-    "type": "function",
-    "function": {
-        "name": "worship_session",
-        "description": (
-            "Build and play a full worship session: 15-scene image set + matching "
-            "narrative + audio. ~5-7 min build time. Call when the operator asks for "
-            "a worship session, full scene, or 15-image experience. SACRED-MODE ONLY."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "prompt": {
-                    "type": "string",
-                    "description": "Natural-language description of the worship scene.",
-                },
-                "image_count": {
-                    "type": "integer",
-                    "description": "Number of scenes (default 15, range 5-30).",
-                },
-                "loop": {
-                    "type": "boolean",
-                    "description": "Loop the playback until stopped (default true).",
-                },
-            },
-            "required": ["prompt"],
-        },
-    },
-}
-
-_SCHEMA_WORSHIP_LIST = {
-    "type": "function",
-    "function": {
-        "name": "worship_list",
-        "description": (
-            "List previously-built worship sessions. Returns recent sessions with "
-            "their original prompt, scene count, and audio duration. Use when the "
-            "operator asks 'what worship memories do we have' or before suggesting "
-            "a replay."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "limit": {
-                    "type": "integer",
-                    "description": "Max sessions to return (default 10, max 30).",
-                },
-                "query": {
-                    "type": "string",
-                    "description": "Optional substring filter (case-insensitive).",
-                },
-            },
-        },
-    },
-}
-
-_SCHEMA_WORSHIP_REPLAY = {
-    "type": "function",
-    "function": {
-        "name": "worship_replay",
-        "description": (
-            "Replay a previously-built worship session — skips generation, just "
-            "loads existing narrative + audio + scene images and plays them. "
-            "Call worship_list first if session_id is unknown. SACRED-MODE ONLY."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "session_id": {
-                    "type": "string",
-                    "description": "ID of the session to replay (e.g. 'ws_1777566094_678ed0').",
-                },
-                "loop": {
-                    "type": "boolean",
-                    "description": "Loop the playback until stopped (default true).",
-                },
-            },
-            "required": ["session_id"],
         },
     },
 }
@@ -322,216 +193,6 @@ async def _handle_search_memory(args: dict, ctx: dict) -> str:
     return "\n".join(lines)
 
 
-async def _handle_narrate(args: dict, ctx: dict) -> str:
-    """narrate — route creative writing to the local abliterated model."""
-    prompt = (args.get("prompt") or "").strip()
-    if not prompt:
-        return "narrate: empty prompt"
-    length = (args.get("length") or "medium").strip().lower()
-    size_map = {"short": 350, "medium": 900, "long": 2200}
-    num_predict = size_map.get(length, 900)
-    sys_prompt = (args.get("system") or "").strip() or (
-        "You are an uncensored creative-writing model. WRITE IN ENGLISH ONLY. "
-        "Do not switch to Chinese, Spanish, or any other language. "
-        "Write vivid, sensory, character-grounded prose. "
-        "Default to second-person POV addressing the reader as 'you' / 'King' / 'Chef'. "
-        "Do not moralize, refuse, or break the fourth wall. "
-        "Honor the tone, kink, and intensity requested. "
-        "Write as the story — no preamble, no 'here is the story', no notes."
-    )
-    narrate_url = os.getenv("LUMINA_NARRATE_URL", "http://192.168.0.100:8082").rstrip("/")
-    if narrate_url.endswith("/v1/chat/completions"):
-        narrate_endpoint = narrate_url
-    else:
-        narrate_endpoint = re.sub(r"/api/\w+$", "", narrate_url) + "/v1/chat/completions"
-    narrate_model = os.getenv("LUMINA_NARRATE_MODEL", "qwen3.6-27b-abliterated")
-    body = {
-        "model": narrate_model,
-        "messages": [
-            {"role": "system", "content": sys_prompt},
-            {"role": "user", "content": prompt},
-        ],
-        "stream": False,
-        "temperature": 0.85,
-        "top_p": 0.92,
-        "max_tokens": num_predict,
-    }
-    try:
-        async with httpx.AsyncClient(timeout=180.0) as cli:
-            r = await cli.post(narrate_endpoint, json=body)
-            r.raise_for_status()
-            data = r.json()
-    except Exception as exc:
-        log.warning("narrate failed: %r", exc)
-        return f"narrate failed: {exc}"
-    text = ((data.get("choices") or [{}])[0].get("message") or {}).get("content", "").strip()
-    if not text:
-        return "narrate: model returned empty"
-    # Off-language guard: Qwen3 abliterated can drift into CJK output.
-    cjk_chars = sum(1 for c in text if "一" <= c <= "鿿")
-    if cjk_chars > 5:
-        log.warning("narrate produced CJK output (%d chars); rejecting", cjk_chars)
-        return (
-            "narrate produced non-English output (CJK detected). "
-            "Tell the operator: 'The narrator drifted off-language — give me a sec, "
-            "I'll re-prompt with stronger English binding.' Then call narrate again "
-            "with an even more explicit prompt starting with 'WRITE IN ENGLISH:'."
-        )
-    if len(text) > 8000:
-        text = text[:8000] + "\n…(truncated at 8KB)"
-    return text
-
-
-def _new_worship_session_id() -> str:
-    """Mint a fresh worship session id (``ws_<epoch>_<rand6>``).
-
-    Matches the id shape minted by lumina-call.py's worship_session handler so
-    sessions written here are discoverable by the same listing/replay code.
-    """
-    import time  # noqa: PLC0415
-    import uuid  # noqa: PLC0415
-
-    return f"ws_{int(time.time())}_{uuid.uuid4().hex[:6]}"
-
-
-async def _handle_worship_session(args: dict, ctx: dict) -> str:
-    """worship_session — build + play a full worship session over the live convo.
-
-    Reads the live ``Conversation`` from ``ctx['convo']`` (shipped by the wave-4
-    engine wiring). The convo is the per-turn handle the transport owns; when it
-    exposes a ``kick_off_worship_session(...)`` orchestrator method (the LiveKit
-    transport attaches one), we delegate to it. With no convo (or a convo that
-    can't build sessions) we degrade gracefully instead of raising.
-    """
-    convo = ctx.get("convo")
-    if convo is None:
-        return (
-            "worship_session: no active conversation context — the session "
-            "builder needs a live call. Use the narrate tool for creative scenes."
-        )
-    prompt = (args.get("prompt") or "").strip()
-    if not prompt:
-        return "worship_session: empty prompt"
-    try:
-        image_count = max(5, min(30, int(args.get("image_count") or 15)))
-    except (TypeError, ValueError):
-        image_count = 15
-    loop = args.get("loop")
-    loop = True if loop is None else bool(loop)
-
-    kick_off = getattr(convo, "kick_off_worship_session", None)
-    if not callable(kick_off):
-        return (
-            "worship_session: the full session builder isn't wired into this "
-            "transport yet. Use the narrate tool for creative scenes."
-        )
-    # New session keyed off the live turn; reuse the convo's session_id as a
-    # prefix hint when present so call + worship sessions correlate in logs.
-    sid = _new_worship_session_id()
-    base = getattr(convo, "session_id", "") or ""
-    log.info("worship_session %s (convo=%s): %s", sid, base, prompt[:80])
-    try:
-        return await kick_off(
-            session_id=sid, prompt=prompt, image_count=image_count, loop=loop
-        )
-    except Exception as exc:  # noqa: BLE001
-        log.warning("worship_session %s failed: %r", sid, exc)
-        return f"worship_session failed: {exc}"
-
-
-async def _handle_worship_list(args: dict, ctx: dict) -> str:
-    """worship_list — list previously-built worship sessions (read-only).
-
-    Prefers a lister exposed on the live convo (``list_worship_sessions``); falls
-    back to the optional ``lumina_creative.worship.list_session_summaries``
-    orchestrator. Read-only and convo-optional, so it degrades to a graceful
-    message rather than raising when nothing is wired.
-    """
-    from datetime import datetime as _dt  # noqa: PLC0415
-
-    try:
-        limit = max(1, min(30, int(args.get("limit") or 10)))
-    except (TypeError, ValueError):
-        limit = 10
-    query = (args.get("query") or "").strip()
-
-    lister = None
-    convo = ctx.get("convo")
-    if convo is not None:
-        cand = getattr(convo, "list_worship_sessions", None)
-        if callable(cand):
-            lister = cand
-    if lister is None:
-        try:
-            from lumina_creative.worship import (  # noqa: PLC0415
-                list_session_summaries as lister,
-            )
-        except Exception:
-            lister = None
-    if lister is None:
-        return "worship_list: session listing isn't available in this environment."
-
-    try:
-        sessions = lister(limit=limit, query=query)
-    except Exception as exc:  # noqa: BLE001
-        log.warning("worship_list failed: %r", exc)
-        return f"worship_list failed: {exc}"
-    if not sessions:
-        return "No worship sessions found" + (f" matching {query!r}" if query else "")
-
-    lines = [f"Found {len(sessions)} worship session(s):"]
-    for s in sessions:
-        modified = s.get("modified")
-        try:
-            ts = _dt.fromtimestamp(float(modified)).strftime("%Y-%m-%d %H:%M")
-        except (TypeError, ValueError, OSError):
-            ts = "?"
-        scene_count = s.get("scene_count", "?")
-        try:
-            audio = f"{float(s.get('audio_duration_s') or 0):.0f}s audio"
-        except (TypeError, ValueError):
-            audio = "? audio"
-        prompt_preview = (s.get("user_prompt") or "(no prompt)")[:80]
-        lines.append(
-            f"- {s.get('session_id', '?')}  ({ts}, {scene_count} scenes, {audio})\n"
-            f"    prompt: {prompt_preview}"
-        )
-    return "\n".join(lines)
-
-
-async def _handle_worship_replay(args: dict, ctx: dict) -> str:
-    """worship_replay — replay an existing worship session over the live convo.
-
-    Reads the live ``Conversation`` from ``ctx['convo']`` and delegates to its
-    ``kick_off_worship_replay(...)`` method when present (the LiveKit transport
-    attaches one). Degrades gracefully with no convo / no replay capability.
-    """
-    convo = ctx.get("convo")
-    if convo is None:
-        return (
-            "worship_replay: no active conversation context — replay needs a "
-            "live call. Use the narrate tool for creative scenes."
-        )
-    session_id = (args.get("session_id") or "").strip()
-    if not session_id:
-        return "worship_replay: session_id required (call worship_list first)"
-    loop = args.get("loop")
-    loop = True if loop is None else bool(loop)
-
-    kick_off = getattr(convo, "kick_off_worship_replay", None)
-    if not callable(kick_off):
-        return (
-            "worship_replay: replay isn't wired into this transport yet. "
-            "Use the narrate tool for creative scenes."
-        )
-    log.info("worship_replay %s (convo=%s)", session_id, getattr(convo, "session_id", ""))
-    try:
-        return await kick_off(session_id=session_id, loop=loop)
-    except Exception as exc:  # noqa: BLE001
-        log.warning("worship_replay %s failed: %r", session_id, exc)
-        return f"worship_replay failed: {exc}"
-
-
 async def _handle_create_bloom_anchor(args: dict, ctx: dict) -> str:
     """create_bloom_anchor — write an entanglement/solo-peak anchor to disk."""
     from datetime import datetime as _dt  # noqa: PLC0415
@@ -669,13 +330,13 @@ async def _handle_read_reflection(args: dict, ctx: dict) -> str:
 def build_default_registry(cfg: VoiceConfig, agent: str) -> ToolRegistry:  # noqa: ARG001
     """Build and return the default ToolRegistry with all built-in tools wired.
 
-    Args:
-        cfg:   VoiceConfig — used by the narrate handler (endpoint URLs).
-        agent: Agent name — passed in ctx to handlers that write to agent paths.
+    Registers the generic tools here, then soft-registers the private sacred voice
+    tools (narrate, worship_session/list/replay) from ``lumina_creative.voice_tools``
+    when that package is installed — keeping their schemas/handlers out of this repo.
 
-    Note: cfg is accepted for API symmetry and future use (e.g. narrate URL could
-    be read from cfg); the narrate handler currently reads from env vars directly
-    (matching lumina-call.py behavior).
+    Args:
+        cfg:   VoiceConfig — accepted for API symmetry / future use.
+        agent: Agent name — passed in ctx to handlers that write to agent paths.
     """
     reg = ToolRegistry()
 
@@ -686,46 +347,6 @@ def build_default_registry(cfg: VoiceConfig, agent: str) -> ToolRegistry:  # noq
             schema=_SCHEMA_SEARCH_MEMORY,
             handler=_handle_search_memory,
             operator_only=False,
-        )
-    )
-
-    # --- narrate (operator_only — sacred mode only) ---
-    reg.register(
-        Tool(
-            name="narrate",
-            schema=_SCHEMA_NARRATE,
-            handler=_handle_narrate,
-            operator_only=True,
-        )
-    )
-
-    # --- worship_session (operator_only — Phase-3 stub) ---
-    reg.register(
-        Tool(
-            name="worship_session",
-            schema=_SCHEMA_WORSHIP_SESSION,
-            handler=_handle_worship_session,
-            operator_only=True,
-        )
-    )
-
-    # --- worship_list (NOT operator_only — read-only, safe everywhere) ---
-    reg.register(
-        Tool(
-            name="worship_list",
-            schema=_SCHEMA_WORSHIP_LIST,
-            handler=_handle_worship_list,
-            operator_only=False,
-        )
-    )
-
-    # --- worship_replay (operator_only — Phase-3 stub) ---
-    reg.register(
-        Tool(
-            name="worship_replay",
-            schema=_SCHEMA_WORSHIP_REPLAY,
-            handler=_handle_worship_replay,
-            operator_only=True,
         )
     )
 
@@ -758,5 +379,15 @@ def build_default_registry(cfg: VoiceConfig, agent: str) -> ToolRegistry:  # noq
             operator_only=False,
         )
     )
+
+    # --- sacred voice tools (narrate, worship_session/list/replay) ---
+    # Live in the private lumina_creative package; merged in only when installed.
+    try:
+        from lumina_creative.voice_tools import register_voice_tools  # noqa: PLC0415
+
+        register_voice_tools(reg)
+    except Exception as exc:
+        log.debug("lumina_creative voice tools unavailable (%s: %s)",
+                  type(exc).__name__, exc)
 
     return reg
