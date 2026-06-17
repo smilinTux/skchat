@@ -409,6 +409,41 @@ def register_spaces_routes(
             raise HTTPException(403, f"assertion rejected: {exc}") from exc
         return JSONResponse(out)
 
+    @app.get("/sfu/candidates")
+    async def sfu_candidates() -> JSONResponse:
+        """Federation discovery: list advertised SFU focus hosts for this realm.
+
+        Returns ``{hosts: [{fqid, auth_url, sfu_ws_url}]}`` built from the focus
+        descriptors advertised on the configured Nostr relays. This is a
+        best-effort, never-fatal endpoint: any relay/parse failure yields an
+        EMPTY list rather than a 500, so a client can always poll it safely.
+        """
+        hosts: list[dict] = []
+        try:
+            from skchat.spaces.federation.events import FOCUS_KIND, parse_focus_descriptor
+            from skchat.spaces.federation.nostr_io import FederationNostr
+
+            relays = [r for r in os.getenv("SKCHAT_NOSTR_RELAYS", "").split(",") if r.strip()]
+            if relays:
+                nostr = FederationNostr(relays=relays)
+                seen: set[str] = set()
+                for ev in nostr._query({"kinds": [FOCUS_KIND]}):
+                    try:
+                        d = parse_focus_descriptor(ev)
+                    except Exception:  # noqa: BLE001 - hostile/malformed relay event
+                        continue
+                    fqid = (d.get("host_fqid") or "").strip()
+                    auth_url = (d.get("auth_url") or "").strip()
+                    sfu_ws_url = (d.get("sfu_ws_url") or "").strip()
+                    if not (fqid and auth_url and sfu_ws_url) or fqid in seen:
+                        continue
+                    seen.add(fqid)
+                    hosts.append({"fqid": fqid, "auth_url": auth_url, "sfu_ws_url": sfu_ws_url})
+        except Exception as exc:  # noqa: BLE001 - discovery is best-effort, never 500
+            logger.warning("sfu/candidates discovery failed: %s", exc)
+            hosts = []
+        return JSONResponse({"hosts": hosts})
+
     @app.get("/spaces/live", response_class=HTMLResponse)
     async def spaces_directory() -> HTMLResponse:
         static = Path(__file__).resolve().parent.parent / "static" / "spaces.html"
