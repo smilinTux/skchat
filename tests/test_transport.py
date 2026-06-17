@@ -17,8 +17,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from skchat import transport as transport_module
 from skchat.models import ChatMessage, DeliveryStatus
-from skchat.transport import ChatTransport
+from skchat.transport import ChatTransport, _write_local_loopback
 
 
 @pytest.fixture
@@ -510,3 +511,195 @@ class TestFileInboxRawFallback:
         messages = ct._poll_file_inbox()
         assert len(messages) == 1
         assert messages[0].content == "raw bare msg"
+
+
+# ---------------------------------------------------------------------------
+# (A) Local loopback envelope tests — _write_local_loopback()
+# ---------------------------------------------------------------------------
+
+
+class TestWriteLocalLoopback:
+    """Tests for the module-level _write_local_loopback() helper.
+
+    A loopback send to a local peer (e.g. lumina@skworld.io) writes an
+    envelope into the ~/.skcomms/outbox/ dir with
+    metadata.delivered_via == 'local_loopback'.  Each test redirects the
+    module-level _LOCAL_OUTBOX constant to a tmp dir so the real
+    ~/.skcomms/outbox is never touched.
+    """
+
+    def test_loopback_writes_envelope_with_delivered_via(self, tmp_path, monkeypatch):
+        """Writes exactly one .skc.json envelope tagged local_loopback."""
+        outbox = tmp_path / "outbox"
+        monkeypatch.setattr(transport_module, "_LOCAL_OUTBOX", outbox)
+
+        msg = ChatMessage(
+            sender="capauth:test@skchat",
+            recipient="lumina@skworld.io",  # a member of _LOCAL_PEERS
+            content="loopback to lumina",
+        )
+
+        _write_local_loopback(msg)
+
+        files = list(outbox.glob("*.skc.json"))
+        assert len(files) == 1
+
+        envelope = json.loads(files[0].read_text(encoding="utf-8"))
+        # The defining field/dir names verified against transport.py.
+        assert envelope["metadata"]["delivered_via"] == "local_loopback"
+        assert envelope["sender"] == "capauth:test@skchat"
+        assert envelope["recipient"] == "lumina@skworld.io"
+        assert envelope["payload"]["content_type"] == "text"
+        assert envelope["payload"]["encrypted"] is False
+
+        # payload.content is the ChatMessage JSON — round-trips cleanly.
+        inner = ChatMessage.model_validate_json(envelope["payload"]["content"])
+        assert inner.content == "loopback to lumina"
+        assert inner.recipient == "lumina@skworld.io"
+
+    def test_loopback_leaves_no_tmp_files(self, tmp_path, monkeypatch):
+        """Atomic tmp->rename leaves only the final file, no .tmp residue."""
+        outbox = tmp_path / "outbox"
+        monkeypatch.setattr(transport_module, "_LOCAL_OUTBOX", outbox)
+
+        msg = ChatMessage(
+            sender="capauth:test@skchat",
+            recipient="lumina@skworld.io",
+            content="atomic check",
+        )
+        _write_local_loopback(msg)
+
+        # No leftover dot-prefixed temp files (atomic write completed).
+        all_entries = list(outbox.iterdir())
+        assert all(not e.name.startswith(".") for e in all_entries)
+        assert len([e for e in all_entries if e.suffix == ".json"]) == 1
+
+    def test_send_message_to_local_peer_triggers_loopback(self, tmp_path, monkeypatch):
+        """send_message() to a _LOCAL_PEERS recipient writes a loopback copy."""
+        outbox = tmp_path / "outbox"
+        monkeypatch.setattr(transport_module, "_LOCAL_OUTBOX", outbox)
+
+        ct, mock_skcomms, _ = _make_transport(tmp_path, identity="capauth:test@skchat")
+
+        msg = ChatMessage(
+            sender="capauth:test@skchat",
+            recipient="lumina@skworld.io",  # in _LOCAL_PEERS but != identity
+            content="hi lumina",
+        )
+        ct.send_message(msg)
+
+        # A loopback envelope landed in the outbox...
+        files = list(outbox.glob("*.skc.json"))
+        assert len(files) == 1
+        env = json.loads(files[0].read_text(encoding="utf-8"))
+        assert env["metadata"]["delivered_via"] == "local_loopback"
+        # ...and the normal SKComms send still happened (loopback is additive).
+        mock_skcomms.send.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# (B) Concurrency / race tests — concurrent writers + single-cycle drain
+# ---------------------------------------------------------------------------
+
+
+class TestConcurrentWriteAndPollRace:
+    """~10 concurrent writers + the file poller must drop NO messages, and a
+    backlog of ~100 pending files must drain in a single poll cycle.
+
+    Writers use _write_local_loopback's atomic tmp->rename discipline (mirrored
+    here via the same envelope shape) writing into the per-fingerprint file
+    inbox that _poll_file_inbox() drains.
+    """
+
+    @staticmethod
+    def _write_inbox_envelope(inbox: Path, idx: int) -> None:
+        """Atomically write one ChatMessage envelope into the inbox dir."""
+        msg = ChatMessage(
+            sender="capauth:peer@skworld.io",
+            recipient="capauth:test@skchat",
+            content=f"msg-{idx}",
+        )
+        envelope = {
+            "skcomms_version": "1.0.0",
+            "envelope_id": f"env{idx:05d}",
+            "sender": msg.sender,
+            "recipient": msg.recipient,
+            "payload": {"content": msg.model_dump_json(), "content_type": "text"},
+        }
+        filename = f"env{idx:05d}.skc.json"
+        target = inbox / filename
+        tmp = inbox / f".{filename}.tmp"
+        # Atomic tmp->rename so the poller never sees a partial file.
+        tmp.write_bytes(json.dumps(envelope).encode("utf-8"))
+        tmp.rename(target)
+
+    def test_concurrent_writers_drop_no_messages(self, tmp_path):
+        """~10 concurrent writers race the poller; every message is delivered once."""
+        import threading
+
+        ct, _, mock_history = _make_transport(tmp_path)
+        ct._get_own_fingerprint = lambda: "RACEFP"  # type: ignore[method-assign]
+        inbox = ct._file_inbox_root / "RACEFP"  # type: ignore[attr-defined]
+        inbox.mkdir(parents=True)
+
+        n_writers = 10
+        per_writer = 10
+        total = n_writers * per_writer
+
+        # Barrier releases all parties at once: writers + poller + main thread.
+        start = threading.Barrier(n_writers + 2)
+        collected: list[ChatMessage] = []
+        stop = threading.Event()
+
+        def writer(w: int) -> None:
+            start.wait()
+            for j in range(per_writer):
+                self._write_inbox_envelope(inbox, w * per_writer + j)
+
+        def poller() -> None:
+            start.wait()
+            # Poll repeatedly while writers run, then a final drain after stop.
+            while not stop.is_set():
+                collected.extend(ct._poll_file_inbox())
+            collected.extend(ct._poll_file_inbox())
+
+        writer_threads = [
+            threading.Thread(target=writer, args=(w,)) for w in range(n_writers)
+        ]
+        poll_thread = threading.Thread(target=poller)
+        poll_thread.start()
+        for t in writer_threads:
+            t.start()
+        start.wait()  # release everyone at once
+
+        for t in writer_threads:
+            t.join()
+        stop.set()
+        poll_thread.join()
+
+        # No message dropped: exactly `total` delivered, each content unique.
+        assert len(collected) == total
+        contents = {m.content for m in collected}
+        assert contents == {f"msg-{i}" for i in range(total)}
+        # Each delivered message was stored in history exactly once.
+        assert mock_history.store_message.call_count == total
+
+    def test_backlog_drains_in_one_poll_cycle(self, tmp_path):
+        """~100 pending files all drain in a SINGLE _poll_file_inbox() call."""
+        ct, _, mock_history = _make_transport(tmp_path)
+        ct._get_own_fingerprint = lambda: "DRAINFP"  # type: ignore[method-assign]
+        inbox = ct._file_inbox_root / "DRAINFP"  # type: ignore[attr-defined]
+        inbox.mkdir(parents=True)
+
+        total = 100
+        for i in range(total):
+            self._write_inbox_envelope(inbox, i)
+
+        # One poll cycle drains the whole backlog.
+        messages = ct._poll_file_inbox()
+
+        assert len(messages) == total
+        assert {m.content for m in messages} == {f"msg-{i}" for i in range(total)}
+        # Inbox is empty afterward (all archived) — a second poll yields nothing.
+        assert ct._poll_file_inbox() == []
+        assert list(inbox.glob("*.skc.json")) == []

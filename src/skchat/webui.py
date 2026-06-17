@@ -153,6 +153,82 @@ async def agent_state() -> JSONResponse:
         )
 
 
+def _get_adapter_registry():
+    """Locate the live AdapterRegistry, if one has been instantiated.
+
+    The registry is the channel-adapter health source (skcomms transport
+    adapters: matrix, telegram, p2p, …). It may not exist yet — the webui
+    can boot long before any adapters are wired — so this resolver returns
+    ``None`` gracefully rather than raising. Tests monkeypatch this to inject
+    a stub registry.
+    """
+    try:
+        from . import integration as _integration
+
+        reg = getattr(_integration, "adapter_registry", None)
+        if reg is not None:
+            return reg
+    except Exception:  # pragma: no cover - defensive import guard
+        pass
+    return None
+
+
+def _adapter_health(adapter) -> dict:
+    """Normalise one adapter into the documented health shape.
+
+    Shape: ``{name, channel_type, connected, latency_ms, error}``. Every
+    field is read defensively so a partially-initialised or duck-typed
+    adapter never breaks the endpoint.
+    """
+    def _attr(obj, *names, default=None):
+        for n in names:
+            if hasattr(obj, n):
+                return getattr(obj, n)
+        return default
+
+    err = _attr(adapter, "error", "last_error", default=None)
+    return {
+        "name": _attr(adapter, "name", default=None),
+        "channel_type": _attr(adapter, "channel_type", "channel", "type", default=None),
+        "connected": bool(_attr(adapter, "connected", "is_connected", default=False)),
+        "latency_ms": _attr(adapter, "latency_ms", "latency", default=None),
+        "error": str(err) if err is not None else None,
+    }
+
+
+@app.get("/adapters")
+async def adapters() -> JSONResponse:
+    """Report channel-adapter health.
+
+    Returns a JSON list of ``{name, channel_type, connected, latency_ms,
+    error}`` read from the live ``AdapterRegistry``. When no registry has
+    been instantiated this returns an empty list with a 200 — it must never
+    500 just because adapters aren't wired up yet.
+    """
+    registry = _get_adapter_registry()
+    if registry is None:
+        return JSONResponse([])
+
+    try:
+        # Support a few common registry surfaces: an ``adapters()`` method, an
+        # ``adapters`` attribute (list or dict), or a plain iterable.
+        adapters_obj = getattr(registry, "adapters", None)
+        if callable(adapters_obj):
+            items = adapters_obj()
+        elif adapters_obj is not None:
+            items = adapters_obj
+        else:
+            items = registry
+
+        if isinstance(items, dict):
+            items = items.values()
+
+        return JSONResponse([_adapter_health(a) for a in items])
+    except Exception as exc:
+        logger.warning("webui.py /adapters: %s", exc)
+        return JSONResponse([])
+
+
 # Serve /voice page even when torch/silero are unavailable (voice WS won't work
 # but the static HTML page will still load and attempt to connect)
 if not _voice_routes_loaded:

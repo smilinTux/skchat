@@ -2,6 +2,10 @@ import asyncio
 
 import pytest
 
+# skchat.glossa_mesh imports skcomms transitively — an optional dep. Skip the
+# whole module if skcomms is absent so collection stays clean.
+pytest.importorskip("skcomms.glossa", reason="skcomms not installed")
+
 from skchat.glossa_mesh.audio_bus import AudioMeshBus
 from skchat.glossa_mesh.bus import MeshBus
 from skchat.glossa_mesh.mac import FakeAudioMedium
