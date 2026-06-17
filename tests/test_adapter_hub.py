@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from unittest.mock import MagicMock
 
 import pytest
+from skcomms.adapters.fake import FakeAdapter
 from skcomms.adapters.models import (
     ChannelMessage,
     ChannelType,
@@ -374,3 +375,193 @@ class TestInboundResult:
     def test_default_reply_none(self):
         r = InboundResult(message=MagicMock(), fqid="x@y", trust=TRUST_VERIFIED)
         assert r.reply is None
+
+
+# ---------------------------------------------------------------------------
+# Reply routing — skchat → originating platform (U14 Phase 2)
+# ---------------------------------------------------------------------------
+
+
+class FakeRegistry:
+    """A minimal registry exposing the real ``send_to_adapter`` signature."""
+
+    def __init__(self, adapter: FakeAdapter) -> None:
+        self._adapter = adapter
+        self.calls: list[tuple[str, ChannelMessage]] = []
+
+    def get(self, adapter_name: str):
+        return self._adapter if adapter_name == self._adapter.adapter_name else None
+
+    async def send_to_adapter(self, adapter_name: str, message: ChannelMessage) -> str:
+        self.calls.append((adapter_name, message))
+        return await self._adapter.send(message)
+
+
+@pytest.fixture
+def fake_adapter():
+    return FakeAdapter({"adapter_name": "telegram"})
+
+
+class TestBuildReplyMessage:
+    def test_reply_addressed_to_same_channel_and_room(self, hub):
+        inbound = _chan_msg(channel=ChannelType.TELEGRAM)
+        out = hub.build_reply_message(inbound, "pong")
+        assert out.channel == ChannelType.TELEGRAM
+        assert out.room_id == inbound.room_id
+        assert out.text == "pong"
+        assert out.kind == MessageKind.TEXT
+
+    def test_reply_sender_is_agent_identity(self, hub):
+        out = hub.build_reply_message(_chan_msg(), "pong")
+        assert out.sender.platform_id == AGENT
+
+    def test_reply_threads_to_inbound_platform_msg(self, hub):
+        out = hub.build_reply_message(_chan_msg(), "pong")
+        assert out.reply_to_platform_id == "plat-msg-1"
+
+
+class TestRouteReply:
+    @pytest.mark.asyncio
+    async def test_route_via_send_to_adapter(self, history, advocacy, resolver_map, fake_adapter):
+        reg = FakeRegistry(fake_adapter)
+        h = AdapterHub(
+            history=history,
+            advocacy=advocacy,
+            resolve_fqid=resolver_map,
+            registry=reg,
+            outbound_adapter="telegram",
+        )
+        await h.route_reply(_chan_msg(channel=ChannelType.TELEGRAM), "Hi from Opus")
+        assert reg.calls[0][0] == "telegram"
+        assert len(fake_adapter.sent) == 1
+        assert fake_adapter.sent[0].text == "Hi from Opus"
+        assert fake_adapter.sent[0].room_id == "-5134021983"
+
+    @pytest.mark.asyncio
+    async def test_route_falls_back_to_channel_name(self, history, resolver_map, fake_adapter):
+        # No outbound_adapter configured → derive from the inbound channel.
+        reg = FakeRegistry(fake_adapter)
+        h = AdapterHub(history=history, resolve_fqid=resolver_map, registry=reg)
+        await h.route_reply(_chan_msg(channel=ChannelType.TELEGRAM), "yo")
+        assert reg.calls[0][0] == "telegram"
+
+    @pytest.mark.asyncio
+    async def test_route_direct_adapter_object(self, history, resolver_map, fake_adapter):
+        # outbound_adapter is itself a ChannelAdapter (no registry needed).
+        h = AdapterHub(
+            history=history, resolve_fqid=resolver_map, outbound_adapter=fake_adapter
+        )
+        msg_id = await h.route_reply(_chan_msg(), "direct")
+        assert isinstance(msg_id, str)
+        assert fake_adapter.sent[0].text == "direct"
+
+    @pytest.mark.asyncio
+    async def test_route_via_registry_get(self, history, resolver_map, fake_adapter):
+        class GetOnlyRegistry:
+            def __init__(self, a):
+                self._a = a
+
+            def get(self, name):
+                return self._a if name == self._a.adapter_name else None
+
+        h = AdapterHub(
+            history=history,
+            resolve_fqid=resolver_map,
+            registry=GetOnlyRegistry(fake_adapter),
+            outbound_adapter="telegram",
+        )
+        await h.route_reply(_chan_msg(channel=ChannelType.TELEGRAM), "via get")
+        assert fake_adapter.sent[0].text == "via get"
+
+    @pytest.mark.asyncio
+    async def test_empty_reply_is_noop(self, history, resolver_map, fake_adapter):
+        reg = FakeRegistry(fake_adapter)
+        h = AdapterHub(history=history, resolve_fqid=resolver_map, registry=reg)
+        assert await h.route_reply(_chan_msg(), "") is None
+        assert await h.route_reply(_chan_msg(), "   ") is None
+        assert fake_adapter.sent == []
+
+    @pytest.mark.asyncio
+    async def test_no_registry_no_crash(self, history, resolver_map):
+        h = AdapterHub(history=history, resolve_fqid=resolver_map)
+        assert await h.route_reply(_chan_msg(), "nowhere") is None
+
+    @pytest.mark.asyncio
+    async def test_unknown_adapter_name_returns_none(self, history, resolver_map, fake_adapter):
+        class GetOnlyRegistry:
+            def get(self, name):
+                return None
+
+        h = AdapterHub(
+            history=history,
+            resolve_fqid=resolver_map,
+            registry=GetOnlyRegistry(),
+            outbound_adapter="nope",
+        )
+        assert await h.route_reply(_chan_msg(), "x") is None
+
+
+class TestDispatchInbound:
+    @pytest.mark.asyncio
+    async def test_reply_routed_back_to_platform(self, history, advocacy, resolver_map, fake_adapter):
+        advocacy.process_message.return_value = "Hello from Opus"
+        reg = FakeRegistry(fake_adapter)
+        h = AdapterHub(
+            history=history,
+            advocacy=advocacy,
+            resolve_fqid=resolver_map,
+            registry=reg,
+            outbound_adapter="telegram",
+        )
+        result = await h.dispatch_inbound(_chan_msg(text="@opus hi"))
+        assert result.reply == "Hello from Opus"
+        # The reply text was sent to the correct channel/room.
+        assert len(fake_adapter.sent) == 1
+        assert fake_adapter.sent[0].text == "Hello from Opus"
+        assert fake_adapter.sent[0].room_id == "-5134021983"
+        assert fake_adapter.sent[0].channel == ChannelType.TELEGRAM
+
+    @pytest.mark.asyncio
+    async def test_inbound_only_when_no_reply(self, history, advocacy, resolver_map, fake_adapter):
+        advocacy.process_message.return_value = None
+        reg = FakeRegistry(fake_adapter)
+        h = AdapterHub(
+            history=history,
+            advocacy=advocacy,
+            resolve_fqid=resolver_map,
+            registry=reg,
+            outbound_adapter="telegram",
+        )
+        result = await h.dispatch_inbound(_chan_msg(text="just chatting"))
+        assert result.reply is None
+        # Nothing sent back — pure inbound behaviour preserved.
+        assert fake_adapter.sent == []
+        history.save.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_dispatch_still_persists_and_returns_result(self, history, advocacy, resolver_map):
+        advocacy.process_message.return_value = "reply"
+        # No registry → routing is a no-op but the pipeline still completes.
+        h = AdapterHub(history=history, advocacy=advocacy, resolve_fqid=resolver_map)
+        result = await h.dispatch_inbound(_chan_msg(text="@opus hi"))
+        assert isinstance(result, InboundResult)
+        history.save.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_send_failure_does_not_drop_result(self, history, advocacy, resolver_map):
+        advocacy.process_message.return_value = "reply"
+
+        class BoomRegistry:
+            async def send_to_adapter(self, name, msg):
+                raise RuntimeError("platform down")
+
+        h = AdapterHub(
+            history=history,
+            advocacy=advocacy,
+            resolve_fqid=resolver_map,
+            registry=BoomRegistry(),
+            outbound_adapter="telegram",
+        )
+        result = await h.dispatch_inbound(_chan_msg(text="@opus hi"))
+        # Result intact despite a send failure.
+        assert result.reply == "reply"

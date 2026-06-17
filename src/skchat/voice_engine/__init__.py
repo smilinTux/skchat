@@ -18,6 +18,7 @@ from skchat.voice_engine.persona import PersonaBuilder
 from skchat.voice_engine.stt import STTClient
 from skchat.voice_engine.tools import Tool, ToolRegistry, wants_action, wants_narrate
 from skchat.voice_engine.tts import TTSClient
+from skchat.voice_engine.voice_session import VoiceSession
 
 __all__ = [
     "VoiceConfig",
@@ -28,6 +29,7 @@ __all__ = [
     "MemoryBridge",
     "PersonaBuilder",
     "VoiceEngine",
+    "VoiceSession",
     "Conversation",
     "ToolRegistry",
     "Tool",

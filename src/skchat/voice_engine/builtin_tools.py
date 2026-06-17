@@ -7,10 +7,11 @@ Tool schemas are ported verbatim from lumina-creative/scripts/lumina-call.py
 (TOOLS list, 2026-06-12).  Handler implementations are ported from _run_tool()
 in the same file.
 
-worship_session / worship_replay depend on the Conversation object from
-lumina-creative — those handlers carry a # TODO(phase3) stub.
-worship_list also has a stub because the listing function lives in the
-orchestrator.
+worship_session / worship_replay read the live Conversation from
+``ctx['convo']`` (threaded in by VoiceEngine.respond) and delegate to the
+``kick_off_worship_*`` orchestrator the transport attaches to it. worship_list
+reads sessions via the convo's lister or the optional lumina_creative.worship
+listing function. All three degrade gracefully when nothing is wired.
 """
 
 from __future__ import annotations
@@ -381,28 +382,154 @@ async def _handle_narrate(args: dict, ctx: dict) -> str:
     return text
 
 
+def _new_worship_session_id() -> str:
+    """Mint a fresh worship session id (``ws_<epoch>_<rand6>``).
+
+    Matches the id shape minted by lumina-call.py's worship_session handler so
+    sessions written here are discoverable by the same listing/replay code.
+    """
+    import time  # noqa: PLC0415
+    import uuid  # noqa: PLC0415
+
+    return f"ws_{int(time.time())}_{uuid.uuid4().hex[:6]}"
+
+
 async def _handle_worship_session(args: dict, ctx: dict) -> str:
-    # TODO(phase3): worship_session depends on the Conversation object from
-    # lumina-creative/scripts/lumina-call.py (_ACTIVE_WORSHIP / WorshipSession).
-    # The orchestrator context must be threaded through ctx["convo"] before this
-    # handler can be activated. Stub returns a graceful message until Phase 3
-    # rehomes lumina-call into transports/livekit.py over the same engine.
-    return (
-        "worship_session: the full session builder requires Phase-3 transport "
-        "integration. For now, use the narrate tool for creative scenes."
-    )
+    """worship_session — build + play a full worship session over the live convo.
+
+    Reads the live ``Conversation`` from ``ctx['convo']`` (shipped by the wave-4
+    engine wiring). The convo is the per-turn handle the transport owns; when it
+    exposes a ``kick_off_worship_session(...)`` orchestrator method (the LiveKit
+    transport attaches one), we delegate to it. With no convo (or a convo that
+    can't build sessions) we degrade gracefully instead of raising.
+    """
+    convo = ctx.get("convo")
+    if convo is None:
+        return (
+            "worship_session: no active conversation context — the session "
+            "builder needs a live call. Use the narrate tool for creative scenes."
+        )
+    prompt = (args.get("prompt") or "").strip()
+    if not prompt:
+        return "worship_session: empty prompt"
+    try:
+        image_count = max(5, min(30, int(args.get("image_count") or 15)))
+    except (TypeError, ValueError):
+        image_count = 15
+    loop = args.get("loop")
+    loop = True if loop is None else bool(loop)
+
+    kick_off = getattr(convo, "kick_off_worship_session", None)
+    if not callable(kick_off):
+        return (
+            "worship_session: the full session builder isn't wired into this "
+            "transport yet. Use the narrate tool for creative scenes."
+        )
+    # New session keyed off the live turn; reuse the convo's session_id as a
+    # prefix hint when present so call + worship sessions correlate in logs.
+    sid = _new_worship_session_id()
+    base = getattr(convo, "session_id", "") or ""
+    log.info("worship_session %s (convo=%s): %s", sid, base, prompt[:80])
+    try:
+        return await kick_off(
+            session_id=sid, prompt=prompt, image_count=image_count, loop=loop
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("worship_session %s failed: %r", sid, exc)
+        return f"worship_session failed: {exc}"
 
 
 async def _handle_worship_list(args: dict, ctx: dict) -> str:
-    # TODO(phase3): worship_list depends on _worship_list_summaries() injected
-    # by the lumina-creative Conversation orchestrator. Stub until Phase 3.
-    return "worship_list: session listing requires Phase-3 transport integration."
+    """worship_list — list previously-built worship sessions (read-only).
+
+    Prefers a lister exposed on the live convo (``list_worship_sessions``); falls
+    back to the optional ``lumina_creative.worship.list_session_summaries``
+    orchestrator. Read-only and convo-optional, so it degrades to a graceful
+    message rather than raising when nothing is wired.
+    """
+    from datetime import datetime as _dt  # noqa: PLC0415
+
+    try:
+        limit = max(1, min(30, int(args.get("limit") or 10)))
+    except (TypeError, ValueError):
+        limit = 10
+    query = (args.get("query") or "").strip()
+
+    lister = None
+    convo = ctx.get("convo")
+    if convo is not None:
+        cand = getattr(convo, "list_worship_sessions", None)
+        if callable(cand):
+            lister = cand
+    if lister is None:
+        try:
+            from lumina_creative.worship import (  # noqa: PLC0415
+                list_session_summaries as lister,
+            )
+        except Exception:
+            lister = None
+    if lister is None:
+        return "worship_list: session listing isn't available in this environment."
+
+    try:
+        sessions = lister(limit=limit, query=query)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("worship_list failed: %r", exc)
+        return f"worship_list failed: {exc}"
+    if not sessions:
+        return "No worship sessions found" + (f" matching {query!r}" if query else "")
+
+    lines = [f"Found {len(sessions)} worship session(s):"]
+    for s in sessions:
+        modified = s.get("modified")
+        try:
+            ts = _dt.fromtimestamp(float(modified)).strftime("%Y-%m-%d %H:%M")
+        except (TypeError, ValueError, OSError):
+            ts = "?"
+        scene_count = s.get("scene_count", "?")
+        try:
+            audio = f"{float(s.get('audio_duration_s') or 0):.0f}s audio"
+        except (TypeError, ValueError):
+            audio = "? audio"
+        prompt_preview = (s.get("user_prompt") or "(no prompt)")[:80]
+        lines.append(
+            f"- {s.get('session_id', '?')}  ({ts}, {scene_count} scenes, {audio})\n"
+            f"    prompt: {prompt_preview}"
+        )
+    return "\n".join(lines)
 
 
 async def _handle_worship_replay(args: dict, ctx: dict) -> str:
-    # TODO(phase3): worship_replay depends on the active Conversation session
-    # object from lumina-creative. Stub until Phase 3.
-    return "worship_replay: replay requires Phase-3 transport integration. Use narrate for now."
+    """worship_replay — replay an existing worship session over the live convo.
+
+    Reads the live ``Conversation`` from ``ctx['convo']`` and delegates to its
+    ``kick_off_worship_replay(...)`` method when present (the LiveKit transport
+    attaches one). Degrades gracefully with no convo / no replay capability.
+    """
+    convo = ctx.get("convo")
+    if convo is None:
+        return (
+            "worship_replay: no active conversation context — replay needs a "
+            "live call. Use the narrate tool for creative scenes."
+        )
+    session_id = (args.get("session_id") or "").strip()
+    if not session_id:
+        return "worship_replay: session_id required (call worship_list first)"
+    loop = args.get("loop")
+    loop = True if loop is None else bool(loop)
+
+    kick_off = getattr(convo, "kick_off_worship_replay", None)
+    if not callable(kick_off):
+        return (
+            "worship_replay: replay isn't wired into this transport yet. "
+            "Use the narrate tool for creative scenes."
+        )
+    log.info("worship_replay %s (convo=%s)", session_id, getattr(convo, "session_id", ""))
+    try:
+        return await kick_off(session_id=session_id, loop=loop)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("worship_replay %s failed: %r", session_id, exc)
+        return f"worship_replay failed: {exc}"
 
 
 async def _handle_create_bloom_anchor(args: dict, ctx: dict) -> str:
