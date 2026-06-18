@@ -113,6 +113,36 @@ def sample_thread() -> Thread:
 
 
 # ---------------------------------------------------------------------------
+# Guest revocation/single-use store isolation
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _isolate_guest_revocation_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Point the guest SQLite store at a per-test tmp DB and reset its cache.
+
+    Keeps every test (including the legacy ``test_guest.py`` revocation cases)
+    from touching the real ``~/.skchat/guest_revocations.db`` and prevents
+    revocation state from leaking between tests via the in-memory cache.
+    """
+    db = tmp_path / "guest_revocations.db"
+    monkeypatch.setenv("SKCHAT_GUEST_REVOCATION_DB", str(db))
+    try:
+        from skchat import guest as _guest
+
+        _guest._reset_revocation_cache()
+    except Exception:  # pragma: no cover — guest module import-time guard
+        pass
+    yield
+    try:
+        from skchat import guest as _guest
+
+        _guest._reset_revocation_cache()
+    except Exception:  # pragma: no cover
+        pass
+
+
+# ---------------------------------------------------------------------------
 # Directory + environment fixtures
 # ---------------------------------------------------------------------------
 
