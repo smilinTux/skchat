@@ -679,7 +679,16 @@ def register_guest_routes(app: object) -> None:  # app: FastAPI
             logger.exception("guest livekit token mint failed")
             raise HTTPException(status_code=500, detail=f"token mint failed: {exc}") from exc
 
-        livekit_url = os.getenv("SKCHAT_LIVEKIT_URL", "ws://skworld-100:7880")
+        # Public-aware SFU URL: a guest arriving via Funnel (public Host /
+        # X-Forwarded-Host) gets the public wss URL; a tailnet caller keeps the
+        # tailnet URL. Falls back to the tailnet default when the helper or
+        # FastAPI is unavailable. See livekit_routes.public_aware_livekit_url.
+        try:
+            from skchat.livekit_routes import public_aware_livekit_url
+
+            livekit_url = public_aware_livekit_url(request)
+        except Exception:  # pragma: no cover - defensive fallback
+            livekit_url = os.getenv("SKCHAT_LIVEKIT_URL", "ws://skworld-100:7880")
         ttl_remaining = max(0, int(guest.exp - time.time()))
 
         return JSONResponse(

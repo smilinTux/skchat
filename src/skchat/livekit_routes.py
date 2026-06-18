@@ -30,6 +30,7 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
@@ -42,9 +43,77 @@ LIVEKIT_API_SECRET = os.getenv("SKCHAT_LIVEKIT_API_SECRET", "")
 DEFAULT_ROOM = os.getenv("SKCHAT_LIVEKIT_DEFAULT_ROOM", "lumina-and-chef")
 DEFAULT_TTL_SECONDS = int(os.getenv("SKCHAT_LIVEKIT_TOKEN_TTL", "21600"))  # 6h
 
+# Public/Funnel-reachable SFU wss URL. The tailnet LIVEKIT_URL (:8443) is only
+# reachable by peers already on the tailnet; a public guest arriving via
+# Tailscale Funnel must be handed this URL instead. Read at call time so the
+# helper and tests stay env-driven (see ``public_aware_livekit_url``).
+LIVEKIT_PUBLIC_URL_ENV = "SKCHAT_LIVEKIT_PUBLIC_URL"
+# Optional explicit tailnet host override. When unset, the tailnet host is
+# derived from ``SKCHAT_LIVEKIT_URL``'s hostname.
+TAILNET_HOST_ENV = "SKCHAT_TAILNET_HOST"
+
 
 def _have_creds() -> bool:
     return bool(LIVEKIT_API_KEY and LIVEKIT_API_SECRET)
+
+
+def _request_host(request: object) -> str:
+    """Return the request's effective host (lowercased, no port).
+
+    Prefers ``X-Forwarded-Host`` (set by Tailscale Funnel / reverse proxies)
+    and falls back to ``Host``. Returns ``""`` when neither is present.
+    """
+    headers = getattr(request, "headers", None) or {}
+    raw = headers.get("x-forwarded-host") or headers.get("host") or ""
+    # X-Forwarded-Host may carry a comma list (proxy chain) — take the first.
+    raw = raw.split(",")[0].strip().lower()
+    # Strip a trailing :port if present.
+    if raw.startswith("["):  # bracketed IPv6 literal, e.g. [::1]:8443
+        end = raw.find("]")
+        return raw[: end + 1] if end != -1 else raw
+    return raw.split(":", 1)[0]
+
+
+def _tailnet_host() -> str:
+    """The host that identifies tailnet-origin requests (lowercased, no port).
+
+    Explicit ``SKCHAT_TAILNET_HOST`` wins; otherwise derive from the hostname
+    of ``SKCHAT_LIVEKIT_URL``.
+    """
+    explicit = os.getenv(TAILNET_HOST_ENV, "").strip().lower()
+    if explicit:
+        return explicit.split(":", 1)[0]
+    url = os.getenv("SKCHAT_LIVEKIT_URL", LIVEKIT_URL)
+    return (urlsplit(url).hostname or "").lower()
+
+
+def public_aware_livekit_url(request: object) -> str:
+    """Return the SFU wss URL appropriate for the requesting client.
+
+    Behavior:
+      * If ``SKCHAT_LIVEKIT_PUBLIC_URL`` is unset/empty -> always the tailnet
+        ``SKCHAT_LIVEKIT_URL`` (identical to pre-public behavior).
+      * If set, and the request's Host / X-Forwarded-Host does NOT match the
+        tailnet host -> the request arrived over the public/Funnel host, so
+        return the public URL.
+      * If set, but the request host matches the tailnet host (or no host
+        header is present, i.e. a local/tailnet caller) -> the tailnet URL.
+
+    Read env at call time so a long-running process and the tests share one
+    code path.
+    """
+    tailnet_url = os.getenv("SKCHAT_LIVEKIT_URL", LIVEKIT_URL)
+    public_url = os.getenv(LIVEKIT_PUBLIC_URL_ENV, "").strip()
+    if not public_url:
+        return tailnet_url
+
+    req_host = _request_host(request)
+    if not req_host:
+        # No host header -> treat as a local/tailnet caller (unchanged default).
+        return tailnet_url
+    if req_host == _tailnet_host():
+        return tailnet_url
+    return public_url
 
 
 def _mint_token(identity: str, name: str, room: str, ttl: int) -> str:
@@ -74,11 +143,16 @@ def register_livekit_routes(app: FastAPI) -> None:
     """Register LiveKit endpoints on the FastAPI app."""
 
     @app.get("/livekit/config")
-    async def livekit_config() -> JSONResponse:
-        """Browser-safe config; never includes the API secret."""
+    async def livekit_config(request: Request) -> JSONResponse:
+        """Browser-safe config; never includes the API secret.
+
+        The SFU ``url`` is request-aware: a public/Funnel guest gets the public
+        wss URL, a tailnet client gets the tailnet URL (see
+        ``public_aware_livekit_url``).
+        """
         return JSONResponse(
             {
-                "url": LIVEKIT_URL,
+                "url": public_aware_livekit_url(request),
                 "default_room": DEFAULT_ROOM,
                 "token_endpoint": "/livekit/token",
                 "available": _have_creds(),
@@ -134,7 +208,7 @@ def register_livekit_routes(app: FastAPI) -> None:
 
         return JSONResponse(
             {
-                "url": LIVEKIT_URL,
+                "url": public_aware_livekit_url(request),
                 "room": room,
                 "identity": identity,
                 "name": name,
