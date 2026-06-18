@@ -314,6 +314,7 @@ def register_conf_routes(
             f"--unit={unit}",
             "--property=MemoryMax=2G",
             "--property=CPUQuota=200%",
+            "-E", f"SKCHAT_WEBUI_URL=http://127.0.0.1:{os.getenv('SKCHAT_PORT', '8765')}",
             _agent_python(),
             _lumina_call_script(),
             "--room",
