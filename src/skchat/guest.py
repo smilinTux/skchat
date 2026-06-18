@@ -17,8 +17,18 @@ Security properties
 - Invite tokens are HS256 JWTs signed with ``SKCHAT_GUEST_TOKEN_SECRET``.
 - Token is room-scoped (``room`` claim); cannot be used to join another room.
 - Guest identity in LiveKit is always server-assigned (``guest:<jti[:8]>``).
-- Revocation: ``revoke_invite(jti)`` adds to an in-memory set; a revoked token
-  is rejected before any LiveKit call is made. (P1: replace with Postgres table.)
+- Guests are marked ``verified=false`` on their LiveKit participant attributes so
+  the client can render an "unverified guest" badge; sovereign tokens (minted
+  elsewhere) carry their own proven identity. Guests who pick a reserved display
+  name ("chef"/"lumina"/"sovereign"/"admin"/"host") are suffixed "(guest)" so
+  they cannot impersonate an operator/agent in the participant list.
+- Revocation: ``revoke_invite(jti)`` persists the JTI to a small SQLite table
+  (``~/.skchat/guest_revocations.db``, the source of truth — survives restart and
+  is shared across processes), with an in-memory cache in front; a revoked token
+  is rejected before any LiveKit call is made.
+- Single-use invites: ``create_invite(..., single_use=True)`` stamps a ``once``
+  claim; the first successful verify burns the JTI into a TTL'd ``used`` SQLite
+  table so a second use is rejected. Default invites stay multi-use until expiry.
 - Invalid/expired/revoked tokens all produce the same HTTP 401 + generic message
   (no oracle distinguishing expiry vs bad signature).
 
@@ -34,8 +44,11 @@ import html
 import logging
 import os
 import secrets
+import sqlite3
+import threading
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
 # `from __future__ import annotations` turns the route handlers' ``request:
@@ -77,17 +90,167 @@ _DEFAULT_INVITE_TTL = 14400  # 4 hours
 _MAX_INVITE_TTL = 28800  # 8 hours hard cap
 _GUEST_PERMS = ["join", "chat_send", "publish_audio", "publish_camera"]
 
-# ── Module-level revocation list (P0: in-memory; P1: Postgres) ───────────────
-_revoked_jtis: set[str] = set()
+# Display names a guest may NOT claim verbatim (case-insensitive). A guest who
+# picks one is suffixed " (guest)" so they cannot impersonate an operator/agent
+# in the LiveKit participant list. Sovereign tokens (minted elsewhere) carry a
+# proven identity and are unaffected by this guard.
+_RESERVED_DISPLAY_NAMES = frozenset({"chef", "lumina", "sovereign", "admin", "host"})
+
+# Path to the SQLite revocation/single-use store. Override via env (tests use a
+# tmp path so they never touch ~/.skchat). The DB file is created at runtime.
+_REVOCATION_DB_ENV = "SKCHAT_GUEST_REVOCATION_DB"
+_DEFAULT_REVOCATION_DB = "~/.skchat/guest_revocations.db"
+
+# ── Persistent revocation + single-use store (SQLite, source of truth) ───────
+# Source of truth is the SQLite DB (survives restart, shared across processes);
+# a small in-memory set caches revoked JTIs to keep the hot verify path fast.
+# Mirrors the on-disk ~/.skchat SQLite pattern used by history.py.
+
+_store_lock = threading.Lock()
+_revoked_cache: set[str] = set()
+_revoked_cache_loaded = False
+
+# Backward-compat alias: older code/tests referenced the in-memory revocation
+# set directly as ``_revoked_jtis``. It now fronts the SQLite source of truth.
+_revoked_jtis = _revoked_cache
+
+
+def _revocation_db_path() -> Path:
+    raw = os.getenv(_REVOCATION_DB_ENV, "").strip() or _DEFAULT_REVOCATION_DB
+    return Path(raw).expanduser()
+
+
+def _connect() -> sqlite3.Connection:
+    """Open the guest store, creating the parent dir + schema on first use."""
+    path = _revocation_db_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(path))
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS revoked_jtis ("
+        "  jti TEXT PRIMARY KEY,"
+        "  revoked_at REAL NOT NULL"
+        ")"
+    )
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS used_jtis ("
+        "  jti TEXT PRIMARY KEY,"
+        "  used_at REAL NOT NULL,"
+        "  expires_at REAL NOT NULL"
+        ")"
+    )
+    conn.commit()
+    return conn
+
+
+def _reset_revocation_cache() -> None:
+    """Drop the in-memory cache so the next check re-reads the DB.
+
+    Used by tests that swap the DB path between issuer/verifier instances to
+    simulate a process restart (the cache must not mask a fresh-DB read).
+    """
+    global _revoked_cache_loaded
+    with _store_lock:
+        _revoked_cache.clear()
+        _revoked_cache_loaded = False
+
+
+def _load_revoked_cache(conn: sqlite3.Connection) -> None:
+    global _revoked_cache_loaded
+    rows = conn.execute("SELECT jti FROM revoked_jtis").fetchall()
+    _revoked_cache.clear()
+    _revoked_cache.update(r[0] for r in rows)
+    _revoked_cache_loaded = True
 
 
 def revoke_invite(jti: str) -> None:
-    """Add a JTI to the revocation list. Revoked tokens are rejected at verify."""
-    _revoked_jtis.add(jti)
+    """Persist *jti* to the revocation table. Revoked tokens are rejected at verify.
+
+    The SQLite row is the source of truth (survives restart, shared across
+    processes); the in-memory cache is updated in lock-step for fast lookups.
+    """
+    if not jti:
+        return
+    with _store_lock:
+        conn = _connect()
+        try:
+            conn.execute(
+                "INSERT OR IGNORE INTO revoked_jtis (jti, revoked_at) VALUES (?, ?)",
+                (jti, time.time()),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        _revoked_cache.add(jti)
 
 
 def _is_revoked(jti: str) -> bool:
-    return jti in _revoked_jtis
+    """True if *jti* is revoked. Cache-first; the DB is the source of truth."""
+    with _store_lock:
+        if jti in _revoked_cache:
+            return True
+        conn = _connect()
+        try:
+            if not _revoked_cache_loaded:
+                _load_revoked_cache(conn)
+                if jti in _revoked_cache:
+                    return True
+            row = conn.execute("SELECT 1 FROM revoked_jtis WHERE jti = ?", (jti,)).fetchone()
+        finally:
+            conn.close()
+        if row is not None:
+            _revoked_cache.add(jti)
+            return True
+        return False
+
+
+def _is_used(jti: str) -> bool:
+    """True if a single-use *jti* has already been burned (and not yet TTL'd out)."""
+    now = time.time()
+    with _store_lock:
+        conn = _connect()
+        try:
+            # Opportunistically prune expired single-use rows.
+            conn.execute("DELETE FROM used_jtis WHERE expires_at < ?", (now,))
+            row = conn.execute(
+                "SELECT 1 FROM used_jtis WHERE jti = ? AND expires_at >= ?",
+                (jti, now),
+            ).fetchone()
+            conn.commit()
+        finally:
+            conn.close()
+    return row is not None
+
+
+def _mark_used(jti: str, expires_at: float) -> bool:
+    """Burn a single-use *jti*. Returns True on first use, False if already used.
+
+    The INSERT is the atomic claim: if the row already exists the invite was
+    already consumed and this attempt is rejected (TTL'd by *expires_at*).
+    """
+    now = time.time()
+    with _store_lock:
+        conn = _connect()
+        try:
+            conn.execute("DELETE FROM used_jtis WHERE expires_at < ?", (now,))
+            try:
+                conn.execute(
+                    "INSERT INTO used_jtis (jti, used_at, expires_at) VALUES (?, ?, ?)",
+                    (jti, now, expires_at),
+                )
+                conn.commit()
+                return True
+            except sqlite3.IntegrityError:
+                conn.rollback()
+                return False
+        finally:
+            conn.close()
+
+
+def _enforce_display_name(name: str) -> str:
+    """Suffix a reserved display name so a guest cannot impersonate an operator."""
+    if name.strip().lower() in _RESERVED_DISPLAY_NAMES:
+        return f"{name} (guest)"[:40]
+    return name
 
 
 # -- Operator-auth gate (for /guest/invite + /guest/revoke) -------------------
@@ -187,6 +350,7 @@ class GuestToken:
     display: str  # display name to show in the room
     exp: float  # Unix timestamp matching the invite token's exp
     perms: list[str] = field(default_factory=lambda: list(_GUEST_PERMS))
+    single_use: bool = False  # invite carried a one-time ("once") claim
 
 
 # ── Invite issuer ─────────────────────────────────────────────────────────────
@@ -214,6 +378,7 @@ class InviteIssuer:
         display: str = "",
         ttl: int | None = None,
         issuer: str = "operator",
+        single_use: bool = False,
     ) -> dict:
         """Mint a signed invite token for ``room``.
 
@@ -222,6 +387,9 @@ class InviteIssuer:
             display: Optional display-name hint embedded in the token.
             ttl: Token lifetime in seconds (default from env; capped at MAX).
             issuer: FQID of the inviting operator (informational).
+            single_use: When True the invite carries a ``once`` claim and is
+                burned on first successful verify (rejected on second use).
+                Default False keeps the existing multi-use-until-expiry behavior.
 
         Returns:
             {
@@ -231,6 +399,7 @@ class InviteIssuer:
                 "room":         "<room>",
                 "expires_at":   <unix float>,
                 "ttl":          <seconds>,
+                "single_use":   <bool>,
             }
         """
         try:
@@ -255,6 +424,10 @@ class InviteIssuer:
             "exp": int(exp),
             "tier": "invite",
         }
+        # Only stamp the one-time claim when requested, so existing multi-use
+        # invite tokens are byte-for-byte unchanged (claim absent == multi-use).
+        if single_use:
+            payload["once"] = True
         token = _jwt.encode(payload, self._get_secret(), algorithm="HS256")
 
         funnel_base = os.getenv(_FUNNEL_URL_ENV, "").rstrip("/")
@@ -271,6 +444,7 @@ class InviteIssuer:
             "room": room,
             "expires_at": exp,
             "ttl": effective_ttl,
+            "single_use": single_use,
         }
 
 
@@ -339,16 +513,26 @@ class InviteVerifier:
         if _is_revoked(jti):
             raise GuestJoinError(f"invite token {jti!r} has been revoked")
 
+        # Single-use check + burn. The ``once`` claim is opt-in; absent == reusable.
+        # exp is already validated by PyJWT; extract as float for TTL calc + burn TTL.
+        exp = float(payload["exp"])
+        single_use = bool(payload.get("once"))
+        if single_use:
+            # Atomically claim the JTI; a second use loses the race and is rejected.
+            # The used-row is TTL'd to the invite's own expiry (no point keeping it
+            # past the point the token would be rejected by expiry anyway).
+            if not _mark_used(jti, expires_at=exp):
+                raise GuestJoinError(f"single-use invite {jti!r} already used")
+
         # Build identity: server-assigned, guest cannot influence it.
         identity = f"guest:{jti[:8]}"
 
-        # Display name: body > token hint > fallback.
+        # Display name: body > token hint > fallback. Reserved names (operator /
+        # agent handles) are suffixed so a guest cannot impersonate them.
         effective_display = (
             display_name.strip()[:40] or payload.get("display", "").strip()[:40] or "Guest"
         )
-
-        # exp is already validated by PyJWT; extract as float for TTL calc.
-        exp = float(payload["exp"])
+        effective_display = _enforce_display_name(effective_display)
 
         return GuestToken(
             jti=jti,
@@ -356,6 +540,7 @@ class InviteVerifier:
             identity=identity,
             display=effective_display,
             exp=exp,
+            single_use=single_use,
         )
 
 
@@ -436,6 +621,14 @@ def build_livekit_token(
         .with_grants(grant)
         .with_ttl(timedelta(seconds=ttl))
     )
+    # Anti-spoof signal: every GUEST token is stamped ``verified=false`` so the
+    # client can render an "unverified guest" badge. Sovereign tokens are minted
+    # elsewhere with a proven identity and carry their own (verified) signal.
+    # ``with_attributes`` lands the data under the JWT's ``attributes`` claim and
+    # is surfaced as participant attributes by LiveKit. Guard for older
+    # livekit-api builds that predate the helper.
+    if hasattr(token, "with_attributes"):
+        token = token.with_attributes({"verified": "false"})
     return token.to_jwt()
 
 
@@ -610,9 +803,11 @@ def register_guest_routes(app: object) -> None:  # app: FastAPI
         """Operator-only: create a shareable invite link for a room.
 
         Body (JSON):
-            room:     LiveKit room name (required)
-            display:  Optional display-name hint for the invite page
-            ttl:      Token lifetime in seconds (optional; default from env)
+            room:        LiveKit room name (required)
+            display:     Optional display-name hint for the invite page
+            ttl:         Token lifetime in seconds (optional; default from env)
+            single_use:  Optional bool; when true the invite is burned on first
+                         successful join (rejected on second use). Default false.
 
         Operator-auth: gated by ``_require_operator`` -- a shared bearer token
         (``SKCHAT_GUEST_OPERATOR_TOKEN``) when set, else loopback/tailnet-only.
@@ -636,9 +831,10 @@ def register_guest_routes(app: object) -> None:  # app: FastAPI
                 ttl = int(ttl_raw)
             except (TypeError, ValueError):
                 pass
+        single_use = bool(body.get("single_use", False))
 
         try:
-            result = issuer.create_invite(room, display=display, ttl=ttl)
+            result = issuer.create_invite(room, display=display, ttl=ttl, single_use=single_use)
         except RuntimeError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
 
