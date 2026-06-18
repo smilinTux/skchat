@@ -33,25 +33,31 @@ _DEFAULT_PATH = Path.home() / ".skchat" / "confs.json"
 
 
 def derive_conf_id(host_fqid: str, slug: str | None = None) -> str:
-    """Derive a Conf id from the host FQID, optionally pinned to a ``slug``.
-
-    Two modes:
-
-    * **Named / stable** (``slug`` given) — DETERMINISTIC: SHA-256 over
-      ``"host_fqid/slug"``, base32 (lowercased, no padding), first 16 chars.
-      Re-derives the same room for the same ``(host, slug)`` pair, exactly like
-      :func:`skchat.spaces.space.derive_space_id`.
-    * **Ad-hoc / "new meeting"** (``slug is None``) — RANDOM: a fresh
-      ``secrets.token_hex`` suffix, so each call yields a unique room.
-
-    Returns:
-        ``"conf-" + <16 chars>``.
-    """
     if slug is None:
         return _CONF_PREFIX + secrets.token_hex(_CONF_SUFFIX_LEN // 2)
     digest = hashlib.sha256(f"{host_fqid.strip()}/{slug.strip()}".encode()).digest()
     b32 = base64.b32encode(digest).decode().lower().rstrip("=")
     return _CONF_PREFIX + b32[:_CONF_SUFFIX_LEN]
+
+
+@dataclass
+class PendingGuest:
+    """A guest waiting in the lobby for host admission."""
+
+    identity: str           # "guest:<jti[:8]>"
+    display: str = ""       # chosen display name
+    ip: str = ""            # client IP (for tailnet auto-admit decision)
+    is_tailnet: bool = False  # true if _client_is_private detected tailnet
+    timestamp: float = 0.0  # unix time they entered the waiting room
+
+    def to_dict(self) -> dict:
+        return {
+            "identity": self.identity,
+            "display": self.display,
+            "ip": self.ip,
+            "is_tailnet": self.is_tailnet,
+            "timestamp": self.timestamp,
+        }
 
 
 @dataclass
@@ -68,6 +74,9 @@ class Conf:
     participants: list[str] = field(default_factory=list)
     recording: bool = False
     egress_id: str = ""
+    waiting_room: list[dict] = field(default_factory=list)
+    admitted: list[str] = field(default_factory=list)
+    denied: list[str] = field(default_factory=list)
 
     @property
     def room(self) -> str:
@@ -155,3 +164,49 @@ class ConfRegistry:
 
     def list_live(self) -> list[Conf]:
         return [c for c in self._confs.values() if c.status != SpaceStatus.ENDED]
+
+    def add_waiting_guest(self, conf_id: str, guest: PendingGuest) -> bool:
+        """Add a guest to the waiting room. Returns False if conf not found."""
+        c = self._confs.get(conf_id)
+        if c is None:
+            return False
+        if guest.identity not in c.admitted and guest.identity not in c.denied:
+            c.waiting_room.append(guest.to_dict())
+            self._save()
+        return True
+
+    def admit_guest(self, conf_id: str, identity: str) -> bool:
+        """Admit a waiting guest and remove them from the waiting room."""
+        c = self._confs.get(conf_id)
+        if c is None:
+            return False
+        c.waiting_room = [g for g in c.waiting_room if g.get("identity") != identity]
+        if identity not in c.admitted:
+            c.admitted.append(identity)
+        self._save()
+        return True
+
+    def deny_guest(self, conf_id: str, identity: str) -> bool:
+        """Deny a waiting guest, removing them from waiting room."""
+        c = self._confs.get(conf_id)
+        if c is None:
+            return False
+        c.waiting_room = [g for g in c.waiting_room if g.get("identity") != identity]
+        if identity not in c.denied:
+            c.denied.append(identity)
+        self._save()
+        return True
+
+    def is_admitted(self, conf_id: str, identity: str) -> bool:
+        """Check if an identity has been admitted to a conf."""
+        c = self._confs.get(conf_id)
+        if c is None:
+            return False
+        return identity in c.admitted
+
+    def is_denied(self, conf_id: str, identity: str) -> bool:
+        """Check if an identity has been denied from a conf."""
+        c = self._confs.get(conf_id)
+        if c is None:
+            return False
+        return identity in c.denied
