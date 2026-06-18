@@ -1,5 +1,58 @@
 # Tailscale Funnel Ingress — Verification Runbook
 
+## Sovereign coturn deployment (coord 0f70eeda)
+
+coturn runs as a Docker container with host networking:
+```bash
+# Status
+docker ps --filter name=skchat-coturn
+
+# Logs
+docker logs skchat-coturn
+
+# Restart via systemd
+systemctl --user restart skchat-coturn.service
+```
+
+### Funnel-vs-open-UDP exposure decision
+
+**Tailscale Funnel is HTTP(S)-only** — it cannot proxy UDP TURN media traffic.
+For public (off-tailnet) guests to reach our coturn, the host UDP ports must be
+open (3478 + relay range 49152-65535). Currently:
+
+| Exposure | Status | Who can reach coturn |
+|----------|--------|---------------------|
+| Tailnet (`100.x.x.x:3478`) | ✅ Always | All tailnet peers |
+| LAN (`192.168.0.158:3478`) | ✅ Always | LAN peers |
+| Public internet (UDP) | ❌ Closed | Off-tailnet guests use free TURN fallback |
+
+**Current setup:** SKCHAT_TURN_SECRET is set → the ICE ladder prefers sovereign
+coturn. Tailnet/LAN users relay through our coturn. Public guests behind
+symmetric NAT will fail to reach coturn via UDP and **fall back to the free
+public TURN** (Open Relay Project) because `SKCHAT_PUBLIC_TURN_ENABLED` defaults
+to true when the ICE relay fails.
+
+**To enable full sovereign TURN for public guests:**
+1. Open UDP 3478 + UDP 49152-65535 in the host firewall
+2. Add the host's public IP to `SKCHAT_TURN_URLS`
+3. Optionally set `SKCHAT_PUBLIC_TURN_ENABLED=false` to remove the free fallback
+4. If behind a NAT router: forward ports 3478/UDP and 49152-65535/UDP
+
+### ICE ladder verification
+
+```python
+from skchat.connectivity import ice_config
+
+# Tailnet → direct (no STUN/TURN)
+cfg = ice_config("lumina@skworld.io", "chef@skworld.io", {"on_tailnet": True})
+
+# Cross-NAT → sovereign coturn + Google STUN, NO free public TURN
+cfg = ice_config("lumina@skworld.io", "public@guest", {"on_tailnet": False})
+# cfg["ice_servers"] contains:
+#   [0] Google STUN URLs
+#   [1] {urls: ["turn:noroc2027.tail204f0c.ts.net:3478", ...], username, credential}
+```
+
 ## Public paths (exposed via Funnel on `:10000`)
 | Path | Type | Gated by |
 |------|------|----------|
