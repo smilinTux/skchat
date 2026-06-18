@@ -38,6 +38,23 @@ logger = logging.getLogger("skchat.conf.routes")
 
 _DEFAULT_TTL = int(os.getenv("SKCHAT_LIVEKIT_TOKEN_TTL", "21600"))
 
+_MAX_FEDERATION_AGE = 300
+
+_NONCE_CACHE: dict = {}
+
+
+
+def _check_fed_nonce(fqid: str, nonce: str) -> bool:
+    key = f"{fqid}::{nonce}"
+    now = time.time()
+    old = [k for k, v in _NONCE_CACHE.items() if now - v > _MAX_FEDERATION_AGE]
+    for k in old:
+        _NONCE_CACHE.pop(k, None)
+    if key in _NONCE_CACHE:
+        return False
+    _NONCE_CACHE[key] = now
+    return True
+
 # --- On-demand Lumina conf-agent (pull the AI into THIS room) ----------------
 # The resident single-room agent is ``skchat-lumina-call.service``; this is the
 # transient "join THIS conf room" path. We spawn the SAME agent script
@@ -510,6 +527,68 @@ def register_conf_routes(
         if not ok:
             raise HTTPException(400, "could not deny guest")
         return JSONResponse({"ok": True, "identity": identity})
+
+    @app.post("/conf/{room}/federated-token")
+    async def conf_federated_token(room: str, request: Request) -> JSONResponse:
+        """sk-lk-authd for conferences: cross-instance token minting.
+        
+        Accepts a capauth-signed FQID assertion ``{claim, sig}``, verifies
+        the assertion signature and freshness, checks trust policy, and mints
+        a conf PARTICIPANT token for this host's LiveKit SFU.
+        
+        This is the conf parallel of ``POST /sfu/get`` (which mints audio Space
+        tokens). The assertion uses the same capauth-signing format, so a remote
+        agent can present the same identity credential to either endpoint.
+        """
+        try:
+            from skchat.spaces.federation.assertion import (
+                AssertionError as FedAssertionError,
+                verify_signed,
+            )
+            from skchat.spaces.federation.trust import AccessLevel, TrustPolicy
+        except ImportError:
+            raise HTTPException(503, "federation module not available")
+
+        body = await request.json()
+        if not isinstance(body, dict) or "claim" not in body or "sig" not in body:
+            raise HTTPException(400, "body must be {claim, sig}")
+
+        conf = reg.get(room)
+        if conf is None or conf.status.value == "ended":
+            raise HTTPException(404, "conf not found or ended")
+
+        try:
+            assertion = verify_signed(body)
+        except FedAssertionError as exc:
+            raise HTTPException(403, f"assertion rejected: {exc}") from exc
+
+        if not _check_fed_nonce(assertion.fqid, assertion.nonce):
+            raise HTTPException(403, "replay detected")
+
+        access = TrustPolicy().access_for(assertion.fqid)
+        if access == AccessLevel.DENY:
+            raise HTTPException(403, f"fqid {assertion.fqid!r} not permitted")
+
+        role = ConfRole.PARTICIPANT
+        rmr = TrustPolicy().remote_max_role
+        if rmr == "listener":
+            role = ConfRole.GUEST_CONF
+
+        token = mint_conf_token(
+            assertion.fqid,
+            assertion.fqid.split("@")[0],
+            role,
+            conf.room,
+            _DEFAULT_TTL,
+        )
+        return JSONResponse({
+            "token": token,
+            "url": _url(),
+            "role": role.value,
+            "identity": assertion.fqid,
+            "conf_id": conf.conf_id,
+            "room": conf.room,
+        })
 
     @app.get("/conf/{room}", response_class=HTMLResponse)
     async def conf_page(room: str) -> HTMLResponse:  # noqa: ARG001

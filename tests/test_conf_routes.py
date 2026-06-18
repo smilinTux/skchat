@@ -175,6 +175,7 @@ def test_routes_registered_on_app():
     assert "/conf/{room}/waiting" in paths
     assert "/conf/{room}/admit" in paths
     assert "/conf/{room}/deny" in paths
+    assert "/conf/{room}/federated-token" in paths
 
 
 def test_conf_health_returns_ok(client):
@@ -270,3 +271,33 @@ def test_admit_requires_host(client):
         "identity": "guest:x",
     })
     assert r.status_code == 403
+
+
+def test_federated_token_rejects_missing_body(client):
+    conf = _create(client, slug="fed-test").json()
+    room = conf["room"]
+    assert client.post(f"/conf/{room}/federated-token", json={}).status_code == 400
+
+
+def test_federated_token_rejects_missing_claim_or_sig(client):
+    conf = _create(client, slug="fed-test2").json()
+    room = conf["room"]
+    assert client.post(f"/conf/{room}/federated-token", json={"claim": "x"}).status_code == 400
+    assert client.post(f"/conf/{room}/federated-token", json={"sig": "y"}).status_code == 400
+
+
+def test_federated_token_404_for_unknown_conf(client):
+    assert client.post("/conf/conf-nonexistent/federated-token", json={
+        "claim": {"fqid": "x@y", "nonce": "n"},
+        "sig": "s",
+    }).status_code == 404
+
+
+def test_federated_token_rejects_bad_assertion(client):
+    conf = _create(client, slug="fed-bad").json()
+    room = conf["room"]
+    r = client.post(f"/conf/{room}/federated-token", json={
+        "claim": {"fqid": "x@y", "nonce": "n", "space_id": "s", "issued_at": 1000},
+        "sig": "bad",
+    })
+    assert r.status_code in (400, 403)  # federation module missing or assertion rejected
