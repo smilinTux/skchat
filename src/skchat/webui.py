@@ -96,6 +96,12 @@ try:
 except ImportError as _e:
     logger.warning("spaces routes not registered: %s", _e)
 try:
+    from .conf.routes import register_conf_routes as _register_conf_routes
+
+    _register_conf_routes(app)
+except ImportError as _e:
+    logger.warning("conf routes not registered: %s", _e)
+try:
     from .glossa_mesh.routes import register_glossa_routes as _register_glossa_routes
 
     _register_glossa_routes(app)
