@@ -439,6 +439,70 @@ class TestBuildLivekitToken:
         assert isinstance(token, str)
         assert len(token) > 20
 
+    @pytest.mark.skipif(
+        not __import__("importlib").util.find_spec("livekit"),
+        reason="livekit-api not installed",
+    )
+    def test_default_guest_token_has_no_screenshare(self):
+        """Backward-compat: default (audio-space) guest stays screenshare-stripped."""
+        import jwt as _jwt
+
+        from skchat.guest import GuestToken, build_livekit_token
+
+        clk = _FixedClock()
+        gt = GuestToken(
+            jti="aabb1122",
+            room="audio-room",
+            identity="guest:aabb1122",
+            display="Tester",
+            exp=clk.t + 3600,
+        )
+        token = build_livekit_token(
+            gt,
+            livekit_api_key="test-key",
+            livekit_api_secret="test-secret-long-enough-for-livekit",
+            now_fn=clk,
+        )
+        v = _jwt.decode(token, "test-secret-long-enough-for-livekit", algorithms=["HS256"])[
+            "video"
+        ]
+        assert set(v["canPublishSources"]) == {"camera", "microphone"}
+        assert "screen_share" not in v["canPublishSources"]
+
+    @pytest.mark.skipif(
+        not __import__("importlib").util.find_spec("livekit"),
+        reason="livekit-api not installed",
+    )
+    def test_conf_guest_token_allows_screenshare_but_no_admin(self):
+        """allow_screenshare=True widens publish sources but never grants admin."""
+        import jwt as _jwt
+
+        from skchat.guest import GuestToken, build_livekit_token
+
+        clk = _FixedClock()
+        gt = GuestToken(
+            jti="ccdd3344",
+            room="conf-room",
+            identity="guest:ccdd3344",
+            display="ConfGuest",
+            exp=clk.t + 3600,
+        )
+        token = build_livekit_token(
+            gt,
+            livekit_api_key="test-key",
+            livekit_api_secret="test-secret-long-enough-for-livekit",
+            now_fn=clk,
+            allow_screenshare=True,
+        )
+        v = _jwt.decode(token, "test-secret-long-enough-for-livekit", algorithms=["HS256"])[
+            "video"
+        ]
+        srcs = set(v["canPublishSources"])
+        assert {"camera", "microphone", "screen_share", "screen_share_audio"}.issubset(srcs)
+        # A conf guest is still never an admin / recorder.
+        assert v.get("roomAdmin", False) is False
+        assert v.get("roomRecord", False) is False
+
     def test_import_error_raised_when_livekit_absent(self):
         """When livekit-api is not installed, ImportError propagates."""
         import sys
