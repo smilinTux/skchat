@@ -95,11 +95,21 @@ def _agent_unit(room: str) -> str:
 
 def _default_runner(cmd: list[str]) -> subprocess.CompletedProcess:
     """Default command runner — actually invokes the process.
-
+    
     Tests inject their own runner (no real spawn). Raises ``FileNotFoundError``
     if ``cmd[0]`` is missing, which callers translate into a graceful 503.
     """
     return subprocess.run(cmd, capture_output=True, text=True, timeout=20, check=False)
+
+
+def _agent_runner(cmd: list[str]) -> subprocess.CompletedProcess:
+    """Runner for long-lived agent processes — fire-and-forget, check start only."""
+    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        pass
+    return proc
 
 
 def _url() -> str:
@@ -315,6 +325,8 @@ def register_conf_routes(
             "--property=MemoryMax=2G",
             "--property=CPUQuota=200%",
             "-E", f"SKCHAT_WEBUI_URL=http://127.0.0.1:{os.getenv('SKCHAT_PORT', '8765')}",
+            "-E", f"SKCHAT_LIVEKIT_API_KEY={os.getenv('SKCHAT_LIVEKIT_API_KEY', '')}",
+            "-E", f"SKCHAT_LIVEKIT_API_SECRET={os.getenv('SKCHAT_LIVEKIT_API_SECRET', '')}",
             _agent_python(),
             _lumina_call_script(),
             "--room",
@@ -323,7 +335,7 @@ def register_conf_routes(
             greeting,
         ]
         try:
-            proc = run_cmd(cmd)
+            proc = _agent_runner(cmd)
         except FileNotFoundError as exc:
             raise HTTPException(503, "systemd-run unavailable; cannot launch conf agent") from exc
         except Exception as exc:  # noqa: BLE001 - any spawn failure → graceful error
