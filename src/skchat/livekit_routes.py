@@ -57,6 +57,81 @@ def _have_creds() -> bool:
     return bool(LIVEKIT_API_KEY and LIVEKIT_API_SECRET)
 
 
+def _gate_token_mint(request: object) -> None:
+    """Gate POST /livekit/token to loopback/tailnet OR an operator token.
+
+    ``_mint_token`` issues a FULL-publish JWT for any caller-supplied
+    ``identity``, so this endpoint must NOT be reachable by anonymous public
+    callers (e.g. over Tailscale Funnel) — that would be an impersonation hole.
+
+    We reuse the *exact same* gate the guest operator endpoints use
+    (``skchat.guest._require_operator``):
+      * If ``SKCHAT_GUEST_OPERATOR_TOKEN`` is set, the caller MUST present it
+        (``Authorization: Bearer <token>`` or ``X-Operator-Token``).
+      * Otherwise, only loopback (``127.``/``::1``) or private/tailnet IPs
+        (RFC1918 ``10.``/``192.168.``, Tailscale CGNAT ``100.64.0.0/10`` →
+        ``100.``, ULA ``fd``) are allowed.
+      * Anything else → HTTP 401/403.
+
+    This keeps lumina-call.py (localhost ``WEBUI_URL``) and tailnet browser
+    callers working while blocking public/Funnel callers from minting
+    arbitrary-identity tokens. The conf join path uses /conf/{room}/token and
+    /join/sovereign instead (the safe public paths).
+
+    The import is DRY (single source of truth in guest.py); a tiny local
+    mirror is used only if guest.py can't be imported.
+    """
+    try:
+        from skchat.guest import _require_operator
+    except Exception:  # pragma: no cover - defensive fallback if guest.py shifts
+        _require_operator = _local_require_operator
+    _require_operator(request)
+
+
+# Private/loopback prefixes mirroring skchat.guest._PRIVATE_PREFIXES. Only used
+# by the fallback below if guest.py's _require_operator can't be imported.
+_PRIVATE_PREFIXES = (
+    "127.",
+    "10.",
+    "192.168.",
+    "100.",  # Tailscale CGNAT range (100.64.0.0/10)
+    "::1",
+    "fd",  # ULA / Tailscale IPv6
+)
+
+
+def _local_require_operator(request: object) -> None:
+    """Fallback operator gate mirroring ``skchat.guest._require_operator``.
+
+    Only reached if guest.py is not importable. Same policy: operator bearer
+    token when ``SKCHAT_GUEST_OPERATOR_TOKEN`` is set, else loopback/tailnet
+    private-IP only.
+    """
+    import secrets
+
+    from fastapi import HTTPException
+
+    token = os.getenv("SKCHAT_GUEST_OPERATOR_TOKEN", "").strip()
+    if token:
+        headers = getattr(request, "headers", {}) or {}
+        presented = (headers.get("x-operator-token") or "").strip()
+        if not presented:
+            auth = (headers.get("authorization") or "").strip()
+            if auth.lower().startswith("bearer "):
+                presented = auth[7:].strip()
+        if not secrets.compare_digest(presented, token):
+            raise HTTPException(status_code=401, detail="operator authentication required")
+        return
+    client = getattr(request, "client", None)
+    host = getattr(client, "host", None) if client is not None else None
+    if not host or not host.startswith(_PRIVATE_PREFIXES):
+        raise HTTPException(
+            status_code=403,
+            detail="token mint is tailnet-only; set SKCHAT_GUEST_OPERATOR_TOKEN "
+            "to allow authenticated remote access",
+        )
+
+
 def _request_host(request: object) -> str:
     """Return the request's effective host (lowercased, no port).
 
@@ -168,7 +243,14 @@ def register_livekit_routes(app: FastAPI) -> None:
             name: display name
             room: room name (defaults to env DEFAULT_ROOM)
             ttl: seconds (clamped to [60, 86400])
+
+        Access gate: callable ONLY from loopback/tailnet OR with a valid
+        operator token (``SKCHAT_GUEST_OPERATOR_TOKEN``). Public/Funnel callers
+        are rejected (401/403) before any token is minted — this route hands out
+        FULL-publish JWTs for an arbitrary ``identity``, so it must not be
+        anonymously reachable. Public conf joins use /conf/{room}/token instead.
         """
+        _gate_token_mint(request)
         if not _have_creds():
             raise HTTPException(
                 status_code=503,
