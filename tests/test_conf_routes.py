@@ -171,3 +171,102 @@ def test_routes_registered_on_app():
     assert "/conf/{room}/participants" in paths
     assert "/conf/{room}/end" in paths
     assert "/conf" in paths
+    assert "/conf/health" in paths
+    assert "/conf/{room}/waiting" in paths
+    assert "/conf/{room}/admit" in paths
+    assert "/conf/{room}/deny" in paths
+
+
+def test_conf_health_returns_ok(client):
+    r = client.get("/conf/health")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["service"] == "skchat-conf"
+    assert body["status"] == "ok"
+    assert "live_confs" in body
+    assert "livekit_configured" in body
+    assert body["livekit_configured"] is True
+
+
+def test_enter_waiting_room_and_admit(client):
+    conf = _create(client, slug="wait-test").json()
+    room = conf["room"]
+
+    # Enter waiting room
+    r = client.post(f"/conf/{room}/waiting", json={"identity": "guest:abc123", "display": "Alice"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["admitted"] is False
+    assert body["identity"] == "guest:abc123"
+
+    # Check waiting room status
+    r = client.get(f"/conf/{room}/waiting")
+    assert r.status_code == 200
+    body = r.json()
+    assert len(body["waiting"]) == 1
+    assert body["waiting"][0]["identity"] == "guest:abc123"
+
+    # Host admits
+    r = client.post(f"/conf/{room}/admit", json={
+        "requester": "lumina@chef.skworld",
+        "identity": "guest:abc123",
+    })
+    assert r.status_code == 200
+    assert r.json()["ok"] is True
+
+    # Waiting room should now be empty, guest admitted
+    r = client.get(f"/conf/{room}/waiting")
+    assert r.status_code == 200
+    assert len(r.json()["waiting"]) == 0
+    assert "guest:abc123" in r.json()["admitted"]
+
+
+def test_deny_guest(client):
+    conf = _create(client, slug="deny-test").json()
+    room = conf["room"]
+
+    client.post(f"/conf/{room}/waiting", json={"identity": "guest:denied1", "display": "Bob"})
+    r = client.post(f"/conf/{room}/deny", json={
+        "requester": "lumina@chef.skworld",
+        "identity": "guest:denied1",
+    })
+    assert r.status_code == 200
+
+    # Re-entry should be denied
+    r = client.post(f"/conf/{room}/waiting", json={"identity": "guest:denied1", "display": "Bob"})
+    assert r.status_code == 403
+
+
+def test_admit_nonexistent_guest_graceful(client):
+    conf = _create(client, slug="noop-admit").json()
+    room = conf["room"]
+    r = client.post(f"/conf/{room}/admit", json={
+        "requester": "lumina@chef.skworld",
+        "identity": "guest:nobody",
+    })
+    assert r.status_code == 200  # admit is idempotent
+
+
+def test_waiting_conf_not_found(client):
+    assert client.post("/conf/conf-nonexistent/waiting", json={"identity": "guest:x"}).status_code == 404
+    assert client.get("/conf/conf-nonexistent/waiting").status_code == 404
+    assert client.post("/conf/conf-nonexistent/admit", json={
+        "requester": "lumina@chef.skworld", "identity": "guest:x",
+    }).status_code == 404
+
+
+def test_waiting_requires_identity(client):
+    conf = _create(client, slug="req-id").json()
+    room = conf["room"]
+    assert client.post(f"/conf/{room}/waiting", json={}).status_code == 400
+
+
+def test_admit_requires_host(client):
+    conf = _create(client, slug="host-gate").json()
+    room = conf["room"]
+    client.post(f"/conf/{room}/waiting", json={"identity": "guest:x", "display": "X"})
+    r = client.post(f"/conf/{room}/admit", json={
+        "requester": "wrong@host",
+        "identity": "guest:x",
+    })
+    assert r.status_code == 403

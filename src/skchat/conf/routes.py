@@ -24,12 +24,13 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
-from skchat.conf.room import Conf, ConfRegistry
+from skchat.conf.room import Conf, ConfRegistry, PendingGuest
 from skchat.spaces.roles import ConfRole
 from skchat.spaces.tokens import mint_conf_token
 
@@ -94,6 +95,24 @@ def _http_url(ws_url: str) -> str:
 
 def _have_creds() -> bool:
     return bool(os.getenv("SKCHAT_LIVEKIT_API_KEY") and os.getenv("SKCHAT_LIVEKIT_API_SECRET"))
+
+
+_PRIVATE_PREFIXES = (
+    "127.", "10.", "192.168.", "100.", "::1", "fd",
+)
+
+
+def _client_ip(request: Request) -> str:
+    forwarded = request.headers.get("x-forwarded-for", "").strip()
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    client = getattr(request, "client", None)
+    return getattr(client, "host", "") if client else ""
+
+
+def _is_tailnet(request: Request) -> bool:
+    ip = _client_ip(request)
+    return any(ip.startswith(p) for p in _PRIVATE_PREFIXES) if ip else False
 
 
 def register_conf_routes(
@@ -382,6 +401,115 @@ def register_conf_routes(
                 ]
             }
         )
+
+    @app.get("/conf/health")
+    async def conf_ops_health() -> JSONResponse:
+        """Standalone ops health endpoint for the conf subsystem.
+        
+        Reports conf registry stats, LiveKit credential status, and
+        any running agent-worker units (best-effort).
+        """
+        live = reg.list_live()
+        agent_units: list[str] = []
+        try:
+            proc = run_cmd(["systemctl", "--user", "list-units", "--type=scope", "--no-pager"])
+            out = getattr(proc, "stdout", "") or ""
+            for line in out.splitlines():
+                if "lumina-conf-" in line:
+                    parts = line.split()
+                    if len(parts) > 1:
+                        agent_units.append(parts[0])
+        except Exception:
+            pass
+        return JSONResponse({
+            "service": "skchat-conf",
+            "status": "ok",
+            "live_confs": len(live),
+            "total_participants": sum(len(c.participants) for c in live),
+            "total_waiting": sum(len(c.waiting_room) for c in live),
+            "livekit_configured": _have_creds(),
+            "agent_workers": agent_units,
+        })
+
+    @app.post("/conf/{room}/waiting")
+    async def enter_waiting_room(room: str, request: Request) -> JSONResponse:
+        """A guest enters the conf waiting room. Tailnet callers auto-admitted."""
+        conf = reg.get(room)
+        if conf is None or conf.status.value == "ended":
+            raise HTTPException(404, "conf not found or ended")
+        body = await request.json()
+        identity = (body.get("identity") or "").strip()
+        display = (body.get("display") or "").strip()[:40]
+        if not identity:
+            raise HTTPException(400, "identity required")
+        if reg.is_denied(room, identity):
+            raise HTTPException(403, "guest was denied entry to this conf")
+        if reg.is_admitted(room, identity):
+            return JSONResponse({"admitted": True, "identity": identity})
+        client_ip = _client_ip(request)
+        tailnet = _is_tailnet(request)
+        guest = PendingGuest(
+            identity=identity,
+            display=display or identity.split("@")[0],
+            ip=client_ip,
+            is_tailnet=tailnet,
+            timestamp=time.time(),
+        )
+        reg.add_waiting_guest(room, guest)
+        if tailnet:
+            reg.admit_guest(room, identity)
+            return JSONResponse({"admitted": True, "identity": identity, "auto_admitted": True})
+        return JSONResponse({
+            "admitted": False,
+            "identity": identity,
+            "position": len(conf.waiting_room),
+            "message": "Waiting for host to admit you",
+        })
+
+    @app.get("/conf/{room}/waiting")
+    async def waiting_room_status(room: str) -> JSONResponse:
+        """Host views the waiting room (callers, not admitted/denied)."""
+        conf = reg.get(room)
+        if conf is None:
+            raise HTTPException(404, "conf not found")
+        return JSONResponse({
+            "room": room,
+            "waiting": conf.waiting_room,
+            "admitted": conf.admitted,
+            "denied": conf.denied,
+        })
+
+    @app.post("/conf/{room}/admit")
+    async def admit_guest(room: str, request: Request) -> JSONResponse:
+        """Host admits a waiting guest by identity."""
+        conf = reg.get(room)
+        if conf is None:
+            raise HTTPException(404, "conf not found")
+        body = await request.json()
+        _require_host(conf, (body.get("requester") or "").strip())
+        identity = (body.get("identity") or "").strip()
+        if not identity:
+            raise HTTPException(400, "identity required")
+        ok = reg.admit_guest(room, identity)
+        if not ok:
+            raise HTTPException(400, "could not admit guest")
+        return JSONResponse({"ok": True, "identity": identity})
+
+    @app.post("/conf/{room}/deny")
+    async def deny_guest(room: str, request: Request) -> JSONResponse:
+        """Host denies a waiting guest by identity."""
+        conf = reg.get(room)
+        if conf is None:
+            raise HTTPException(404, "conf not found")
+        body = await request.json()
+        _require_host(conf, (body.get("requester") or "").strip())
+        identity = (body.get("identity") or "").strip()
+        if not identity:
+            raise HTTPException(400, "identity required")
+        ok = reg.deny_guest(room, identity)
+        if not ok:
+            raise HTTPException(400, "could not deny guest")
+        return JSONResponse({"ok": True, "identity": identity})
 
     @app.get("/conf/{room}", response_class=HTMLResponse)
     async def conf_page(room: str) -> HTMLResponse:  # noqa: ARG001
