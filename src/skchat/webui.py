@@ -95,6 +95,15 @@ try:
     _register_spaces_routes(app)
 except ImportError as _e:
     logger.warning("spaces routes not registered: %s", _e)
+# Local (non-federation) sovereign conference join: POST /join/sovereign verifies
+# a capauth-signed FQID assertion + replay-nonce guard, then mints a SOVEREIGN
+# conf token whose LiveKit identity is the PROVEN fqid.
+try:
+    from .join_routes import register_join_routes as _register_join_routes
+
+    _register_join_routes(app)
+except ImportError as _e:
+    logger.warning("join routes not registered: %s", _e)
 try:
     from .glossa_mesh.routes import register_glossa_routes as _register_glossa_routes
 
