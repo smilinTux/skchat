@@ -126,6 +126,13 @@ try:
 except ImportError as _e:
     logger.warning("guest routes not registered: %s", _e)
 
+# Daemon API proxy for the Flutter app
+try:
+    from .daemon_proxy import router as daemon_api_router
+    app.include_router(daemon_api_router)
+except ImportError as _e:
+    logger.warning("daemon API proxy not registered: %s", _e)
+
 
 @app.get("/")
 async def root() -> RedirectResponse:

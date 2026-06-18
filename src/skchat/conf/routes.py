@@ -613,15 +613,14 @@ def register_conf_routes(
 
     @app.get("/app/{rest:path}", response_class=FileResponse)
     async def flutter_app(rest: str) -> FileResponse:
-        """Serve the Flutter web app (skchat-app build).
-        
-        Maps /app/* to static/app/ (the Flutter web build output).
-        If the requested file doesn't exist, serve index.html for SPA routing.
-        """
+        """Serve the Flutter web app (skchat-app build)."""
         base = Path(__file__).resolve().parent.parent / "static" / "app"
-        path = base / rest if rest else base / "index.html"
+        if not rest:
+            return FileResponse(base / "index.html")
+        path = base / rest
         if path.exists() and path.is_file():
             return FileResponse(path)
+        # SPA fallback: return index.html for any unrecognized path
         return FileResponse(base / "index.html")
 
     @app.get("/conf/{room}", response_class=HTMLResponse)
