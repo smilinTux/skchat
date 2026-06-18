@@ -19,6 +19,10 @@
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/@excalidraw/excalidraw@0.17.6/dist/excalidraw.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/yjs@13.6.20/dist/yjs.cjs" crossorigin></script>
 <style>
   /* ── 2027 Design System tokens (mirrors livekit.html) ─────────────────────── */
   :root {
@@ -251,7 +255,16 @@
     display: flex; align-items: center; gap: 8px;
     font-size: 13px; color: #c8cedd;
     padding: 6px 8px; border-radius: var(--r-sm);
-    background: var(--surface-2); border: 1px solid var(--border-sub);
+  }
+  .sk-panel {
+    background: var(--surface-2); border: 1px solid var(--border-mid);
+    border-radius: var(--r-md); margin-top: 8px; overflow: hidden;
+  }
+  .sk-panel-header {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 12px; font-size: 13px; font-weight: 600;
+    background: var(--surface-3); border-bottom: 1px solid var(--border-mid);
+    cursor: pointer; user-select: none;
   }
   #roster-list li.speaking { border-color: var(--speaking); }
   #roster-list li .rdot { width: 7px; height: 7px; border-radius: 50%; background: var(--good); flex-shrink: 0; }
@@ -275,15 +288,79 @@
     <div class="controls hidden" id="controls">
       <button id="mic-toggle"    class="toggle off">🎤 Mic OFF</button>
       <button id="cam-toggle"    class="toggle off">📷 Cam OFF</button>
-      <button id="screen-share-btn" class="toggle off">🖥️ Screen</button>
       <select id="mic-select" title="Microphone"></select>
       <select id="cam-select" title="Camera"></select>
+      <span class="pill" id="room-pill"></span>
+      <span class="pill" id="peers-pill">0 peers</span>
+    </div>
+
+    <div id="speak-row" class="controls hidden">
+      <button id="chat-toggle-btn"   class="toggle off" title="In-call chat">💬 Chat</button>
+      <button id="wb-toggle-btn"     class="toggle off" title="Whiteboard">📋 Board</button>
+      <button id="screen-share-btn"  class="toggle off" title="Share screen">🖥️ Screen</button>
+      <button id="watch-toggle-btn"  class="toggle off" title="Watch together">📺 Watch</button>
+      <button id="doc-toggle-btn"    class="toggle off" title="Collaborative doc">📝 Doc</button>
+      <button id="term-toggle-btn"   class="toggle off" title="skreach terminal">⌨️ Term</button>
       <span id="screen-unsupported-msg" style="display:none;color:var(--warn);font-size:12px">screen share unsupported</span>
+      <span id="chat-unread-badge" style="display:none;background:var(--bad);color:#fff;border-radius:8px;padding:0 6px;font-size:11px">0</span>
       <button id="end-call" class="danger" style="display:none">⛔ End call (host)</button>
       <button id="leave"     class="danger" disabled>Leave</button>
     </div>
 
     <div id="grid"></div>
+
+    <!-- D2: Chat panel -->
+    <div id="chat-panel" class="sk-panel collapsed" style="display:none">
+      <div id="chat-panel-header" class="sk-panel-header">💬 Chat<span id="chat-unread-badge-panel" style="display:none;background:var(--bad);color:#fff;border-radius:8px;padding:0 6px;font-size:11px;margin-left:6px">0</span><span class="toggle-icon" id="chat-chevron" style="margin-left:auto;cursor:pointer">▼</span></div>
+      <div id="chat-messages" style="max-height:200px;overflow-y:auto;padding:8px;font-size:13px"></div>
+      <div id="chat-input-row" style="display:flex;gap:6px;padding:6px 8px;border-top:1px solid var(--border,#2a2f3a)">
+        <input id="chat-input" placeholder="Message everyone…" autocomplete="off" style="flex:1;background:#181b22;color:#e4e7ee;border:1px solid #2a2f3a;border-radius:6px;padding:6px 10px;font:inherit;font-size:13px" />
+        <button id="chat-send" class="primary">Send</button>
+      </div>
+    </div>
+
+    <!-- D3: Whiteboard panel -->
+    <div id="wb-panel" class="sk-panel collapsed" style="display:none">
+      <div id="wb-panel-header" class="sk-panel-header">📋 Board<span id="wb-status-pill" class="pill" style="font-size:10px;margin-left:4px">idle</span><span class="toggle-icon" id="wb-chevron" style="margin-left:auto;cursor:pointer">▼</span></div>
+      <div id="wb-container" style="height:300px"></div>
+    </div>
+
+    <!-- D4: Watch-together panel -->
+    <div id="watch-panel" class="sk-panel collapsed" style="display:none">
+      <div id="watch-panel-header" class="sk-panel-header">📺 Watch Together<span id="watch-status-pill" class="pill" style="font-size:10px;margin-left:4px">idle</span><span class="toggle-icon" id="watch-chevron" style="margin-left:auto;cursor:pointer">▼</span></div>
+      <div id="watch-video-wrap"><video id="watch-video" controls preload="metadata"></video><div id="watch-placeholder"><span class="glyph">📺</span>Paste a video URL and click Load to share</div></div>
+      <div id="watch-url-row"><input id="watch-url" placeholder="https://…/video.mp4" /><button id="watch-load-btn" class="primary">Load &amp; Share</button></div>
+      <div id="watch-controls"><button id="watch-play-btn" disabled>▶ Play</button><button id="watch-pause-btn" disabled>⏸ Pause</button><button id="watch-sync-btn" disabled title="Sync to host">⇄ Sync</button><span id="watch-host-label" class="pill" style="display:none">host</span><span id="watch-time-display" style="font-family:var(--font-mono);font-size:12px;color:#6b7280;margin-left:auto"></span></div>
+    </div>
+
+    <!-- D5: Collaborative doc panel -->
+    <div id="doc-panel" class="sk-panel collapsed" style="display:none">
+      <div id="doc-panel-header" class="sk-panel-header">📝 Collaborative Doc<span id="doc-status-pill" class="pill" style="font-size:10px;margin-left:4px">idle</span><span class="toggle-icon" id="doc-chevron" style="margin-left:auto;cursor:pointer">▼</span></div>
+      <div id="doc-editor-wrap">
+        <div id="doc-presence-bar"></div>
+        <div id="doc-agent-note"><span class="dot"></span>Lumina can co-author — agent write-back is a future hook</div>
+        <textarea id="doc-textarea" placeholder="Start typing… changes sync to everyone via Yjs CRDT"></textarea>
+      </div>
+      <div id="doc-footer"><span id="doc-sync-status">not connected</span><span id="doc-word-count">0 words</span><button id="doc-clear-btn" class="danger" title="Clear shared doc">Clear</button></div>
+    </div>
+
+    <!-- F3: Terminal panel -->
+    <div id="term-panel" class="sk-panel collapsed" style="display:none">
+      <div id="term-panel-header" class="sk-panel-header">⌨️ skreach Terminal<span id="term-operator-badge" style="font-size:10px;color:#f08a8a;margin-left:6px">operator-only · exec gated</span><span id="term-status-pill" class="pill" style="font-size:10px;margin-left:4px">idle</span><span class="toggle-icon" id="term-chevron" style="margin-left:auto;cursor:pointer">▼</span></div>
+      <div id="term-gated-banner" style="padding:4px 10px;font-size:11px;background:var(--surface-3);border-bottom:1px solid var(--border-mid);color:#8b94a7"><span style="color:var(--warn)">●</span> skreach control — commands are signed + RBAC-verified · exec disabled by default</div>
+      <div id="term-output" aria-live="polite" aria-label="Terminal output" style="height:200px;overflow-y:auto;padding:8px;font-family:var(--font-mono);font-size:12px;background:#000;color:#e4e7ee"></div>
+      <div id="term-confirm-row" style="display:none;padding:6px 10px;background:var(--surface-3);border-bottom:1px solid var(--border-mid);align-items:center;gap:8px">
+        <span style="color:var(--warn);font-size:13px">⚠</span>
+        <span id="term-confirm-summary" style="flex:1;font-size:12px">Confirm required</span>
+        <button id="term-confirm-yes-btn" class="danger" style="padding:4px 12px;font-size:12px">Confirm</button>
+        <button id="term-confirm-no-btn" style="padding:4px 12px;font-size:12px">Cancel</button>
+      </div>
+      <div id="term-input-row" style="display:flex;gap:6px;padding:6px 10px;border-top:1px solid var(--border-mid)">
+        <span style="color:#6b7280;font-family:var(--font-mono)">▶</span>
+        <input id="term-input" placeholder="command…" autocomplete="off" spellcheck="false" style="flex:1;background:#181b22;color:#e4e7ee;border:1px solid #2a2f3a;border-radius:6px;padding:6px 10px;font:inherit;font-size:12px;font-family:var(--font-mono)" />
+        <button id="term-run-btn" class="primary" style="font-size:12px">Run</button>
+      </div>
+    </div>
   </section>
 
   <aside id="roster">
@@ -732,6 +809,7 @@ async function connect(cfg) {
       .on(RoomEvent.TrackMuted,   (pub,p) => { const m = document.querySelector(`.mic-state[data-sid="${p.sid}"]`); if (m && pub.kind === 'audio') m.textContent = '🔇'; })
       .on(RoomEvent.TrackUnmuted, (pub,p) => { const m = document.querySelector(`.mic-state[data-sid="${p.sid}"]`); if (m && pub.kind === 'audio') m.textContent = '🎤'; })
       .on(RoomEvent.ActiveSpeakersChanged,   speakers       => onActiveSpeakers(speakers))
+      .on(RoomEvent.DataReceived,             (payload, participant) => routeDataMessage(payload, participant))
       .on(RoomEvent.Disconnected,            reason         => { log('disconnected:', reason); cleanup(); });
 
     await room.connect(livekitUrl, livekitToken);
@@ -747,10 +825,8 @@ async function connect(cfg) {
 
     $('#leave').disabled = false;
     $('#controls').classList.remove('hidden');
-
-    await toggleMic(true);
-    await toggleCam(true);
-
+    $('#speak-row').classList.remove('hidden');
+    setupWatchVideoListeners();
     refreshRoster();
     setInterval(refreshRoster, 5000);
   } catch (e) {
@@ -772,6 +848,437 @@ function cleanup() {
   setStatus('', 'disconnected');
 }
 
+// ── Data lanes: publish + route ───────────────────────────────────
+
+function publishLane(lanePayload) {
+  if (!room || !room.localParticipant) return Promise.resolve();
+  const bytes = new TextEncoder().encode(JSON.stringify(lanePayload));
+  return room.localParticipant.publishData(bytes, { reliable: true });
+}
+
+function routeDataMessage(raw, participant) {
+  let msg;
+  try { msg = JSON.parse(new TextDecoder().decode(raw)); } catch (e) { return; }
+  const lane = msg.lane || '';
+  if      (lane === 'chat')       onChatReceived(msg, participant);
+  else if (lane === 'whiteboard') onWhiteboardReceived(msg);
+  else if (lane === 'watch')      onWatchReceived(msg, participant);
+  else if (lane === 'doc')        onDocReceived(msg, participant);
+  else if (lane === 'term')       onTermReceived(msg, participant);
+}
+
+// ── D2: Chat ───────────────────────────────────────────────────────
+
+let chatOpen = false;
+let chatUnread = 0;
+
+function setChatOpen(open) {
+  chatOpen = open;
+  const panel = $('#chat-panel');
+  if (open) {
+    panel.classList.remove('collapsed'); panel.style.display = 'block';
+    $('#chat-chevron').textContent = '▲';
+    $('#chat-toggle-btn').classList.remove('off'); $('#chat-toggle-btn').classList.add('on');
+    chatUnread = 0;
+    const badge = $('#chat-unread-badge');
+    if (badge) { badge.style.display = 'none'; badge.textContent = '0'; }
+  } else {
+    panel.classList.add('collapsed'); panel.style.display = 'none';
+    $('#chat-chevron').textContent = '▼';
+    $('#chat-toggle-btn').classList.remove('on'); $('#chat-toggle-btn').classList.add('off');
+  }
+}
+
+function onChatReceived(msg, participant) {
+  const container = $('#chat-messages');
+  if (!container) return;
+  const div = document.createElement('div');
+  div.style.cssText = 'padding:4px 0;border-bottom:1px solid #1f2330;font-size:13px';
+  div.innerHTML = `<strong>${escapeHtml(msg.from||'unknown')}:</strong> ${escapeHtml(msg.text||'')}`;
+  container.appendChild(div);
+  container.scrollTop = container.scrollHeight;
+  if (!chatOpen) {
+    chatUnread++;
+    const badge = $('#chat-unread-badge');
+    if (badge) { badge.style.display = ''; badge.textContent = chatUnread; }
+  }
+}
+
+async function sendChatMessage() {
+  const input = $('#chat-input');
+  const text = input?.value?.trim();
+  if (!text || !room) return;
+  input.value = '';
+  await publishLane({ lane: 'chat', from: room.localParticipant.identity || 'me', text });
+  onChatReceived({ from: room.localParticipant.identity || 'me', text }, null);
+}
+
+// ── D3: Whiteboard ─────────────────────────────────────────────────
+
+let wbOpen = false;
+let excalidrawAPI = null;
+let wbDebounceTimer = null;
+let wbIgnoreNextUpdate = false;
+let wbPendingUpdate = null;
+
+function setWbOpen(open) {
+  wbOpen = open;
+  const panel = $('#wb-panel');
+  if (open) {
+    panel.classList.remove('collapsed'); panel.style.display = 'block';
+    $('#wb-chevron').textContent = '▲';
+    $('#wb-toggle-btn').classList.remove('off'); $('#wb-toggle-btn').classList.add('on');
+    if (!excalidrawAPI) mountExcalidraw();
+  } else {
+    panel.classList.add('collapsed'); panel.style.display = 'none';
+    $('#wb-chevron').textContent = '▼';
+    $('#wb-toggle-btn').classList.remove('on'); $('#wb-toggle-btn').classList.add('off');
+  }
+}
+
+function setWbStatus(text) {
+  const pill = $('#wb-status-pill');
+  if (pill) pill.textContent = text;
+}
+
+function mountExcalidraw() {
+  if (!window.React || !window.ReactDOM || !window.ExcalidrawLib) {
+    setWbStatus('CDN not loaded');
+    return;
+  }
+  const container = $('#wb-container');
+  if (!container) return;
+  const { Excalidraw } = window.ExcalidrawLib;
+  function WhiteboardApp() {
+    return React.createElement(Excalidraw, {
+      excalidrawAPI: (api) => { excalidrawAPI = api; window.excalidrawAPI = api; setWbStatus('ready'); },
+      theme: 'dark',
+      onChange: () => {
+        if (wbIgnoreNextUpdate || !excalidrawAPI || !room) return;
+        clearTimeout(wbDebounceTimer);
+        wbDebounceTimer = setTimeout(() => {
+          const elements = excalidrawAPI.getSceneElements();
+          const appState = excalidrawAPI.getAppState();
+          publishLane({ lane: 'whiteboard', elements, appState: { viewBackgroundColor: appState.viewBackgroundColor, zoom: appState.zoom, scrollX: appState.scrollX, scrollY: appState.scrollY } })
+            .catch(e => log('wb publish failed:', e.message));
+          setWbStatus('synced');
+        }, 400);
+      },
+    });
+  }
+  try {
+    const root = ReactDOM.createRoot(container);
+    root.render(React.createElement(WhiteboardApp));
+    setWbStatus('mounting…');
+    // Apply any pending update received while panel was closed
+    if (wbPendingUpdate) {
+      setTimeout(() => {
+        if (excalidrawAPI && wbPendingUpdate) {
+          try { excalidrawAPI.updateScene({ elements: wbPendingUpdate.elements || [], appState: wbPendingUpdate.appState || {} }); setWbStatus('synced'); } catch (e) { log('wb pending update failed:', e.message); }
+          wbPendingUpdate = null;
+        }
+      }, 200);
+    }
+  } catch (e) { setWbStatus('mount error'); log('wb mount error:', e.message); }
+}
+
+function onWhiteboardReceived(msg) {
+  if (excalidrawAPI) {
+    wbIgnoreNextUpdate = true;
+    try { excalidrawAPI.updateScene({ elements: msg.elements || [], appState: msg.appState || {} }); setWbStatus('synced'); }
+    catch (e) { log('wb updateScene failed:', e.message); }
+  } else {
+    // Store update for when panel is first opened
+    wbPendingUpdate = msg;
+  }
+}
+
+// ── D4: Watch-together ─────────────────────────────────────────────
+
+let watchOpen = false;
+let watchIsHost = false;
+let watchHostTs = 0;
+let watchHostId = null;
+let watchIgnoreEvents = false;
+const watchEl = () => $('#watch-video');
+
+function setWatchOpen(open) {
+  watchOpen = open;
+  const panel = $('#watch-panel');
+  if (open) {
+    panel.classList.remove('collapsed'); panel.style.display = 'block';
+    $('#watch-chevron').textContent = '▲';
+    $('#watch-toggle-btn').classList.remove('off'); $('#watch-toggle-btn').classList.add('on');
+  } else {
+    panel.classList.add('collapsed'); panel.style.display = 'none';
+    $('#watch-chevron').textContent = '▼';
+    $('#watch-toggle-btn').classList.remove('on'); $('#watch-toggle-btn').classList.add('off');
+  }
+}
+
+function setWatchStatus(text) {
+  const pill = $('#watch-status-pill');
+  if (pill) pill.textContent = text;
+}
+
+function watchSetButtons(loaded) {
+  $('#watch-play-btn').disabled = !loaded;
+  $('#watch-pause-btn').disabled = !loaded;
+  $('#watch-sync-btn').disabled = !loaded;
+}
+
+async function watchLoadAndShare() {
+  const url = $('#watch-url').value.trim();
+  if (!url) return;
+  const v = watchEl();
+  v.src = url; v.style.display = 'block';
+  $('#watch-placeholder').style.display = 'none';
+  watchSetButtons(true);
+  watchIsHost = true;
+  watchHostId = room?.localParticipant?.identity || 'me';
+  $('#watch-host-label').style.display = 'inline-block';
+  $('#watch-host-label').textContent = 'you are host';
+  setWatchStatus('loaded · sharing');
+  await publishLane({ lane: 'watch', action: 'load', url }).catch(e => log('watch publish failed:', e.message));
+}
+
+async function watchPlay() {
+  const v = watchEl(); if (!v.src) return;
+  watchIgnoreEvents = true;
+  await v.play();
+  await publishLane({ lane: 'watch', action: 'play', t: v.currentTime });
+  setWatchStatus('playing');
+  watchIgnoreEvents = false;
+}
+
+async function watchPause() {
+  const v = watchEl(); if (!v.src) return;
+  v.pause();
+  await publishLane({ lane: 'watch', action: 'pause', t: v.currentTime });
+  setWatchStatus('paused');
+}
+
+function watchSync() {
+  if (!watchHostTs) { setWatchStatus('no host position'); return; }
+  const v = watchEl(); if (!v.src) return;
+  watchIgnoreEvents = true;
+  v.currentTime = watchHostTs;
+  setWatchStatus(`synced to ${watchHostTs.toFixed(1)}s`);
+  watchIgnoreEvents = false;
+}
+
+function onWatchReceived(msg, participant) {
+  const sender = participant?.identity || 'unknown';
+  const v = watchEl();
+  if (msg.action === 'load') {
+    if (msg.url) { v.src = msg.url; v.style.display = 'block'; $('#watch-placeholder').style.display = 'none'; $('#watch-url').value = msg.url; watchSetButtons(true); watchIsHost = false; watchHostId = sender; $('#watch-host-label').style.display = 'inline-block'; $('#watch-host-label').textContent = `host: ${sender}`; setWatchStatus(`loaded from ${sender}`); if (!watchOpen) { setWatchOpen(true); $('#watch-panel').style.display = 'block'; } }
+  } else if (msg.action === 'play') {
+    watchHostTs = msg.t ?? v.currentTime; watchIgnoreEvents = true;
+    if (Math.abs(v.currentTime - watchHostTs) > 1.5) v.currentTime = watchHostTs;
+    try { v.play(); setWatchStatus('playing (host)'); } catch(e) { setWatchStatus('waiting'); }
+    watchIgnoreEvents = false;
+  } else if (msg.action === 'pause') {
+    watchHostTs = msg.t ?? v.currentTime; watchIgnoreEvents = true; v.pause();
+    if (Math.abs(v.currentTime - watchHostTs) > 1.5) v.currentTime = watchHostTs;
+    setWatchStatus(`paused (host)`); watchIgnoreEvents = false;
+  } else if (msg.action === 'seek') {
+    watchHostTs = msg.t ?? 0; watchIgnoreEvents = true; v.currentTime = watchHostTs;
+    setWatchStatus(`seeked (host)`); watchIgnoreEvents = false;
+  }
+}
+
+function setupWatchVideoListeners() {
+  const v = watchEl();
+  v.addEventListener('seeked', () => {
+    if (watchIgnoreEvents || !watchIsHost || !room) return;
+    publishLane({ lane: 'watch', action: 'seek', t: v.currentTime }).catch(e => log('watch seek publish failed:', e.message));
+  });
+}
+
+// ── D5: Collaborative doc (Yjs CRDT) ───────────────────────────────
+
+let docOpen = false;
+let ydoc = null;
+let ytext = null;
+let docIgnoreInput = false;
+let docUpdateTimer = null;
+let docPendingUpdate = null;
+const docPresence = new Set();
+
+function initYDoc() {
+  if (ydoc) return true;
+  if (!window.Y) { log('doc: Yjs CDN not available'); setDocStatus('Yjs CDN unavailable'); return false; }
+  ydoc = new window.Y.Doc();
+  ytext = ydoc.getText('body');
+  ytext.observe(() => {
+    const ta = $('#doc-textarea'); if (!ta) return;
+    const newVal = ytext.toString();
+    if (ta.value !== newVal) { docIgnoreInput = true; ta.value = newVal; docIgnoreInput = false; }
+    const wc = $('#doc-word-count');
+    if (wc) { const words = newVal.trim() === '' ? 0 : newVal.trim().split(/\s+/).length; wc.textContent = `${words} word${words === 1 ? '' : 's'}`; }
+  });
+  ydoc.on('update', (update, origin) => {
+    if (origin === 'remote' || !room) return;
+    if (docPendingUpdate) { docPendingUpdate = window.Y.mergeUpdates([docPendingUpdate, update]); }
+    else { docPendingUpdate = update; }
+    clearTimeout(docUpdateTimer);
+    docUpdateTimer = setTimeout(() => {
+      if (!docPendingUpdate || !room) { docPendingUpdate = null; return; }
+      const b64 = btoa(String.fromCharCode(...new Uint8Array(docPendingUpdate)));
+      docPendingUpdate = null;
+      publishLane({ lane: 'doc', update: b64, from: room.localParticipant.identity || 'me' }).catch(e => log('doc publish failed:', e.message));
+      setDocStatus('synced');
+    }, 120);
+  });
+  return true;
+}
+
+function setDocStatus(text) {
+  const pill = $('#doc-status-pill');
+  if (pill) pill.textContent = text;
+  const s = $('#doc-sync-status');
+  if (s) s.textContent = text;
+}
+
+function setDocPresence(identity, active) {
+  if (active) docPresence.add(identity); else docPresence.delete(identity);
+  const bar = $('#doc-presence-bar'); if (!bar) return; bar.innerHTML = '';
+  const self = room?.localParticipant?.identity || '';
+  for (const id of docPresence) {
+    const p = document.createElement('span'); p.className = 'doc-peer-pill'; p.style.cssText = 'display:inline-block;padding:2px 8px;border-radius:10px;background:var(--surface-3);font-size:11px;margin:2px 4px 2px 0';
+    p.textContent = (id === self ? '✎ ' : '👤 ') + id; bar.appendChild(p);
+  }
+  if (docPresence.size === 0) { const p = document.createElement('span'); p.style.cssText = 'opacity:.45;font-size:11px;padding:2px 8px'; p.textContent = 'no collaborators yet'; bar.appendChild(p); }
+}
+
+function setDocOpen(open) {
+  docOpen = open;
+  const panel = $('#doc-panel');
+  if (open) {
+    panel.classList.remove('collapsed'); panel.style.display = 'block';
+    $('#doc-chevron').textContent = '▲';
+    $('#doc-toggle-btn').classList.remove('off'); $('#doc-toggle-btn').classList.add('on');
+    if (initYDoc()) {
+      setDocStatus('ready');
+      const self = room?.localParticipant?.identity;
+      if (self) { setDocPresence(self, true); publishLane({ lane: 'doc', action: 'join', from: self }).catch(e => log('doc join failed:', e.message)); }
+    }
+    const ta = $('#doc-textarea');
+    if (ta && !ta._docBound) { ta._docBound = true; ta.addEventListener('input', onDocTextareaInput); }
+  } else {
+    panel.classList.add('collapsed'); panel.style.display = 'none';
+    $('#doc-chevron').textContent = '▼';
+    $('#doc-toggle-btn').classList.remove('on'); $('#doc-toggle-btn').classList.add('off');
+  }
+}
+
+function onDocTextareaInput() {
+  if (docIgnoreInput || !ytext) return;
+  const ta = $('#doc-textarea');
+  const newVal = ta.value;
+  const oldVal = ytext.toString();
+  if (newVal === oldVal) return;
+  let start = 0;
+  while (start < oldVal.length && start < newVal.length && oldVal[start] === newVal[start]) start++;
+  let oldEnd = oldVal.length, newEnd = newVal.length;
+  while (oldEnd > start && newEnd > start && oldVal[oldEnd - 1] === newVal[newEnd - 1]) { oldEnd--; newEnd--; }
+  ydoc.transact(() => {
+    if (oldEnd > start) ytext.delete(start, oldEnd - start);
+    if (newEnd > start) ytext.insert(start, newVal.slice(start, newEnd));
+  }, 'local');
+}
+
+function onDocReceived(msg, participant) {
+  const sender = participant?.identity || msg.from || 'unknown';
+  if (msg.action === 'join') { setDocPresence(sender, true); return; }
+  if (msg.action === 'leave') { setDocPresence(sender, false); return; }
+  if (!msg.update) return;
+  if (!ydoc) { initYDoc(); if (!ydoc) return; }
+  try {
+    const binary = atob(msg.update);
+    const u8 = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) u8[i] = binary.charCodeAt(i);
+    window.Y.applyUpdate(ydoc, u8, 'remote');
+    setDocStatus('synced');
+    setDocPresence(sender, true);
+  } catch (e) { log('doc applyUpdate failed:', e.message); }
+}
+
+// ── F3: Terminal ───────────────────────────────────────────────────
+
+let termOpen = false;
+const termJobs = new Map();
+let termPendingConfirm = null;
+
+function termGenId() {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => { const r = Math.random()*16|0; return (c==='x'?r:(r&0x3)|0x8).toString(16); });
+}
+
+function setTermOpen(open) {
+  termOpen = open;
+  const panel = $('#term-panel');
+  if (open) { panel.classList.remove('collapsed'); panel.style.display = 'block'; $('#term-chevron').textContent = '▲'; $('#term-toggle-btn').classList.remove('off'); $('#term-toggle-btn').classList.add('on'); }
+  else { panel.classList.add('collapsed'); panel.style.display = 'none'; $('#term-chevron').textContent = '▼'; $('#term-toggle-btn').classList.remove('on'); $('#term-toggle-btn').classList.add('off'); }
+}
+
+function setTermStatus(text) { const p = $('#term-status-pill'); if (p) p.textContent = text; }
+
+function termAppendLine(text, cls) {
+  const out = $('#term-output'); if (!out) return;
+  const s = document.createElement('span'); s.className = 'term-line ' + cls; s.textContent = text; out.appendChild(s); out.scrollTop = out.scrollHeight;
+}
+
+function termShowConfirm(summary, cmdId) {
+  termPendingConfirm = { cmd_id: cmdId, summary };
+  const el = $('#term-confirm-summary');
+  if (el) el.textContent = summary;
+  $('#term-confirm-row').style.display = 'flex';
+}
+
+function termHideConfirm() { termPendingConfirm = null; $('#term-confirm-row').style.display = 'none'; }
+
+async function termRunCommand() {
+  const inp = $('#term-input'); const cmd = inp ? inp.value.trim() : ''; if (!cmd || !room) return;
+  if (inp) inp.value = '';
+  const id = termGenId(); termJobs.set(id, { cmd, startTs: Date.now() });
+  termAppendLine(`▶ ${cmd}`, 'term-prompt');
+  try { await publishLane({ lane: 'term', action: 'run', cmd, id }); setTermStatus('running…'); }
+  catch (e) { termAppendLine(`[send failed: ${e.message}]`, 'term-system'); termJobs.delete(id); setTermStatus('send error'); }
+}
+
+function onTermReceived(msg) {
+  const { action, id, chunk, stream, code, reason, summary, cmd_id } = msg;
+  if (action === 'output') {
+    const cls = stream === 'stderr' ? 'term-stderr' : 'term-stdout';
+    const lines = (chunk || '').split('\n');
+    for (let i = 0; i < lines.length - (lines[lines.length-1]===''?1:0); i++) termAppendLine(lines[i], cls);
+    setTermStatus('streaming…');
+  } else if (action === 'exit') {
+    const job = termJobs.get(id); const elapsed = job ? `${((Date.now()-job.startTs)/1000).toFixed(1)}s` : '';
+    termAppendLine(`[exit ${code}${elapsed?' · '+elapsed:''}]`, code===0?'term-exit-ok':'term-exit-fail');
+    termJobs.delete(id); setTermStatus(code===0?'done':`exit ${code}`);
+  } else if (action === 'denied' || action === 'exec_disabled') {
+    termAppendLine(`[${action==='exec_disabled'?'exec disabled':'denied'}] ${reason||''}`, 'term-denied');
+    termJobs.delete(id); setTermStatus('denied');
+  } else if (action === 'confirm_required') {
+    termAppendLine(`[confirm required] ${summary||''}`, 'term-confirm');
+    termShowConfirm(summary||'confirm', cmd_id); setTermStatus('confirm required');
+  }
+}
+
+async function termSendConfirm(accept) {
+  if (!termPendingConfirm || !room) { termHideConfirm(); return; }
+  const { cmd_id } = termPendingConfirm; termHideConfirm();
+  if (accept) {
+    const confirmId = termGenId();
+    try { await publishLane({ lane: 'term', action: 'confirm', cmd_id, id: confirmId }); termAppendLine(`[confirm sent]`, 'term-system'); setTermStatus('confirming…'); }
+    catch (e) { termAppendLine(`[confirm send failed: ${e.message}]`, 'term-system'); }
+  } else {
+    try { await publishLane({ lane: 'term', action: 'cancel', cmd_id }); termAppendLine(`[cancelled]`, 'term-system'); setTermStatus('cancelled'); }
+    catch (e) { termAppendLine(`[cancel send failed: ${e.message}]`, 'term-system'); }
+  }
+}
+
 async function leave() {
   if (room) { await room.disconnect(); room = null; }
   cleanup();
@@ -785,6 +1292,28 @@ $('#cam-select').addEventListener('change',  () => { if (room?.localParticipant.
 $('#screen-share-btn').addEventListener('click', toggleScreenShare);
 $('#end-call').addEventListener('click', endCall);
 $('#leave').addEventListener('click', leave);
+$('#chat-toggle-btn').addEventListener('click', () => setChatOpen(!chatOpen));
+$('#chat-panel-header').addEventListener('click', () => setChatOpen(!chatOpen));
+$('#chat-send').addEventListener('click', sendChatMessage);
+$('#chat-input').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); sendChatMessage(); } });
+$('#wb-toggle-btn').addEventListener('click', () => setWbOpen(!wbOpen));
+$('#wb-panel-header').addEventListener('click', () => setWbOpen(!wbOpen));
+$('#watch-toggle-btn').addEventListener('click', () => { setWatchOpen(!watchOpen); if (watchOpen) $('#watch-panel').style.display = 'block'; });
+$('#watch-panel-header').addEventListener('click', () => setWatchOpen(!watchOpen));
+$('#watch-load-btn').addEventListener('click', watchLoadAndShare);
+$('#watch-play-btn').addEventListener('click', watchPlay);
+$('#watch-pause-btn').addEventListener('click', watchPause);
+$('#watch-sync-btn').addEventListener('click', watchSync);
+$('#watch-url').addEventListener('keydown', e => { if (e.key === 'Enter') watchLoadAndShare(); });
+$('#doc-toggle-btn').addEventListener('click', () => { setDocOpen(!docOpen); if (docOpen) $('#doc-panel').style.display = 'block'; });
+$('#doc-panel-header').addEventListener('click', () => setDocOpen(!docOpen));
+$('#doc-clear-btn').addEventListener('click', () => { if (!ytext || !ydoc) return; if (!confirm('Clear the shared document for all collaborators?')) return; ydoc.transact(() => { ytext.delete(0, ytext.length); }, 'local'); });
+$('#term-toggle-btn').addEventListener('click', () => { setTermOpen(!termOpen); if (termOpen) $('#term-panel').style.display = 'block'; });
+$('#term-panel-header').addEventListener('click', () => setTermOpen(!termOpen));
+$('#term-run-btn').addEventListener('click', termRunCommand);
+$('#term-input').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); termRunCommand(); } });
+$('#term-confirm-yes-btn').addEventListener('click', () => termSendConfirm(true));
+$('#term-confirm-no-btn').addEventListener('click', () => termSendConfirm(false));
 
 // ── Init ────────────────────────────────────────────────────────────────────────
 (async () => {

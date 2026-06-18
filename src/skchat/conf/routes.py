@@ -106,6 +106,14 @@ def _url() -> str:
     return os.getenv("SKCHAT_LIVEKIT_URL", "ws://skworld-100:7880")
 
 
+def _public_url(request: Request) -> str:
+    try:
+        from skchat.livekit_routes import public_aware_livekit_url
+        return public_aware_livekit_url(request)
+    except Exception:
+        return _url()
+
+
 def _http_url(ws_url: str) -> str:
     return ws_url.replace("ws://", "http://").replace("wss://", "https://")
 
@@ -228,7 +236,7 @@ def register_conf_routes(
             {
                 "conf_id": conf.conf_id,
                 "room": conf.room,
-                "url": _url(),
+                "url": _public_url(request),
                 "identity": host,
                 "name": host.split("@")[0],
                 "role": ConfRole.SOVEREIGN.value,
@@ -265,7 +273,7 @@ def register_conf_routes(
             {
                 "conf_id": conf.conf_id,
                 "room": conf.room,
-                "url": _url(),
+                "url": _public_url(request),
                 "identity": identity,
                 "name": name,
                 "role": role.value,
