@@ -611,6 +611,19 @@ def register_conf_routes(
             "room": conf.room,
         })
 
+    @app.get("/app/{rest:path}", response_class=FileResponse)
+    async def flutter_app(rest: str) -> FileResponse:
+        """Serve the Flutter web app (skchat-app build).
+        
+        Maps /app/* to static/app/ (the Flutter web build output).
+        If the requested file doesn't exist, serve index.html for SPA routing.
+        """
+        base = Path(__file__).resolve().parent.parent / "static" / "app"
+        path = base / rest if rest else base / "index.html"
+        if path.exists() and path.is_file():
+            return FileResponse(path)
+        return FileResponse(base / "index.html")
+
     @app.get("/conf/{room}", response_class=HTMLResponse)
     async def conf_page(room: str) -> HTMLResponse:  # noqa: ARG001
         """Serve the conference web client.
