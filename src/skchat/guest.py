@@ -293,15 +293,25 @@ def build_livekit_token(
     livekit_api_key: str,
     livekit_api_secret: str,
     now_fn: Optional[object] = None,
+    allow_screenshare: bool = False,
 ) -> str:
     """Mint a LiveKit participant JWT from a validated ``GuestToken``.
 
     Grants are restricted to the guest permission set (see §5 of design doc):
-      - can_publish=True (audio + camera only; sources restricted)
+      - can_publish=True (audio + camera only by default; sources restricted)
       - can_subscribe=True
       - can_publish_data=True (chat lane)
-      - can_publish_sources=["camera", "microphone"]  (no screen-share)
+      - can_publish_sources=["camera", "microphone"]  (no screen-share by default)
       - recorder=False
+
+    Conference-call invites pass ``allow_screenshare=True`` to additionally grant
+    the screenshare sources. In that mode the grant is sourced from the single
+    conference factory (``roles.conf_grant_for(ConfRole.GUEST_CONF, ...)``), which
+    structurally guarantees a conf guest still NEVER receives
+    room_admin/room_record/room_destroy — only the publish-source set widens.
+
+    The default (``allow_screenshare=False``) is unchanged and screenshare-stripped,
+    so existing audio-space guest joins are byte-for-byte backward compatible.
 
     TTL is bounded to the remaining lifetime of the invite token.
 
@@ -329,7 +339,20 @@ def build_livekit_token(
     # Optional source restriction — set via attribute to stay compatible with
     # older livekit-api versions that may not have this kwarg.
     if hasattr(grant, "can_publish_sources"):
-        grant.can_publish_sources = ["camera", "microphone"]
+        if allow_screenshare:
+            # Route through the single conf grant factory so a conf guest's
+            # source set (and its admin denial) come from one audited place.
+            from skchat.spaces.roles import ConfRole, conf_grant_for
+
+            conf = conf_grant_for(ConfRole.GUEST_CONF, guest.room)
+            grant.can_publish_sources = conf.can_publish_sources
+            # Belt-and-suspenders: the factory already forces these False for a
+            # conf guest; never let them leak onto the LiveKit grant.
+            grant.room_admin = conf.room_admin  # False
+            if hasattr(grant, "room_record"):
+                grant.room_record = conf.room_record  # False
+        else:
+            grant.can_publish_sources = ["camera", "microphone"]
 
     token = (
         api.AccessToken(livekit_api_key, livekit_api_secret)
