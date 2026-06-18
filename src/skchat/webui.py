@@ -101,6 +101,15 @@ try:
     _register_glossa_routes(app)
 except ImportError as _e:
     logger.warning("glossa routes not registered: %s", _e)
+# Guest invite routes — one-link ephemeral call access. /join/{room} + /guest/join
+# stay public (invite-JWT-gated); /guest/invite + /guest/revoke are operator-gated
+# inside guest.py (loopback/tailnet client or SKCHAT_GUEST_OPERATOR_TOKEN).
+try:
+    from .guest import register_guest_routes as _register_guest_routes
+
+    _register_guest_routes(app)
+except ImportError as _e:
+    logger.warning("guest routes not registered: %s", _e)
 
 
 @app.get("/health")
