@@ -53,6 +53,60 @@ cfg = ice_config("lumina@skworld.io", "public@guest", {"on_tailnet": False})
 #   [1] {urls: ["turn:noroc2027.tail204f0c.ts.net:3478", ...], username, credential}
 ```
 
+---
+
+## E2E Conf Verification — Full Pipeline
+
+The `scripts/e2e-conf-verify.sh` script runs the full lifecycle:
+
+```bash
+bash scripts/e2e-conf-verify.sh
+```
+
+It tests all 9 phases:
+
+| # | Phase | What it proves |
+|---|-------|---------------|
+| 1 | Conf creation | REST API works, deterministic room IDs |
+| 2 | Token minting | LiveKit JWT minted with correct role/grants |
+| 3 | Guest invite | Invite JWT signed, URL points to Funnel |
+| 4 | Guest join (Funnel) | Public Funnel reachable, guest gets LiveKit token + wss URL |
+| 5 | ICE config | STUN + sovereign coturn TURN in ICE servers |
+| 6 | Conf health | Health endpoint reports live confs + LiveKit status |
+| 7 | Admin isolation | /guest/invite, /pair/scan, /spaces return 404 on Funnel |
+| 8 | Conf listing | GET /conf returns live conferences |
+| 9 | End conf | Host-gated teardown, ok=true |
+
+### Full multi-party video call checklist
+
+Prerequisites for a real browser-based call:
+1. ✅ Conf created (phase 1)
+2. ✅ Tokens minted for each participant (phase 2)
+3. ✅ Invite URL generated (phase 3)
+4. ✅ Funnel ingress live on `:10000` (phase 4)
+5. ✅ ICE config serves STUN + sovereign TURN (phase 5)
+6. Browser 1 (host): navigate to `https://noroc2027.tail204f0c.ts.net/conf/<room>`
+7. Browser 2 (guest): open invite URL → enter name → join
+8. Both should see each other's camera/mic with screenshare option
+
+### Federation join verification
+
+Cross-instance conf join (two hosts):
+```bash
+# On host A, create conf
+CONF=$(curl -s http://localhost:8765/conf/create -X POST \
+  -H 'Content-Type: application/json' \
+  -d '{"host_fqid":"lumina@chef.skworld","title":"Federated"}')
+ROOM=$(echo "$CONF" | python3 -c "import sys,json; print(json.load(sys.stdin)['room'])")
+
+# Present capauth-signed assertion to host A's auth endpoint
+# (requires a capauth-signed {claim, sig} from the remote identity)
+curl -s "http://localhost:8765/conf/$ROOM/federated-token" -X POST \
+  -H 'Content-Type: application/json' \
+  -d '{"claim":{"fqid":"user@remote.host","nonce":"n1","space_id":"s","issued_at":1000000},"sig":"signed-assertion"}'
+# Returns: {token, url, role, identity, conf_id, room}
+```
+
 ## Public paths (exposed via Funnel on `:10000`)
 | Path | Type | Gated by |
 |------|------|----------|
