@@ -21,9 +21,10 @@ from __future__ import annotations
 
 import logging
 import os
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
 from skchat.conf.room import Conf, ConfRegistry
 from skchat.spaces.roles import ConfRole
@@ -241,3 +242,17 @@ def register_conf_routes(
                 ]
             }
         )
+
+    @app.get("/conf/{room}", response_class=HTMLResponse)
+    async def conf_page(room: str) -> HTMLResponse:  # noqa: ARG001
+        """Serve the conference web client (mirrors livekit_routes' /livekit/{room}).
+
+        The page reads the conf room from its own URL path, mints a join token via
+        ``POST /conf/{room}/token``, and joins the SFU — so a bare ``/conf/<room>``
+        link is all a participant needs. ``room`` is unused server-side (the static
+        HTML does the routing) but is part of the URL contract.
+        """
+        static = Path(__file__).resolve().parent.parent / "static" / "conf.html"
+        if static.exists():
+            return FileResponse(static, media_type="text/html")
+        return HTMLResponse("conf.html missing", status_code=500)

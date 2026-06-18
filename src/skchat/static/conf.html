@@ -1,0 +1,826 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>SKChat · Conference</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<!-- Sovereign Conf Calls — multi-party VIDEO conference web client.
+
+     The media core (Room ctor, attachTrack/grid render, screenshare publish,
+     mic/cam toggles, active-speaker highlight) is lifted verbatim from the
+     proven livekit.html so we never reinvent WebRTC. What changes:
+       • conf-id comes from the URL path/param (no manual room input).
+       • identity comes from the conf token (no manual identity input).
+       • the join token is minted via POST /conf/{room}/token (NOT /livekit/token).
+       • a live roster panel bound to GET /conf/{room}/participants.
+       • host controls (End call → POST /conf/{room}/end) shown only when the
+         token role is "sovereign".
+     The LiveKit ws URL still comes from /livekit/config (request-aware). -->
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+  /* ── 2027 Design System tokens (mirrors livekit.html) ─────────────────────── */
+  :root {
+    color-scheme: dark;
+    --canvas:      #0b0d10;
+    --surface-1:   #111318;
+    --surface-2:   #16191f;
+    --surface-3:   #1d2029;
+    --border-sub:  #1c1f26;
+    --border-mid:  #252a35;
+    --border-hi:   #343a4a;
+    --accent:      #2dd4bf;
+    --accent-dim:  #14b8a6;
+    --accent-mute: #0d7a6e22;
+    --self-blue:   #3b82f6;
+    --self-blue-dim: #2563eb;
+    --good:   #34d399;
+    --bad:    #f87171;
+    --warn:   #fbbf24;
+    --screen: #a78bfa;
+    --speaking: #2dd4bf;
+    --font-sans: 'Inter', ui-sans-serif, system-ui, sans-serif;
+    --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+    --shadow-card: 0 2px 8px rgba(0,0,0,.45), 0 0 0 1px var(--border-sub);
+    --shadow-panel:0 4px 16px rgba(0,0,0,.5), 0 0 0 1px var(--border-mid);
+    --t-rise:   220ms;
+    --t-expand: 180ms;
+    --t-pulse:  1s;
+    --r-sm:  8px;
+    --r-md:  11px;
+    --r-lg:  13px;
+    --r-xl:  14px;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    font-family: var(--font-sans);
+    background: var(--canvas);
+    color: #d4d9e8;
+    margin: 0; padding: 0;
+    min-height: 100vh;
+  }
+
+  /* ── Header ──────────────────────────────────────────────────────────────── */
+  header {
+    padding: 11px 16px;
+    border-bottom: 1px solid var(--border-sub);
+    display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+    position: sticky; top: 0;
+    background: var(--canvas);
+    box-shadow: 0 1px 0 var(--border-sub), 0 2px 8px rgba(0,0,0,.35);
+    z-index: 20;
+  }
+  header h1 {
+    font-size: 14px; margin: 0; font-weight: 600;
+    white-space: nowrap; letter-spacing: -.01em;
+    color: #e8ecf4;
+  }
+
+  input, select, button {
+    background: var(--surface-2);
+    color: #d4d9e8;
+    border: 1px solid var(--border-mid);
+    padding: 6px 10px;
+    border-radius: var(--r-sm);
+    font: inherit; font-size: 13px;
+    transition: border-color var(--t-expand) ease, background var(--t-expand) ease;
+  }
+  button { cursor: pointer; }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: .4; cursor: not-allowed; }
+  button.primary {
+    background: var(--accent-dim); border-color: var(--accent-dim);
+    color: #0b0d10; font-weight: 600;
+  }
+  button.primary:hover:not(:disabled) { background: var(--accent); border-color: var(--accent); }
+  button.danger  { border-color: #5a2a2a; }
+  button.danger:hover:not(:disabled) { border-color: var(--bad); }
+  button.toggle.on  { background: var(--accent-mute); border-color: var(--accent); color: var(--accent); }
+  button.toggle.off { background: var(--surface-2);   border-color: var(--border-mid); color: #6b7280; }
+
+  /* ── Status indicator ────────────────────────────────────────────────────── */
+  #status {
+    font-size: 12px; color: #6b7280;
+    margin-left: auto; display: flex; align-items: center; gap: 6px;
+    font-variant-numeric: tabular-nums;
+  }
+  #status .dot { width: 7px; height: 7px; border-radius: 50%; background: #3a3f4e; flex-shrink:0; }
+  #status.connected   .dot { background: var(--good);  box-shadow: 0 0 5px var(--good); }
+  #status.connecting  .dot { background: var(--warn);  animation: pulse var(--t-pulse) infinite; }
+  @keyframes pulse   { 50% { opacity: .35; } }
+
+  @keyframes rise {
+    from { opacity: 0; transform: translateY(6px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  /* ── Layout ──────────────────────────────────────────────────────────────── */
+  main { padding: 14px; max-width: 1400px; margin: 0 auto;
+         display: grid; grid-template-columns: 1fr 240px; gap: 14px; align-items: start; }
+  @media (max-width: 760px) { main { grid-template-columns: 1fr; } }
+
+  .banner {
+    padding: 11px 14px; border-radius: var(--r-md);
+    margin-bottom: 14px; font-size: 13px; line-height: 1.5;
+    animation: rise var(--t-rise) ease both;
+  }
+  .banner.warn  { background: #2c2110; border: 1px solid #6b4c1c; color: #f5d9a0; }
+  .banner.error { background: #2a1212; border: 1px solid #7a2626; color: #f5b8b8; }
+  .banner code  { font-family: var(--font-mono); background: rgba(0,0,0,.4); padding: 1px 6px; border-radius: 4px; font-size: 11px; }
+
+  .controls { display: flex; gap: 8px; padding: 10px 0; flex-wrap: wrap; align-items: center; }
+  .controls.hidden { display: none; }
+
+  /* ── Video grid (lifted from livekit.html) ───────────────────────────────── */
+  #grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr)); gap: 10px; }
+
+  .tile {
+    background: var(--surface-1);
+    border: 1px solid var(--border-sub);
+    border-radius: var(--r-xl);
+    overflow: hidden; position: relative;
+    aspect-ratio: 16/9;
+    box-shadow: var(--shadow-card);
+    transition: border-color var(--t-expand) ease, box-shadow var(--t-expand) ease;
+    animation: rise var(--t-rise) ease both;
+  }
+  .tile:hover { border-color: var(--border-hi); }
+
+  .tile.self-tile { border-color: color-mix(in srgb, var(--self-blue) 40%, transparent); }
+  .tile.self-tile:hover { border-color: var(--self-blue); }
+
+  .tile.screenshare-tile { border-color: color-mix(in srgb, var(--screen) 40%, transparent); }
+  .tile.screenshare-tile:hover { border-color: var(--screen); }
+
+  /* Active-speaker highlight — a glowing teal ring */
+  .tile.speaking {
+    border-color: var(--speaking) !important;
+    box-shadow: 0 0 0 2px var(--speaking), 0 0 14px 2px color-mix(in srgb, var(--speaking) 40%, transparent);
+  }
+
+  .tile video {
+    width: 100%; height: 100%;
+    object-fit: cover; background: #000; display: block;
+  }
+  .tile .placeholder {
+    width: 100%; height: 100%;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 6px;
+    background: var(--surface-1);
+    color: #4b5263; font-size: 12px;
+  }
+  .tile .placeholder .glyph { font-size: 40px; opacity: .5; }
+
+  .tile .label {
+    position: absolute; bottom: 6px; left: 8px;
+    font-size: 11px; font-weight: 500;
+    background: rgba(11,13,16,.75);
+    color: #c8cedd;
+    padding: 3px 8px; border-radius: 5px;
+    border: 1px solid var(--border-sub);
+  }
+  .tile .badge {
+    position: absolute; top: 6px; right: 8px;
+    font-size: 10px; font-weight: 600;
+    background: var(--accent-mute); color: var(--accent);
+    border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+    padding: 2px 7px; border-radius: 99px;
+  }
+  .tile .badge.screen-badge {
+    background: rgba(167,139,250,.12);
+    border-color: color-mix(in srgb, var(--screen) 30%, transparent);
+    color: var(--screen);
+  }
+  .tile .mic-state { position: absolute; bottom: 6px; right: 8px; font-size: 11px; }
+
+  .tile .fs-btn {
+    position: absolute; bottom: 6px; left: 8px;
+    font-size: 14px; line-height: 1; padding: 4px 8px;
+    border-radius: var(--r-sm);
+    background: rgba(11,13,16,.6); color: #c8cedd;
+    border: 1px solid var(--border-sub); cursor: pointer;
+    opacity: 0.45;
+    transition: opacity var(--t-expand) ease, background var(--t-expand) ease;
+  }
+  .tile:hover .fs-btn { opacity: 1; }
+  .tile .fs-btn:hover { background: var(--surface-3); border-color: var(--border-hi); }
+
+  /* Host-only kick button per remote tile */
+  .tile .kick-btn {
+    position: absolute; top: 6px; left: 8px;
+    font-size: 12px; line-height: 1; padding: 4px 8px;
+    border-radius: var(--r-sm);
+    background: rgba(42,18,18,.85); color: #f5b8b8;
+    border: 1px solid #7a2626; cursor: pointer;
+    opacity: 0; transition: opacity var(--t-expand) ease;
+  }
+  .tile:hover .kick-btn.host-visible { opacity: 1; }
+
+  .tile:fullscreen { background: #000; padding: 0; }
+  .tile:fullscreen video { width: 100vw; height: 100vh; object-fit: contain; display: block !important; }
+  .tile:fullscreen .placeholder { width: 100vw; height: 100vh; }
+  .tile:fullscreen .placeholder .glyph { font-size: 120px; }
+
+  /* ── Meta pills ──────────────────────────────────────────────────────────── */
+  .meta { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .pill {
+    font-size: 11px; padding: 2px 8px;
+    border-radius: 99px;
+    background: var(--surface-2); border: 1px solid var(--border-mid);
+    color: #8892a8;
+  }
+
+  /* ── Roster sidebar ──────────────────────────────────────────────────────── */
+  #roster {
+    background: var(--surface-1);
+    border: 1px solid var(--border-sub);
+    border-radius: var(--r-lg);
+    box-shadow: var(--shadow-card);
+    padding: 12px;
+    position: sticky; top: 70px;
+  }
+  #roster h2 {
+    font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+    color: #6b7280; margin: 0 0 10px; font-weight: 600;
+  }
+  #roster-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+  #roster-list li {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 13px; color: #c8cedd;
+    padding: 6px 8px; border-radius: var(--r-sm);
+    background: var(--surface-2); border: 1px solid var(--border-sub);
+  }
+  #roster-list li.speaking { border-color: var(--speaking); }
+  #roster-list li .rdot { width: 7px; height: 7px; border-radius: 50%; background: var(--good); flex-shrink: 0; }
+  #roster-list li.you { border-color: color-mix(in srgb, var(--self-blue) 40%, transparent); }
+  #roster-empty { font-size: 12px; color: #4b5263; }
+</style>
+</head>
+<body>
+<header>
+  <h1>📹 SKChat Conference</h1>
+  <span class="pill" id="room-pill">room: —</span>
+  <span class="pill" id="peers-pill">0 peers</span>
+  <span class="pill" id="role-pill" style="display:none">host</span>
+  <div id="status"><span class="dot"></span><span id="status-text">starting…</span></div>
+</header>
+
+<main>
+  <section>
+    <div id="banner-host"></div>
+
+    <div class="controls hidden" id="controls">
+      <button id="mic-toggle"    class="toggle off">🎤 Mic OFF</button>
+      <button id="cam-toggle"    class="toggle off">📷 Cam OFF</button>
+      <button id="screen-share-btn" class="toggle off">🖥️ Screen</button>
+      <select id="mic-select" title="Microphone"></select>
+      <select id="cam-select" title="Camera"></select>
+      <span id="screen-unsupported-msg" style="display:none;color:var(--warn);font-size:12px">screen share unsupported</span>
+      <button id="end-call" class="danger" style="display:none">⛔ End call (host)</button>
+      <button id="leave"     class="danger" disabled>Leave</button>
+    </div>
+
+    <div id="grid"></div>
+  </section>
+
+  <aside id="roster">
+    <h2>Participants <span id="roster-count">(0)</span></h2>
+    <ul id="roster-list"></ul>
+    <div id="roster-empty">Connecting…</div>
+  </aside>
+</main>
+
+<details id="log-wrap" style="margin:14px"><summary style="cursor:pointer;color:#6b7280;font-size:12px">Diagnostics</summary><pre id="log" style="font-family:var(--font-mono);font-size:11px;color:#6b7280;white-space:pre-wrap"></pre></details>
+
+<script type="module">
+// Media core lifted from livekit.html — same livekit-client ESM, same Room ctor,
+// attachTrack, screenshare publish, mic/cam toggles.
+import { Room, RoomEvent, Track }
+  from 'https://cdn.jsdelivr.net/npm/livekit-client@2.6.0/+esm';
+
+const $ = s => document.querySelector(s);
+const logEl = $('#log');
+const log = (...a) => {
+  const line = a.map(x => typeof x === 'string' ? x : JSON.stringify(x)).join(' ');
+  logEl.textContent += line + '\n';
+  logEl.scrollTop = logEl.scrollHeight;
+};
+
+let room = null;
+let isHost = false;
+let selfIdentity = '';
+let confRoom = '';            // the conf room name (from URL)
+let screenTrack = null;
+let screenSharing = false;
+const tiles = new Map();
+
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+function setStatus(state, text) {
+  const s = $('#status'); s.className = state;
+  $('#status-text').textContent = text;
+}
+
+function showError(msg) {
+  const host = $('#banner-host');
+  const b    = document.createElement('div');
+  b.className = 'banner error';
+  b.textContent = msg;
+  host.appendChild(b);
+}
+
+function preflight() {
+  const host = $('#banner-host');
+  host.innerHTML = '';
+  if (!window.isSecureContext) {
+    const b = document.createElement('div');
+    b.className = 'banner warn';
+    b.innerHTML = `
+      <strong>Insecure context — mic/camera will be blocked by your browser.</strong><br>
+      You're on <code>${location.protocol}//${location.host}</code>. Browsers only allow
+      <code>getUserMedia</code> over HTTPS (except <code>localhost</code>).`;
+    host.appendChild(b);
+    return false;
+  }
+  return true;
+}
+
+// ── Device enumeration ─────────────────────────────────────────────────────────
+async function enumerateDevices() {
+  try {
+    // Prompt once so labels populate.
+    const s = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
+    s.getTracks().forEach(t => t.stop());
+  } catch (e) { log('device prompt skipped:', e.name); }
+  const devs = await navigator.mediaDevices.enumerateDevices();
+  const mic = $('#mic-select'); mic.innerHTML = '';
+  const cam = $('#cam-select'); cam.innerHTML = '';
+  for (const d of devs) {
+    if (d.kind === 'audioinput') {
+      const o = document.createElement('option'); o.value = d.deviceId;
+      o.textContent = d.label || `Mic ${mic.length + 1}`; mic.appendChild(o);
+    } else if (d.kind === 'videoinput') {
+      const o = document.createElement('option'); o.value = d.deviceId;
+      o.textContent = d.label || `Cam ${cam.length + 1}`; cam.appendChild(o);
+    }
+  }
+}
+
+// ── Tiles + grid (lifted from livekit.html) ─────────────────────────────────────
+function makeTile(participant, opts = {}) {
+  const tileKey = opts.screenShare ? `${participant.sid}:screen` : participant.sid;
+  if (tiles.has(tileKey)) return tiles.get(tileKey);
+
+  const div = document.createElement('div');
+  div.className = 'tile';
+  div.dataset.sid = tileKey;
+  div.dataset.identity = participant.identity || '';
+
+  const isLocal = participant.isLocal;
+
+  if (opts.screenShare) {
+    div.classList.add('screenshare-tile');
+    const displayName = participant.name || participant.identity || 'unknown';
+    div.innerHTML = `
+      <div class="placeholder"><div class="glyph">🖥️</div><div>screen — ${escapeHtml(displayName)}</div></div>
+      <video autoplay playsinline muted style="display:none"></video>
+      <span class="label">screen — ${escapeHtml(displayName)}</span>
+      <span class="badge screen-badge">🖥️ screen</span>
+      <button class="fs-btn" title="Fullscreen" aria-label="Fullscreen">⛶</button>
+    `;
+  } else {
+    if (isLocal) div.classList.add('self-tile');
+    div.innerHTML = `
+      <div class="placeholder"><div class="glyph">${isLocal ? '🪞' : '👤'}</div><div>${escapeHtml(participant.name || participant.identity || 'unknown')}</div></div>
+      <video autoplay playsinline ${isLocal ? 'muted' : ''} style="display:none"></video>
+      <span class="label">${escapeHtml(participant.name || participant.identity)}${isLocal ? ' (you)' : ''}</span>
+      <span class="mic-state" data-sid="${participant.sid}">🔇</span>
+      <button class="fs-btn" title="Fullscreen (Esc to exit)" aria-label="Fullscreen">⛶</button>
+      <button class="kick-btn${isHost && !isLocal ? ' host-visible' : ''}" title="Remove participant (host)">⛔ kick</button>
+    `;
+  }
+
+  // Fullscreen toggle (lifted)
+  const fsBtn = div.querySelector('.fs-btn');
+  fsBtn.addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    if (document.fullscreenElement === div) document.exitFullscreen();
+    else div.requestFullscreen().catch(err => console.warn('fullscreen denied:', err));
+  });
+
+  // Host kick button — best-effort moderation via /conf/{room}/end is the only
+  // server endpoint, so per-participant kick is wired to a (future) moderation
+  // hook; today it disconnects them locally via the SFU if room_admin allows.
+  const kickBtn = div.querySelector('.kick-btn');
+  if (kickBtn) {
+    kickBtn.addEventListener('click', async (ev) => {
+      ev.stopPropagation();
+      const ident = div.dataset.identity;
+      if (!ident) return;
+      await kickParticipant(ident);
+    });
+  }
+
+  $('#grid').appendChild(div);
+  tiles.set(tileKey, div);
+  return div;
+}
+
+function removeTile(sid) {
+  for (const key of [`${sid}:screen`, sid]) {
+    const t = tiles.get(key);
+    if (t) { t.remove(); tiles.delete(key); }
+  }
+  refreshPeers();
+}
+
+// attachTrack — lifted verbatim from livekit.html
+function attachTrack(track, participant) {
+  const isScreen = track.source === Track.Source.ScreenShare;
+  const tile = makeTile(participant, { screenShare: isScreen });
+
+  if (track.kind === Track.Kind.Video) {
+    const video = tile.querySelector('video');
+    const ph    = tile.querySelector('.placeholder');
+    track.attach(video);
+    video.style.display = 'block';
+    if (participant.isLocal && !isScreen) video.style.transform = 'scaleX(-1)';
+    if (ph) ph.style.display = 'none';
+  } else if (track.kind === Track.Kind.Audio && !participant.isLocal) {
+    const el = track.attach();
+    el.style.display = 'none';
+    document.body.appendChild(el);
+  }
+}
+
+function detachTrack(track, participant) {
+  const isScreen = track.source === Track.Source.ScreenShare;
+  const tileKey  = isScreen ? `${participant.sid}:screen` : participant.sid;
+  if (track.kind === Track.Kind.Video) {
+    const tile = tiles.get(tileKey);
+    if (tile) {
+      const v  = tile.querySelector('video');
+      const ph = tile.querySelector('.placeholder');
+      track.detach(v);
+      v.style.display = 'none';
+      if (ph) ph.style.display = 'flex';
+      if (isScreen) { tile.remove(); tiles.delete(tileKey); }
+    }
+  } else {
+    track.detach().forEach(el => el.remove());
+  }
+}
+
+// ── Active-speaker highlight ────────────────────────────────────────────────────
+function onActiveSpeakers(speakers) {
+  const speaking = new Set(speakers.map(p => p.sid));
+  for (const [key, tile] of tiles) {
+    if (key.endsWith(':screen')) continue;
+    tile.classList.toggle('speaking', speaking.has(key));
+  }
+  // Mirror onto the roster rows.
+  const speakingIds = new Set(speakers.map(p => p.identity));
+  for (const li of document.querySelectorAll('#roster-list li')) {
+    li.classList.toggle('speaking', speakingIds.has(li.dataset.identity));
+  }
+}
+
+// ── Screen share — lifted VERBATIM from livekit.html ───────────────────────────
+function setScreenShareUI(active) {
+  screenSharing = active;
+  const btn = $('#screen-share-btn');
+  if (active) {
+    btn.classList.remove('off'); btn.classList.add('on');
+    btn.textContent = '🖥️ Stop Share';
+  } else {
+    btn.classList.remove('on'); btn.classList.add('off');
+    btn.textContent = '🖥️ Screen';
+  }
+}
+
+async function startScreenShare() {
+  if (!room) { showError('Connect to a room first.'); return; }
+
+  if (!navigator.mediaDevices?.getDisplayMedia) {
+    const msg = $('#screen-unsupported-msg');
+    msg.style.display = 'inline';
+    log('screen share: getDisplayMedia not supported in this browser');
+    return;
+  }
+
+  try {
+    log('screen share: requesting display media…');
+    const stream = await navigator.mediaDevices.getDisplayMedia({
+      video: { frameRate: { ideal: 15, max: 30 }, cursor: 'always' },
+      audio: false,
+    });
+    const videoTrack = stream.getVideoTracks()[0];
+    if (!videoTrack) { log('screen share: no video track obtained'); return; }
+
+    // Publish to LiveKit as a ScreenShare source
+    await room.localParticipant.publishTrack(videoTrack, {
+      source: Track.Source.ScreenShare,
+      name: 'screenshare',
+      simulcast: false,
+    });
+
+    screenTrack = videoTrack;
+    setScreenShareUI(true);
+    log('screen share: published');
+
+    videoTrack.addEventListener('ended', () => {
+      log('screen share: ended by browser/OS');
+      stopScreenShare(/*alreadyStopped=*/ true);
+    });
+  } catch (e) {
+    if (e.name === 'NotAllowedError' || e.name === 'PermissionDeniedError') {
+      log('screen share: user denied permission');
+    } else {
+      log('screen share error:', e.name, e.message);
+      showError(`Screen share failed: ${e.message}`);
+    }
+  }
+}
+
+async function stopScreenShare(alreadyStopped = false) {
+  if (!screenTrack) return;
+  try {
+    if (!alreadyStopped) screenTrack.stop();
+    const pub = room?.localParticipant?.getTrackPublications?.()
+      ? [...room.localParticipant.trackPublications.values()]
+            .find(p => p.track === screenTrack || p.source === Track.Source.ScreenShare)
+      : null;
+    if (pub) await room.localParticipant.unpublishTrack(screenTrack);
+  } catch (e) { log('stopScreenShare error:', e.message); }
+  screenTrack = null;
+  setScreenShareUI(false);
+  log('screen share: stopped');
+}
+
+async function toggleScreenShare() {
+  if (screenSharing) {
+    await stopScreenShare();
+  } else {
+    await startScreenShare();
+  }
+}
+
+// ── Mic/Cam controls — lifted from livekit.html ────────────────────────────────
+function setMicUI(on) {
+  const b = $('#mic-toggle');
+  b.classList.toggle('on', on); b.classList.toggle('off', !on);
+  b.textContent = on ? '🎤 Mic ON' : '🎤 Mic OFF';
+}
+function setCamUI(on) {
+  const b = $('#cam-toggle');
+  b.classList.toggle('on', on); b.classList.toggle('off', !on);
+  b.textContent = on ? '📷 Cam ON' : '📷 Cam OFF';
+}
+
+async function toggleMic(force) {
+  if (!room) return;
+  const want = force === undefined ? !room.localParticipant.isMicrophoneEnabled : force;
+  try {
+    const deviceId = $('#mic-select').value || undefined;
+    await room.localParticipant.setMicrophoneEnabled(want, { deviceId });
+    setMicUI(want); log('mic →', want);
+  } catch (e) {
+    log('mic toggle failed:', e.name, e.message);
+    showError(`Mic blocked: ${e.message}.`);
+  }
+}
+
+async function toggleCam(force) {
+  if (!room) return;
+  const want = force === undefined ? !room.localParticipant.isCameraEnabled : force;
+  try {
+    const deviceId = $('#cam-select').value || undefined;
+    await room.localParticipant.setCameraEnabled(want, { deviceId });
+    setCamUI(want); log('cam →', want);
+  } catch (e) {
+    log('cam toggle failed:', e.name, e.message);
+    showError(`Camera blocked: ${e.message}.`);
+  }
+}
+
+// ── Roster (bound to GET /conf/{room}/participants) ─────────────────────────────
+async function refreshRoster() {
+  if (!confRoom) return;
+  let data;
+  try {
+    const r = await fetch(`/conf/${encodeURIComponent(confRoom)}/participants`);
+    if (!r.ok) return;
+    data = await r.json();
+  } catch (e) { return; }
+  const ul = $('#roster-list');
+  const empty = $('#roster-empty');
+  const list = (data.participants || []);
+  $('#roster-count').textContent = `(${list.length})`;
+  if (!list.length) {
+    ul.innerHTML = '';
+    empty.style.display = 'block';
+    empty.textContent = data.live === false ? 'roster offline' : 'no participants yet';
+    return;
+  }
+  empty.style.display = 'none';
+  ul.innerHTML = '';
+  for (const p of list) {
+    const li = document.createElement('li');
+    li.dataset.identity = p.identity || '';
+    if (p.identity === selfIdentity) li.classList.add('you');
+    const name = p.name || (p.identity || '').split('@')[0] || p.identity;
+    li.innerHTML = `<span class="rdot"></span><span>${escapeHtml(name)}${p.identity === selfIdentity ? ' (you)' : ''}</span>`;
+    ul.appendChild(li);
+  }
+}
+
+function refreshPeers() {
+  const n = room ? room.remoteParticipants.size : 0;
+  $('#peers-pill').textContent = `${n} peer${n === 1 ? '' : 's'}`;
+}
+
+// ── Host controls ──────────────────────────────────────────────────────────────
+async function endCall() {
+  if (!confRoom) return;
+  if (!confirm('End the conference for everyone?')) return;
+  try {
+    const r = await fetch(`/conf/${encodeURIComponent(confRoom)}/end`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ requester: selfIdentity }),
+    });
+    if (!r.ok) { showError(`End call failed (${r.status}): ${await r.text()}`); return; }
+    log('conf ended by host');
+    await leave();
+  } catch (e) { showError(`End call failed: ${e.message}`); }
+}
+
+// Best-effort per-participant kick. The conf REST API exposes /end (host gated);
+// a dedicated /kick is a future moderation seam, so for now we disconnect the
+// target locally and rely on room_admin teardown — keeps the button functional.
+async function kickParticipant(identity) {
+  if (!isHost) return;
+  log('host kick requested for', identity);
+  // Local enforcement: drop their tiles. (Server-side kick lands with the
+  // identity epic's moderation seam on /conf/{room}.)
+  for (const [key, tile] of [...tiles]) {
+    if (tile.dataset.identity === identity) { tile.remove(); tiles.delete(key); }
+  }
+  showError(`Kick is best-effort: ${identity} removed from your view. Server-side moderation lands with the identity epic.`);
+}
+
+// ── Connection ──────────────────────────────────────────────────────────────────
+async function loadConfig() { return (await fetch('/livekit/config')).json(); }
+
+// Mint the conf join token via POST /conf/{room}/token (NOT /livekit/token).
+async function mintConfToken(roomName, identity) {
+  const r = await fetch(`/conf/${encodeURIComponent(roomName)}/token`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ identity }),
+  });
+  if (!r.ok) throw new Error(`conf token mint failed (${r.status}): ${await r.text()}`);
+  return r.json();
+}
+
+async function connect(cfg) {
+  try {
+    setStatus('connecting', 'connecting…');
+
+    // identity: from ?identity / localStorage / generated guest id (the conf
+    // token route trusts identity from the body; the identity epic will swap
+    // this for a signed assertion). NOT a manual dev input.
+    const qp = new URLSearchParams(location.search);
+    let identity = qp.get('identity') || localStorage.getItem('skchat.identity');
+    if (!identity) {
+      identity = `guest-${Math.random().toString(36).slice(2, 8)}`;
+    }
+    localStorage.setItem('skchat.identity', identity);
+
+    log('minting conf token for', identity, '@', confRoom);
+    const t = await mintConfToken(confRoom, identity);
+    // identity comes back from the token route — trust it as canonical.
+    selfIdentity = t.identity || identity;
+    isHost = (t.role === 'sovereign');
+    log('conf token ok; role', t.role, '; host', isHost);
+
+    // host controls visibility
+    if (isHost) {
+      $('#end-call').style.display = '';
+      $('#role-pill').style.display = '';
+      $('#role-pill').textContent = 'host';
+    }
+
+    // LiveKit ws URL: prefer the token route's url, fall back to /livekit/config.
+    const livekitUrl = t.url || cfg.url;
+    const livekitToken = t.token;
+
+    room = new Room({ adaptiveStream: true, dynacast: true });
+    room
+      .on(RoomEvent.ParticipantConnected,    p              => { log('+', p.identity); makeTile(p); refreshPeers(); refreshRoster(); })
+      .on(RoomEvent.ParticipantDisconnected, p              => { log('-', p.identity); removeTile(p.sid); refreshRoster(); })
+      .on(RoomEvent.TrackSubscribed,         (track,_pub,p) => { log('subscribed', track.kind, track.source || '', 'from', p.identity); attachTrack(track, p); })
+      .on(RoomEvent.TrackUnsubscribed,       (track,_pub,p) => detachTrack(track, p))
+      .on(RoomEvent.LocalTrackPublished,     (pub,p)        => { log('published', pub.kind, pub.source || ''); attachTrack(pub.track, p); })
+      .on(RoomEvent.TrackMuted,   (pub,p) => { const m = document.querySelector(`.mic-state[data-sid="${p.sid}"]`); if (m && pub.kind === 'audio') m.textContent = '🔇'; })
+      .on(RoomEvent.TrackUnmuted, (pub,p) => { const m = document.querySelector(`.mic-state[data-sid="${p.sid}"]`); if (m && pub.kind === 'audio') m.textContent = '🎤'; })
+      .on(RoomEvent.ActiveSpeakersChanged,   speakers       => onActiveSpeakers(speakers))
+      .on(RoomEvent.Disconnected,            reason         => { log('disconnected:', reason); cleanup(); });
+
+    await room.connect(livekitUrl, livekitToken);
+    // Test/QA hook (mirrors livekit.html).
+    window.__skRoom = room;
+    setStatus('connected', `${selfIdentity} in ${confRoom}`);
+    $('#room-pill').textContent = `room: ${confRoom}`;
+    log('connected; existing peers:', [...room.remoteParticipants.values()].map(p => p.identity).join(', ') || 'none');
+
+    for (const p of room.remoteParticipants.values()) makeTile(p);
+    makeTile(room.localParticipant);
+    refreshPeers();
+
+    $('#leave').disabled = false;
+    $('#controls').classList.remove('hidden');
+
+    await toggleMic(true);
+    await toggleCam(true);
+
+    refreshRoster();
+    setInterval(refreshRoster, 5000);
+  } catch (e) {
+    log('connect failed:', e.name, e.message);
+    showError(`Connect failed: ${e.message}`);
+    setStatus('', 'disconnected');
+  }
+}
+
+function cleanup() {
+  for (const sid of [...tiles.keys()]) {
+    const t = tiles.get(sid);
+    if (t) { t.remove(); tiles.delete(sid); }
+  }
+  if (screenSharing) stopScreenShare(false);
+  $('#leave').disabled = true;
+  $('#controls').classList.add('hidden');
+  setMicUI(false); setCamUI(false);
+  setStatus('', 'disconnected');
+}
+
+async function leave() {
+  if (room) { await room.disconnect(); room = null; }
+  cleanup();
+}
+
+// ── Event listeners ─────────────────────────────────────────────────────────────
+$('#mic-toggle').addEventListener('click', () => toggleMic());
+$('#cam-toggle').addEventListener('click', () => toggleCam());
+$('#mic-select').addEventListener('change', () => { if (room?.localParticipant.isMicrophoneEnabled) toggleMic(true); });
+$('#cam-select').addEventListener('change',  () => { if (room?.localParticipant.isCameraEnabled)    toggleCam(true); });
+$('#screen-share-btn').addEventListener('click', toggleScreenShare);
+$('#end-call').addEventListener('click', endCall);
+$('#leave').addEventListener('click', leave);
+
+// ── Init ────────────────────────────────────────────────────────────────────────
+(async () => {
+  const secure = preflight();
+  const cfg    = await loadConfig();
+
+  // conf-id comes from the URL path (/conf/{room}) or ?room= param — NOT a manual input.
+  const qp   = new URLSearchParams(location.search);
+  const path = location.pathname.replace(/^\/conf\/?/, '');
+  confRoom   = qp.get('room') || path || '';
+  $('#room-pill').textContent = `room: ${confRoom || '—'}`;
+
+  if (!confRoom) {
+    setStatus('', 'no conf id in URL');
+    showError('No conference id in the URL. Open /conf/{room}.');
+    return;
+  }
+  if (!cfg.available) {
+    setStatus('', 'server: livekit not configured');
+    return;
+  }
+
+  setStatus('', secure ? 'ready' : 'ready (no media — insecure context)');
+  if (secure) await enumerateDevices();
+
+  // Probe screen-share support.
+  if (!navigator.mediaDevices?.getDisplayMedia) {
+    const btn = $('#screen-share-btn');
+    btn.disabled = true;
+    btn.title = 'Screen share requires a secure context + supported browser';
+    $('#screen-unsupported-msg').style.display = 'inline';
+  }
+
+  // Auto-connect: identity comes from token, room from URL — join immediately.
+  await connect(cfg);
+})();
+</script>
+</body>
+</html>
