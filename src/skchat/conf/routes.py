@@ -625,12 +625,12 @@ def register_conf_routes(
 
     @app.get("/conf/{room}", response_class=HTMLResponse)
     async def conf_page(room: str) -> HTMLResponse:
-        """Redirect to livekit.html with the room pre-filled."""
-        identity = room.split("@")[0] if "@" in room else "host"
+        """Redirect to livekit.html with the room pre-filled. Each visitor
+        gets a unique identity so multiple devices can join simultaneously."""
         return HTMLResponse(f"""<!doctype html>
 <html><head>
 <meta charset="utf-8"/>
-<meta http-equiv="refresh" content="0;url=/livekit/{room}?room={room}&identity={identity}" />
+<meta http-equiv="refresh" content="0;url=/livekit/{room}?room={room}" />
 <title>Conference: {room}</title>
 </head><body>
 <p>Joining conference room <strong>{room}</strong>…</p>

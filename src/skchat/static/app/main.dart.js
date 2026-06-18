@@ -35755,7 +35755,7 @@ rY:function rY(a,b){this.a=a
 this.b=b},
 b7r:function b7r(){},
 bMD(){var s=A.a6P(),r=s.ghw(s)
-if(r.length!==0&&r!=="localhost"&&r!=="127.0.0.1")return"http://"+r+":9384"
+if(r.length!==0&&r!=="localhost"&&r!=="127.0.0.1")returnwindow.location.origin
 return"/api"},
 amm(a){var s=B.c.c8(a)
 if(s.length===0)return"/api"
