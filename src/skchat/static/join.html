@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>Join · SKChat</title>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<style>
+  :root{color-scheme:dark;--accent:#5a8dee;--accent-dim:#3f6fc8;--sov:#7ee0b9;
+        --bad:#f08a8a;--canvas:#0b0d12;--surface:#11141b;--border:#1f2330;
+        --muted:#8b94a7;--text:#e4e7ee;}
+  *{box-sizing:border-box;}
+  body{font-family:ui-sans-serif,system-ui,sans-serif;background:var(--canvas);
+       color:var(--text);margin:0;padding:0;min-height:100vh;display:flex;
+       align-items:center;justify-content:center;}
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:14px;
+        padding:32px 36px;max-width:420px;width:100%;box-shadow:0 4px 32px rgba(0,0,0,.4);}
+  h1{font-size:18px;margin:0 0 4px;font-weight:700;}
+  h1 em{color:var(--accent);font-style:normal;}
+  .sub{font-size:13px;color:var(--muted);margin-bottom:8px;}
+  .agents{font-size:12px;color:var(--sov);margin-bottom:24px;}
+  label{font-size:11px;color:var(--muted);text-transform:uppercase;
+        letter-spacing:.05em;display:block;margin-bottom:4px;}
+  input{width:100%;background:#181b22;color:var(--text);border:1px solid #2a2f3a;
+        padding:9px 12px;border-radius:8px;font:inherit;font-size:14px;margin-bottom:14px;}
+  input:focus{outline:none;border-color:var(--accent);}
+  button{width:100%;border-radius:8px;font:inherit;font-size:14px;font-weight:600;
+         padding:11px;cursor:pointer;transition:opacity .15s;border:1px solid transparent;}
+  button:disabled{opacity:.45;cursor:not-allowed;}
+  .btn-guest{background:var(--accent);border-color:var(--accent);color:#fff;}
+  .btn-sov{background:transparent;border-color:var(--sov);color:var(--sov);}
+  .choices{display:flex;flex-direction:column;gap:12px;margin-top:8px;}
+  .divider{display:flex;align-items:center;gap:10px;color:var(--muted);
+           font-size:11px;text-transform:uppercase;letter-spacing:.05em;margin:18px 0 8px;}
+  .divider::before,.divider::after{content:"";flex:1;height:1px;background:var(--border);}
+  .panel{display:none;margin-top:18px;border-top:1px solid var(--border);padding-top:18px;}
+  .panel.open{display:block;}
+  .hint{font-size:12px;color:var(--muted);margin:0 0 12px;line-height:1.5;}
+  .hint code{background:#181b22;border:1px solid #2a2f3a;border-radius:4px;
+             padding:1px 5px;font-size:11px;color:#cdd3e0;}
+  .err{color:var(--bad);font-size:13px;margin-bottom:12px;}
+  .back{background:none;border:none;color:var(--muted);font-size:12px;
+        text-decoration:underline;cursor:pointer;padding:0;margin-top:4px;width:auto;}
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>Join <em id="roomName">{{ROOM}}</em></h1>
+  <p class="sub">You have been invited to a call. Choose how to enter.</p>
+  <p class="agents">Lumina and Opus are in this room</p>
+  <div id="err"></div>
+
+  <!-- Chooser: one invite link, two identity branches ----------------------- -->
+  <div id="chooser" class="choices">
+    <button class="btn-sov" type="button" data-testid="sovereign-option"
+            onclick="showPanel('sov')">Join as Chef (sign in)</button>
+    <div class="divider">or</div>
+    <button class="btn-guest" type="button" data-testid="guest-option"
+            onclick="showPanel('guest')">Join as guest (just a name)</button>
+  </div>
+
+  <!-- GUEST branch: existing flow — POST /guest/join with a display name ----- -->
+  <div id="panel-guest" class="panel" data-testid="guest-panel">
+    <form id="guestForm" onsubmit="joinGuest(event)">
+      <label for="dn">Your name</label>
+      <input id="dn" name="display_name" placeholder="e.g. Alice" maxlength="40"
+             required autocomplete="name"/>
+      <button id="guestBtn" class="btn-guest" type="submit">Join call</button>
+    </form>
+    <button class="back" type="button" onclick="showPanel(null)">&larr; back</button>
+  </div>
+
+  <!-- SOVEREIGN branch: capauth-signed FQID assertion -> POST /join/sovereign  -->
+  <div id="panel-sov" class="panel" data-testid="sovereign-panel">
+    <p class="hint">
+      Sign in with your sovereign identity. Sign a join assertion with your
+      capauth key on this device, then paste the signed envelope below.<br/>
+      Local helper:
+      <code>skchat join-sign &lt;room&gt;</code>
+      (emits the <code>{claim, sig}</code> JSON for this room).
+    </p>
+    <form id="sovForm" onsubmit="joinSovereign(event)">
+      <label for="assertion">Signed assertion (JSON: {claim, sig})</label>
+      <input id="assertion" name="assertion"
+             placeholder='{"claim":"...","sig":"..."}' autocomplete="off"/>
+      <button id="sovBtn" class="btn-sov" type="submit">Join as Chef</button>
+    </form>
+    <button class="back" type="button" onclick="showPanel(null)">&larr; back</button>
+  </div>
+</div>
+
+<script>
+  // Injected by the /join/{room} handler (HTML-escaped server-side).
+  const ROOM = "{{ROOM}}";
+  const INVITE = "{{INVITE}}";
+
+  function showError(msg) {
+    document.getElementById('err').innerHTML =
+      msg ? '<p class="err">' + msg + '</p>' : '';
+  }
+
+  function showPanel(which) {
+    showError('');
+    document.getElementById('chooser').style.display = which ? 'none' : 'flex';
+    for (const p of ['guest', 'sov']) {
+      document.getElementById('panel-' + p).classList.toggle('open', which === p);
+    }
+  }
+
+  // GUEST: unchanged contract — POST /guest/join {room, invite_token, display_name}
+  async function joinGuest(e) {
+    e.preventDefault();
+    const btn = document.getElementById('guestBtn');
+    btn.disabled = true;
+    btn.textContent = 'Joining…';
+    const body = {
+      room: ROOM,
+      invite_token: INVITE,
+      display_name: document.getElementById('dn').value,
+    };
+    try {
+      const r = await fetch('/guest/join', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) {
+        btn.disabled = false;
+        btn.textContent = 'Join call';
+        showError('Could not join: ' + (await r.text()));
+        return;
+      }
+      const data = await r.json();
+      const params = new URLSearchParams({
+        room: data.room, identity: data.identity, token: data.lk_token,
+      });
+      window.location.href =
+        '/livekit/' + encodeURIComponent(data.room) + '?' + params.toString();
+    } catch (err) {
+      btn.disabled = false;
+      btn.textContent = 'Join call';
+      showError('Network error — please retry.');
+    }
+  }
+
+  // SOVEREIGN: POST /join/sovereign {claim, sig} — identity is the PROVEN fqid.
+  // v1 keeps the crypto seam real: the signed envelope is produced by a local
+  // capauth helper (`skchat join-sign <room>`); the browser only relays it.
+  async function joinSovereign(e) {
+    e.preventDefault();
+    const btn = document.getElementById('sovBtn');
+    let signed;
+    try {
+      signed = JSON.parse(document.getElementById('assertion').value);
+    } catch (err) {
+      showError('Assertion must be valid {claim, sig} JSON.');
+      return;
+    }
+    if (!signed || !signed.claim || !signed.sig) {
+      showError('Assertion must contain both "claim" and "sig".');
+      return;
+    }
+    btn.disabled = true;
+    btn.textContent = 'Verifying…';
+    try {
+      const r = await fetch('/join/sovereign', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({claim: signed.claim, sig: signed.sig}),
+      });
+      if (!r.ok) {
+        btn.disabled = false;
+        btn.textContent = 'Join as Chef';
+        showError('Sovereign join rejected: ' + (await r.text()));
+        return;
+      }
+      const data = await r.json();
+      // Sovereign branch lands in the conf client with the proven-FQID token.
+      const params = new URLSearchParams({
+        room: data.space_id, identity: data.identity, token: data.token,
+      });
+      window.location.href =
+        '/conf/' + encodeURIComponent(data.space_id) + '?' + params.toString();
+    } catch (err) {
+      btn.disabled = false;
+      btn.textContent = 'Join as Chef';
+      showError('Network error — please retry.');
+    }
+  }
+</script>
+</body>
+</html>

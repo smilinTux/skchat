@@ -539,6 +539,34 @@ async function join(e) {{
 </html>"""
 
 
+def join_chooser_html(room: str, invite_token: str) -> str:
+    """Return the join *chooser* page (``static/join.html``) for ``room``.
+
+    Served at GET /join/<room>?invite=<token>. One invite link, TWO identity
+    branches (the invite secret authorizes ENTRY; identity choice is downstream):
+
+      * GUEST     — the existing flow: name -> POST /guest/join -> LiveKit token.
+      * SOVEREIGN — a capauth-signed FQID assertion -> POST /join/sovereign,
+        whose minted token's identity is the PROVEN fqid (never caller-supplied).
+
+    The static template carries ``{{ROOM}}`` / ``{{INVITE}}`` placeholders which
+    are HTML-escaped here before substitution (same XSS posture as the legacy
+    ``guest_join_page_html``). Falls back to that legacy guest-only page if the
+    static asset is missing, so a broken deploy still serves a working guest join.
+    """
+    import pathlib
+
+    safe_room = html.escape(room)
+    safe_token = html.escape(invite_token)
+    template_path = pathlib.Path(__file__).parent / "static" / "join.html"
+    try:
+        template = template_path.read_text(encoding="utf-8")
+    except OSError:  # pragma: no cover - missing asset → degrade to guest page
+        logger.warning("join.html not found at %s; serving guest-only page", template_path)
+        return guest_join_page_html(room, invite_token)
+    return template.replace("{{ROOM}}", safe_room).replace("{{INVITE}}", safe_token)
+
+
 # ── FastAPI route registration (wired from webui.py) ──────────────────────────────
 
 
@@ -555,7 +583,7 @@ def register_guest_routes(app: object) -> None:  # app: FastAPI
 
     Routes registered:
         POST   /guest/invite           — operator creates a shareable invite
-        GET    /join/{room}            — serve the guest join HTML page
+        GET    /join/{room}            — serve the join chooser HTML page
         POST   /guest/join             — validate invite → return LiveKit token
         DELETE /guest/revoke/{jti}     — operator revokes a live invite
     """
@@ -618,7 +646,12 @@ def register_guest_routes(app: object) -> None:  # app: FastAPI
 
     @app.get("/join/{room}", response_class=HTMLResponse)  # type: ignore[attr-defined]
     async def guest_join_page(room: str, request: Request) -> HTMLResponse:
-        """Public (Funnel): serve the guest join landing page.
+        """Public (Funnel): serve the join *chooser* landing page.
+
+        One invite link offers TWO identity branches (the invite secret
+        authorizes ENTRY; identity choice is downstream):
+          * "Join as Chef (sign in)"  -> capauth assertion -> POST /join/sovereign
+          * "Join as guest (a name)"  -> POST /guest/join (unchanged guest flow)
 
         Query params:
             invite: the signed invite token (required)
@@ -629,7 +662,7 @@ def register_guest_routes(app: object) -> None:  # app: FastAPI
                 "<h2>Invalid invite link</h2><p>The invite parameter is missing.</p>",
                 status_code=400,
             )
-        return HTMLResponse(guest_join_page_html(room, invite_token))
+        return HTMLResponse(join_chooser_html(room, invite_token))
 
     @app.post("/guest/join")  # type: ignore[attr-defined]
     async def guest_join(request: Request) -> JSONResponse:
