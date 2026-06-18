@@ -127,6 +127,11 @@ except ImportError as _e:
     logger.warning("guest routes not registered: %s", _e)
 
 
+@app.get("/")
+async def root() -> RedirectResponse:
+    """Redirect to the Flutter app."""
+    return RedirectResponse(url="/app/")
+
 @app.get("/health")
 async def health() -> JSONResponse:
     """Health check endpoint for container orchestration.

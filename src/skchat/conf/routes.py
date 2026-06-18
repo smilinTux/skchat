@@ -625,15 +625,14 @@ def register_conf_routes(
         return FileResponse(base / "index.html")
 
     @app.get("/conf/{room}", response_class=HTMLResponse)
-    async def conf_page(room: str) -> HTMLResponse:  # noqa: ARG001
-        """Serve the conference web client.
-        
-        Delegates to livekit.html (the full-featured collaboration client)
-        for consistency — conf.html was a stripped-down fork that kept
-        diverging. All features (chat, board, watch, doc, term, roster,
-        host controls) should live in one page.
-        """
-        static = Path(__file__).resolve().parent.parent / "static" / "livekit.html"
-        if static.exists():
-            return FileResponse(static, media_type="text/html")
-        return HTMLResponse("livekit.html missing", status_code=500)
+    async def conf_page(room: str) -> HTMLResponse:
+        """Redirect to livekit.html with the room pre-filled."""
+        identity = room.split("@")[0] if "@" in room else "host"
+        return HTMLResponse(f"""<!doctype html>
+<html><head>
+<meta charset="utf-8"/>
+<meta http-equiv="refresh" content="0;url=/livekit/{room}?room={room}&identity={identity}" />
+<title>Conference: {room}</title>
+</head><body>
+<p>Joining conference room <strong>{room}</strong>…</p>
+</body></html>""")
