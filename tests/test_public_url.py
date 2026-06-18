@@ -147,6 +147,12 @@ def test_token_url_is_public_aware_when_available(monkeypatch):
     monkeypatch.setenv("SKCHAT_LIVEKIT_PUBLIC_URL", _PUBLIC_URL)
     monkeypatch.setenv("SKCHAT_LIVEKIT_API_KEY", "k")
     monkeypatch.setenv("SKCHAT_LIVEKIT_API_SECRET", "s")
+    # /livekit/token is gated (loopback/tailnet OR operator token). A public-host
+    # request (public X-Forwarded-Host) comes from a proxy, so it must carry an
+    # operator token to pass the gate — that's the authorized-proxied-caller case
+    # whose URL selection we're asserting here.
+    monkeypatch.setenv("SKCHAT_GUEST_OPERATOR_TOKEN", "optok")
+    _op = {"X-Operator-Token": "optok"}
     # Re-import so module-level creds reflect the patched env.
     import importlib
 
@@ -158,14 +164,19 @@ def test_token_url_is_public_aware_when_available(monkeypatch):
     client = TestClient(app)
 
     r_pub = client.post(
-        "/livekit/token", json={"identity": "alice"}, headers={"Host": _PUBLIC_HOST}
+        "/livekit/token", json={"identity": "alice"}, headers={"Host": _PUBLIC_HOST, **_op}
     )
     r_tail = client.post(
-        "/livekit/token", json={"identity": "alice"}, headers={"Host": _TAILNET_HOST}
+        "/livekit/token", json={"identity": "alice"}, headers={"Host": _TAILNET_HOST, **_op}
     )
     assert r_pub.status_code == 200 and r_pub.json()["url"] == _PUBLIC_URL
     assert r_tail.status_code == 200 and r_tail.json()["url"] == _TAILNET_URL
-    # Restore the module to its env-default state for later tests.
+    # Restore the module to its env-default (no-creds) state for later tests:
+    # clear the creds BEFORE reloading (monkeypatch reverts only at teardown, so
+    # without this the reloaded module keeps API_KEY="k" cached and pollutes the
+    # token-gate tests that expect a no-creds 503).
+    monkeypatch.delenv("SKCHAT_LIVEKIT_API_KEY", raising=False)
+    monkeypatch.delenv("SKCHAT_LIVEKIT_API_SECRET", raising=False)
     importlib.reload(lkr)
 
 
