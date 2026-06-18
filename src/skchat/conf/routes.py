@@ -21,6 +21,9 @@ from __future__ import annotations
 
 import logging
 import os
+import re
+import shutil
+import subprocess
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
@@ -33,6 +36,52 @@ from skchat.spaces.tokens import mint_conf_token
 logger = logging.getLogger("skchat.conf.routes")
 
 _DEFAULT_TTL = int(os.getenv("SKCHAT_LIVEKIT_TOKEN_TTL", "21600"))
+
+# --- On-demand Lumina conf-agent (pull the AI into THIS room) ----------------
+# The resident single-room agent is ``skchat-lumina-call.service``; this is the
+# transient "join THIS conf room" path. We spawn the SAME agent script
+# (~/lumina-creative/scripts/lumina-call.py — a DIFFERENT repo, never modified
+# here) into the requested room via ``systemd-run --user --scope``, so it is a
+# supervised, resource-scoped, individually-stoppable unit. The agent self-mints
+# its LiveKit token over the loopback ``WEBUI_URL/livekit/token`` gate.
+
+_DEFAULT_LUMINA_CALL = str(
+    Path.home() / "clawd" / "skcapstone-repos" / "lumina-creative" / "scripts" / "lumina-call.py"
+)
+
+
+def _lumina_call_script() -> str:
+    """Absolute path to lumina-call.py (override via ``SKCHAT_LUMINA_CALL_SCRIPT``)."""
+    return os.getenv("SKCHAT_LUMINA_CALL_SCRIPT", _DEFAULT_LUMINA_CALL)
+
+
+def _agent_python() -> str:
+    """Python interpreter used to run the agent (override via ``SKCHAT_AGENT_PYTHON``)."""
+    return os.getenv("SKCHAT_AGENT_PYTHON", str(Path.home() / ".skenv" / "bin" / "python"))
+
+
+def _sanitize_unit(room: str) -> str:
+    """Sanitize ``room`` into the alnum/dash slug used in the systemd unit name.
+
+    Injection guard: the room string lands inside a ``--unit=`` argument, so we
+    strip everything but ``[A-Za-z0-9-]`` (collapsing runs to a single dash).
+    """
+    slug = re.sub(r"[^A-Za-z0-9-]+", "-", room).strip("-")
+    return slug or "room"
+
+
+def _agent_unit(room: str) -> str:
+    """The systemd ``--scope`` unit name for the conf-agent of ``room``."""
+    return f"lumina-conf-{_sanitize_unit(room)}"
+
+
+def _default_runner(cmd: list[str]) -> subprocess.CompletedProcess:
+    """Default command runner — actually invokes the process.
+
+    Tests inject their own runner (no real spawn). Raises ``FileNotFoundError``
+    if ``cmd[0]`` is missing, which callers translate into a graceful 503.
+    """
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=20, check=False)
 
 
 def _url() -> str:
@@ -52,14 +101,20 @@ def register_conf_routes(
     *,
     registry: ConfRegistry | None = None,
     room_service=None,
+    runner=None,
 ) -> None:
     """Wire the conference REST API onto ``app``.
 
     ``registry`` and ``room_service`` are injectable for tests; in production a
     default ``ConfRegistry`` (``~/.skchat/confs.json``) is used and the LiveKit
     ``RoomService`` is built lazily from the env creds on first roster/teardown.
+
+    ``runner`` is the systemd-run/systemctl command runner for the on-demand
+    conf-agent routes; it defaults to :func:`_default_runner` (a real
+    ``subprocess.run``) and is injected by tests so no process is ever spawned.
     """
     reg = registry or ConfRegistry()
+    run_cmd = runner or _default_runner
     # Lazy LiveKit room-service client (mirrors Moderator._service): only built
     # when a route actually needs the live SFU, and only if creds are present.
     _svc_holder = {"svc": room_service}
@@ -91,6 +146,16 @@ def register_conf_routes(
 
     def _join_url(room: str) -> str:
         return f"/conf/{room}"
+
+    def _stop_agent_unit(room: str) -> bool:
+        """Best-effort ``systemctl --user stop <unit>.scope``. Never raises."""
+        unit = _agent_unit(room)
+        try:
+            run_cmd(["systemctl", "--user", "stop", f"{unit}.scope"])
+            return True
+        except Exception as exc:  # noqa: BLE001 - teardown is best-effort
+            logger.warning("conf: could not stop agent unit %s.scope: %s", unit, exc)
+            return False
 
     @app.post("/conf/create")
     async def create_conf(request: Request) -> JSONResponse:
@@ -173,6 +238,72 @@ def register_conf_routes(
             }
         )
 
+    @app.post("/conf/{room}/invite-agent")
+    async def invite_agent(room: str, request: Request) -> JSONResponse:
+        """Pull the Lumina AI agent into ``room`` (host-gated, like /end).
+
+        Launches ``lumina-call.py --room <room> --greet "<greeting>"`` as a
+        transient, supervised, resource-scoped systemd ``--scope`` unit
+        (``lumina-conf-<sanitized-room>``). The room name is sanitized into the
+        unit name (alnum/dash only) to prevent argument injection. Degrades
+        gracefully (503 + clear error) if ``systemd-run`` is unavailable.
+        """
+        conf = reg.get(room)
+        if conf is None or conf.status.value == "ended":
+            raise HTTPException(404, "conf not found or ended")
+        body = await request.json()
+        _require_host(conf, (body.get("requester") or "").strip())
+        greeting = (body.get("greet") or "Lumina here — joining the conference.").strip()
+        # C-defense: cap greeting length (it is an arg, sanitized, but keep it sane).
+        if len(greeting) > 500:
+            raise HTTPException(400, "greeting too long (max 500 chars)")
+
+        # Fail clearly (not 5xx-crash) if the spawning mechanism is unavailable.
+        if shutil.which("systemd-run") is None:
+            raise HTTPException(503, "systemd-run unavailable; cannot launch conf agent")
+
+        unit = _agent_unit(conf.room)
+        cmd = [
+            "systemd-run",
+            "--user",
+            "--scope",
+            f"--unit={unit}",
+            "--property=MemoryMax=2G",
+            "--property=CPUQuota=200%",
+            _agent_python(),
+            _lumina_call_script(),
+            "--room",
+            conf.room,
+            "--greet",
+            greeting,
+        ]
+        try:
+            proc = run_cmd(cmd)
+        except FileNotFoundError as exc:
+            raise HTTPException(503, "systemd-run unavailable; cannot launch conf agent") from exc
+        except Exception as exc:  # noqa: BLE001 - any spawn failure → graceful error
+            logger.warning("conf: invite-agent spawn failed for %s: %s", conf.room, exc)
+            raise HTTPException(500, f"failed to launch conf agent: {exc}") from exc
+
+        rc = getattr(proc, "returncode", 0)
+        if rc not in (0, None):
+            stderr = (getattr(proc, "stderr", "") or "").strip()
+            logger.warning("conf: systemd-run rc=%s for %s: %s", rc, conf.room, stderr)
+            raise HTTPException(502, f"systemd-run failed (rc={rc}): {stderr}")
+        return JSONResponse({"ok": True, "unit": unit, "room": conf.room})
+
+    @app.post("/conf/{room}/remove-agent")
+    async def remove_agent(room: str, request: Request) -> JSONResponse:
+        """Stop the Lumina conf-agent for ``room`` (host-gated). Idempotent."""
+        conf = reg.get(room)
+        if conf is None:
+            raise HTTPException(404, "conf not found")
+        body = await request.json()
+        _require_host(conf, (body.get("requester") or "").strip())
+        unit = _agent_unit(conf.room)
+        stopped = _stop_agent_unit(conf.room)
+        return JSONResponse({"ok": True, "unit": unit, "room": conf.room, "stopped": stopped})
+
     @app.get("/conf/{room}/participants")
     async def conf_participants(room: str) -> JSONResponse:
         """LIVE roster from the SFU. Degrades gracefully: no creds / no livekit /
@@ -212,6 +343,8 @@ def register_conf_routes(
         body = await request.json()
         _require_host(conf, (body.get("requester") or "").strip())
         reg.end(room)
+        # Best-effort stop any on-demand Lumina conf-agent for this room.
+        agent_stopped = _stop_agent_unit(conf.room)
         room_deleted = False
         svc = _service()
         if svc is not None:
@@ -222,7 +355,14 @@ def register_conf_routes(
                 room_deleted = True
             except Exception as exc:  # noqa: BLE001 - teardown is best-effort
                 logger.warning("conf: delete_room failed for %s: %s", conf.room, exc)
-        return JSONResponse({"ok": True, "conf_id": conf.conf_id, "room_deleted": room_deleted})
+        return JSONResponse(
+            {
+                "ok": True,
+                "conf_id": conf.conf_id,
+                "room_deleted": room_deleted,
+                "agent_stopped": agent_stopped,
+            }
+        )
 
     @app.get("/conf")
     async def list_confs() -> JSONResponse:
