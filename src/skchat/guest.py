@@ -22,10 +22,10 @@ Security properties
 - Invalid/expired/revoked tokens all produce the same HTTP 401 + generic message
   (no oracle distinguishing expiry vs bad signature).
 
-TODO wire route
----------------
+Route wiring (done)
+-------------------
   from skchat.guest import register_guest_routes
-  register_guest_routes(app)   # call after register_livekit_routes(app)
+  register_guest_routes(app)   # called from webui.py after the spaces/glossa block
 """
 
 from __future__ import annotations
@@ -36,7 +36,19 @@ import os
 import secrets
 import time
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
+
+# `from __future__ import annotations` turns the route handlers' ``request:
+# Request`` hints into strings; FastAPI resolves them against this module's
+# globals, so ``Request`` must be importable at module scope. Guarded so pure
+# CLI usage (no FastAPI installed) still imports this module fine.
+if TYPE_CHECKING:  # pragma: no cover
+    from fastapi import Request
+else:
+    try:
+        from fastapi import Request
+    except ImportError:  # FastAPI not installed; routes are never registered.
+        Request = None  # type: ignore[assignment,misc]
 
 logger = logging.getLogger("skchat.guest")
 
@@ -44,6 +56,22 @@ logger = logging.getLogger("skchat.guest")
 _GUEST_SECRET_ENV = "SKCHAT_GUEST_TOKEN_SECRET"
 _INVITE_TTL_ENV = "SKCHAT_INVITE_WINDOW_TTL"
 _FUNNEL_URL_ENV = "SKCHAT_FUNNEL_PUBLIC_URL"
+# Operator-auth for /guest/invite + /guest/revoke. A shared bearer secret lets the
+# operator drive these from off-host (e.g. behind Funnel); when unset, access is
+# restricted to loopback/private (tailnet) clients -- matching the P0 "tailnet-only"
+# posture of the pairing routes. Public guests never touch these endpoints; they
+# use the invite-JWT-gated /join/{room} + /guest/join only.
+_OPERATOR_TOKEN_ENV = "SKCHAT_GUEST_OPERATOR_TOKEN"
+
+# Private/loopback address prefixes trusted as "operator on the local network".
+_PRIVATE_PREFIXES = (
+    "127.",
+    "10.",
+    "192.168.",
+    "100.",  # Tailscale CGNAT range (100.64.0.0/10)
+    "::1",
+    "fd",  # ULA / Tailscale IPv6
+)
 
 _DEFAULT_INVITE_TTL = 14400  # 4 hours
 _MAX_INVITE_TTL = 28800  # 8 hours hard cap
@@ -60,6 +88,53 @@ def revoke_invite(jti: str) -> None:
 
 def _is_revoked(jti: str) -> bool:
     return jti in _revoked_jtis
+
+
+# -- Operator-auth gate (for /guest/invite + /guest/revoke) -------------------
+
+
+def _client_is_private(request: object) -> bool:
+    """True if the request originates from loopback or a private/tailnet IP."""
+    client = getattr(request, "client", None)
+    host = getattr(client, "host", None) if client is not None else None
+    if not host:
+        # No client info (e.g. some TestClient configs) -> treat as untrusted.
+        return False
+    return host.startswith(_PRIVATE_PREFIXES)
+
+
+def _require_operator(request: object) -> None:
+    """Authorize an operator-only request, or raise HTTP 401/403.
+
+    Policy (additive, P0 posture):
+      * If ``SKCHAT_GUEST_OPERATOR_TOKEN`` is set, the caller MUST present it as
+        a bearer token (``Authorization: Bearer <token>`` or ``X-Operator-Token``
+        header) -- this makes the endpoints safe even if Funnel-exposed.
+      * Otherwise, fall back to the pairing-route posture: only loopback/tailnet
+        (private-IP) clients are allowed; public callers get 403.
+
+    Public/anonymous callers are therefore never able to mint or revoke invites.
+    """
+    from fastapi import HTTPException
+
+    token = os.getenv(_OPERATOR_TOKEN_ENV, "").strip()
+    if token:
+        headers = getattr(request, "headers", {}) or {}
+        presented = (headers.get("x-operator-token") or "").strip()
+        if not presented:
+            auth = (headers.get("authorization") or "").strip()
+            if auth.lower().startswith("bearer "):
+                presented = auth[7:].strip()
+        if not secrets.compare_digest(presented, token):
+            raise HTTPException(status_code=401, detail="operator authentication required")
+        return
+    # No shared secret configured: trust only the local/tailnet network.
+    if not _client_is_private(request):
+        raise HTTPException(
+            status_code=403,
+            detail="operator endpoint is tailnet-only; set "
+            f"{_OPERATOR_TOKEN_ENV} to allow authenticated remote access",
+        )
 
 
 # ── Errors ───────────────────────────────────────────────────────────────────
@@ -441,7 +516,7 @@ async function join(e) {{
 </html>"""
 
 
-# ── FastAPI route registration (TODO wire route) ──────────────────────────────
+# ── FastAPI route registration (wired from webui.py) ──────────────────────────────
 
 
 def register_guest_routes(app: object) -> None:  # app: FastAPI
@@ -451,9 +526,9 @@ def register_guest_routes(app: object) -> None:  # app: FastAPI
     factory.  The import is guarded so skchat works even when FastAPI is not
     installed (e.g. pure CLI usage).
 
-    TODO wire route: add ``register_guest_routes(app)`` to
-    ``src/skchat/webui.py`` (or the central app factory) after the existing
-    ``register_livekit_routes`` call.
+    Wired from ``src/skchat/webui.py`` (after the spaces/glossa route block).
+    ``/guest/invite`` + ``/guest/revoke`` are operator-gated (``_require_operator``);
+    ``/join/{room}`` + ``/guest/join`` stay public (invite-JWT-gated).
 
     Routes registered:
         POST   /guest/invite           — operator creates a shareable invite
@@ -470,7 +545,7 @@ def register_guest_routes(app: object) -> None:  # app: FastAPI
 
     import os
 
-    from fastapi import HTTPException, Request
+    from fastapi import HTTPException
     from fastapi.responses import HTMLResponse, JSONResponse
 
     livekit_api_key = os.getenv("SKCHAT_LIVEKIT_API_KEY", "")
@@ -488,10 +563,12 @@ def register_guest_routes(app: object) -> None:  # app: FastAPI
             display:  Optional display-name hint for the invite page
             ttl:      Token lifetime in seconds (optional; default from env)
 
-        TODO wire route: this endpoint should require operator auth
-        (X-SKChat-FQID + HMAC or session cookie). For P0 it is tailnet-only
-        (not Funnel-exposed), so the call is from the same trusted network.
+        Operator-auth: gated by ``_require_operator`` -- a shared bearer token
+        (``SKCHAT_GUEST_OPERATOR_TOKEN``) when set, else loopback/tailnet-only.
+        Anonymous/public callers are rejected (401/403) before any invite is
+        minted.
         """
+        _require_operator(request)
         try:
             body = await request.json()
         except Exception as exc:
@@ -595,12 +672,14 @@ def register_guest_routes(app: object) -> None:  # app: FastAPI
         )
 
     @app.delete("/guest/revoke/{jti}")  # type: ignore[attr-defined]
-    async def guest_revoke(jti: str) -> JSONResponse:
+    async def guest_revoke(jti: str, request: Request) -> JSONResponse:
         """Operator-only: revoke a live invite token by JTI.
 
-        TODO wire route: should require operator auth (same as /guest/invite).
-        For P0 this endpoint is tailnet-only (not Funnel-exposed).
+        Operator-auth: gated by ``_require_operator`` (shared bearer token when
+        ``SKCHAT_GUEST_OPERATOR_TOKEN`` is set, else loopback/tailnet-only), so
+        anonymous/public callers cannot revoke invites.
         """
+        _require_operator(request)
         revoke_invite(jti)
         logger.info("guest invite revoked: jti=%s", jti)
         return JSONResponse({"ok": True, "revoked_jti": jti})
