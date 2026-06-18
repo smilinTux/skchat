@@ -613,14 +613,14 @@ def register_conf_routes(
 
     @app.get("/conf/{room}", response_class=HTMLResponse)
     async def conf_page(room: str) -> HTMLResponse:  # noqa: ARG001
-        """Serve the conference web client (mirrors livekit_routes' /livekit/{room}).
-
-        The page reads the conf room from its own URL path, mints a join token via
-        ``POST /conf/{room}/token``, and joins the SFU — so a bare ``/conf/<room>``
-        link is all a participant needs. ``room`` is unused server-side (the static
-        HTML does the routing) but is part of the URL contract.
+        """Serve the conference web client.
+        
+        Delegates to livekit.html (the full-featured collaboration client)
+        for consistency — conf.html was a stripped-down fork that kept
+        diverging. All features (chat, board, watch, doc, term, roster,
+        host controls) should live in one page.
         """
-        static = Path(__file__).resolve().parent.parent / "static" / "conf.html"
+        static = Path(__file__).resolve().parent.parent / "static" / "livekit.html"
         if static.exists():
             return FileResponse(static, media_type="text/html")
-        return HTMLResponse("conf.html missing", status_code=500)
+        return HTMLResponse("livekit.html missing", status_code=500)
