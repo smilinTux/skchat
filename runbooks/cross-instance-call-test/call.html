@@ -1,0 +1,62 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>B4 call test</title></head>
+<body>
+<h3 id="who">connecting…</h3>
+<pre id="log"></pre>
+<script type="module">
+import { Room, RoomEvent, Track, createLocalVideoTrack }
+  from 'https://cdn.jsdelivr.net/npm/livekit-client@2.6.0/+esm';
+
+const q = new URLSearchParams(location.search);
+const token = q.get('token');
+const url = q.get('url');
+const me = q.get('me') || 'anon';
+const logEl = document.getElementById('log');
+const log = (m) => { logEl.textContent += m + "\n"; };
+
+window.__lk = { me, connected:false, error:null, remotes:[], remoteVideo:false, published:false };
+
+const room = new Room({ adaptiveStream:false, dynacast:false });
+
+function snapshot() {
+  const remotes = [];
+  let remoteVideo = false;
+  room.remoteParticipants.forEach((p) => {
+    let hasVid = false;
+    p.trackPublications.forEach((pub) => {
+      if (pub.kind === Track.Kind.Video && pub.isSubscribed) hasVid = true;
+    });
+    if (hasVid) remoteVideo = true;
+    remotes.push({ id:p.identity, vid:hasVid });
+  });
+  window.__lk.remotes = remotes;
+  window.__lk.remoteVideo = remoteVideo;
+  window.__lk.connected = room.state === 'connected';
+}
+
+room.on(RoomEvent.Connected, () => { log('connected'); snapshot(); });
+room.on(RoomEvent.ParticipantConnected, (p) => { log('peer+ '+p.identity); snapshot(); });
+room.on(RoomEvent.ParticipantDisconnected, (p) => { log('peer- '+p.identity); snapshot(); });
+room.on(RoomEvent.TrackSubscribed, (t,pub,p) => { log('subscribed '+t.kind+' from '+p.identity); snapshot(); });
+room.on(RoomEvent.Disconnected, () => { log('disconnected'); window.__lk.connected=false; });
+
+(async () => {
+  try {
+    document.getElementById('who').textContent = me + ' → ' + url;
+    await room.connect(url, token);
+    window.__lk.connected = true;
+    const vt = await createLocalVideoTrack();
+    await room.localParticipant.publishTrack(vt);
+    window.__lk.published = true;
+    log('published local video');
+    snapshot();
+    setInterval(snapshot, 1000);
+  } catch (e) {
+    window.__lk.error = String(e);
+    log('ERROR ' + e);
+  }
+})();
+</script>
+</body>
+</html>
