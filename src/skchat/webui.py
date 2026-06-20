@@ -900,6 +900,64 @@ async def send(recipient: str = Form(...), content: str = Form(...)) -> HTMLResp
     return HTMLResponse(_render_messages(history, identity))
 
 
+@app.post("/api/send")
+async def api_send(payload: dict = Body(...)) -> JSONResponse:
+    """JSON send path for native clients (Flutter app).
+
+    The legacy HTML ``POST /send`` (form body -> server-rendered HTML) is left
+    untouched for the web UI.  This route runs the SAME send_and_store transport
+    path but speaks JSON in and JSON out, and broadcasts the identical
+    ``{"type": "new"}`` signal to ``/ws/chat`` so open web clients still refresh.
+
+    Native client contract (the three pieces a Flutter port consumes):
+      * Send   -> POST /api/send  body {"recipient": str, "content": str}
+                  returns {"ok": bool, "id": str, "recipient": str, "ts": iso8601}
+                  (400 if content is blank, 422 if recipient is missing).
+      * Inbox  -> GET /inbox returns a JSON array of messages, each:
+                  {id, sender, recipient, content, timestamp, delivery_status, thread_id}.
+      * Live   -> WS /ws/chat pushes {"type": "new"} whenever a message is
+                  sent or received; the client re-fetches /inbox on that signal.
+
+    Args:
+        payload: JSON object with ``recipient`` and ``content`` keys.
+
+    Returns:
+        JSONResponse: {ok, id, recipient, ts}.
+    """
+    recipient = (payload or {}).get("recipient")
+    content = (payload or {}).get("content")
+    if not isinstance(recipient, str) or not recipient:
+        raise HTTPException(status_code=422, detail="recipient is required")
+    if not isinstance(content, str) or not content.strip():
+        raise HTTPException(status_code=400, detail="content is required")
+
+    from .models import ChatMessage
+
+    identity = _get_identity()
+    # Build the message up front so the JSON response carries the exact id/ts
+    # that gets stored, regardless of which send path runs below.
+    msg = ChatMessage(sender=identity, recipient=recipient, content=content)
+
+    transport = _get_transport(identity)
+    if transport:
+        # Same transport path as the HTML /send route.
+        transport.send_and_store(recipient=recipient, content=content)
+    else:
+        _get_history().save(msg)
+
+    # Notify WS clients so they refresh — identical signal to the HTML /send route.
+    asyncio.create_task(_ws_broadcast({"type": "new"}))
+
+    return JSONResponse(
+        {
+            "ok": True,
+            "id": msg.id,
+            "recipient": recipient,
+            "ts": msg.timestamp.isoformat() if msg.timestamp else None,
+        }
+    )
+
+
 @app.post("/upload")
 async def upload(
     recipient: str = Form(...),
@@ -956,6 +1014,10 @@ def file_thumb(transfer_id: str) -> FileResponse:
 @app.get("/inbox")
 async def inbox(limit: int = 100, since_minutes: int = 1440) -> JSONResponse:
     """Return recent messages as JSON.
+
+    Part of the native-client (Flutter) contract alongside ``POST /api/send``
+    and the ``/ws/chat`` ``{"type": "new"}`` signal.  Each element:
+    {id, sender, recipient, content, timestamp, delivery_status, thread_id}.
 
     Args:
         limit: Max messages to return.
