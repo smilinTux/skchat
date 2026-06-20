@@ -4977,6 +4977,73 @@ def conf_join_federated(remote_host: str, room: str, fqid: str | None, as_json: 
     _print(f"  [bold]token[/]    {result.get('token', '')}\n")
 
 
+@conf.command("agent-join-federated")
+@click.option("--room", required=True, help="Remote-hosted conf room id to join.")
+@click.option(
+    "--host",
+    "remote_host",
+    default=None,
+    help="Remote host auth_url (skip discovery). Omit to discover via the relay.",
+)
+@click.option("--fqid", default=None,
+              help="Override signing identity (default: this agent's canonical fqid).")
+@click.option("--greet", default="Lumina here — joining the federated conference.",
+              help="Greeting the agent speaks on join (max 500 chars).")
+@click.option("--json", "as_json", is_flag=True, help="Output raw JSON for scripting.")
+def conf_agent_join_federated(
+    room: str, remote_host: str | None, fqid: str | None, greet: str, as_json: bool
+) -> None:
+    """Pull the AI agent into a conf room hosted on a REMOTE instance's SFU.
+
+    Discovers the elected SFU focus for ``room`` (or uses ``--host``), mints a
+    cross-realm conf token at that host's authd, and spawns the EXISTING agent
+    media stack against the REMOTE SFU (handing it the pre-minted token + url).
+
+    Examples:
+
+        skchat conf agent-join-federated --room standup
+        skchat conf agent-join-federated --room demo --host http://box-a:8765
+    """
+    import json as _json
+
+    from skchat.conf.fed_agent import FederatedAgentJoinError, federated_agent_join
+    from skchat.conf.fed_client import ConfAuthDenied, ConfFederationError
+
+    try:
+        result = federated_agent_join(
+            room, host=remote_host, fqid=fqid, greet=greet
+        )
+    except ConfAuthDenied as exc:
+        if as_json:
+            click.echo(_json.dumps({"error": "denied", "detail": str(exc)}))
+        else:
+            _print(f"\n  [red]Denied:[/] {exc}\n")
+        raise SystemExit(2)
+    except (FederatedAgentJoinError, ConfFederationError) as exc:
+        if as_json:
+            click.echo(_json.dumps({"error": "federation", "detail": str(exc)}))
+        else:
+            _print(f"\n  [red]Federation error:[/] {exc}\n")
+        raise SystemExit(1)
+    except Exception as exc:  # noqa: BLE001 - surface transport/spawn failures cleanly
+        if as_json:
+            click.echo(_json.dumps({"error": "transport", "detail": str(exc)}))
+        else:
+            _print(f"\n  [red]Error:[/] {exc}\n")
+        raise SystemExit(1)
+
+    if as_json:
+        click.echo(_json.dumps(result))
+        return
+
+    _print("\n  [green]Federated conf-agent launched.[/]\n")
+    _print(f"  [bold]unit[/]     {result.get('unit', '')}")
+    _print(f"  [bold]room[/]     {result.get('room', room)}")
+    _print(f"  [bold]identity[/] {result.get('identity', '')}")
+    _print(f"  [bold]role[/]     {result.get('role', '')}")
+    _print(f"  [bold]url[/]      {result.get('url', '')}\n")
+
+
 @main.command()
 @click.option("--port", "-p", default=8765, show_default=True, help="TCP port to listen on.")
 @click.option(

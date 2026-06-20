@@ -200,8 +200,14 @@ def test_remove_agent_stops_unit_host_gated(tmp_path, monkeypatch):
     r = client.post(f"/conf/{room}/remove-agent", json={"requester": _HOST})
     assert r.status_code == 200
     assert r.json()["stopped"] is True
+    # C4: remove-agent now stops BOTH the local (lumina-conf-) and federated
+    # (lumina-fedconf-) conf-agent units for the room — idempotent cleanup.
     expected_unit = f"lumina-conf-{room.replace('_', '-')}"
-    assert runner.calls == [["systemctl", "--user", "stop", f"{expected_unit}.scope"]]
+    fed_unit = f"lumina-fedconf-{room.replace('_', '-')}"
+    assert runner.calls == [
+        ["systemctl", "--user", "stop", f"{expected_unit}.scope"],
+        ["systemctl", "--user", "stop", f"{fed_unit}.scope"],
+    ]
 
 
 def test_remove_agent_unknown_room_404(tmp_path, monkeypatch):

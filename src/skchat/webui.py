@@ -110,6 +110,17 @@ try:
     _register_conf_routes(app)
 except ImportError as _e:
     logger.warning("conf routes not registered: %s", _e)
+# Federation observability — read-only GET /federation/status (identity, relays,
+# trust policy, pinned peers, discovered focus hosts, live conf/space + token
+# counters). Best-effort, never 500.
+try:
+    from .federation_status import (
+        register_federation_status_routes as _register_federation_status_routes,
+    )
+
+    _register_federation_status_routes(app)
+except ImportError as _e:
+    logger.warning("federation status route not registered: %s", _e)
 try:
     from .glossa_mesh.routes import register_glossa_routes as _register_glossa_routes
 
