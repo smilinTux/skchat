@@ -54,30 +54,17 @@ echo "== 3. tailscale serve — signaling ws (PIA-permitted, terminates at tails
 # The jarvis webui advertises wss://<host>.ts.net/livekit-ws as the public SFU url.
 tailscale serve --bg --set-path=/livekit-ws "http://${TNET_IP}:7880"
 
-echo "== 4. PIA killswitch allow-rules for the SFU media ports on the tailnet iface =="
-# PIA's killswitch + tailscale's ts-input already ACCEPT tailscale0 inbound, but make
-# the SFU rtc ports explicit + survive PIA reloads. (ts-input ACCEPTs -i tailscale0 already.)
-for rule in \
-  "-i tailscale0 -p tcp --dport 7880 -j ACCEPT" \
-  "-i tailscale0 -p tcp --dport 7881 -j ACCEPT" \
-  "-i tailscale0 -p udp --dport 50000:50200 -j ACCEPT"; do
-  sudo iptables -C INPUT $rule 2>/dev/null || sudo iptables -I INPUT 1 $rule
-done
-echo "   iptables INPUT allow-rules ensured for 7880/7881/50000-50200 on tailscale0"
-
 cat <<NOTE
 
-== 5. REQUIRED — tailscale ACL grant (Chef / tailnet admin) ==
-.41 is a 'tagged-devices' node; the tailnet ACL gates DIRECT peer port access
-(funnel + disco/ping are NOT gated, which is why signaling works but media did not).
-Add to the tailnet policy at https://login.tailscale.com/admin/acls :
-
-  {"action":"accept",
-   "src":["$PEER_TNET"],
-   "dst":["$TNET_IP:7880,7881,50000-50200"]}
-
-(and the symmetric grant for any other peer that must join jarvis-hosted confs).
-Until this lands, lumina@.158 can reach jarvis SIGNALING but not jarvis SFU MEDIA,
-so Shape-B media falls back per README (coturn relay / Shape-A shared SFU).
+== 4. REQUIRED — unblock the .41 inbound MEDIA path (PIA killswitch) ==
+The tailnet ACL is allow-all and is NOT the blocker. The blocker is .41's **PIA VPN
+killswitch**, which drops inbound tailnet traffic to the SFU media ports (livekit answers
+fine on .41's own bind; only remote .158->.41:7880 is EHOSTUNREACH). Plain INPUT ACCEPTs do
+NOT fix it (the interference is in PIA's own mangle/MARK chains — do not hand-edit blind).
+Pick ONE (see README.md "Fix options"):
+  1. PIA app: allow the tailscale interface / split-tunnel excluding tailscale0 + 100.64.0.0/10.
+  2. coturn TURN relay on .158 (PIA-agnostic; media relays via the reachable host, zero .41 inbound).
+  3. Shape A (works today): both join the .158 SFU (runbooks/cross-instance-call-test/).
+Verify after: from .158, 'curl -m6 http://$TNET_IP:7880/' connects (not 000).
 NOTE
 echo "done."
