@@ -151,4 +151,12 @@ def mint_remote_conf_token(
         raise ConfFederationError(f"conf room {room!r} not found at {url} (404)")
     if status < 200 or status >= 300:
         raise ConfFederationError(f"conf authd error {status} at {url}")
+    # Federation observability: this instance just minted a cross-realm token
+    # from a remote host (best-effort counter — never break the mint on it).
+    try:
+        from skchat.federation_status import incr
+
+        incr("fed_tokens_minted")
+    except Exception:  # noqa: BLE001
+        pass
     return resp.json()

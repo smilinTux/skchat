@@ -221,14 +221,23 @@ def register_conf_routes(
         return f"/conf/{room}"
 
     def _stop_agent_unit(room: str) -> bool:
-        """Best-effort ``systemctl --user stop <unit>.scope``. Never raises."""
-        unit = _agent_unit(room)
-        try:
-            run_cmd(["systemctl", "--user", "stop", f"{unit}.scope"])
-            return True
-        except Exception as exc:  # noqa: BLE001 - teardown is best-effort
-            logger.warning("conf: could not stop agent unit %s.scope: %s", unit, exc)
-            return False
+        """Best-effort stop of BOTH the local + federated conf-agent units.
+
+        ``systemctl --user stop <unit>.scope`` for ``lumina-conf-<room>`` (local
+        invite) and ``lumina-fedconf-<room>`` (federated invite). Idempotent and
+        never raises — stopping an absent unit is a no-op.
+        """
+        from skchat.conf.fed_agent import fed_agent_unit
+
+        units = [_agent_unit(room), fed_agent_unit(room)]
+        ok = False
+        for unit in units:
+            try:
+                run_cmd(["systemctl", "--user", "stop", f"{unit}.scope"])
+                ok = True
+            except Exception as exc:  # noqa: BLE001 - teardown is best-effort
+                logger.warning("conf: could not stop agent unit %s.scope: %s", unit, exc)
+        return ok
 
     @app.post("/conf/create")
     async def create_conf(request: Request) -> JSONResponse:
@@ -370,6 +379,57 @@ def register_conf_routes(
             logger.warning("conf: systemd-run rc=%s for %s: %s", rc, conf.room, stderr)
             raise HTTPException(502, f"systemd-run failed (rc={rc}): {stderr}")
         return JSONResponse({"ok": True, "unit": unit, "room": conf.room})
+
+    @app.post("/conf/{room}/invite-agent-federated")
+    async def invite_agent_federated(room: str, request: Request) -> JSONResponse:
+        """Pull the AI agent into a REMOTE-hosted conf ``room`` (federated join).
+
+        Unlike ``/conf/{room}/invite-agent`` (which spawns the agent into a
+        room hosted on THIS instance with a local token), this discovers the
+        elected SFU focus for ``room`` (or uses the supplied ``host`` auth_url),
+        mints a cross-realm token, and spawns the SAME agent media stack against
+        the REMOTE SFU. The room need NOT exist in this instance's registry.
+
+        Body: ``{requester, host?, fqid?, greet?}``. ``requester`` is required
+        and (when the room is local) host-gated; for a purely remote room there
+        is no local host to gate against, so any tailnet caller may invite —
+        the cross-realm trust gate is enforced at the REMOTE authd.
+
+        Degrades gracefully: missing ``systemd-run`` → 503; discovery/trust
+        failure → 502 with a clear reason (never an unhandled 5xx crash).
+        """
+        body = await request.json()
+        requester = (body.get("requester") or "").strip()
+        if not requester:
+            raise HTTPException(400, "requester required")
+        host = (body.get("host") or "").strip() or None
+        fqid = (body.get("fqid") or "").strip() or None
+        greeting = (
+            body.get("greet") or "Lumina here — joining the federated conference."
+        ).strip()
+        if len(greeting) > 500:
+            raise HTTPException(400, "greeting too long (max 500 chars)")
+
+        # If the room IS local, keep the existing host-gate (only its host may
+        # invite). If it is purely remote (not in our registry), there is no
+        # local host to gate on — the remote authd is the trust boundary.
+        local = reg.get(room)
+        if local is not None and local.status.value != "ended":
+            _require_host(local, requester)
+
+        if shutil.which("systemd-run") is None:
+            raise HTTPException(503, "systemd-run unavailable; cannot launch conf agent")
+
+        from skchat.conf.fed_agent import FederatedAgentJoinError, federated_agent_join
+
+        try:
+            result = federated_agent_join(room, host=host, fqid=fqid, greet=greeting)
+        except FederatedAgentJoinError as exc:
+            raise HTTPException(502, f"federated join failed: {exc}") from exc
+        except Exception as exc:  # noqa: BLE001 - mint/auth/spawn failure → graceful
+            logger.warning("conf: invite-agent-federated failed for %s: %s", room, exc)
+            raise HTTPException(502, f"federated join failed: {exc}") from exc
+        return JSONResponse(result)
 
     @app.post("/conf/{room}/remove-agent")
     async def remove_agent(room: str, request: Request) -> JSONResponse:
@@ -693,6 +753,14 @@ def register_conf_routes(
             conf.room,
             _DEFAULT_TTL,
         )
+        # Federation observability: a remote peer just redeemed a cross-realm
+        # token against this instance's SFU (best-effort counter, never fatal).
+        try:
+            from skchat.federation_status import incr
+
+            incr("fed_tokens_redeemed")
+        except Exception:  # noqa: BLE001 - observability must never break the mint
+            pass
         return JSONResponse({
             "token": token,
             "url": _url(),
