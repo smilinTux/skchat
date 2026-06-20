@@ -4899,6 +4899,84 @@ def tui() -> None:
     tui_main()
 
 
+@main.group()
+def conf() -> None:
+    """Sovereign Conf Calls — federation client.
+
+    Cross-instance ("sovereign") conf join: mint a conf token from a REMOTE
+    host by presenting a capauth-signed FQID assertion, then use the returned
+    token + SFU url to join that host's conference.
+
+    Examples:
+
+        skchat conf join-federated --host http://box-a:8765 --room standup
+    """
+
+
+@conf.command("join-federated")
+@click.option("--host", "remote_host", required=True,
+              help="Remote host base URL (http://box-a:8765) or full federated-token URL.")
+@click.option("--room", required=True, help="Remote conf room id to join.")
+@click.option("--fqid", default=None,
+              help="Override signing identity (default: this agent's canonical fqid).")
+@click.option("--json", "as_json", is_flag=True, help="Output raw JSON for scripting.")
+def conf_join_federated(remote_host: str, room: str, fqid: str | None, as_json: bool) -> None:
+    """Mint a cross-instance conf token from a remote host and print it.
+
+    Builds a capauth-signed FQID assertion (canonical fqid, e.g.
+    ``lumina@chef.skworld``) and POSTs it to the remote
+    ``POST /conf/{room}/federated-token``. On success prints the minted
+    LiveKit token + SFU websocket url so the Flutter app / a browser can join
+    the remote conference.
+
+    Examples:
+
+        skchat conf join-federated --host http://192.168.0.41:8765 --room standup
+
+        skchat conf join-federated --host http://box-a:8765 --room demo --json
+    """
+    import json as _json
+
+    from skchat.conf.fed_client import (
+        ConfAuthDenied,
+        ConfFederationError,
+        mint_remote_conf_token,
+    )
+
+    try:
+        result = mint_remote_conf_token(remote_host, room, fqid=fqid)
+    except ConfAuthDenied as exc:
+        if as_json:
+            click.echo(_json.dumps({"error": "denied", "detail": str(exc)}))
+        else:
+            _print(f"\n  [red]Denied:[/] {exc}\n")
+        raise SystemExit(2)
+    except ConfFederationError as exc:
+        if as_json:
+            click.echo(_json.dumps({"error": "federation", "detail": str(exc)}))
+        else:
+            _print(f"\n  [red]Federation error:[/] {exc}\n")
+        raise SystemExit(1)
+    except Exception as exc:  # noqa: BLE001 - surface transport/network failures cleanly
+        if as_json:
+            click.echo(_json.dumps({"error": "transport", "detail": str(exc)}))
+        else:
+            _print(f"\n  [red]Error:[/] {exc}\n")
+        raise SystemExit(1)
+
+    if as_json:
+        click.echo(_json.dumps(result))
+        return
+
+    _print("\n  [green]Federated conf token minted.[/]\n")
+    _print(f"  [bold]identity[/] {result.get('identity', '')}")
+    _print(f"  [bold]room[/]     {result.get('room', room)}")
+    _print(f"  [bold]conf_id[/]  {result.get('conf_id', '')}")
+    _print(f"  [bold]role[/]     {result.get('role', '')}")
+    _print(f"  [bold]url[/]      {result.get('url', '')}")
+    _print(f"  [bold]token[/]    {result.get('token', '')}\n")
+
+
 @main.command()
 @click.option("--port", "-p", default=8765, show_default=True, help="TCP port to listen on.")
 @click.option(
