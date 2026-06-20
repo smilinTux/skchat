@@ -52,5 +52,20 @@ not be hand-edited blind.
    each other's video.
 3. Cross-realm mint itself: `tests/test_conf_fed_client.py`. Discovery: `tests/test_fed_advertise.py`.
 
+## Field notes (2026-06-20 debug — C5 still blocked)
+PIA's daemon on .41 is **dead** (`piactl` shows Disconnected, no `pia-daemon` process), but it left
+**orphaned rules across all 4 iptables tables** (`piavpn.*` chains incl. `r.100.blockAll` REJECT) plus
+PIA `ip rule`s pointing at now-empty VPN routing tables. We removed every `piavpn` jump (filter/mangle/
+nat/raw) + the orphaned `ip rule`s and restarted `tailscaled`. After that: ICMP `.158→.41` works,
+the Funnel works, `.41→.158:7880` works, livekit is bound — **but direct `.158→.41:7880` TCP still
+returns `EHOSTUNREACH`.** Root cause not cracked remotely; the half-dead PIA state appears to leave a
+deeper routing/conntrack knot.
+
+**Recommended next step: reboot .41** (clears ALL the orphaned PIA iptables/routing state at once),
+then re-run `setup-jarvis-sfu.sh` and the C5 test. If PIA isn't needed on .41, uninstall it so it
+stops re-installing a killswitch on boot. Until then, **Shape A is the working cross-instance path.**
+NOTE: this debug already removed .41's orphaned PIA killswitch rules + added an `ip rule to
+100.64.0.0/10 lookup 52` and INPUT ACCEPTs for the SFU ports — all cleared by a reboot.
+
 ## Files
 - `setup-jarvis-sfu.sh` — idempotent .41 SFU bring-up (config + unit + serve + ACCEPT rules).
