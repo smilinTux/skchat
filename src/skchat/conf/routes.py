@@ -156,6 +156,7 @@ def register_conf_routes(
     registry: ConfRegistry | None = None,
     room_service=None,
     runner=None,
+    advertiser=None,
 ) -> None:
     """Wire the conference REST API onto ``app``.
 
@@ -166,9 +167,27 @@ def register_conf_routes(
     ``runner`` is the systemd-run/systemctl command runner for the on-demand
     conf-agent routes; it defaults to :func:`_default_runner` (a real
     ``subprocess.run``) and is injected by tests so no process is ever spawned.
+
+    ``advertiser`` is the C2 federation focus-advertise callable invoked on
+    ``/conf/create`` to publish this room's focus descriptor + membership to the
+    Nostr relay(s). It defaults to :func:`skchat.spaces.federation.advertise.
+    advertise_conf` and is injected by tests (a fake recorder) so create-time
+    advertising is verified without touching a relay.
     """
     reg = registry or ConfRegistry()
     run_cmd = runner or _default_runner
+
+    def _advertise_conf(*, host_fqid: str, room: str, title: str) -> None:
+        """Best-effort focus-advertise on conf create — never fails the create."""
+        try:
+            if advertiser is not None:
+                advertiser(host_fqid=host_fqid, room=room, title=title)
+                return
+            from skchat.spaces.federation.advertise import advertise_conf
+
+            advertise_conf(host_fqid=host_fqid, room=room, title=title)
+        except Exception as exc:  # noqa: BLE001 - advertise must never fail create
+            logger.warning("conf: focus-advertise failed for %s: %s", room, exc)
     # Lazy LiveKit room-service client (mirrors Moderator._service): only built
     # when a route actually needs the live SFU, and only if creds are present.
     _svc_holder = {"svc": room_service}
@@ -233,6 +252,9 @@ def register_conf_routes(
         if len(title) > 120:
             raise HTTPException(400, "title too long (max 120 chars)")
         conf = reg.create(host, title, slug=slug or None)
+        # C2: advertise this instance as the SFU focus for the new room so a
+        # federated peer can discover + elect it (best-effort, never fatal).
+        _advertise_conf(host_fqid=host, room=conf.room, title=conf.title)
         # Host is SOVEREIGN with room_admin so it can moderate / tear down.
         token = mint_conf_token(
             host,
@@ -420,6 +442,75 @@ def register_conf_routes(
                 "agent_stopped": agent_stopped,
             }
         )
+
+    @app.get("/conf/candidates")
+    async def conf_candidates() -> JSONResponse:
+        """Federation discovery for CONFS: list discoverable federated conf rooms.
+
+        Cross-host sibling of ``/conf`` (which lists only LOCAL confs). Reads the
+        focus descriptors + Space-state events advertised on the configured Nostr
+        relays and joins them into ``{confs: [{room, title, status, host_fqid,
+        auth_url, sfu_ws_url}]}``. A conf is discoverable only if its focus host
+        has a complete descriptor (so a peer can actually redeem a token).
+
+        Best-effort + never-fatal: any relay/parse/import failure yields an EMPTY
+        list rather than a 500, so a client can always poll it safely.
+        """
+        confs: list[dict] = []
+        try:
+            from skchat.spaces.federation.events import (
+                FOCUS_KIND,
+                SPACE_KIND,
+                parse_focus_descriptor,
+            )
+            from skchat.spaces.federation.nostr_io import FederationNostr
+
+            relays = [r for r in os.getenv("SKCHAT_NOSTR_RELAYS", "").split(",") if r.strip()]
+            if relays:
+                nostr = FederationNostr(relays=relays)
+                # host_fqid -> {auth_url, sfu_ws_url}
+                foci: dict[str, dict] = {}
+                for ev in nostr._query({"kinds": [FOCUS_KIND]}):
+                    try:
+                        d = parse_focus_descriptor(ev)
+                    except Exception:  # noqa: BLE001 - hostile/malformed relay event
+                        continue
+                    fqid = (d.get("host_fqid") or "").strip()
+                    auth_url = (d.get("auth_url") or "").strip()
+                    sfu_ws_url = (d.get("sfu_ws_url") or "").strip()
+                    if fqid and auth_url and sfu_ws_url:
+                        foci[fqid] = {"auth_url": auth_url, "sfu_ws_url": sfu_ws_url}
+                # join Space-state events to their focus host, conf rooms only.
+                seen: set[str] = set()
+                for ev in nostr._query({"kinds": [SPACE_KIND]}):
+                    tags = {
+                        t[0]: t[1]
+                        for t in (ev.get("tags") or [])
+                        if isinstance(t, list) and len(t) >= 2
+                    }
+                    room = (tags.get("d") or "").strip()
+                    host = (tags.get("host") or "").strip()
+                    # conf rooms are the only ones whose auth_url mints conf tokens;
+                    # we surface every advertised room with a complete focus, but
+                    # mark which are conf rooms (id prefix) so the UI can filter.
+                    if not room or room in seen or host not in foci:
+                        continue
+                    seen.add(room)
+                    confs.append(
+                        {
+                            "room": room,
+                            "title": (tags.get("title") or "").strip(),
+                            "status": (tags.get("status") or "").strip() or "live",
+                            "host_fqid": host,
+                            "auth_url": foci[host]["auth_url"],
+                            "sfu_ws_url": foci[host]["sfu_ws_url"],
+                            "is_conf": room.startswith("conf-"),
+                        }
+                    )
+        except Exception as exc:  # noqa: BLE001 - discovery best-effort, never 500
+            logger.warning("conf/candidates discovery failed: %s", exc)
+            confs = []
+        return JSONResponse({"confs": confs})
 
     @app.get("/conf")
     async def list_confs() -> JSONResponse:

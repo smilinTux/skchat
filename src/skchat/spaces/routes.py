@@ -73,8 +73,21 @@ def register_spaces_routes(
     recorder=None,
     lane_store: "LaneStore | None" = None,
     skreach_executor=None,
+    advertiser=None,
 ) -> None:
     reg = registry or SpaceRegistry()
+
+    def _advertise_space(*, host_fqid: str, space_id: str, title: str) -> None:
+        """C2 best-effort focus-advertise on space create — never fails create."""
+        try:
+            if advertiser is not None:
+                advertiser(host_fqid=host_fqid, space_id=space_id, title=title)
+                return
+            from skchat.spaces.federation.advertise import advertise_space
+
+            advertise_space(host_fqid=host_fqid, space_id=space_id, title=title)
+        except Exception as exc:  # noqa: BLE001 - advertise must never fail create
+            logger.warning("spaces: focus-advertise failed for %s: %s", space_id, exc)
     _mod_holder = {"mod": moderator}
     from skchat.spaces.consent import ConsentLedger
 
@@ -145,6 +158,8 @@ def register_spaces_routes(
         sid = derive_space_id(host, slug)
         space = Space(space_id=sid, host_fqid=host, title=title, slug=slug, created_at=time.time())
         reg.add(space)
+        # C2: advertise this instance as the SFU focus for the new Space.
+        _advertise_space(host_fqid=host, space_id=space.space_id, title=space.title)
         return JSONResponse(_token_response(host, host.split("@")[0], Role.HOST, space))
 
     @app.post("/spaces/{space_id}/join")
