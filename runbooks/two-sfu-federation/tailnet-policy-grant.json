@@ -1,0 +1,10 @@
+{
+  "_comment": "Shape-B two-SFU federation media grant. Lets tailnet peers reach the .41 (jarvis) LiveKit SFU rtc ports directly. Merged into the tailnet ACL by apply-acl.sh. Signaling (Funnel) + disco/ping already work; this is purely the WebRTC media path.",
+  "acls": [
+    {
+      "action": "accept",
+      "src": ["100.108.59.57"],
+      "dst": ["100.86.156.5:7880,7881,50000-50200"]
+    }
+  ]
+}
