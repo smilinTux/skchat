@@ -3,8 +3,29 @@
 Each sovereign instance hosts conferences on its **own** LiveKit SFU; a peer joins a
 remote-hosted conf via the capauth-signed cross-realm mint (`/conf/{room}/federated-token`,
 client = `skchat/conf/fed_client.py`). This is the "then 2." of the SKChat Unified Client +
-Federation epic (`skchat-unify`); Shape A (shared SFU on .158, **works today**) is in
+Federation epic (`skchat-unify`); Shape A (shared SFU on .158) is in
 `runbooks/cross-instance-call-test/`.
+
+## ✅✅ COMPLETE — BOTH directions proven (2026-06-21)
+- conf on **.158** SFU, jarvis joins via cross-realm mint → video both ways (`cross-instance-call-test/`).
+- conf on **.41** SFU, lumina joins via cross-realm mint → video both ways (`drive_fed.py`, host=jarvis).
+True bidirectional two-SFU peer federation works.
+
+## ⚠️ THE REAL ROOT CAUSE (was misdiagnosed as PIA): firewalld zone
+The long-running ".158 can't reach .41's SFU" block was **firewalld on .41 (Manjaro) placing
+`tailscale0` in the `public` zone**, which rejects inbound with `admin-prohibited` → the sender
+sees `EHOSTUNREACH`. PIA's killswitch and the reboot were **red herrings** (PIA being stopped did
+NOT fix it; firewalld did). Symptoms that pinpointed it: control-plane (tailscale-SSH `:22`, funnel,
+`tailscale ping`) + kernel ICMP all worked, and `.41→.158` worked, but `.158→.41:<app>` got
+`EHOSTUNREACH` with the SYN never reaching .41's `tailscale0` (tcpdump empty). **The fix (permanent):**
+```bash
+sudo firewall-cmd --zone=trusted --add-interface=tailscale0
+sudo firewall-cmd --permanent --zone=trusted --add-interface=tailscale0
+sudo firewall-cmd --reload
+```
+After this, `.158→.41:7880/8765` connect immediately. If tailscale0 ever drops back to `public`
+(reinstall, reboot edge cases), re-apply. Tailscale normally self-assigns trusted; PIA's churn left it
+in `public` here.
 
 ## Deployed (2026-06-20)
 - **.41 LiveKit SFU**: `livekit-server` 1.9.1, `~/.config/livekit/livekit.yaml` bound to the
