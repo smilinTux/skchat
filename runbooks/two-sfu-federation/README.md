@@ -81,5 +81,20 @@ stops re-installing a killswitch on boot. Until then, **Shape A is the working c
 NOTE: this debug already removed .41's orphaned PIA killswitch rules + added an `ip rule to
 100.64.0.0/10 lookup 52` and INPUT ACCEPTs for the SFU ports — all cleared by a reboot.
 
+## Serving the jarvis Flutter app over the funnel (HTTPS — no mixed content)
+The app is reached cross-box via `tailscale serve` HTTPS (`:8443 → :8088`), because PIA blocks
+direct `:8088`. An HTTPS-served Flutter app must use **HTTPS backends** or the browser blocks them
+as *mixed content*. Recipe (verified 2026-06-21, app boots with 0 console errors):
+```bash
+# serve the SKComms daemon API over the funnel root (strips /daemon → :9384)
+tailscale serve --bg --set-path=/daemon http://127.0.0.1:9384
+# build the app pointing webui + daemon at the HTTPS funnel host (not http://IP:port)
+flutter build web --release \
+  --dart-define=SKCHAT_WEBUI_URL=https://cbrd21-laptop12thgenintelcore.tail204f0c.ts.net \
+  --dart-define=SKCOMMS_URL=https://cbrd21-laptop12thgenintelcore.tail204f0c.ts.net/daemon
+```
+(.41 funnel root already serves `/conf /join /livekit /livekit-ws /guest/join → :8765`.) The lumina
+app on .158 is served over plain HTTP `:8088`, so its http backends are fine (no mixed content).
+
 ## Files
 - `setup-jarvis-sfu.sh` — idempotent .41 SFU bring-up (config + unit + serve + ACCEPT rules).
