@@ -7,6 +7,9 @@ build/
 .eggs/
 .venv/
 .env
+# B3: gitignored secret env consumed by deploy/stacks/make-secrets.sh — NEVER commit
+.env.secrets
+deploy/stacks/.env.secrets
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/

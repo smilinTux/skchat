@@ -1,0 +1,602 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# skchat comms-suite Docker Swarm stack — B2 (same-origin) + B3 (secrets) + B5 (state)
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Built by the B2/B3/B5 build lane.  Composes the B1 images by NAME:
+#     skchat-webui:v2   skchat-daemon:v2   skchat-voice:v2
+# and aligns with the B4 media-plane stacks (livekit-stack.yml + coturn-stack.yml).
+#
+# ── KEY GOAL (B2): ONE ORIGIN, NO CORS ────────────────────────────────────────
+# A single Traefik router serves the Flutter web app AND every API the browser
+# app talks to, all under ONE hostname.  Because everything is same-origin the
+# browser never makes a cross-origin request → no CORS pre-flights, no
+# Access-Control-Allow-Origin: * workaround (see src/skchat/daemon.py:877).
+#
+#   Path prefix      →  upstream service        notes
+#   ───────────────  ─  ──────────────────────  ──────────────────────────────────
+#   /                →  flutter-web   :80        static Flutter web build (was :8088)
+#   /api             →  skcomms-api   :9384      SKComms federation / inbox / chat API
+#   /access          →  sk-access     :9386      sk-access control / token / policy API
+#   /tool            →  sk-access     :9386      MCP/tool surface (same service)
+#   /livekit-ws      →  livekit       :7880      LiveKit signalling WebSocket
+#
+# All five are reached at the SAME origin, e.g. (tailnet-first):
+#
+#     https://noroc2027.tail204f0c.ts.net/            ← Flutter app
+#     https://noroc2027.tail204f0c.ts.net/api/...     ← skcomms-api  (same-origin)
+#     https://noroc2027.tail204f0c.ts.net/access/...  ← sk-access    (same-origin)
+#     https://noroc2027.tail204f0c.ts.net/tool/...    ← sk-access    (same-origin)
+#     wss://noroc2027.tail204f0c.ts.net/livekit-ws    ← LiveKit WS   (same-origin)
+#
+# The Flutter app therefore uses RELATIVE URLs (/api, /access, /tool, /livekit-ws)
+# and inherits the page origin → zero CORS surface.
+#
+# ── Ingress model (tailnet-first, public via Funnel only where already public) ─
+# Traefik runs INSIDE this stack and owns the single HTTP entrypoint (:8081 on the
+# `app` overlay, mapped to host :8081 in `host` mode).  Front it two ways:
+#
+#   1. Tailnet (default): point one `tailscale serve` rule at Traefik:
+#        tailscale serve --bg https+insecure://localhost:8081
+#      → the whole same-origin surface is reachable at
+#        https://noroc2027.tail204f0c.ts.net  (tailnet-only, WireGuard-encrypted)
+#
+#   2. Public (opt-in, only what is ALREADY public today): the existing Funnel
+#      on :10000 / root already fronts the comms surface.  Re-point those Funnel
+#      path rules at Traefik :8081 instead of the old :8765 monolith — see
+#      deploy/stacks/README-same-origin.md §Ingress.  Nothing here opens a new
+#      public port on its own.
+#
+# This stack does NOT bind a public Traefik entrypoint to the shared
+# `cloud-public-prod` overlay by default (that overlay = the cluster Traefik for
+# *.douno.it).  This is a self-contained, tailnet-first, single-origin proxy.
+# To publish on the cluster edge instead, see README-same-origin.md §Cluster-edge.
+#
+# ── Secrets (B3): NONE baked into images or this YAML ──────────────────────────
+# Docker *secrets* (not env-file substitution) carry every credential.  Each
+# secret lands at /run/secrets/<name> (tmpfs, root-only) and is read by the
+# service via a `*_FILE` env var.  Non-secret tuning still comes from the
+# `--env-file` at deploy time.  Create the secrets first:
+#     deploy/stacks/make-secrets.sh   (reads deploy/stacks/.env.secrets, gitignored)
+# Inventory + example: deploy/stacks/secrets.example
+#
+# ── State volumes (B5): named volumes, identity keys read-only where possible ──
+# See the `volumes:` block + deploy/stacks/backup.md.  Identity / trust volumes
+# are SECRET-SENSITIVE and MUST be backed up encrypted to Garage.
+#
+# ── Deploy (SUPERVISED — do NOT run unsupervised) ─────────────────────────────
+#   1. docker network create --driver overlay --attachable skchat-app || true
+#   2. docker network create --driver overlay --attachable media       || true   # B4 shares this
+#   3. deploy/stacks/make-secrets.sh                                              # create docker secrets
+#   4. docker stack config -c deploy/stacks/skchat-stack.yml > /dev/null          # validate
+#   5. set -a && source /var/data/deploy_skchat/skchat.env && set +a
+#      docker stack deploy --env-file /var/data/deploy_skchat/skchat.env \
+#        -c deploy/stacks/skchat-stack.yml skchat
+#   6. tailscale serve --bg https+insecure://localhost:8081
+#   → test URL: https://noroc2027.tail204f0c.ts.net/
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+
+version: "3.8"
+
+services:
+
+  # ── traefik ────────────────────────────────────────────────────────────────
+  # The single same-origin reverse proxy.  Static config via CLI flags (no file,
+  # no secrets).  Dynamic routing via per-service deploy labels (Swarm provider).
+  # Listens on one HTTP entrypoint (:8081); TLS is terminated upstream by
+  # `tailscale serve` (tailnet) or the Funnel — Traefik speaks plain HTTP behind
+  # them, which is correct for a tailnet-first single-host proxy.
+  traefik:
+    image: traefik:v3.3
+    command:
+      - "--providers.swarm=true"
+      - "--providers.swarm.exposedByDefault=false"
+      - "--providers.swarm.network=skchat-app"
+      - "--entrypoints.web.address=:8081"
+      # Forward the original Host/X-Forwarded-* so same-origin redirects stay correct.
+      - "--entrypoints.web.forwardedHeaders.insecure=true"
+      - "--ping=true"
+      - "--ping.entrypoint=web"
+      - "--accesslog=true"
+      - "--log.level=INFO"
+    ports:
+      # Host :8081 → Traefik web entrypoint.  `mode: host` so `tailscale serve`
+      # and the Funnel can proxy to localhost:8081 without traversing the routing
+      # mesh.  This is the ONLY port this stack binds on the host.
+      - target: 8081
+        published: 8081
+        protocol: tcp
+        mode: host
+    networks:
+      - skchat-app
+      - media          # reach the B4 LiveKit SFU for /livekit-ws routing
+    volumes:
+      # Traefik needs the Swarm API to read service labels.  Read-only socket.
+      # Pinned (below) to a manager node — only managers expose the swarm API.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    healthcheck:
+      test: ["CMD", "traefik", "healthcheck", "--ping"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          # Traefik's Swarm provider must talk to the Swarm API → manager node.
+          - node.role == manager
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 5
+        window: 120s
+      update_config:
+        parallelism: 1
+        delay: 10s
+        failure_action: rollback
+        monitor: 30s
+        max_failure_ratio: 0
+        order: start-first
+      rollback_config:
+        parallelism: 1
+        delay: 0s
+        failure_action: pause
+        monitor: 30s
+        order: stop-first
+      resources:
+        limits:
+          memory: 256M
+        reservations:
+          memory: 64M
+      labels:
+        traefik.enable: "false"   # the proxy does not route to itself
+
+  # ── flutter-web ──────────────────────────────────────────────────────────────
+  # Static Flutter web build served by the B1 webui image at container :80.
+  # This is the `/` route of the single origin.  It serves index.html + the
+  # compiled app bundle; the app calls /api, /access, /tool, /livekit-ws as
+  # RELATIVE paths so it is automatically same-origin.
+  #
+  # NOTE on image: the B1 `skchat-webui:v2` image bundles the built Flutter web
+  # assets and serves them on :80 (static).  If the webui image instead serves on
+  # :8765, change the loadbalancer.server.port label below to 8765 and the
+  # healthcheck port to match — see README-same-origin.md §Image-port.
+  flutter-web:
+    image: skchat-webui:v2
+    environment:
+      SKCHAT_NO_BROWSER: "true"
+    networks:
+      - skchat-app
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:80/ >/dev/null 2>&1 || curl -fs http://localhost:80/ >/dev/null"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == worker
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 5
+        window: 120s
+      update_config:
+        parallelism: 1
+        delay: 10s
+        failure_action: rollback
+        monitor: 30s
+        order: start-first
+      rollback_config:
+        parallelism: 1
+        delay: 0s
+        failure_action: pause
+        order: stop-first
+      resources:
+        limits:
+          memory: 256M
+        reservations:
+          memory: 64M
+      labels:
+        # ── Traefik: `/` → Flutter static (lowest priority; the catch-all) ──────
+        traefik.enable: "true"
+        traefik.swarm.network: "skchat-app"
+        traefik.http.routers.skchat-web.rule: "PathPrefix(`/`)"
+        traefik.http.routers.skchat-web.entrypoints: "web"
+        traefik.http.routers.skchat-web.priority: "1"      # lowest — APIs win first
+        traefik.http.routers.skchat-web.service: "skchat-web"
+        traefik.http.services.skchat-web.loadbalancer.server.port: "80"
+
+  # ── skcomms-api ──────────────────────────────────────────────────────────────
+  # SKComms federation / inbox / chat API (uvicorn skcomms.api:app on :9384).
+  # Exposed same-origin at /api.  Reuses the B1 daemon image (which ships the
+  # skcomms package) but runs the API server entrypoint instead of the poll loop.
+  skcomms-api:
+    image: skchat-daemon:v2
+    command:
+      - "uvicorn"
+      - "skcomms.api:app"
+      - "--host"
+      - "0.0.0.0"
+      - "--port"
+      - "9384"
+    environment:
+      SKAGENT: "${SKAGENT:-lumina}"
+      SKCHAT_HOME: "/data/skchat"
+      SKCOMMS_HOME: "/data/skcomms"
+      SKCAPSTONE_HOME: "${SKCAPSTONE_HOME:-/data/skcapstone}"
+      SKCHAT_IDENTITY: "${SKCHAT_IDENTITY:-}"
+      # skmem-pg — host + non-secret knobs from env-file; password via secret.
+      SKMEMORY_PG_HOST: "${SKMEMORY_PG_HOST}"
+      SKMEMORY_PG_PORT: "${SKMEMORY_PG_PORT:-5432}"
+      SKMEMORY_PG_DB: "${SKMEMORY_PG_DB:-skmemory}"
+      SKMEMORY_PG_USER: "${SKMEMORY_PG_USER}"
+      SKMEMORY_PG_PASSWORD_FILE: "/run/secrets/skmemory_pg_password"
+    secrets:
+      - skmemory_pg_password
+    networks:
+      - skchat-app
+    volumes:
+      - skchat-data:/data/skchat
+      - skchat-outbox:/data/skcomms
+      # Identity keys: READ-ONLY — the API verifies/serves identity but the daemon
+      # is the writer.  Read-only mount = defence-in-depth for private keys.
+      - skchat-identity:/data/capauth:ro
+      - skchat-skcapstone:/data/skcapstone:ro
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:9384/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == worker
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 5
+        window: 120s
+      update_config:
+        parallelism: 1
+        delay: 10s
+        failure_action: rollback
+        monitor: 30s
+        order: start-first
+      rollback_config:
+        parallelism: 1
+        delay: 0s
+        failure_action: pause
+        order: stop-first
+      resources:
+        limits:
+          memory: 384M
+        reservations:
+          memory: 96M
+      labels:
+        # ── Traefik: /api → skcomms-api:9384, strip the /api prefix ─────────────
+        traefik.enable: "true"
+        traefik.swarm.network: "skchat-app"
+        traefik.http.routers.skchat-api.rule: "PathPrefix(`/api`)"
+        traefik.http.routers.skchat-api.entrypoints: "web"
+        traefik.http.routers.skchat-api.priority: "10"
+        traefik.http.routers.skchat-api.service: "skchat-api"
+        traefik.http.routers.skchat-api.middlewares: "skchat-api-strip"
+        traefik.http.middlewares.skchat-api-strip.stripprefix.prefixes: "/api"
+        traefik.http.services.skchat-api.loadbalancer.server.port: "9384"
+
+  # ── sk-access ──────────────────────────────────────────────────────────────
+  # sk-access control / token / policy + MCP tool surface (:9386).
+  # Exposed same-origin at BOTH /access and /tool (one service, two routers).
+  # Reuses the B1 webui image (which ships the sk-access ASGI app); override the
+  # entrypoint to the access server.  Adjust the command if the B1 image exposes
+  # a different console script — see README-same-origin.md §sk-access-entrypoint.
+  sk-access:
+    image: skchat-webui:v2
+    command:
+      - "uvicorn"
+      - "skchat.access:app"
+      - "--host"
+      - "0.0.0.0"
+      - "--port"
+      - "9386"
+    environment:
+      SKAGENT: "${SKAGENT:-lumina}"
+      SKCHAT_HOME: "/data/skchat"
+      SKCAPSTONE_HOME: "${SKCAPSTONE_HOME:-/data/skcapstone}"
+      SKCHAT_IDENTITY: "${SKCHAT_IDENTITY:-}"
+      # LiveKit token minting: URL is non-secret; key+secret via docker secrets.
+      SKCHAT_LIVEKIT_URL: "${SKCHAT_LIVEKIT_URL}"
+      SKCHAT_LIVEKIT_API_KEY_FILE: "/run/secrets/livekit_api_key"
+      SKCHAT_LIVEKIT_API_SECRET_FILE: "/run/secrets/livekit_api_secret"
+      SKCHAT_LIVEKIT_DEFAULT_ROOM: "${SKCHAT_LIVEKIT_DEFAULT_ROOM:-lumina-and-chef}"
+      # TURN: only the static secret is sensitive (→ docker secret); URLs are public.
+      SKCHAT_TURN_SECRET_FILE: "/run/secrets/turn_secret"
+      SKCHAT_TURN_URLS: "${SKCHAT_TURN_URLS}"
+      SKCHAT_STUN_URLS: "${SKCHAT_STUN_URLS}"
+      SKCHAT_TURN_TTL: "${SKCHAT_TURN_TTL:-300}"
+    secrets:
+      - livekit_api_key
+      - livekit_api_secret
+      - turn_secret
+    networks:
+      - skchat-app
+    volumes:
+      - skchat-data:/data/skchat
+      # Identity keys: READ-ONLY — sk-access mints tokens with the identity key
+      # but should never mutate the keystore.
+      - skchat-identity:/data/capauth:ro
+      - skchat-skcapstone:/data/skcapstone:ro
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:9386/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == worker
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 5
+        window: 120s
+      update_config:
+        parallelism: 1
+        delay: 10s
+        failure_action: rollback
+        monitor: 30s
+        order: start-first
+      rollback_config:
+        parallelism: 1
+        delay: 0s
+        failure_action: pause
+        order: stop-first
+      resources:
+        limits:
+          memory: 384M
+        reservations:
+          memory: 96M
+      labels:
+        # ── Traefik: /access AND /tool → sk-access:9386, strip prefixes ─────────
+        traefik.enable: "true"
+        traefik.swarm.network: "skchat-app"
+        # /access router
+        traefik.http.routers.skchat-access.rule: "PathPrefix(`/access`)"
+        traefik.http.routers.skchat-access.entrypoints: "web"
+        traefik.http.routers.skchat-access.priority: "10"
+        traefik.http.routers.skchat-access.service: "skchat-access"
+        traefik.http.routers.skchat-access.middlewares: "skchat-access-strip"
+        traefik.http.middlewares.skchat-access-strip.stripprefix.prefixes: "/access"
+        # /tool router (same service)
+        traefik.http.routers.skchat-tool.rule: "PathPrefix(`/tool`)"
+        traefik.http.routers.skchat-tool.entrypoints: "web"
+        traefik.http.routers.skchat-tool.priority: "10"
+        traefik.http.routers.skchat-tool.service: "skchat-access"
+        traefik.http.routers.skchat-tool.middlewares: "skchat-tool-strip"
+        traefik.http.middlewares.skchat-tool-strip.stripprefix.prefixes: "/tool"
+        # shared service definition
+        traefik.http.services.skchat-access.loadbalancer.server.port: "9386"
+
+  # ── daemon ───────────────────────────────────────────────────────────────────
+  # SKComms receive loop, history (SQLite), advocacy engine, outbox retry.
+  # Internal only — NOT routed by Traefik.  Singleton (replicas MUST stay 1): two
+  # daemons would both poll the same inbox and double-deliver.
+  daemon:
+    image: skchat-daemon:v2
+    command:
+      - "skchat"
+      - "daemon"
+      - "start"
+      - "--foreground"
+      - "--interval"
+      - "5"
+    environment:
+      SKAGENT: "${SKAGENT:-lumina}"
+      SKCHAT_DAEMON_INTERVAL: "${SKCHAT_DAEMON_INTERVAL:-5}"
+      SKCHAT_DAEMON_QUIET: "${SKCHAT_DAEMON_QUIET:-false}"
+      SKCHAT_HOME: "/data/skchat"
+      SKCOMMS_HOME: "/data/skcomms"
+      SKCHAT_IDENTITY: "${SKCHAT_IDENTITY:-}"
+      SKCAPSTONE_HOME: "${SKCAPSTONE_HOME:-/data/skcapstone}"
+      SKMEMORY_PG_HOST: "${SKMEMORY_PG_HOST}"
+      SKMEMORY_PG_PORT: "${SKMEMORY_PG_PORT:-5432}"
+      SKMEMORY_PG_DB: "${SKMEMORY_PG_DB:-skmemory}"
+      SKMEMORY_PG_USER: "${SKMEMORY_PG_USER}"
+      SKMEMORY_PG_PASSWORD_FILE: "/run/secrets/skmemory_pg_password"
+    secrets:
+      - skmemory_pg_password
+    networks:
+      - skchat-app
+    volumes:
+      # daemon is the SOLE WRITER of history.db / outbox.db / identity keystore.
+      - skchat-data:/data/skchat
+      - skchat-outbox:/data/skcomms
+      # Identity keys: READ-WRITE here (daemon signs outgoing msgs + manages
+      # pairing nonces).  This is the only service that mounts identity rw.
+      - skchat-identity:/data/capauth
+      - skchat-skcapstone:/data/skcapstone
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:9385/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    deploy:
+      mode: replicated
+      replicas: 1                # MUST stay 1 — singleton inbox poller
+      placement:
+        constraints:
+          - node.role == worker
+          # Hard-pin to one node to guarantee the singleton across restarts:
+          #   docker node update --label-add skchat.daemon=true <node-id>
+          # - node.labels.skchat.daemon == true
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 5
+        window: 120s
+      update_config:
+        parallelism: 1
+        delay: 10s
+        failure_action: rollback
+        monitor: 30s
+        order: stop-first          # stop old first — only one poller at a time
+      rollback_config:
+        parallelism: 1
+        delay: 0s
+        failure_action: pause
+        order: stop-first
+      resources:
+        limits:
+          memory: 256M
+        reservations:
+          memory: 64M
+      labels:
+        traefik.enable: "false"
+
+  # ── voice ────────────────────────────────────────────────────────────────────
+  # WebSocket voice service (STT → LLM → TTS).  Internal overlay only — reached
+  # by the app via the same-origin LiveKit path for media; this WS pipeline is an
+  # internal upstream, NOT Traefik-routed.
+  voice:
+    image: skchat-voice:v2
+    command: ["skchat-voice"]
+    environment:
+      SKCHAT_VOICE_HOST: "0.0.0.0"
+      SKCHAT_VOICE_PORT: "18800"
+      SKVOICE_AGENT: "${SKAGENT:-lumina}"
+      SKVOICE_LLM_URL: "${SKCHAT_LLM_URL}"
+      SKVOICE_MODEL: "${SKCHAT_LLM_MODEL}"
+      SKVOICE_FALLBACK_MODEL: "${SKVOICE_FALLBACK_MODEL}"
+      SKVOICE_STT_URL: "${SKCHAT_STT_URL}"
+      SKVOICE_TTS_URL: "${SKCHAT_TTS_URL}"
+      SKVOICE_TTS_VOICE: "${SKVOICE_TTS_VOICE:-lumina}"
+      SKVOICE_MAX_TOKENS: "${SKVOICE_MAX_TOKENS:-200}"
+      SKVOICE_STT_MIN_RMS: "${SKVOICE_STT_MIN_RMS:-800}"
+      # Fallback LLM endpoint may embed an auth token → docker secret.
+      SKVOICE_FALLBACK_URL_FILE: "/run/secrets/voice_fallback_url"
+    secrets:
+      - voice_fallback_url
+    networks:
+      - skchat-app
+    volumes:
+      # Voice-session audio blobs (private call audio).  Backed up to Garage with
+      # bucket-level encryption; 30-day retention.  See backup.md.
+      - skchat-recordings:/data/recordings
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:18800/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == worker
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 5
+        window: 120s
+      update_config:
+        parallelism: 1
+        delay: 10s
+        failure_action: rollback
+        monitor: 30s
+        order: start-first
+      rollback_config:
+        parallelism: 1
+        delay: 0s
+        failure_action: pause
+        order: stop-first
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 256M
+      labels:
+        traefik.enable: "false"
+
+# ── networks ──────────────────────────────────────────────────────────────────
+networks:
+  # App overlay — Traefik + all skchat services.  Created externally so it
+  # survives `docker stack rm` and can be shared if needed:
+  #   docker network create --driver overlay --attachable skchat-app
+  skchat-app:
+    external: true
+  # Media overlay — shared with the B4 LiveKit/coturn stacks so Traefik can
+  # route /livekit-ws → the SFU.  Created by B4 (or once, before either deploy):
+  #   docker network create --driver overlay --attachable media
+  media:
+    external: true
+
+# ── secrets (B3) ────────────────────────────────────────────────────────────
+# All carried as Docker secrets (NOT env substitution, NOT image layers).
+# Each is `external: true` → created out-of-band by make-secrets.sh BEFORE deploy.
+# Mounted at /run/secrets/<name> (tmpfs, root-only) and read via the *_FILE env
+# vars wired into each service above.
+#
+# NOTE on /livekit-ws routing: Traefik routes the WS path to the B4 `livekit`
+# service over the shared `media` overlay; LiveKit's OWN api key/secret live in
+# the B4 livekit.env / livekit_config Swarm config.  The secrets below are the
+# ones SKCHAT services need to MINT LiveKit JWTs and derive TURN creds — they MUST
+# match B4's LIVEKIT_KEYS and SKCHAT_TURN_SECRET respectively (see secrets.example).
+secrets:
+  livekit_api_key:
+    external: true            # → must equal the key half of B4 LIVEKIT_KEYS
+  livekit_api_secret:
+    external: true            # → must equal the secret half of B4 LIVEKIT_KEYS
+  turn_secret:
+    external: true            # → must equal B4 coturn SKCHAT_TURN_SECRET
+  skmemory_pg_password:
+    external: true
+  voice_fallback_url:
+    external: true
+
+# ── volumes (B5) ────────────────────────────────────────────────────────────
+# Named, driver: local, persist on the placement node across `docker stack rm`.
+# Swarm prefixes them with the stack name → e.g. `skchat_skchat-identity`.
+# Backup target: Garage (S3) — see deploy/stacks/backup.md.
+#
+# Volume             Mounts                         Secret?  Backup priority
+# ─────────────────  ─────────────────────────────  ───────  ────────────────
+# skchat-data        daemon(rw) api(rw) — history    No       P1 daily
+# skchat-outbox      daemon(rw) api(rw) — outbox     No       P2 daily
+# skchat-identity    daemon(rw) api(ro) access(ro)   YES      P0 daily ENCRYPTED
+# skchat-skcapstone  daemon(rw) api(ro) access(ro)   YES      P0 daily ENCRYPTED
+# skchat-recordings  voice(rw) — call audio          private  P1 daily (30d ret.)
+volumes:
+  skchat-data:
+    # history.db, outbox.db, group configs, memory/index.db. daemon writes; api reads.
+    driver: local
+  skchat-outbox:
+    # SKComms transport state: pending outbox queue, delivery receipts.
+    driver: local
+  skchat-identity:
+    # !! SECRET-SENSITIVE — capauth Ed25519 PRIVATE KEYS + pairing nonces.
+    # daemon mounts rw (signs); api + sk-access mount RO.  Back up ENCRYPTED only.
+    # Losing this volume = permanent loss of the agent's sovereign identity.
+    # MUST NOT live in any image layer.
+    driver: local
+  skchat-skcapstone:
+    # !! SECRET-SENSITIVE — peer registry, trust FEBs, ritual blobs, peer pubkeys.
+    # daemon rw; api + sk-access RO.  Back up ENCRYPTED alongside identity.
+    driver: local
+  skchat-recordings:
+    # Voice-session audio (private call audio).  Garage bucket-level SSE; 30d ret.
+    # MUST NOT live in any image layer.
+    driver: local
