@@ -1,0 +1,187 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# coturn TURN/STUN — first-class v2 Docker Swarm stack  (skchat B4 · media plane)
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Makes coturn a reproducible Swarm stack instead of the ad-hoc launcher it runs
+# under today:
+#
+#   Today (ad-hoc):  ~/.config/systemd/user/skchat-coturn.service (oneshot)
+#                    → /home/cbrd21/.skchat/coturn/start-coturn.sh
+#                        docker run --network host coturn/coturn:4.6 ...
+#                        --realm noroc2027.tail204f0c.ts.net
+#                        --use-auth-secret --static-auth-secret=<from coturn.secret>
+#                        --listening-port 3478 --min-port 49152 --max-port 65535
+#                    secret read from /home/cbrd21/.skchat/coturn/coturn.secret
+#
+#   Here (declarative):  docker stack deploy -c coturn-stack.yml media
+#
+# coturn is tier-3 of the ICE ladder and is exercised ONLY by off-tailnet peers
+# (Funnel/Cloudflare guests, mobile on carrier NAT).  Tailnet peers use tier-1
+# (Tailscale) / tier-2 (LAN) and never relay.
+#
+# Deploy:
+#   set -a && source /var/data/deploy_coturn/coturn.env && set +a
+#   docker stack deploy --env-file /var/data/deploy_coturn/coturn.env \
+#     -c deploy/stacks/coturn-stack.yml media
+#
+# Secrets (B3): the static-auth-secret is referenced as ${SKCHAT_TURN_SECRET}
+# from the host env file (OpenBao-sourced) — NEVER inlined here.  The same value
+# must equal SKCHAT_TURN_SECRET in skchat.env (skchat derives short-lived
+# HMAC-SHA1 TURN credentials from it; the static secret never reaches a browser).
+# See deploy/SECRETS.md §SKCHAT_TURN_SECRET + deploy/stacks/README.md.
+#
+# ── UDP port range + firewall ────────────────────────────────────────────────
+# For OFF-TAILNET guests, the host (and any upstream firewall / cloud SG) must
+# allow inbound:
+#   3478  UDP+TCP            — STUN/TURN control plane
+#   5349  UDP+TCP            — TURN over TLS (only if TLS enabled — see below)
+#   ${COTURN_MIN_PORT}–${COTURN_MAX_PORT}  UDP  — relay allocation pool
+#                                                 (default 49152–65535)
+# Each concurrent relay consumes one UDP port: max relays = MAX-MIN+1.
+# Narrow the range on constrained hosts (e.g. 49152–50000 = 848 relays) and
+# narrow the firewall to match.  external-ip MUST be the host's publicly
+# reachable address (see COTURN_EXTERNAL_IP below) or relays advertise a wrong
+# candidate and media fails for guests.
+# ─────────────────────────────────────────────────────────────────────────────
+
+version: "3.8"
+
+services:
+
+  # ── coturn ──────────────────────────────────────────────────────────────────
+  # Standalone TURN/STUN relay.  Single instance is ample for a sovereign deploy
+  # where TURN is only hit by off-tailnet guests.
+  coturn:
+    image: coturn/coturn:4.6     # pin to a digest in prod (see README)
+    # Configured via flags so env-var substitution works straight from coturn.env
+    # without a separate config-file templating step.  Mirrors today's
+    # start-coturn.sh exactly, plus --external-ip for correct candidate
+    # advertisement to off-tailnet peers.
+    command: >
+      -n
+      --log-file=stdout
+      --realm=${SKCHAT_TURN_REALM}
+      --use-auth-secret
+      --static-auth-secret=${SKCHAT_TURN_SECRET}
+      --listening-port=3478
+      --external-ip=${COTURN_EXTERNAL_IP}
+      --min-port=${COTURN_MIN_PORT:-49152}
+      --max-port=${COTURN_MAX_PORT:-65535}
+      --no-multicast-peers
+      --denied-peer-ip=0.0.0.0-0.255.255.255
+      --denied-peer-ip=10.0.0.0-10.255.255.255
+      --denied-peer-ip=100.64.0.0-100.127.255.255
+      --denied-peer-ip=127.0.0.0-127.255.255.255
+      --denied-peer-ip=169.254.0.0-169.254.255.255
+      --denied-peer-ip=172.16.0.0-172.31.255.255
+      --denied-peer-ip=192.168.0.0-192.168.255.255
+      --denied-peer-ip=::1
+      --denied-peer-ip=fd00::/8
+      --cipher-list="HIGH"
+      --no-tlsv1
+      --no-tlsv1_1
+      --fingerprint
+      --stale-nonce=0
+    # ── denied-peer-ip rationale ──────────────────────────────────────────────
+    # Blocking RFC-1918 + loopback + link-local + Tailscale CGNAT (100.64/10)
+    # prevents SSRF-style relay abuse (a guest using TURN to reach internal LAN
+    # or tailnet hosts).  LAN peers do not need TURN (LAN → tier-2, no relay), so
+    # leave these in.  Drop the 192.168/172.16/10 rules ONLY if a real LAN peer
+    # must relay (unusual).
+    #
+    # ── TURN/TLS (port 5349) ──────────────────────────────────────────────────
+    # Plain TURN (:3478) is sufficient for tailnet-first deploys (WireGuard already
+    # encrypts the tailnet).  To offer TURNS:// for stricter guests, add:
+    #   --tls-listening-port=5349
+    #   --cert=/etc/coturn/tls/fullchain.pem
+    #   --pkey=/etc/coturn/tls/privkey.pem
+    # bind-mount a cert into the coturn-data volume / a tls mount, and open 5349.
+    environment:
+      # Re-exported for any health/tooling scripts; the values are already on the
+      # command line above.
+      SKCHAT_TURN_SECRET: "${SKCHAT_TURN_SECRET}"
+      SKCHAT_TURN_REALM: "${SKCHAT_TURN_REALM}"
+      COTURN_EXTERNAL_IP: "${COTURN_EXTERNAL_IP}"
+      COTURN_MIN_PORT: "${COTURN_MIN_PORT:-49152}"
+      COTURN_MAX_PORT: "${COTURN_MAX_PORT:-65535}"
+    # Host networking: coturn must bind 3478 + the full relay UDP range on the
+    # host directly.  Swarm cannot proxy a multi-thousand-port UDP range.
+    network_mode: host
+    ports:
+      # Informational only (host networking — not mapped by Swarm).  Firewall
+      # rules are applied at the host/cloud level (see header).
+      - target: 3478
+        protocol: udp
+        mode: host          # STUN/TURN control (UDP)
+      - target: 3478
+        protocol: tcp
+        mode: host          # STUN/TURN control (TCP fallback)
+      - target: 5349
+        protocol: udp
+        mode: host          # TURN/TLS (only if --tls-listening-port enabled)
+      - target: 5349
+        protocol: tcp
+        mode: host          # TURN/TLS (only if --tls-listening-port enabled)
+      # Relay range 49152–65535/udp: bound via --min-port/--max-port; open in the
+      # host firewall.  Not enumerable here (16K ports under host networking).
+    volumes:
+      # coturn state / optional TLS certs for TURNS.  Mostly stateless.
+      - coturn-data:/var/lib/coturn
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          # Pin to the node whose firewall is open for 3478 + the relay range and
+          # whose external-ip matches COTURN_EXTERNAL_IP.  Label it:
+          #   docker node update --label-add coturn=true <node>
+          - node.labels.coturn == true
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 5
+        window: 120s
+      update_config:
+        parallelism: 1
+        delay: 10s
+        failure_action: rollback
+        monitor: 30s
+        max_failure_ratio: 0
+        order: stop-first      # one coturn on the host at a time (host networking)
+      rollback_config:
+        parallelism: 1
+        delay: 0s
+        failure_action: pause
+        monitor: 30s
+        max_failure_ratio: 0
+        order: stop-first
+      resources:
+        limits:
+          memory: 256M         # ~8KB per relay port; 1K concurrent ≈ 8MB
+        reservations:
+          memory: 64M
+      labels:
+        traefik.enable: "false"   # TURN is UDP; Traefik is not in the path
+    healthcheck:
+      # A TCP connect to :3478 confirms the control plane is up.  (Use
+      # turnutils_stunclient for a deeper STUN binding check if present.)
+      test: ["CMD-SHELL", "nc -z -w3 127.0.0.1 3478 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+# ── networks ─────────────────────────────────────────────────────────────────
+# coturn uses host networking and attaches to nothing.  `media` is declared
+# external so this stack can be deployed into the same `media` overlay namespace
+# that livekit-stack.yml creates — Swarm requires every referenced network to
+# resolve.  Deploy livekit-stack.yml first (it creates `media`), or pre-create:
+#   docker network create --driver overlay --attachable media
+networks:
+  media:
+    external: true
+
+# ── volumes ──────────────────────────────────────────────────────────────────
+volumes:
+  coturn-data:
+    driver: local
