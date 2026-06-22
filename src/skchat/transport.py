@@ -176,6 +176,30 @@ class ChatTransport:
         """
         return self._identity
 
+    def _federation_target(self, recipient: str) -> Optional[str]:
+        """Resolve a recipient to a federation peer FQID, or None.
+
+        Returns the peer's ``<agent>@<operator>.<realm>`` FQID iff the recipient
+        matches a skcomms peer that advertises an ``https-s2s`` inbox_url (i.e. a
+        reachable remote node). Accepts the recipient as a bare name (``lumina``),
+        a capauth URI (``capauth:lumina@skworld.io``), or an FQID
+        (``lumina@chef.skworld``). Returns None for local/unknown recipients so
+        the caller falls back to the legacy local transports.
+        """
+        try:
+            from skcomms.discovery import PeerStore
+
+            norm = recipient.split(":", 1)[1] if recipient.startswith("capauth:") else recipient
+            short = norm.split("@", 1)[0]
+            wanted = {recipient, norm, short}
+            for p in PeerStore().list_all():
+                names = {p.name, p.fqid, (p.fqid or "").split("@", 1)[0]}
+                if (wanted & names) and p.inbox_url():
+                    return p.fqid or norm
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("federation target resolve failed for %s: %s", recipient, exc)
+        return None
+
     def send_message(
         self,
         message: ChatMessage,
@@ -223,6 +247,33 @@ class ChatTransport:
                 "recipient": message.recipient,
                 "transport": "file",
             }
+
+        # Federation (SKFed): if the recipient is a reachable remote peer (has an
+        # https-s2s inbox_url in the skcomms peer store), deliver node-to-node via
+        # the canonical signed S2S path instead of the legacy local transports.
+        fed_fqid = self._federation_target(message.recipient)
+        if fed_fqid is not None and hasattr(self._skcomms, "send_federated"):
+            try:
+                report = self._skcomms.send_federated(
+                    fed_fqid,
+                    payload_json,
+                    thread_id=message.thread_id,
+                    in_reply_to=message.reply_to_id,
+                )
+                delivered = getattr(report, "delivered", False)
+                if delivered:
+                    self._history.store_message(
+                        message.model_copy(update={"delivery_status": DeliveryStatus.SENT})
+                    )
+                    return {
+                        "delivered": True,
+                        "message_id": message.id,
+                        "recipient": message.recipient,
+                        "transport": "skfed-s2s",
+                    }
+                logger.info("federated send to %s not delivered — falling back", fed_fqid)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("federated send to %s failed (%s) — falling back", fed_fqid, exc)
 
         try:
             report = self._skcomms.send(
