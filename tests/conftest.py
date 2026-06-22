@@ -118,6 +118,27 @@ def sample_thread() -> Thread:
 
 
 @pytest.fixture(autouse=True)
+def _isolate_skcomms_peers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Isolate the skcomms PeerStore from machine state.
+
+    The ChatTransport federation branch consults the skcomms PeerStore (peers
+    with an ``https-s2s`` inbox_url route via ``send_federated``). On a real node
+    that store holds seeded federation peers (lumina/jarvis), which would make
+    unit-test sends to those names take the federation path. Point PeerStore at a
+    fresh empty tmp dir so federation resolution is a no-op unless a test opts in.
+    """
+    try:
+        import skcomms.discovery as _disc
+
+        peers_home = tmp_path / "skcomms_iso"
+        (peers_home / "peers").mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr(_disc, "SKCOMMS_HOME", str(peers_home), raising=False)
+    except Exception:  # pragma: no cover — skcomms optional in some envs
+        pass
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _isolate_guest_revocation_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """Point the guest SQLite store at a per-test tmp DB and reset its cache.
 
