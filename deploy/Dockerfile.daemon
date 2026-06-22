@@ -7,14 +7,32 @@
 
 FROM python:3.12-slim
 
+# ── skcomms source ────────────────────────────────────────────────────────────
+# skcomms is a sovereign sibling package (NOT on public PyPI). The daemon's
+# receive loop (skchat.daemon → `from skcomms import SKComms`) cannot run
+# without it. Install it from its git remote, pinned via ARG so B2/CI can
+# override to a vendored path, internal index, or a different ref.
+ARG SKCOMMS_SPEC=git+https://github.com/smilinTux/skcomms.git@v0.1.6
+# skmemory backs ChatHistory.from_config() (history store) — also sovereign,
+# NOT on public PyPI. Pinned via ARG (overridable by B2/CI).
+ARG SKMEMORY_SPEC=git+https://github.com/smilinTux/skmemory.git@v0.10.4
+
 # ── system deps ────────────────────────────────────────────────────────────────
+# git is required to pip-install skcomms from its git remote.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
+    git \
  && rm -rf /var/lib/apt/lists/*
 
 # ── non-root user ──────────────────────────────────────────────────────────────
+# Pre-create ~/.skchat: the daemon writes daemon.pid / daemon.lock / daemon.log /
+# daemon_stats.json under Path.home()/".skchat" (these are NOT redirected by
+# SKCHAT_HOME). $HOME defaults to /home/skchat via --create-home.
 RUN groupadd --gid 1001 skchat \
- && useradd  --uid 1001 --gid skchat --create-home --shell /sbin/nologin skchat
+ && useradd  --uid 1001 --gid skchat --create-home --home-dir /home/skchat \
+             --shell /sbin/nologin skchat \
+ && mkdir -p /home/skchat/.skchat \
+ && chown -R skchat:skchat /home/skchat
 
 WORKDIR /app
 
@@ -24,17 +42,24 @@ COPY src/ ./src/
 
 RUN pip install --no-cache-dir \
     ".[cli]" \
-    httpx
+    httpx \
+    "${SKCOMMS_SPEC}" \
+    "${SKMEMORY_SPEC}"
 
 # ── persistent state directories ─────────────────────────────────────────────
 # History DB, outbox, and capauth keys live here; mount as a named volume so
 # state survives container recreation.
-RUN mkdir -p /data/skchat /data/skcomms /data/capauth \
+RUN mkdir -p /data/skchat /data/skcomms /data/capauth /data/skcapstone \
  && chown -R skchat:skchat /data
 
 # ── runtime config defaults ───────────────────────────────────────────────────
+# SKCAPSTONE_HOME points skmemory's agent-dir resolver (skmemory.agents._agents_base)
+# at /data/skcapstone/agents — it is read at IMPORT time, so it must be set as an
+# ENV default here (not only injected by the stack). B5 mounts the agent identity
+# volume at /data/skcapstone; the active agent is selected via SKAGENT at runtime.
 ENV SKCHAT_HOME=/data/skchat \
     SKCOMMS_HOME=/data/skcomms \
+    SKCAPSTONE_HOME=/data/skcapstone \
     SKCHAT_DAEMON_INTERVAL=5 \
     SKCHAT_DAEMON_QUIET=false
 

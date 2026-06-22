@@ -6,14 +6,31 @@
 
 FROM python:3.12-slim
 
+# ── skcomms source ────────────────────────────────────────────────────────────
+# skcomms is a sovereign sibling package (NOT on public PyPI). The web UI uses
+# it for the pairing gate (`from skcomms import pairing`) and the SKComms
+# transport. Install from its git remote, pinned via ARG (overridable by B2/CI).
+ARG SKCOMMS_SPEC=git+https://github.com/smilinTux/skcomms.git@v0.1.6
+# skmemory backs chat history + agent profile / FEB lookups (lazy-imported in the
+# web UI). Sovereign, NOT on public PyPI. Pinned via ARG (overridable by B2/CI).
+ARG SKMEMORY_SPEC=git+https://github.com/smilinTux/skmemory.git@v0.10.4
+
 # ── system deps ────────────────────────────────────────────────────────────────
+# git is required to pip-install skcomms from its git remote.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
+    git \
  && rm -rf /var/lib/apt/lists/*
 
 # ── non-root user ──────────────────────────────────────────────────────────────
+# A real home is required: the web UI + spaces routes resolve state via
+# Path.home()/".skchat" (lanes.db, groups/, spaces-recordings/, config.yml).
+# Pre-create ~/.skchat so the non-root user can write on first boot.
 RUN groupadd --gid 1001 skchat \
- && useradd  --uid 1001 --gid skchat --no-create-home --shell /sbin/nologin skchat
+ && useradd  --uid 1001 --gid skchat --create-home --home-dir /home/skchat \
+             --shell /sbin/nologin skchat \
+ && mkdir -p /home/skchat/.skchat \
+ && chown -R skchat:skchat /home/skchat
 
 WORKDIR /app
 
@@ -31,14 +48,26 @@ RUN pip install --no-cache-dir \
     httpx \
     websockets \
     python-multipart \
-    livekit-api
+    livekit-api \
+    "${SKCOMMS_SPEC}" \
+    "${SKMEMORY_SPEC}"
+
+# ── persistent state directory (agent identity) ───────────────────────────────
+# SKCAPSTONE_HOME points skmemory's agent-dir resolver at /data/skcapstone/agents
+# (read at import time → must be an ENV default). B5 mounts the agent identity
+# volume here; the active agent is chosen via SKAGENT at runtime.
+RUN mkdir -p /data/skcapstone && chown -R skchat:skchat /data
 
 # ── runtime config defaults ───────────────────────────────────────────────────
 # All sensitive values (API keys, secrets) MUST come from the host .env or
 # OpenBao at runtime — never baked in here.
-ENV SKCHAT_HOST=0.0.0.0 \
+ENV HOME=/home/skchat \
+    SKCAPSTONE_HOME=/data/skcapstone \
+    SKCHAT_HOST=0.0.0.0 \
     SKCHAT_PORT=8765 \
     SKCHAT_NO_BROWSER=true
+# Persistent webui state lives at $HOME/.skchat (lanes.db, groups/, recordings).
+# B2: mount the skchat-data volume at /home/skchat/.skchat to persist it.
 
 # ── ownership ────────────────────────────────────────────────────────────────
 RUN chown -R skchat:skchat /app

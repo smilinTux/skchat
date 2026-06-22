@@ -4,9 +4,13 @@
 # Build context: repo root
 # docker build -f deploy/Dockerfile.voice -t skchat-voice:<tag> .
 #
-# NOTE: torch (Silero VAD) makes the image large (~2 GB). If CPU-only is
-# acceptable in prod, install torch with --index-url
-# https://download.pytorch.org/whl/cpu to keep the image under 1 GB.
+# NOTE: the voice_engine (src/skchat/voice_engine + transports/serve_ws) does
+# all STT/TTS/LLM over HTTP to external GPU services (faster-whisper, VoxCPM,
+# Ollama) — it does NOT import torch in-process. No torch/torchaudio is
+# installed here, keeping the image small. If a future in-process VAD (e.g.
+# Silero) is added, install CPU torch in its OWN pip step with
+# `--index-url https://download.pytorch.org/whl/cpu` (never combined with the
+# skchat install — the PyTorch index lacks the skchat build deps and breaks it).
 
 FROM python:3.12-slim
 
@@ -26,16 +30,12 @@ WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY src/ ./src/
 
-# CPU-only torch keeps the layer lean for Swarm workers without a GPU.
-# Remove the --index-url override if the target node has CUDA.
 RUN pip install --no-cache-dir \
     ".[cli]" \
     fastapi \
     "uvicorn[standard]" \
     httpx \
-    websockets \
-    torch --index-url https://download.pytorch.org/whl/cpu \
-    torchaudio --index-url https://download.pytorch.org/whl/cpu
+    websockets
 
 # ── runtime config defaults ───────────────────────────────────────────────────
 # STT/TTS/LLM endpoints, model name, and voice persona are all injected at
