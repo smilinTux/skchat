@@ -176,7 +176,7 @@ async def media_file(path: str, node: str = ".158"):
 
 # Per-node sk-access endpoints (for the same-origin /access/tool proxy below).
 _ACCESS_NODES = {
-    ".158": "http://127.0.0.1:9386",
+    ".158": "http://100.108.59.57:9386",  # sk-access binds the tailnet IP, not loopback
     ".41": "http://100.86.156.5:9386",
 }
 
