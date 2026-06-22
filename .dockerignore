@@ -1,11 +1,45 @@
+# ── Python build/cache artifacts ──────────────────────────────────────────────
 __pycache__
 *.pyc
 *.pyo
-.git
-.pytest_cache
-.ruff_cache
+*.pyd
 *.egg-info
+.eggs
 dist
 build
-tests
+.pytest_cache
+.ruff_cache
+.mypy_cache
+.coverage
+htmlcov
+
+# ── VCS / env ─────────────────────────────────────────────────────────────────
+.git
+.gitignore
+.gitattributes
 .venv
+venv
+.env
+.env.*
+!.env.example
+
+# ── tests + dev-only assets ───────────────────────────────────────────────────
+tests
+flutter_prd_backup
+
+# ── docs / runbooks / repo meta (not needed at runtime) ───────────────────────
+docs
+runbooks
+*.md
+!README.md
+launchd
+systemd
+openclaw-plugin
+.github
+
+# ── editor / OS noise ─────────────────────────────────────────────────────────
+.DS_Store
+*.swp
+*.swo
+.idea
+.vscode
