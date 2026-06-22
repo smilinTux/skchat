@@ -22,6 +22,7 @@ from fastapi import (
     File,
     Form,
     HTTPException,
+    Request,
     UploadFile,
     WebSocket,
     WebSocketDisconnect,
@@ -171,6 +172,52 @@ async def media_file(path: str, node: str = ".158"):
     if not resolved.is_file():
         raise HTTPException(status_code=404, detail="not a regular file")
     return FileResponse(str(resolved))
+
+
+# Per-node sk-access endpoints (for the same-origin /access/tool proxy below).
+_ACCESS_NODES = {
+    ".158": "http://127.0.0.1:9386",
+    ".41": "http://100.86.156.5:9386",
+}
+
+
+@app.post("/access/tool")
+async def access_tool_proxy(request: Request):
+    """Same-origin proxy to a node's sk-access ``/tool``.
+
+    Lets the web app reach the access plane over ANY origin (localhost, the
+    https funnel, a cloudflared tunnel) with no mixed-content and no need for
+    the browser to reach a tailnet IP directly. Every call still carries the
+    capauth-signed token, so the access gate authorizes it exactly as before.
+    Body: ``{node, token, tool, arguments}``.
+    """
+    from fastapi import HTTPException
+    import urllib.error
+    import urllib.request
+
+    body = await request.json()
+    node = body.get("node", ".158")
+    base = _ACCESS_NODES.get(node, _ACCESS_NODES[".158"])
+    payload = json.dumps(
+        {k: body[k] for k in ("token", "tool", "arguments") if k in body}
+    ).encode()
+    req = urllib.request.Request(
+        f"{base}/tool",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        r = urllib.request.urlopen(req, timeout=30)
+        return JSONResponse(json.loads(r.read()))
+    except urllib.error.HTTPError as e:
+        try:
+            return JSONResponse(json.loads(e.read() or b"{}"), status_code=e.code)
+        except Exception:
+            return JSONResponse({"detail": "access tool error"}, status_code=e.code)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"access node unreachable: {exc}")
+
 
 @app.get("/health")
 async def health() -> JSONResponse:
