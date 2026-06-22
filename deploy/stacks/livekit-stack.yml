@@ -1,0 +1,179 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# LiveKit SFU — first-class v2 Docker Swarm stack  (skchat B4 · shared media plane)
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# This stack makes the LiveKit SFU a reproducible Swarm stack instead of the
+# ad-hoc `livekit-server.service` user unit that runs it today.
+#
+#   Today (ad-hoc):  ~/.config/systemd/user/livekit-server.service
+#                    → /home/cbrd21/.local/bin/livekit-server
+#                        --config /home/cbrd21/.config/livekit/livekit.yaml
+#                    binds 100.108.59.57 (tailnet IP) :7880, :7881/tcp,
+#                    RTC UDP 50000–50200, keys skchat-opus / skchat-lumina.
+#
+#   Here (declarative):  docker stack deploy -c livekit-stack.yml media
+#
+# Tailnet-first.  The SFU binds the host's Tailscale IP only — it is NOT exposed
+# on 0.0.0.0.  Off-tailnet reach is via the existing `tailscale serve`/funnel
+# proxies (see README "Relationship to today's proxies").  Do NOT add a public
+# 0.0.0.0 bind here.
+#
+# Deploy:
+#   set -a && source /var/data/deploy_livekit/livekit.env && set +a
+#   docker config create livekit_config /var/data/deploy_livekit/livekit.yaml
+#   docker stack deploy --env-file /var/data/deploy_livekit/livekit.env \
+#     -c deploy/stacks/livekit-stack.yml media
+#
+# Secrets (B3): the API key/secret pairs live ONLY in the Swarm config object
+# `livekit_config` (the rendered livekit.yaml `keys:` block) — created from a
+# host file that is itself populated from OpenBao.  Nothing sensitive is inlined
+# in this YAML.  See deploy/SECRETS.md §Media plane + deploy/stacks/README.md.
+# ─────────────────────────────────────────────────────────────────────────────
+
+version: "3.8"
+
+services:
+
+  # ── livekit ─────────────────────────────────────────────────────────────────
+  # The SFU.  Single-node; binds the host's tailnet IP for WS/HTTP + RTC media.
+  # Reachable in-tailnet at wss://noroc2027.tail204f0c.ts.net:8443 (via
+  # `tailscale serve` → 100.108.59.57:7880) and publicly at the funnel :10001
+  # and https://noroc2027.tail204f0c.ts.net/livekit-ws (see README).
+  livekit:
+    image: livekit/livekit-server:v1.7   # pin to a digest in prod (see README)
+    command: ["--config", "/etc/livekit/livekit.yaml"]
+    # Host networking: LiveKit needs the host UDP stack directly for low-latency
+    # RTC media, and must bind the tailnet IP (100.108.59.57) that the running
+    # service uses today.  Swarm's overlay/ingress mesh cannot proxy a UDP media
+    # range efficiently, and the bind address lives in the config below.
+    # NOTE: under host networking the `ports:` block is informational only —
+    # Swarm does not map it; the actual bind is from livekit.yaml.
+    network_mode: host
+    # ── Non-secret tuning AND the secret `keys:` come from the Swarm config ─────
+    # object `livekit_config` (rendered from /var/data/deploy_livekit/livekit.yaml).
+    # The `keys:` block (skchat-opus / skchat-lumina API key→secret) is the SECRET
+    # part — it lives in the config object created from an OpenBao-sourced file,
+    # never in this stack YAML.  See deploy/stacks/README.md "Secrets".
+    configs:
+      - source: livekit_config
+        target: /etc/livekit/livekit.yaml
+        mode: 0440
+    ports:
+      # Informational only (host networking).  Mirrors today's bind on
+      # 100.108.59.57.  Real binding is set in livekit.yaml.
+      - target: 7880
+        protocol: tcp
+        mode: host          # HTTP API + WebSocket signalling (tailscale serve proxies)
+      - target: 7881
+        protocol: tcp
+        mode: host          # ICE/TCP fallback for RTC
+      # RTC media UDP range — must equal livekit.yaml rtc.port_range_start/end.
+      # Live config today: 50000–50200.  Listed as a single representative entry;
+      # the full range is opened in livekit.yaml (and host firewall if off-tailnet).
+      - target: 50000
+        protocol: udp
+        mode: host          # RTC media (range 50000–50200)
+    volumes:
+      # Egress/recordings landing dir (only if egress is enabled in livekit.yaml).
+      - livekit-recordings:/var/livekit/recordings
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          # Pin to the node that owns the tailnet IP + the `tailscale serve` rules
+          # (today: noroc2027 / 192.168.0.158).  Label it:
+          #   docker node update --label-add livekit=true <node>
+          - node.labels.livekit == true
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 5
+        window: 120s
+      update_config:
+        parallelism: 1
+        delay: 10s
+        failure_action: rollback
+        monitor: 30s
+        max_failure_ratio: 0
+        order: stop-first      # only one SFU at a time (host networking, single bind)
+      rollback_config:
+        parallelism: 1
+        delay: 0s
+        failure_action: pause
+        monitor: 30s
+        max_failure_ratio: 0
+        order: stop-first
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 256M
+      labels:
+        # Tailnet-only by default — exposure is via tailscale serve/funnel, not Traefik.
+        traefik.enable: "false"
+    healthcheck:
+      # LiveKit serves /healthz on the HTTP port (bound to the tailnet IP).
+      test: ["CMD", "wget", "-qO-", "http://100.108.59.57:7880/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  # ── livekit-redis (optional) ────────────────────────────────────────────────
+  # Only needed for multi-node LiveKit (room distribution).  Single-node today
+  # runs 0 replicas.  To scale: set replicas: 1 here AND add a `redis:` block to
+  # livekit.yaml (address: 100.108.59.57:6379 or via the `media` overlay).
+  livekit-redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    networks:
+      - media
+    deploy:
+      mode: replicated
+      replicas: 0              # bump to 1 only when going multi-node
+      placement:
+        constraints:
+          - node.role == worker
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 5
+        window: 60s
+      resources:
+        limits:
+          memory: 128M
+        reservations:
+          memory: 32M
+      labels:
+        traefik.enable: "false"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+# ── networks ─────────────────────────────────────────────────────────────────
+# The SFU uses host networking and does not attach to `media`.  The overlay is
+# defined here so multi-node livekit-redis (and a future coturn-on-overlay) share
+# one media-plane network across both stacks (coturn-stack.yml declares it
+# external + attaches nothing under host networking).
+networks:
+  media:
+    driver: overlay
+    attachable: true
+
+# ── configs ──────────────────────────────────────────────────────────────────
+# livekit.yaml as a Swarm config object so it (and the secret `keys:` block) can
+# be rotated without rebuilding the image.  Create before first deploy:
+#   docker config create livekit_config /var/data/deploy_livekit/livekit.yaml
+# Rotate: create livekit_config_v2, point this `source:`/name at it, redeploy.
+configs:
+  livekit_config:
+    external: true
+
+# ── volumes ──────────────────────────────────────────────────────────────────
+volumes:
+  livekit-recordings:
+    driver: local
