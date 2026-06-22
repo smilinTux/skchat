@@ -150,6 +150,28 @@ async def root() -> RedirectResponse:
     """Redirect to the Flutter app."""
     return RedirectResponse(url="/app/")
 
+
+@app.get("/media/file")
+async def media_file(path: str, node: str = ".158"):
+    """Stream a file from an exposed root for the skos media viewer.
+
+    Same-origin + HTTP range-capable (via Starlette FileResponse), so images
+    load efficiently and video/audio stream + seek without base64 or the 8 MiB
+    /tool cap — this is what makes the 300 MB AI-LIFE masters viewable.
+    Path safety reuses the access plane's allowlist + hard-deny secret checks.
+    Local node (.158) only for now; remote nodes are a follow-up.
+    """
+    from fastapi import HTTPException
+    from fastapi.responses import FileResponse
+    try:
+        from skcomms.access.files import get_default_access
+        resolved = get_default_access()._resolve_checked(path, must_exist=True)
+    except Exception as exc:  # PathDenied / traversal / hard-denied secret
+        raise HTTPException(status_code=403, detail=f"denied: {exc}")
+    if not resolved.is_file():
+        raise HTTPException(status_code=404, detail="not a regular file")
+    return FileResponse(str(resolved))
+
 @app.get("/health")
 async def health() -> JSONResponse:
     """Health check endpoint for container orchestration.
