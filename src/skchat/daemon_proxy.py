@@ -867,7 +867,9 @@ async def api_send(request: Request):
 
     # Group send: fan out to members + persist on the group thread.
     target_group = group_id or recipient
-    if target_group:
+    # Never treat an agent (Lumina) 1:1 as a group — a stray same-id group file
+    # (e.g. from promoting her DM) must not hijack the brain-reply path.
+    if target_group and not _is_lumina(recipient):
         try:
             from skchat import daemon_proxy_groups as G
 
