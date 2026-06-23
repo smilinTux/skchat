@@ -319,17 +319,28 @@ def update_group(group, *, name: Optional[str] = None, description: Optional[str
 # Messaging + history
 # --------------------------------------------------------------------------- #
 def fan_out_send(group, hist, sender_uri: str, content: str,
-                 reply_to_id: Optional[str] = None, thread_id: Optional[str] = None):
+                 reply_to_id: Optional[str] = None, thread_id: Optional[str] = None,
+                 content_type: Optional[str] = None, rich: Optional[dict] = None):
     """Persist a group message keyed by the group id + per-member copies.
 
     Returns the canonical group-thread :class:`ChatMessage` (the one whose
     ``recipient == "group:<id>"``), so the caller can echo it back. The group
     thread message AND each member copy carry ``thread_id == group.id`` so the
     whole conversation reads back via ``history.get_thread(group.id)``.
+
+    ``content_type``/``rich`` carry the P1 typed-message payload (e.g. a
+    location pin) onto the group thread + every member copy unchanged.
     """
     from .models import ChatMessage
 
-    group_msg = ChatMessage(
+    def _typed(**kw):
+        if content_type:
+            kw["content_type"] = content_type
+        if rich is not None:
+            kw["rich"] = rich
+        return ChatMessage(**kw)
+
+    group_msg = _typed(
         sender=sender_uri,
         recipient=f"group:{group.id}",
         content=content,
@@ -345,7 +356,7 @@ def fan_out_send(group, hist, sender_uri: str, content: str,
         if member.identity_uri == sender_uri:
             continue
         try:
-            hist.save(ChatMessage(
+            hist.save(_typed(
                 sender=sender_uri,
                 recipient=member.identity_uri,
                 content=content,
