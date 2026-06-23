@@ -101,6 +101,25 @@ def _get_brain():
     return _BRAIN
 
 
+def _persist(hist, sender: str, recipient: str, content: str, reply_to_id=None, thread_id=None):
+    """Build a ChatMessage (with optional reply/thread linkage) and save it.
+
+    ``ChatHistory.add_message`` only takes scalars, so we construct the model
+    directly to carry reply_to_id/thread_id, then ``save`` it.
+    """
+    from skchat.models import ChatMessage
+
+    msg = ChatMessage(
+        sender=sender,
+        recipient=recipient,
+        content=content,
+        reply_to_id=reply_to_id or None,
+        thread_id=thread_id or None,
+    )
+    hist.save(msg)
+    return msg
+
+
 def _is_lumina(peer: str) -> bool:
     """True if *peer* addresses Lumina (any of her known aliases)."""
     if not peer:
@@ -131,32 +150,74 @@ def _operator_online() -> bool:
 # --------------------------------------------------------------------------- #
 # Message shaping (Flutter contract)
 # --------------------------------------------------------------------------- #
+def _iso(ts) -> str | None:
+    if ts is None:
+        return None
+    return ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
+
+
 def _msg_to_app(m, *, self_id: str) -> dict:
     """Map a stored ``ChatMessage`` to the app's message JSON.
 
-    App message fields (from the bundle): id, peer_id, content, timestamp,
-    is_outbound, delivery_status, is_encrypted, reply_to_id, reactions,
-    is_agent, sender_name. ``peer_id`` is the conversation peer (the non-self
-    party); ``is_outbound`` is true for messages the operator sent.
+    Emits the **full shared message contract** the Flutter half builds to:
+    id, conversation_id, sender, content_type (short wire form), body, rich, ts,
+    reply_to_id, thread_id, edited_at, edit_history, reactions, receipts —
+    plus the legacy app fields (peer_id, content, timestamp, is_outbound,
+    is_agent, sender_name, delivery_status, is_encrypted) so the existing
+    webui/app keep working. ``body`` is ALWAYS present (Golden rule): even an
+    unknown ``content_type`` carries a human-readable fallback.
     """
+    from skchat.models import ContentType
+
     sender = getattr(m, "sender", "") or ""
     recipient = getattr(m, "recipient", "") or ""
     outbound = not _is_lumina(sender) and _is_lumina(recipient)
     # The peer of the conversation = whichever party is Lumina.
     peer = LUMINA_ID if (_is_lumina(sender) or _is_lumina(recipient)) else recipient
-    ts = getattr(m, "timestamp", None)
-    ts_iso = ts.isoformat() if hasattr(ts, "isoformat") else (ts or _now_iso())
+    ts_iso = _iso(getattr(m, "timestamp", None)) or _now_iso()
     is_agent = _is_lumina(sender)
+    body = getattr(m, "content", "") or ""
+
+    # reactions → {emoji: [sender, ...]} (or None if none)
+    reactions_map = None
+    if hasattr(m, "reactions_map"):
+        rm = m.reactions_map()
+        reactions_map = rm or None
+
+    # receipts → {delivered:[...], read:[...]} (or None)
+    receipts = None
+    rcpt = getattr(m, "receipts", None)
+    if rcpt is not None:
+        receipts = {"delivered": list(rcpt.delivered), "read": list(rcpt.read)}
+
+    # edit_history → [{body, ts}] (or None)
+    edit_history = None
+    eh = getattr(m, "edit_history", None)
+    if eh:
+        edit_history = [{"body": e.body, "ts": _iso(e.ts)} for e in eh]
+
     return {
+        # --- shared message contract (Flutter builds to this exact shape) ---
         "id": getattr(m, "id", ""),
+        "conversation_id": peer,
+        "sender": sender,
+        "content_type": ContentType.to_wire(getattr(m, "content_type", "markdown")),
+        "body": body,
+        "rich": getattr(m, "rich", None),
+        "ts": ts_iso,
+        "reply_to_id": getattr(m, "reply_to_id", None),
+        "thread_id": getattr(m, "thread_id", None),
+        "edited_at": _iso(getattr(m, "edited_at", None)),
+        "edit_history": edit_history,
+        "reactions": reactions_map,
+        "receipts": receipts,
+        # --- legacy app fields (kept for back-compat) ---
         "peer_id": peer,
-        "content": getattr(m, "content", "") or "",
+        "content": body,
         "timestamp": ts_iso,
         "is_outbound": outbound,
         "delivery_status": "sent",
         "is_encrypted": False,
-        "reply_to_id": getattr(m, "reply_to_id", None),
-        "reactions": [],
         "is_agent": is_agent,
         "sender_name": LUMINA_NAME if is_agent else "You",
     }
@@ -340,6 +401,8 @@ async def api_send(request: Request):
         body = {}
     recipient = (body.get("recipient") or body.get("peer_id") or "").strip()
     content = (body.get("message") or body.get("content") or "").strip()
+    reply_to_id = body.get("reply_to_id") or body.get("reply_to") or None
+    thread_id = body.get("thread_id") or None
     if not content:
         raise HTTPException(400, "empty message")
 
@@ -347,13 +410,15 @@ async def api_send(request: Request):
 
     if not _is_lumina(recipient):
         # Non-Lumina peers: persist only (no brain). Keeps the route honest.
-        msg = hist.add_message(sender=OPERATOR_ID, recipient=recipient or "unknown", content=content)
+        msg = _persist(
+            hist, OPERATOR_ID, recipient or "unknown", content, reply_to_id, thread_id
+        )
         return JSONResponse(
             {"ok": True, "id": msg.id, "recipient": recipient, "ts": msg.timestamp.isoformat()}
         )
 
-    # 1. Persist the operator's message to Lumina.
-    user_msg = hist.add_message(sender=OPERATOR_ID, recipient=LUMINA_URI, content=content)
+    # 1. Persist the operator's message to Lumina (with reply/thread linkage).
+    user_msg = _persist(hist, OPERATOR_ID, LUMINA_URI, content, reply_to_id, thread_id)
 
     # 2. Build the prior-turn history for context (oldest-first role/content).
     prior = _lumina_messages(limit=40)
@@ -378,8 +443,15 @@ async def api_send(request: Request):
         if not reply_text.strip():
             reply_text = "…(thinking failed — I came back empty. Try once more?)"
 
-    # 4. Persist + return her reply.
-    reply_msg = hist.add_message(sender=LUMINA_URI, recipient=OPERATOR_ID, content=reply_text)
+    # 4. Persist + return her reply — linked back to the user turn (and thread).
+    reply_msg = _persist(
+        hist,
+        LUMINA_URI,
+        OPERATOR_ID,
+        reply_text,
+        reply_to_id=user_msg.id,
+        thread_id=thread_id,
+    )
 
     # Web clients (the legacy webui) refresh on a ws "new" ping if available.
     try:
@@ -395,19 +467,113 @@ async def api_send(request: Request):
             "id": user_msg.id,
             "recipient": LUMINA_ID,
             "ts": user_msg.timestamp.isoformat(),
-            "reply": {
-                "id": reply_msg.id,
-                "peer_id": LUMINA_ID,
-                "content": reply_text,
-                "timestamp": reply_msg.timestamp.isoformat(),
-                "is_outbound": False,
-                "delivery_status": "sent",
-                "is_encrypted": False,
-                "reply_to_id": user_msg.id,
-                "reactions": [],
-                "is_agent": True,
-                "sender_name": LUMINA_NAME,
-            },
+            # Full shared contract (+ legacy fields) so the app round-trips it.
+            "reply": _msg_to_app(reply_msg, self_id=OPERATOR_ID),
+        }
+    )
+
+
+@router.post("/v1/react")
+async def api_react(request: Request):
+    """Add or remove an emoji reaction on a message.
+
+    Body: ``{conversation_id, message_id, emoji, op: "add"|"remove",
+    sender?}``. Returns the updated message in the full contract. The operator
+    is the default reactor when ``sender`` is omitted.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    message_id = (body.get("message_id") or "").strip()
+    emoji = (body.get("emoji") or "").strip()
+    op = (body.get("op") or "add").strip().lower()
+    sender = (body.get("sender") or OPERATOR_ID).strip()
+    if not message_id or not emoji:
+        raise HTTPException(400, "message_id and emoji are required")
+    if op not in ("add", "remove"):
+        raise HTTPException(400, "op must be 'add' or 'remove'")
+
+    hist = _get_history()
+    if op == "add":
+        msg = hist.set_reaction(message_id, emoji, sender)
+    else:
+        msg = hist.clear_reaction(message_id, emoji, sender)
+    if msg is None:
+        raise HTTPException(404, "message not found")
+    return JSONResponse({"ok": True, "message": _msg_to_app(msg, self_id=OPERATOR_ID)})
+
+
+@router.post("/v1/edit")
+async def api_edit(request: Request):
+    """Edit a message body (archives the prior body, stamps edited_at).
+
+    Body: ``{message_id, body}``. Enforces the 24h server-side edit window —
+    an out-of-window edit returns 403. Returns the updated message.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    message_id = (body.get("message_id") or "").strip()
+    new_body = body.get("body")
+    if new_body is None:
+        new_body = body.get("content")
+    if not message_id:
+        raise HTTPException(400, "message_id is required")
+    if not (new_body or "").strip():
+        raise HTTPException(400, "body cannot be empty")
+
+    hist = _get_history()
+    try:
+        msg = hist.edit_message(message_id, new_body)
+    except ValueError as exc:
+        # 24h window elapsed (or empty body) — refuse, don't 500.
+        raise HTTPException(403, str(exc))
+    if msg is None:
+        raise HTTPException(404, "message not found")
+    return JSONResponse({"ok": True, "message": _msg_to_app(msg, self_id=OPERATOR_ID)})
+
+
+@router.post("/v1/receipt")
+async def api_receipt(request: Request):
+    """Record a delivery/read receipt.
+
+    Body: ``{conversation_id, message_id, kind: "delivered"|"read", sender?}``.
+    Idempotent. Returns the updated message.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    message_id = (body.get("message_id") or "").strip()
+    kind = (body.get("kind") or "").strip().lower()
+    sender = (body.get("sender") or OPERATOR_ID).strip()
+    if not message_id:
+        raise HTTPException(400, "message_id is required")
+    if kind not in ("delivered", "read"):
+        raise HTTPException(400, "kind must be 'delivered' or 'read'")
+
+    hist = _get_history()
+    msg = hist.record_receipt(message_id, kind, sender)
+    if msg is None:
+        raise HTTPException(404, "message not found")
+    return JSONResponse({"ok": True, "message": _msg_to_app(msg, self_id=OPERATOR_ID)})
+
+
+@router.get("/v1/thread/{thread_id}")
+async def api_thread(thread_id: str):
+    """Return all messages in a thread, oldest-first, in the full contract."""
+    hist = _get_history()
+    try:
+        msgs = hist.get_thread(thread_id, limit=500)
+    except Exception:
+        logger.exception("thread load failed for %s", thread_id)
+        msgs = []
+    return JSONResponse(
+        {
+            "thread_id": thread_id,
+            "messages": [_msg_to_app(m, self_id=OPERATOR_ID) for m in msgs],
         }
     )
 

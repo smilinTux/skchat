@@ -259,6 +259,135 @@ class ChatHistory:
 
         return removed
 
+    # ------------------------------------------------------------------
+    # In-place mutation (reactions / edits / receipts) — JSONL-safe
+    # ------------------------------------------------------------------
+    #
+    # The JSONL store is append-only for *new* messages, but reactions, edits
+    # and receipts mutate an EXISTING message. We rewrite only the dated file
+    # that holds the target line — O(one day's file), migration-safe (any line
+    # that doesn't parse, or isn't the target, is preserved byte-for-line).
+
+    def find_by_id(self, message_id: str) -> Optional[ChatMessage]:
+        """Return the stored message with *message_id*, or None.
+
+        Scans newest-day-first (edits usually target recent messages).
+        """
+        files = sorted(self._history_dir.glob("*.jsonl"), reverse=True)
+        for path in files:
+            try:
+                lines = path.read_text(encoding="utf-8").splitlines()
+            except OSError:
+                continue
+            for raw in reversed(lines):
+                raw = raw.strip()
+                if not raw:
+                    continue
+                try:
+                    msg = ChatMessage.model_validate_json(raw)
+                except Exception:
+                    continue
+                if msg.id == message_id:
+                    return msg
+        return None
+
+    def update_message(self, message: ChatMessage) -> bool:
+        """Persist mutations to an existing message in place.
+
+        Finds the JSONL line whose parsed ``id`` matches *message*'s id and
+        rewrites just that line with the updated serialization. Other lines —
+        including malformed/legacy ones — are preserved untouched.
+
+        Args:
+            message: The mutated :class:`ChatMessage` to write back.
+
+        Returns:
+            bool: True if a matching line was found and rewritten.
+        """
+        files = sorted(self._history_dir.glob("*.jsonl"), reverse=True)
+        for path in files:
+            try:
+                lines = path.read_text(encoding="utf-8").splitlines()
+            except OSError:
+                continue
+            replaced = False
+            out: list[str] = []
+            for raw in lines:
+                stripped = raw.strip()
+                if not stripped:
+                    continue
+                if not replaced:
+                    try:
+                        existing = ChatMessage.model_validate_json(stripped)
+                    except Exception:
+                        out.append(stripped)
+                        continue
+                    if existing.id == message.id:
+                        out.append(message.model_dump_json())
+                        replaced = True
+                        continue
+                out.append(stripped)
+            if replaced:
+                path.write_text("\n".join(out) + "\n", encoding="utf-8")
+                return True
+        return False
+
+    def set_reaction(self, message_id: str, emoji: str, sender: str) -> Optional[ChatMessage]:
+        """Add *sender*'s *emoji* reaction to a message and persist it.
+
+        Idempotent: a duplicate (same sender+emoji) is a no-op but still
+        returns the message. Returns None if the message is not found.
+        """
+        msg = self.find_by_id(message_id)
+        if msg is None:
+            return None
+        if msg.set_reaction(emoji, sender):
+            self.update_message(msg)
+        return msg
+
+    def clear_reaction(self, message_id: str, emoji: str, sender: str) -> Optional[ChatMessage]:
+        """Remove *sender*'s *emoji* reaction and persist. None if not found."""
+        msg = self.find_by_id(message_id)
+        if msg is None:
+            return None
+        if msg.clear_reaction(emoji, sender):
+            self.update_message(msg)
+        return msg
+
+    def edit_message(
+        self, message_id: str, new_body: str, *, enforce_window: bool = True
+    ) -> Optional[ChatMessage]:
+        """Apply an edit (archives prior body, stamps edited_at) and persist.
+
+        Enforces the 24h server-side edit window by default.
+
+        Returns:
+            The updated message, or None if not found.
+
+        Raises:
+            ValueError: If the edit window has elapsed or the body is empty.
+        """
+        msg = self.find_by_id(message_id)
+        if msg is None:
+            return None
+        msg.apply_edit(new_body, enforce_window=enforce_window)
+        self.update_message(msg)
+        return msg
+
+    def record_receipt(
+        self, message_id: str, kind: str, sender: str
+    ) -> Optional[ChatMessage]:
+        """Record a delivered/read receipt for *sender* and persist.
+
+        Idempotent. Returns None if the message is not found.
+        """
+        msg = self.find_by_id(message_id)
+        if msg is None:
+            return None
+        if msg.record_receipt(kind, sender):
+            self.update_message(msg)
+        return msg
+
     @classmethod
     def from_config(cls, store_path: Optional[str] = None) -> "ChatHistory":
         """Create a ChatHistory from config, backed by SKMemory SQLite.
@@ -311,7 +440,7 @@ class ChatHistory:
             "chat_message_id": message.id,
             "sender": message.sender,
             "recipient": message.recipient,
-            "content_type": message.content_type.value,
+            "content_type": str(message.content_type),
             "thread_id": message.thread_id,
             "reply_to_id": message.reply_to_id,
             "delivery_status": message.delivery_status.value,
