@@ -1,0 +1,629 @@
+{
+ "research": [
+  {
+   "dimension": "Nextcloud Talk (spreed) as an experience model for sovereign skcomms/LiveKit \u2014 conversation model, signaling/SFU, call escalation, recording, and the Talk Bot/webhook API for AI participants",
+   "keyFindings": [
+    "A 'call' is NOT a separate entity \u2014 it is just a STATE on a conversation. The same `token` addresses chat, files, polls, and the live call. Escalation is `POST /ocs/v2.php/apps/spreed/api/v4/call/{token}` with a `flags` bitmask; leaving the call (`DELETE /call/{token}`) keeps you in the conversation. This single-token model is the central design insight: chat and call are one room, one identity, one history.",
+    "The in-call `flags` field is a bitmask: DISCONNECTED=0, IN_CALL=1, WITH_AUDIO=2, WITH_VIDEO=4, WITH_PHONE=8, WITH_SCREEN=16. `PUT /call/{token}` mutates flags mid-call to toggle audio/video/screenshare without renegotiating the room. `GET /call/{token}` returns participants with `sessionId` + `lastPing` for presence. 1:1 ring is a separate explicit step: `POST /call/{token}/ring/{attendeeId}`.",
+    "Room model (roomType enum): 1=one-to-one, 2=group, 3=public (guest-joinable via link), plus legacy 4=changelog/5=former-1:1. Access-control fields are all integer-enum state on the room object: `lobbyState` (webinar gate), `readOnly`, `listable` (discoverability scope), `hasPassword`, `sipEnabled`+`attendeePin` (dial-in), `messageExpiration` (TTL auto-delete in seconds), `mentionPermissions` (@all gate), `recordingConsent`. Permissions are a per-attendee bitmask (`attendeePermissions`/`callPermissions`/`defaultPermissions`).",
+    "Breakout rooms are modeled as CHILD rooms of a parent conversation: creating a breakout child auto-sets the parent lobby until started; deleting the parent cascades. This means 'sub-rooms' reuse the exact same room primitive rather than a new type.",
+    "Two signaling tiers: (1) INTERNAL signaling = mesh P2P over Nextcloud PHP long-polling, fine for ~2-4 people; (2) the High-Performance Backend (HPB) = `nextcloud-spreed-signaling`, a Go WebSocket server fronting Janus Gateway's VideoRoom plugin as the SFU. Clients NEVER talk to Janus directly \u2014 all SDP offer/answer/ICE is relayed through the Go signaling server, which hides the MCU entirely.",
+    "HPB scaling stack: NATS as the inter-instance message bus, etcd (or DNS SRV) for service discovery/clustering, and a separate 'signaling proxy' component where each proxy fronts exactly one Janus server \u2014 so you scale media by adding proxies, with GeoIP-based MCU selection to route users to the nearest media node. gRPC interconnects signaling instances into one 'virtual' server for HA/failover.",
+    "Signaling WebSocket protocol is a clean JSON envelope `{id, type, <type>:{...}}` with message types: `hello` (auth via backend ticket/URL+params \u2192 returns sessionid/resumeid/userid), `room` (join/leave by roomid+sessionid, empty roomid = leave), `message` (recipient.type = session|user|room|call carrying WebRTC `offer`/`answer`/`candidate`/`requestoffer`), `control` (moderator mute/hangup/dtmf), `bye`. Publisher sends offer with `roomType:'video'|'screen'`, audiocodec=opus, videocodec=vp9,vp8,h264; subscribers send `requestoffer` to pull a stream. Screen share is just `roomType:'screen'` \u2014 a second publisher track on the same session, not a separate mechanism.",
+    "Backend trust between PHP and the signaling/recording servers is a SHARED-SECRET HMAC: every backend request carries a random nonce + HMAC-SHA256(nonce+body, secret) checksum. Same pattern used for recording callbacks (`/recording/backend`).",
+    "Recording is a SEPARATE headless service (nextcloud/recording) that JOINS THE CALL AS A REAL PARTICIPANT (headless browser) to capture composited audio/video/screenshare \u2014 it is not an SFU server-side mux. Moderator triggers `POST /recording/{token}`; finished file is pushed back via `POST /recording/{token}/store` with HMAC validation. `recordingConsent` can gate joining. Same join-as-bot pattern is exactly how an AI teammate would attend a call.",
+    "Talk Bot API (capability `bots-v1`, since NC 27.1) is the headline borrow: bots are installed ONLY via CLI `occ talk:bot:install <name> <url> <secret> [--feature webhook|response|event|reaction]` (no web UI, for security). Inbound = ActivityStreams 2.0 webhook (Create/Note for messages, Like/Undo for reactions, Join/Leave for lifecycle) with actor/object/target(room). Outbound = `POST /bot/{token}/message` (+ replyTo, referenceId, silent) and `POST|DELETE /bot/{token}/reaction/{messageId}`. Every direction is authenticated with HMAC-SHA256 over a RANDOM header + body using the per-bot shared secret; headers `X-Nextcloud-Talk-Signature`/`-Random`/`-Backend` inbound and `X-Nextcloud-Talk-Bot-Signature`/`-Random` outbound. 32k char limit, 429 rate-limited.",
+    "Bots can also run IN-PROCESS as a Nextcloud app via `nextcloudapp://$APPID` + the `events` feature flag (value 4) listening to `OCA\\Talk\\Events\\BotInvokeEvent` \u2014 zero HTTP overhead. The real AI bots (call_summary_bot, Summary Bot / context_chat) use the LLM provider abstraction (Assistant) to post chat summaries on-demand or scheduled, and post a post-call summary listing participants + extracted tasks. Transcription is produced via the OpenAI/LLM provider on the recording file and delivered as a sibling file the moment the recording ends.",
+    "Federation: a conversation on server A can include users from server B via cloud-ID invite (OCM/Open Cloud Mesh share). The home server proxies chat AND now calls for the remote participant; servers trust each other via shared-secret. It is owner-centric proxying (the room lives on the host server, remote users are federated attendees) \u2014 conceptually identical to your skcomms 'owner-centric, not full replication' envelope model.",
+    "Rich object / mention system: chat messages carry a `message` template string + a `parameters` dict of 'Rich Object Strings' (typed objects: user, call, file, geo-location, deck-card, etc.). Mentions, file shares, location shares, and polls are all the SAME mechanism \u2014 typed parameters rendered client-side \u2014 rather than bespoke message types. Polls, reactions (emoji on messageId), and file shares are first-class but ride this one extensible envelope."
+   ],
+   "whatToBorrow": [
+    "The single-token room model: make a skcomms 'room' the ONE addressable entity (your FQID) that holds chat history AND the live LiveKit call state. A call = `in_call` state flag on the room, not a new object. Reuse the SAME room token as the LiveKit room name so chat and call share identity/history/ACL.",
+    "The in-call flags bitmask (IN_CALL=1, AUDIO=2, VIDEO=4, SCREEN=16). LiveKit already exposes per-participant track publication; map it to this bitmask in your room presence so 'who is on, with what media' is one cheap GET, mirroring `GET /call/{token}`.",
+    "The Talk Bot webhook contract verbatim for 'Lumina in the room': ActivityStreams 2.0 inbound (Create/Like/Join), `POST /bot/{token}/message` outbound, HMAC-SHA256(random+body, per-bot-secret) BOTH directions with explicit signature/random/backend headers. This is a battle-tested, minimal, capauth-compatible contract \u2014 your capauth-signed envelope already does the signing half; adopt the random-nonce+HMAC header shape and the Create/Note/Like event vocabulary so any external/AI participant integrates uniformly.",
+    "The dual bot mode: webhook (external AI service) AND in-process (`events` flag, BotInvokeEvent). For skcomms: a Lumina bot can be a remote webhook OR an in-process skcomms lane handler \u2014 same identity, two transports. The `silent` flag on bot posts (suppress notifications) is worth copying for agent chatter.",
+    "Recording/agent-as-participant pattern: have Lumina (and a recording/transcription agent) JOIN the LiveKit room as a normal participant via a LiveKit token rather than tapping the SFU server-side. LiveKit's egress/agents framework is the direct analog of nextcloud/recording's headless-join. Use the HMAC-callback + `recordingConsent` gate pattern for compliance.",
+    "The HMAC shared-secret backend-trust pattern (random nonce + HMAC-SHA256(nonce+body)) for every server-to-server callback (signaling auth, recording store, bot post). Even with capauth/PGP, this lightweight nonce-HMAC is the right shape for high-frequency machine callbacks where full PGP is overkill.",
+    "The Rich Object String envelope: ONE message schema = `text` + `parameters{type:object}` to represent mentions, file shares, geo-location, polls, and call cards. Build skcomms messages on this single extensible typed-parameter model instead of per-feature message types \u2014 it future-proofs reactions/polls/location/agent-action-cards.",
+    "Breakout rooms as child-of-parent rooms (lobby gating + cascade) \u2014 reuse your room primitive for sub-rooms / spaces instead of a new type, exactly matching your SK Spaces concept.",
+    "Lobby + listable + readOnly + messageExpiration as integer-enum room state for access control \u2014 a compact, serializable room ACL model that maps cleanly onto capauth scopes and your public/guest funnel-ingress conf-call plan.",
+    "The signaling 'requestoffer' subscriber pull model and `roomType:'screen'` as just-another-publisher-track \u2014 informs how you expose screenshare in skchat: a second published track on the same participant session, surfaced via the same flags bitmask."
+   ],
+   "recommendationsForUs": [
+    "Define a skcomms Room as the single FQID entity carrying {chat history, ACL, in_call flags, participant presence}; make the LiveKit room name == the skcomms room token so escalating chat\u2192call is a state transition, not a new object. Mirror Talk's `POST/PUT/DELETE call/{token}` as state ops on the room.",
+    "Specify a 'skcomms Bot API v1' that copies Talk's contract: ActivityStreams-2.0-shaped inbound events (message=Create/Note, reaction=Like/Undo, lifecycle=Join/Leave) over a webhook, outbound `POST /bot/{room}/message` + reaction endpoints, all HMAC-SHA256(random+body, per-bot-secret). Register Lumina as the first bot. This gives you a uniform, language-agnostic way for ANY agent to participate, independent of MCP/Hermes.",
+    "Implement Lumina-in-the-call as a LiveKit participant (LiveKit Agents framework + a server-minted token), NOT an SFU-side hook \u2014 directly analogous to nextcloud/recording's headless join. Reuse the same agent-join path for a transcription/summary agent that posts a post-call summary message (participants + extracted tasks) into the room chat, matching call_summary_bot.",
+    "Adopt the Rich Object String pattern as the skcomms message schema (text + typed parameters) so mentions, file sends (you already have file_send), polls, geo-location, and 'agent action cards' all ride one extensible envelope rather than bespoke types.",
+    "Keep your capauth/PGP for human identity + initial room/bot provisioning, but add the lightweight random-nonce + HMAC-SHA256 shared-secret pattern for high-frequency machine callbacks (agent posts, recording store, presence). This is the proven Talk/HPB trust shape and avoids PGP overhead per message.",
+    "Model access control as compact room state enums (lobbyState, listable, readOnly, hasPassword, messageExpiration, recordingConsent) mapped to capauth scopes \u2014 this gives the sovereign conf-call plan its guest/lobby/public-funnel gates with a serializable, federation-friendly ACL.",
+    "For SK Spaces, implement sub-rooms as child-of-parent rooms (lobby + cascade-delete) reusing the room primitive, exactly as Talk does breakout rooms.",
+    "For your owner-centric federation: model remote agents/users as federated attendees on a host-owned room (host proxies chat+call), trusting peer servers via shared-secret/capauth \u2014 this matches both Talk federation and your existing skfed envelope philosophy; do NOT full-replicate rooms."
+   ],
+   "bestPractices2027": [
+    "Treat chat and call as one entity addressed by one token \u2014 escalate in place, never spin a separate meeting object (Talk's core model, now standard).",
+    "Hide the SFU entirely behind a signaling layer: clients exchange only abstract offer/answer/requestoffer; the server picks/relays the MCU (Janus VideoRoom). LiveKit already enforces this \u2014 keep clients SFU-agnostic.",
+    "Scale media horizontally with one-MCU-per-proxy + GeoIP selection + NATS/etcd clustering for HA; route users to nearest media node. Mirror with LiveKit's multi-node/region routing.",
+    "Authenticate ALL server-to-server callbacks with random-nonce + HMAC-SHA256(nonce+body, shared-secret) and explicit signature/random/backend headers.",
+    "Run AI/recording as real call participants (headless join), not server-side taps \u2014 gate with explicit recording consent state on the room.",
+    "Install bots via CLI/admin only (never a web-exposed self-serve), each with its own per-bot shared secret and feature flags (webhook/response/event/reaction).",
+    "Carry mentions/files/polls/locations as typed Rich-Object parameters on one message schema; let clients render \u2014 keeps the wire format stable as features grow.",
+    "Deliver AI transcription as a sibling file the moment recording ends, and post LLM call/chat summaries (participants + tasks) back into the same room via the bot API."
+   ],
+   "pitfalls": [
+    "Internal mesh signaling does NOT scale past ~2-4 participants \u2014 Talk requires the HPB (Janus SFU) for real group calls. Lesson: never ship P2P-mesh as your group-call path; LiveKit SFU is mandatory (you already have it).",
+    "Recording-as-headless-browser-participant is resource-heavy (a full browser per recorded call) and is the historically fragile/ops-heavy piece. Prefer LiveKit server-side egress where possible instead of a literal headless browser.",
+    "Bot security hinges entirely on correct HMAC verification (constant-time, case-insensitive hex compare of signature over RANDOM+body). A naive compare or skipping verification = anyone can impersonate the bot or inject messages. Web-UI bot install is deliberately disabled \u2014 don't expose self-serve bot registration.",
+    "The 32k-char message limit and 429 rate-limiting on bot posts mean a chatty AI agent must chunk/throttle; design Lumina's posting cadence around this.",
+    "HPB clustering (NATS+etcd+gRPC+signaling proxies+coturn) is genuinely complex to operate; the multi-node story has real setup/firewall (zone) footguns \u2014 budget ops effort, and lean on LiveKit's managed clustering rather than rebuilding Janus topology.",
+    "Federation across servers historically lagged calls behind chat and has trust/secret-management overhead; treat federated calls as a maturing feature and keep the host-owned-room (proxy) model rather than attempting symmetric replication.",
+    "A call being 'just state on a conversation' means call lifecycle bugs surface as stale presence \u2014 Talk relies on `lastPing` timeouts to garbage-collect dead sessions; you must implement equivalent ping/TTL reaping or rooms will show phantom participants."
+   ],
+   "sources": [
+    "https://nextcloud-talk.readthedocs.io/en/latest/bots/",
+    "https://nextcloud-talk.readthedocs.io/en/latest/bot-list/",
+    "https://nextcloud-talk.readthedocs.io/en/latest/conversation/",
+    "https://nextcloud-talk.readthedocs.io/en/latest/call/",
+    "https://github.com/nextcloud/spreed",
+    "https://github.com/strukturag/nextcloud-spreed-signaling",
+    "https://github.com/strukturag/nextcloud-spreed-signaling/blob/master/docs/standalone-signaling-api-v1.md",
+    "https://github.com/nextcloud/call_summary_bot",
+    "https://docs.nextcloud.com/server/32/admin_manual/ai/app_summary_bot.html",
+    "https://nextcloud.com/talk/",
+    "https://www.heise.de/en/news/Paris-update-Nextcloud-Talk-now-with-desktop-client-and-AI-10184770.html",
+    "https://nextcloud.com/blog/ai-in-nextcloud-what-why-and-how/"
+   ]
+  },
+  {
+   "dimension": "WebRTC group calling / SFU best practices for 2027 \u2014 LiveKit-centric (1:1\u2194group escalation, screenshare/simulcast/SVC, scaling, TURN/ICE, server-side egress recording) vs mediasoup/Janus",
+   "keyFindings": [
+    "Hybrid topology is the 2027 default, NOT a binary choice: P2P for the 1:1 leg (sub-500ms, zero server media cost), SFU the moment a 3rd participant or screenshare joins. P2P mesh is dead beyond ~4 peers \u2014 a 6-person mesh forces each peer to upload 5 streams (quadratic), drains a mid-range Android in <1hr. Industry rule of thumb: 2=P2P, 3-12=SFU, hundreds=SFU+CDN/MCU.",
+    "LiveKit's architectural answer to on-the-fly escalation is that you don't actually escalate transports \u2014 you put everyone in a LiveKit room from the start and let the SFU handle 1:1 and N-way identically. A '1:1' is just a 2-participant room; adding a 3rd is a join, not a renegotiation. This sidesteps the painful P2P->SFU media-path swap that mediasoup/Janus force you to hand-roll at the app layer.",
+    "LiveKit's killer bandwidth feature is the Dynacast (publisher-side) + Adaptive Stream (subscriber-side) closed loop. Dynacast stops encoding any simulcast/SVC layer with zero subscribers; Adaptive Stream uses a browser ResizeObserver on the actual rendered <video> pixel size and asks the SFU for the closest-matching layer. Documented result: a 25-person room drops from ~45Mbps to ~4Mbps (92% reduction). mediasoup/Janus require you to wire all of this yourself.",
+    "Simulcast vs SVC in 2027: simulcast (VP8/H.264) is still the cross-browser safe default (mandatory if you have Safari publishers); VP9/AV1 SVC is the Chromium/AI-agent/broadcast choice (single encode, server extracts layers, more publisher-efficient). LiveKit supports multi-codec simulcast so ONE publisher serves both SVC and simulcast subscribers from the same room.",
+    "Recording is done server-side via the standalone LiveKit Egress service (Go + GStreamer + headless Chrome), NOT in-client. Four request types: RoomComposite (whole-room rendered via an HTML layout template in Chrome), Web (record any URL, room-independent), TrackComposite (sync one participant's audio+video, e.g. their camera+screenshare), and Track (raw single-track export). Outputs: MP4/OGG/WebM, HLS(TS segments), RTMP(s), SRT, WebSocket, + JPEG thumbnails. Destinations: S3-compatible, Azure Blob, GCS, Alibaba OSS.",
+    "Egress is CPU-heavy and the cost model is explicit: RoomComposite/Web = 3.0 CPU units each (they each spin up a full Chrome + encode), TrackComposite = 2.0, Track = 1.0. Egress MUST share the same Redis address as the LiveKit server, runs as separate worker instances, and autoscales (K8s Helm chart, CPU-based). Auto-record: set the egress field on CreateRoom to capture room-composite + per-track automatically on room creation.",
+    "Scaling model differs fundamentally: LiveKit = Redis-coordinated mesh cluster where any participant connects to any node and the cluster routes media between nodes hosting other participants \u2014 a room transparently spans multiple servers with automatic cascading/region placement. mediasoup = manual (~500 consumers/worker, you assign rooms to workers and wire pipeToRouter yourself). Janus = single-instance to hundreds, then app-layer routing across instances. LiveKit removes the 'which worker/node hosts this room' app logic the others impose.",
+    "TURN/ICE: LiveKit ships an EMBEDDED TURN server (no separate coturn needed for most deploys). For maximum reachability through corporate firewalls, enable TURN/TLS on 443 with a CA-signed cert (self-signed certs do NOT work; a separate TURN subdomain+cert is required). TURN/UDP can also be advertised on 443 for some firewall scenarios. External coturn is supported but mid-2025 GitHub issues show external-IP/TLS integration is fiddly \u2014 the embedded TURN is the lower-friction path.",
+    "LiveKit Agents framework (1.5+) lets any Python/Node program join a room as a first-class realtime participant \u2014 same media plane as humans, so an AI teammate can see screenshare, hear active speaker, and publish back. Native MCP tool integration (one line), semantic turn-detection transformer to reduce interruptions, and a built-in SIP/telephony gateway. 2025-26 production latency medians: 1.4-1.7s, p99 3-5s; ~450ms achievable with full streaming + co-located regions + pre-warmed contexts.",
+    "Access control is pure JWT: a token encodes identity + grants (room, canPublish, canSubscribe, roomCreate, etc.). RoomCreate grant auto-creates the room on connect \u2014 so on-the-fly group calls need no pre-provisioning step; mint a token and join."
+   ],
+   "whatToBorrow": [
+    "LiveKit Egress RoomComposite with a CUSTOM HTML layout template \u2014 we already render layouts in our skchat/conf-calls UI; point egress at our own template URL (default template port 7980) so recordings match the live layout exactly. Set duration limits (file 1hr / stream 90min / segment 3hr defaults) to bound runaway jobs.",
+    "Auto-egress via the egress field on CreateRoom \u2014 flip on for any room flagged 'record' so a RoomComposite MP4 + per-track files land in S3 (or our Nextcloud/MinIO-compatible store) automatically without a separate start-egress call.",
+    "Dynacast + Adaptive Stream \u2014 make sure adaptiveStream:true and dynacast:true are set in our Flutter/JS RoomOptions. Wire our tile UI state (pinned / thumbnail / off-screen) into the layer-selection hint; the cited 30-60% egress cut on many-tile rooms and 92% on a 25-person room is free money on our home GPU/bandwidth budget.",
+    "TrackComposite egress for the 'record just the presenter + their screenshare' case (set screen_share:true on ParticipantEgress) \u2014 cleaner than RoomComposite when we want a single clean asset per speaker rather than the whole grid.",
+    "LiveKit Agents framework to formalize the existing LUMINA-as-teammate pattern: join calls as a real room participant (we already do CoT/TAK LUMINA), use semantic turn-detection to stop the agent talking over people, and native MCP so our skcapstone MCP tools are callable mid-call with one line.",
+    "Embedded TURN/TLS on 443 \u2014 drop any separate coturn dependency for the conf-calls funnel ingress; one CA cert on a turn subdomain gives corporate-firewall traversal. Keep the cert in our existing CF/SKStacks cert flow.",
+    "Multi-codec simulcast config: default VP8/H.264 simulcast for broad client support, enable AV1/VP9 SVC for agent rooms and Chromium-only sovereign clients to cut publisher upload on the home uplink.",
+    "config-sample.yaml from livekit/livekit as the canonical reference for turn.tls_port/external-ip/redis blocks \u2014 clone it rather than hand-writing config."
+   ],
+   "recommendationsForUs": [
+    "Adopt the 'everyone in a LiveKit room, always' model for skchat/sovereign-conf-calls \u2014 do NOT build a bespoke P2P->SFU escalation handshake. Treat 1:1 as a 2-person room; 'escalate to group' = mint+hand out a token and the new peer joins. This eliminates the renegotiation class of bugs and matches what LiveKit is built for. (Our skfed/skcomms capauth-signed envelope still governs WHO gets a token; LiveKit governs the media.)",
+    "Stand up the LiveKit Egress service as a dedicated worker (NOT on the .100/5060 GPU box \u2014 egress is CPU+Chrome heavy and the MEMORY.md note says don't add 5060 load). Point it at the SAME Redis the LiveKit server uses. Budget ~3 CPU per concurrent RoomComposite; if home CPU is tight, prefer TrackComposite (2 CPU) or Track (1 CPU) per-participant recording and stitch later.",
+    "Wire RoomComposite egress to a custom template that reuses our existing conf-call layout, write recordings to our S3-compatible store (MinIO/Nextcloud), and gate playback through capauth \u2014 this gives sovereign, owner-controlled recordings with no third-party cloud.",
+    "Replace/avoid any standalone coturn for conf-calls with LiveKit's embedded TURN/TLS on 443 behind the funnel ingress; provision a turn.<domain> CA cert via our CF/SKStacks pipeline. Document the 443-must-be-advertised gotcha (turn.tls_port=443 when no LB) in runbooks/ alongside the existing sksso-cloudflared notes.",
+    "Confirm adaptiveStream + dynacast are ON in the skchat-app RoomOptions and bind tile lifecycle (pin/thumbnail/offscreen) to layer hints before we scale past ~6 participants \u2014 this is the single biggest bandwidth lever on our residential uplink.",
+    "Formalize LUMINA-in-call via the LiveKit Agents framework rather than ad-hoc bot plumbing: gives semantic turn-detection (no talking over Chef), native MCP so skcapstone tools work mid-call, and same-media-plane access to screenshare/active-speaker. This supersedes hand-rolled call_peer/initiate_call glue for the agent participant.",
+    "Keep LiveKit, don't switch to mediasoup/Janus: LiveKit's ceiling (Redis mesh cluster, native egress, Agents+SIP, Dynacast/Adaptive, embedded TURN) covers every stated goal with the least app-layer code. mediasoup would only win if we needed total signalling control / strict HIPAA isolation; Janus only if we needed its all-in-one SIP+RTSP+SFU box. Neither advantage applies to our sovereign group-video+screenshare+record goal.",
+    "Record the cost/latency expectations in MEMORY/runbooks: egress CPU units (3/3/2/1), the 92% adaptive-stream bandwidth claim, and the Agents latency reality (1.4-1.7s median, 450ms only with co-located+pre-warmed) so future agents size hardware and set UX expectations correctly."
+   ],
+   "bestPractices2027": [
+    "Hybrid by default: P2P only for true 1:1 where latency/cost matter; SFU from the 3rd participant or any screenshare onward; CDN/MCU tail only for hundreds-of-viewers broadcast.",
+    "Always pair simulcast/SVC with subscriber-driven layer selection (Adaptive Stream / Dynacast equivalent) and feed UI viewport state into the SFU's layer hint \u2014 this is the highest-ROI optimization and routinely cuts SFU egress 30-60% (up to 92% in large grids).",
+    "Default to VP8/H.264 simulcast for cross-browser (Safari) safety; switch to VP9/AV1 SVC only for Chromium-only or AI-agent rooms where the single-encode publisher savings pay off.",
+    "Do recording server-side via egress workers, never in the client; isolate egress on dedicated/autoscaled CPU instances sharing the SFU's Redis, and bound jobs with duration limits.",
+    "Prefer per-track / track-composite egress when you need clean per-participant assets or want to avoid the cost of a full Chrome-rendered room composite.",
+    "Enable TURN/TLS on 443 with a CA-signed cert for maximum firewall traversal; advertise the right external IP/port and verify the relay path actually engages (a common silent failure).",
+    "Mint short-lived JWTs with least-privilege grants per participant (canPublish/canSubscribe/roomCreate scoped per session) and use RoomCreate-on-connect to avoid a separate provisioning round-trip for ad-hoc group calls.",
+    "Treat AI participants as first-class room members through an agents framework (real media plane, semantic turn-detection, MCP tools) rather than bolting a bot onto signalling."
+   ],
+   "pitfalls": [
+    "P2P mesh beyond ~4 participants: quadratic upload, mobile battery/CPU collapse \u2014 never use it for group calls.",
+    "RoomComposite egress is expensive (full headless Chrome + encode, 3 CPU/job): running several concurrently on a small/GPU-shared box will starve it; co-locating egress with the LLM/ComfyUI GPU box is explicitly the wrong move given our 5060 VRAM/CPU constraints.",
+    "Egress that doesn't share the SAME Redis as the LiveKit server simply won't receive jobs \u2014 a silent misconfig.",
+    "Self-signed TURN certs do NOT work; TURN needs its own subdomain + CA-signed cert and the correct external-IP/443 advertisement \u2014 external coturn integration has documented external-IP/TLS footguns (livekit issues #3826/#3971/#3595).",
+    "Forgetting to enable adaptiveStream/dynacast leaves you paying full multi-Mbps egress per subscriber even when tiles are tiny or off-screen \u2014 the 92% savings only happen if explicitly enabled and UI-wired.",
+    "Assuming SVC everywhere: Safari/older clients lack reliable VP9/AV1 SVC; an SVC-only room can leave those publishers/subscribers degraded \u2014 keep a simulcast fallback.",
+    "Expecting sub-second AI-agent call latency by default: production medians are 1.4-1.7s; 450ms requires co-located regions + streaming-at-every-stage + pre-warmed contexts, which our distributed home topology (.100/.158/.41) may not achieve without tuning.",
+    "No SFU (LiveKit/mediasoup/Janus) auto-selects layers for you out of the box \u2014 subscription/layer policy must be configured; default behavior can over-send."
+   ],
+   "sources": [
+    "https://github.com/livekit/livekit",
+    "https://docs.livekit.io/reference/internals/livekit-sfu/",
+    "https://www.forasoft.com/learn/video-streaming/articles-streaming/sfu-comparison-mediasoup-janus-livekit-jitsi-pion",
+    "https://www.forasoft.com/learn/video-streaming/articles-streaming/simulcast-svc-sfu",
+    "https://www.forasoft.com/blog/article/webrtc-architecture-guide-for-business-2026",
+    "https://www.forasoft.com/learn/webrtc-architecture-production-systems",
+    "https://github.com/livekit/egress",
+    "https://docs.livekit.io/transport/media/ingress-egress/egress/composite-recording/",
+    "https://docs.livekit.io/transport/media/ingress-egress/egress/track/",
+    "https://docs.livekit.io/home/egress/autoegress/",
+    "https://livekit.com/blog/livekit-universal-egress-launch",
+    "https://github.com/livekit/agents",
+    "https://docs.livekit.io/agents/",
+    "https://www.forasoft.com/blog/article/livekit-ai-agents-guide",
+    "https://docs.livekit.io/transport/self-hosting/deployment/",
+    "https://github.com/livekit/livekit/blob/master/config-sample.yaml",
+    "https://sheerbit.com/livekit-architecture-deep-dive-sfu-media-routing-and-scaling/",
+    "https://blog.livekit.io/livekit-one-dot-zero/",
+    "https://kb.livekit.io/articles/3859313029-configuring-the-client-sdk-for-optimal-video-quality",
+    "https://docs.livekit.io/transport/media/subscribe/",
+    "https://rtcleague.com/blogs/webrtc-infrastructure"
+   ]
+  },
+  {
+   "dimension": "Chat/Comms UX & Modular Surfaces (2026-2027 best-of-breed) \u2014 Signal, Telegram, Element/Matrix, Discord, Slack, Teams, WhatsApp, Nextcloud Talk",
+   "keyFindings": [
+    "ESCALATION (1:1 -> group -> voice/video) has converged on the 'Call Link' pattern as the 2026 best practice. Signal's Calls tab lets you create a reusable, optionally-named call link with no group required, default admin-approval-to-join, raise-hand queue, and aggregated emoji reactions (75-participant cap). Nextcloud Talk adds lobby/waiting rooms + breakout rooms over WebRTC E2E. This decouples 'a call' from 'a chat thread' \u2014 the call is a first-class object you share by link, which is exactly what skchat's Sovereign Conf Calls / shareable-link work is building toward.",
+    "MESSAGE UX is now a settled baseline that you cannot ship without: swipe-to-reply (Discord swipe right-to-left on a message), long-press/double-tap reaction tray with 6 suggested + overflow (Signal double-tap-to-edit), edit window (Signal: 24h, max 10 edits, edit-history indicator), threads as a distinct surface, and reactions that are aggregated/animated. Telegram added in-call ephemeral comments+reactions that float on the call screen (groups <1000).",
+    "THREADS have a clear winner model: Element explicitly rebuilt 'Threads 2.0' copying Discord+Slack rather than the old Matrix threads \u2014 subscribe/unsubscribe per-thread, auto or manual notification subscription, drafts inside threads, media, permalinks. Matrix Rust SDK exposes Room::list_threads(). Discord adds per-channel 'channel details' showing Media/Files/Links/Threads as filtered sub-views of one channel \u2014 threads + scoped media browser in one panel.",
+    "NAVIGATION has split into dedicated top-level tabs everywhere: Discord moved Servers / Messages / Notifications / You into separate tabs (swipe left/right on the 'You Bar' flips DMs<->current server). Slack's 2026 redesign replaced the unified sidebar with Home / DMs / Activity / Later / More views. The 'Activity' tab (consolidated mentions+threads+reactions+app notifications) and 'Later'/save-for-later are now standard top-level surfaces. This is the IA backbone to copy.",
+    "MODULAR / CUSTOMIZABLE SURFACES \u2014 the exact thing the user described \u2014 is real and shipping. Slack lets users pin tools/tabs to the sidebar in one click, push the rest into 'More', AND share custom sidebar sections (incl. private channels) via link. Discord lets users Favorite channels + toggle which previews show. The user's 'swipe-up toolbar reveals all enabled sub-apps' maps directly to the 2026-dominant BOTTOM-SHEET pattern (draggable panel anchored to screen bottom \u2014 Telegram/Apple Maps standard) used as an app-drawer of enabled modules, plus Samsung One UI 8.5's interactive swipe-up app drawer as the gesture precedent.",
+    "EXTENSIBILITY: the platform-of-platforms model is the moat. Telegram Mini Apps (bug-report/feature-request/sticker creation all run inside the app without leaving it), Nextcloud Talk's Smart Picker + per-conversation app integrations (Files/Calendar/Deck/Maps/Whiteboard appear in the call/chat sidebar), Slack canvas embedded inside huddles + workflows embedded inside canvas. Sub-apps are surfaced contextually inside the conversation, not as separate destinations.",
+    "COMMUNITY/SCALE structure (relevant for skchat groups/federation): WhatsApp Communities = parent container linking up to 50 subgroups + a one-way Announcement Channel auto-joined by all members (broadcast to 5,000). Matrix Spaces (redesigned in Element X) group rooms, distinguish internal vs external spaces, and filter by unread. This is the hierarchy: Space/Community > rooms/subgroups > threads.",
+    "CALL UX in-call standard kit (2026): grid + speaker view, raise-hand ordered queue, ephemeral floating reactions, screen share, breakout rooms, lobby/waiting room with approve/decline, remove+block-from-call, live captions/notes via an attached canvas. Slack huddles now open in a separate non-blocking window with a docked toolbar so you keep navigating the app mid-call \u2014 the 'minimized persistent call dock' is the expected behavior.",
+    "ADAPTIVE/THUMB-ZONE: 2026 design consensus puts all primary actions in the bottom third + side curve (thumb zone); top 40% is read-only territory. Gestures are taught in-context (TikTok/haptic-on-first-use) not via tutorials. Interfaces increasingly self-restructure by usage (surface frequent contacts/tools by time-of-day) WITHOUT manual config \u2014 pairs with explicit per-user module toggles."
+   ],
+   "whatToBorrow": [
+    "Call Links as a first-class object (Signal model): a 'Calls' tab where you create a reusable, optionally-named, capauth-signed call link with join policy = {open | approve}. skchat already has initiate_call/call_link surface + LiveKit + Sovereign Conf Calls epic 3ceb6da1 \u2014 wire the link object + admin approve/decline + remove/block-from-call.",
+    "Bottom-sheet app drawer for modular sub-apps (Telegram/Apple Maps draggable bottom sheet + Samsung One UI 8.5 swipe-up): a swipe-up gesture from the composer/toolbar reveals a draggable sheet listing all ENABLED modules (worship/render, voice, file-send, memory-capture, GTD, whiteboard, calendar). This is the user's exact described pattern \u2014 implement as a Flutter DraggableScrollableSheet / showModalBottomSheet.",
+    "Slack's pin-to-sidebar + 'More' overflow + shareable sidebar sections: per-user module enable/disable where pinned modules show on the bar and unpinned ones live behind 'More'; let a user/agent share their module layout via a capauth-signed link.",
+    "Top-level tab IA: adopt Home / DMs / Activity / Calls / You (Discord+Slack hybrid). The 'Activity' tab consolidating mentions+thread-replies+reactions+agent/MCP notifications is high-value given skchat's agent-to-agent traffic. Add 'Later' (save-for-later) since agents/Chef triage async.",
+    "Threads 2.0 model (Element copied Discord/Slack): thread = subscribable object with drafts, media, permalink; get_thread/list_threads MCP tools already exist (mcp__skchat__get_thread / list_threads). Add per-thread subscribe + notify-on-subscribed, and a scoped Media/Files/Links sub-view per conversation (Discord 'channel details').",
+    "Message-row interaction kit: swipe-to-reply, long-press reaction tray (6 suggested + overflow), double-tap-to-edit, edit-history badge, ephemeral floating in-call reactions+comments (Telegram). MCP already has add_reaction/get_reactions/send_typing_indicator \u2014 surface them in the Flutter row widget.",
+    "Persistent minimized call dock (Slack huddles window): when a call is active, dock a small persistent toolbar/PiP so the user keeps browsing chat; attach a live notes canvas to the call (Slack canvas-in-huddle / Nextcloud whiteboard).",
+    "Community/Space hierarchy + Announcement channel: Space (capauth-federated) > rooms/groups > threads, plus a one-way Announcement room auto-joined by members (WhatsApp Communities). Maps onto skchat federation (lumina@.158 / jarvis@.41) \u2014 federated Spaces with internal/external distinction (Element X)."
+   ],
+   "recommendationsForUs": [
+    "Adopt a 5-tab bottom IA for skchat-app: [Chats | Activity | Calls | Modules | You]. Chats = unified 1:1/group list with swipe-to-reply rows; Activity = consolidated mentions/thread-replies/reactions/MCP+agent notifications + a 'Later' filter; Calls = Signal-style call-link list (create/share/join, approve queue) backed by LiveKit; Modules = the swipe-up app drawer; You = presence/identity/soul/theme.",
+    "Build the 'Modules' surface as a draggable bottom sheet (Flutter DraggableScrollableSheet) that lists enabled sub-apps as a grid, with a per-user enable/disable settings page and pin-to-composer-toolbar (Slack model). Each module declares a manifest (icon, name, context it injects, MCP tools it exposes) \u2014 reuse the existing skskills skill.yaml/catalog.yaml manifest convention so sub-apps == skills/MCP tool groups. This makes the toolbar self-populate from registered skills.",
+    "Make the call a first-class object, not a chat side-effect: implement capauth-signed reusable call links with join policy {open|approve}, raise-hand ordered queue, aggregated floating reactions, lobby/waiting room, remove+block. Land it on the existing Sovereign Conf Calls epic (3ceb6da1) + LiveKit + sk-lk-authd federation. One-tap escalation from any 1:1/group = 'start call' that mints a link the others can deep-link into.",
+    "Ship the message-row interaction kit before any cosmetic work: swipe-to-reply, long-press reaction tray (6 suggested + overflow), double-tap-to-edit with 24h/edit-history badge, typing indicator, read/delivery receipts, pinned messages, in-thread drafts. Wire to existing MCP tools (add_reaction, get_reactions, send_typing_indicator, get_thread). All bottom-third/thumb-zone; teach gestures via first-use haptic hint, no tutorial.",
+    "Add per-conversation scoped sub-views (Discord channel-details): a side/bottom panel filtering Media / Files / Links / Threads / Pinned for the current chat \u2014 reuse search_messages + list_transfers + list_threads MCP tools rather than new infra.",
+    "Implement Space/Community hierarchy for federation: Space (federated via skcomms capauth envelope) > rooms/groups > threads + a one-way Announcement room auto-joined by members; distinguish internal (lumina/jarvis sovereign) vs external (guest/federated) Spaces like Element X. Filter room list by unread.",
+    "Persistent minimized call dock + attach a live notes surface (canvas/whiteboard) to calls so a call can capture to skmemory via the existing capture_chat_to_memory / capture_to_memory MCP tools \u2014 turns every conf call into durable memory automatically.",
+    "Lean on adaptive-but-explicit: auto-surface frequent peers/modules by recent usage AND expose explicit per-user enable/disable. Never auto-hide a module the user pinned. Default-enable a minimal set (Chats/Calls/Files/Voice) and let worship/render/GTD/memory modules be opt-in per agent identity."
+   ],
+   "bestPractices2027": [
+    "The call is a first-class shareable object (call link), decoupled from any single chat thread \u2014 create, name, set join policy, reuse; admin approve/decline + remove/block (Signal/Nextcloud convergence).",
+    "Modular surfaces driven by a declarative module/skill manifest: users enable/disable and pin sub-apps; the toolbar/app-drawer self-populates from the manifest registry (Slack pin-to-sidebar + Telegram Mini Apps + manifest-driven).",
+    "Bottom-sheet as the universal secondary-content container (compose options, module drawer, settings, share, call controls) \u2014 draggable, thumb-zone, the 2026 default over modals/menus.",
+    "Top-level 'Activity' tab consolidating mentions + thread replies + reactions + app/agent notifications, plus a 'Later' save-for-later queue \u2014 separated from the chat list.",
+    "Threads 2.0 = subscribable objects (per-thread subscribe, drafts, media, permalink, notify-on-subscribed) modeled on Discord/Slack, not legacy in-line threads.",
+    "Persistent minimized call dock + canvas/whiteboard attached to the call so meetings don't block navigation and produce durable notes.",
+    "In-context gesture teaching (first-use haptic/animation, no tutorial walls) for swipe-to-reply / long-press-react; all primary actions in the bottom-third thumb zone.",
+    "Space/Community > rooms/subgroups > threads hierarchy with a one-way Announcement channel auto-joined by members, and clear internal-vs-external (federated) distinction."
+   ],
+   "pitfalls": [
+    "Discord's 2026 mobile redesign drew heavy criticism (two dedicated support threads of 'Mobile UI Changes Are Bad'/'The Good AND The Bad') \u2014 splitting Servers and Messages into separate tabs disoriented power users. Lesson: do NOT force a tab split without preserving fast cross-context swipe (Discord kept You-Bar swipe DMs<->server as the escape hatch). Provide a migration/opt-in.",
+    "Over-modularization fatigue: 2026 trend writeups warn modular dashboards only help if users can prioritize WITHOUT confusion. Don't ship 15 sub-apps enabled by default; default-minimal + opt-in, or the swipe-up drawer becomes a junk drawer.",
+    "Don't conflate 'adaptive auto-restructuring' with hiding things the user explicitly pinned \u2014 auto-reordering frequent items is fine, auto-removing configured modules erodes trust.",
+    "Legacy Matrix threads were a known UX failure \u2014 Element threw them out and rebuilt as Threads 2.0. Don't copy the old in-line-only Matrix thread model; copy the Discord/Slack subscribable model.",
+    "Call links without join policy + remove/block = abuse vector; Signal defaults to admin-approval for a reason. Ship approval + block before opening links publicly (relevant to skchat's public funnel/guest ingress).",
+    "Top-40%-of-screen actions are unreachable on modern phones \u2014 keep call controls, reactions, and the module drawer in the bottom third; the user's swipe-up-from-bottom instinct is correct and should be honored over a top toolbar."
+   ],
+   "sources": [
+    "https://support.discord.com/hc/en-us/articles/12654190110999-New-Mobile-App-Updates-Layout",
+    "https://discord.com/blog/improving-our-mobile-experience",
+    "https://support.discord.com/hc/en-us/community/posts/19660229409175-Mobile-UI-Changes-Are-Bad-A-Compilation-of-Feedback-and-Critisism",
+    "https://slack.com/blog/productivity/a-redesigned-slack-built-for-focus",
+    "https://slack.com/help/articles/4402059015315-Use-huddles-in-Slack",
+    "https://slack.com/blog/news/meet-slack-canvas",
+    "https://element.io/blog/element-x-and-pro-updates-a-glimpse-into-the-future/",
+    "https://element.io/blog/element-x-web-a-glimpse-into-the-future/",
+    "https://github.com/matrix-org/matrix-rust-sdk/issues/4869",
+    "https://telegram.org/blog/comments-in-video-chats-threads-for-bots",
+    "https://releasebot.io/updates/telegram",
+    "https://signal.org/blog/call-links/",
+    "https://support.signal.org/hc/en-us/articles/360039929972-Message-Reactions",
+    "https://nextcloud.com/talk/",
+    "https://nextcloud-talk.readthedocs.io/en/latest/breakout-rooms/",
+    "https://github.com/nextcloud/spreed",
+    "https://faq.whatsapp.com/495856382464992",
+    "https://faq.whatsapp.com/582420703681043",
+    "https://muz.li/blog/whats-changing-in-mobile-app-design-ui-patterns-that-matter-in-2026/",
+    "https://uidesignz.com/blogs/mobile-app-ui-design",
+    "https://www.sammyfans.com/2026/01/22/one-ui-8-5-app-drawer-is-an-interactive-update/",
+    "https://developer.android.com/develop/ui/compose/components/drawer"
+   ]
+  },
+  {
+   "dimension": "Real-time collaborative document editing with an AI agent as a first-class collaborator (CRDT/OT, live-doc-in-chat, agent-as-peer patterns) \u2014 architecture recommendation for a Flutter + LLM (qwen/Lumina) stack",
+   "keyFindings": [
+    "The defining 2026/2027 pattern is the AI agent as a SERVER-SIDE CRDT peer, not a client-side bolt-on. Electric's reference build (electric-sql/collaborative-ai-editor) opens its own Yjs document on the server and connects to the SAME transport as humans, presenting via the standard Yjs awareness protocol as a named participant ('Electra') with a moving cursor and status (thinking/composing/idle). This is the cleanest blueprint for what Chef wants.",
+    "The hardest technical truth: a rich-text CRDT is a DATA STRUCTURE, not a string. You CANNOT have the LLM emit a markdown/text diff and patch it. You must convert streaming model tokens into native CRDT ops incrementally (streaming markdown parser: `**bold**`->bold mark, `## h`->heading node). Treating the doc as text is the #1 architecture mistake.",
+    "Agent edits must be anchored by RELATIVE POSITIONS (Yjs relative positions / Loro cursors), not integer offsets. Electric's agent uses a read->locate->edit tool loop (get_document_snapshot, search_text returning stable match-handles backed by Yjs relative positions, place_cursor, insert_text, start_streaming_edit with modes continue/insert/rewrite). Relative anchors survive concurrent human edits; offsets do not.",
+    "Two opposing UX philosophies exist and BOTH are valid: (1) Electric = agent edits the doc DIRECTLY and live, visible as a cursor (fast, feels collaborative); (2) the arxiv 2026 study (2509.11826) = agent NEVER edits text directly, responds ONLY via comments/suggestions with Append/Replace/Approve gates, because 'edits carry social meaning.' The study found 23% of users felt loss of control with autonomous edits, and AI-initiated suggestions got ignored when they overwhelmed. Recommendation: default to suggestion/diff mode, allow opt-in direct mode.",
+    "CRDT library landscape 2026: Yjs is the production default (~920K weekly downloads, 17K stars, ~18kB gzip, no WASM). Loro wins encoding size (68kB vs Yjs 160kB vs Automerge 250kB for same doc; 2-5x smaller) and is fast, but younger ecosystem. Automerge has Git-like DAG history/branching but ~320kB bundle. For rich text, Yjs (XmlFragment + Y.RelativePosition) and Loro (Peritext-based rich text + native movable tree) are the rich-text-capable ones.",
+    "OT vs CRDT 2026 verdict: OT still wins for centralized server-authoritative SaaS (memory: OT ~2MB vs CRDT 34-66MB for 10k nodes, a 17-33x difference from tombstones). CRDT wins for offline-first, P2P, and MULTI-PEER including AI agents. Since the SK stack is sovereign/federated/offline-tolerant with multiple agent+human peers, CRDT (Yjs/Loro) is the right call, not OT.",
+    "AI agents write at 1000-4000 WPM (25-100x human speed), which floods both OT servers and CRDT metadata. Mitigation pattern (Taskade): operation batching AT THE AGENT LAYER + rate-limited broadcast. Do not stream every token as a separate CRDT op uncompacted.",
+    "Transport is converging on persistent, resumable, offset-addressable streams. Electric uses Durable Streams (HTTP, catch-up from last offset, no custom WebSocket reconnection): 3 streams per doc (doc updates / awareness / chat). Self-hosted classic path is Hocuspocus (y-websocket server) which now has AI-editor demos with Tiptap+Gemini.",
+    "Flutter has NO mature native-Dart rich-text CRDT. The proven path is the Rust core: y-crdt/yrs (binary-compatible Yjs port, has yffi C-FFI) or loro-rs, wrapped via flutter_rust_bridge. AppFlowy is the existence proof: Flutter UI -> appflowy_backend events -> Rust dart-ffi crate -> yrs. This is exactly the FFI shape the SK stack already uses elsewhere.",
+    "Live-doc-in-chat-room integration: a 'room' = a chat thread bound 1:1 to a document id; the same room broadcasts both chat messages and CRDT awareness. Self-host options: Etherpad (embeddable iframe + HTTP API, Nextcloud Talk integration via Ownpad/nextpad exists), Nextcloud Text (server-authoritative, weaker for agent-as-peer), or block editors BlockNote/Tiptap over Yjs (best for a Notion-style block model + agent ops)."
+   ],
+   "whatToBorrow": [
+    "electric-sql/collaborative-ai-editor (GitHub) \u2014 read it directly. The agent tool schema (get_document_snapshot / search_text / place_cursor / insert_text / start_streaming_edit{mode,format}) is a ready-to-adapt MCP-style toolset for Lumina/qwen. Adapt these as skchat MCP tools backed by a yrs document handle.",
+    "The 'streaming markdown -> CRDT nodes' incremental parser pattern \u2014 borrow this so qwen/Lumina output becomes real bold/heading/list nodes, not escaped text. Pair with Tiptap/ProseMirror or BlockNote schema.",
+    "Yjs Awareness protocol for agent presence: give Lumina an awareness entry with {user:{name:'Lumina',color}, cursor:relPos, status:'composing'} so she renders as a real cursor in the Flutter client like any peer.",
+    "Y.RelativePosition (yrs: yrs::RelativePosition / loro cursor) for ALL agent edit anchoring \u2014 search_text returns stable handles, agent edits survive concurrent human typing.",
+    "Suggestion/diff mode from arxiv 2509.11826: agent edits as a CRDT-tracked 'suggestion' overlay (separate Y.Map of pending changes or marks) with Append/Replace/Approve human gate + side-by-side preview. Make this the DEFAULT; direct-edit is opt-in per room.",
+    "Taskade's agent-layer operation batching + rate-limited broadcast to stop the 1000-4000 WPM agent from flooding the doc; coalesce token bursts into periodic CRDT updates and compact server-side.",
+    "Hocuspocus (self-hosted y-websocket) + Tiptap as the fastest path to a working web prototype before committing the Flutter/yrs FFI work; there are 2026 Tiptap+Hocuspocus+LLM AI-editor demos to copy.",
+    "AppFlowy's Flutter<->yrs dart-ffi architecture as the template for the Flutter client core (flutter_rust_bridge over yrs)."
+   ],
+   "recommendationsForUs": [
+    "Adopt CRDT, not OT: the SK stack is sovereign/federated/multi-peer/offline-tolerant \u2014 exactly CRDT's strong case. Pick Yjs/yrs as the primary (max ecosystem + binary-compatible Rust core for Flutter); keep Loro as a watch item for its 2-5x smaller encoding (matters for mobile sync + storing agent edit history in skmem-pg).",
+    "Architecture: ONE Rust CRDT core (yrs) shared by server and Flutter via flutter_rust_bridge. Server runs a Lumina/qwen 'doc agent' as a headless yrs peer on .158/.41 alongside skchat-telegram-opus. Transport = a resumable stream per room; if reusing existing skchat WebRTC/SFU+Nostr rails, run y-protocol sync messages over a dedicated data channel/relay, with offset catch-up so federated peers and an offline laptop reconcile.",
+    "Bind doc<->room: a skchat room id maps to a Yjs doc id. The room carries 3 logical channels (doc updates, awareness, chat) \u2014 model this in skcomms' capauth-signed envelope so every CRDT op AND agent edit is signed by the per-agent identity key (reuse the skcomms agent-signing-key fix). This gives you an audit trail of exactly which edits were Lumina's.",
+    "Make Lumina a real awareness peer: name + color + live cursor + status(thinking/composing/idle) in the Flutter client so co-drafting feels like a person is in the doc. Wire her prompt input from the chat pane; selection/cursor context from humans is encoded as relative anchors and attached to her prompt so 'rewrite this paragraph' targets the right node.",
+    "Default to SUGGESTION/DIFF mode (arxiv finding): Lumina's edits land as a tracked-changes overlay with Approve/Reject + side-by-side preview; promote to live direct-edit only when a human toggles 'co-write' for that room. This directly avoids the 23% loss-of-control and ignored-suggestion failure modes.",
+    "Expose the agent edit loop as skchat MCP tools mirroring Electric's set (doc_snapshot, search_text->relpos handle, place_cursor, insert/replace, start_streaming_edit) backed by yrs; route qwen3.6 (.100:8082) for bulk drafting and Opus for high-stakes rewrites via the existing model_route/SKGateway picker.",
+    "Build order: (1) prototype on web with Tiptap+Hocuspocus+qwen to validate UX cheaply; (2) port the CRDT core to yrs+flutter_rust_bridge in skchat-app following AppFlowy's pattern; (3) add suggestion-mode + capauth-signed ops + skmem-pg persistence of doc snapshots. Don't build Flutter-native CRDT from scratch \u2014 there's no mature Dart option.",
+    "Persistence: store yrs update logs + periodic snapshots in skmem-pg (you already have the docs table + AGE graph); compact server-side to keep tombstone bloat down, and you get versioning/branching for free as a base layer (consider Automerge ONLY if you later need Git-like branch/cherry-pick of agent drafts)."
+   ],
+   "pitfalls": [
+    "Treating the doc as a string and patching LLM text diffs \u2014 breaks rich-text CRDT structure; you MUST stream tokens as CRDT ops.",
+    "Anchoring agent edits by integer offsets \u2014 they corrupt under concurrent human typing; use relative positions only.",
+    "Letting the agent edit directly by default \u2014 arxiv study: 23% felt loss of control, autonomous triggers produced comment floods that users then ignored. Gate it.",
+    "Streaming every LLM token as an uncompacted CRDT update \u2014 1000-4000 WPM agent floods the wire and balloons tombstone metadata (CRDT already uses 17-33x more memory than OT). Batch at the agent layer + server compaction.",
+    "Picking OT for a sovereign/federated/offline stack \u2014 OT needs a central authoritative server and loses the P2P/offline/multi-agent merge you actually want.",
+    "Expecting a turnkey Flutter CRDT \u2014 there isn't one; budget for the yrs/flutter_rust_bridge FFI core (AppFlowy proves it works but it's real work).",
+    "Loro's ecosystem immaturity \u2014 great encoding/perf but fewer editor bindings and integration recipes; don't bet the primary path on it yet.",
+    "Nextcloud Text / Etherpad as the agent substrate \u2014 they're server-authoritative editors, awkward to make an LLM a true CRDT peer in; fine for human-only embedded pads, not for agent-as-peer co-drafting.",
+    "Mixing tree-structure and in-node text conflict resolution naively \u2014 keep them as independent transform/merge domains (block ops vs text-in-block) to avoid combinatorial blowup.",
+    "Forgetting to sign agent ops \u2014 without per-agent capauth signatures you lose the ability to distinguish/audit Lumina's edits in a federated room."
+   ],
+   "bestPractices2027": [
+    "AI agent = server-side CRDT peer with its own doc instance + awareness presence (cursor + thinking/composing/idle status), indistinguishable on the wire from a human peer.",
+    "read->locate->edit tool loop with semantic search_text returning relative-position handles; never raw offsets.",
+    "Streaming-token-to-CRDT-op pipeline (incremental markdown/block parser) so agent output is structured rich text, not escaped strings.",
+    "Suggestion/tracked-changes mode as default; live direct co-write as an explicit opt-in toggle per document/room.",
+    "Resumable, offset-addressable transport (Durable Streams / Hocuspocus catch-up) with separate logical channels for doc, awareness, and chat \u2014 so offline + federated peers reconcile.",
+    "Agent-layer operation batching + rate-limited broadcast + server-side compaction to absorb agent write speed and bound CRDT metadata.",
+    "Encode human selection/cursor as relative anchors and attach to the agent prompt so 'edit this' targets the exact intended node under concurrency.",
+    "Shared single CRDT core in Rust (yrs/loro) reused across server and clients via FFI/WASM to guarantee identical merge semantics everywhere."
+   ],
+   "sources": [
+    "https://electric.ax/blog/2026/04/08/ai-agents-as-crdt-peers-with-yjs",
+    "https://github.com/electric-sql/collaborative-ai-editor",
+    "https://arxiv.org/html/2509.11826v2",
+    "https://www.pkgpulse.com/guides/yjs-vs-automerge-vs-loro-crdt-libraries-2026",
+    "https://www.taskade.com/blog/ot-vs-crdt",
+    "https://github.com/y-crdt/y-crdt",
+    "https://docs.rs/yrs",
+    "https://lib.rs/crates/yrs",
+    "https://github.com/yjs/yjs",
+    "https://loro.dev/docs/performance",
+    "https://github.com/dmonad/crdt-benchmarks",
+    "https://deepwiki.com/AppFlowy-IO/AppFlowy/11-glossary",
+    "https://etherpad.org/",
+    "https://www.blocknotejs.org/examples/collaboration/liveblocks",
+    "https://liveblocks.io/docs/collaboration-features/multiplayer/text-editor/blocknote",
+    "https://github.com/nextcloud/spreed/issues/3174"
+   ]
+  },
+  {
+   "dimension": "Meeting recording \u2192 diarized transcription \u2192 LLM minutes/summary pipeline (LiveKit egress + faster-whisper + qwen), with sovereign/on-device, consent, and storage",
+   "keyFindings": [
+    "Two recording modes in LiveKit Egress map cleanly onto two product goals. ROOM COMPOSITE runs a headless Chrome to render the room as one MP4 (what viewers saw \u2014 good for a replayable artifact) but is heavy/transcoding. TRACK egress exports each track WITHOUT transcoding (Opus\u2192Ogg) and, critically, can stream a single AUDIO track to a WebSocket as raw pcm_s16le @48kHz. The WebSocket also carries JSON control frames like {\"muted\":true}. Per-track audio is the right input for diarized transcription because each participant is a separate stream \u2014 you get speaker labels essentially for free from the track\u2192participant mapping, no acoustic diarization guesswork.",
+    "Egress caveat: track egress can record the WRONG track if a server-side subscription manager calls UpdateSubscriptions on the egress participant. Pin subscriptions / use a dedicated egress identity.",
+    "The 2026 consensus ASR stack is pyannote (who-spoke-when) + faster-whisper (what-was-said), with WhisperX as the integrated wrapper that adds VAD chunking, wav2vec2 forced alignment for word-level timestamps, and pyannote diarization. The recommended technique is NOT letting Whisper segment freely \u2014 use VAD/diarization timestamps to slice audio, transcribe per-segment, then align word-level Whisper timestamps (word_timestamps=True) to speaker turns for per-word attribution.",
+    "Per-participant track egress LARGELY OBVIATES acoustic diarization. If each speaker already has their own clean audio track, you label by track identity and only need pyannote when a single track contains multiple voices (e.g., a phone/room mic / one device with several people). This is a major sovereign-stack simplification vs commercial single-mixed-stream tools.",
+    "Model choice 2026: faster-whisper large-v3 for max quality, large-v3-turbo for backlog/speed at modest accuracy cost. VRAM is sequential-not-simultaneous best practice: run transcription, THEN diarization in a separate process to avoid co-resident OOM (relevant since the .100 box is already VRAM-near-limit per the qwen3.6 notes).",
+    "The LLM-minutes layer best practice is map-reduce over speaker-labelled transcript: chunk to ~10-15 min segments, summarize each (map), then a final reduce prompt that emits a STRUCTURED schema (overview/attendees, decisions[], action_items[{owner,task,due_date,priority,status}], risks/open_questions, next_steps). Speaker labels like [Speaker 0]/names are what let the LLM correctly attribute action items to owners.",
+    "Reliable structured output uses a 4-layer prompt: (1) explicit JSON schema with types, (2) one perfect few-shot example, (3) strict formatting rules, (4) a self-validation instruction. Cap list sizes (e.g. max 10 action items) to fight runaway extraction. qwen at .100:8082 already runs OpenAI /v1 API with 64k ctx \u2014 enough to often do single-pass reduce on a 60-90 min meeting, but map-reduce still wins on long/multi-topic calls.",
+    "UX pattern divergence: GRANOLA = no bot, no recording announcement, captures device audio, user jots rough notes during the call and AI ENHANCES them post-call (best for trust-sensitive/external). OTTER/FIREFLIES = a visible bot participant joins (acceptable for internal, enables CRM auto-push). Zoom AI Companion / Teams recap are native-platform recaps. The market verdict: no single tool serves both trust-sensitive and data-pipeline cases.",
+    "Zoom AI Companion's action-item extraction works by parsing imperative/assignment phrasing ('Jake, send the wireframes by Thursday' \u2192 action item owned by Jake, due Thursday) and pushing to Zoom Tasks with owner+deadline. 'Custom Briefs' let users re-tailor the same summary for different audiences (internal short vs client-detailed) \u2014 a reusable UX idea: one transcript, multiple prompt-driven views.",
+    "Consent is a legal gate, not a nicety. Many US states (CA, etc.) are two-/all-party consent for audio; video doesn't change the audio rule and it applies to Zoom/Teams/Meet equally. The standard mitigation is a recording disclaimer shown when recording starts / on join, with stay-or-leave consent. Self-hosting removes GDPR cross-border-transfer risk because audio never leaves your perimeter.",
+    "Meetily (Zackriya-Solutions, Rust, 100% local) is the closest open-source reference architecture to a sovereign build: captures system audio locally, Parakeet/Whisper live transcription (claims 4x faster), local speaker diarization (WhisperX-style, in active dev), and Ollama LLM summarization \u2014 explicitly 'no cloud required.' Validates the exact faster-whisper + local-LLM shape you already run."
+   ],
+   "whatToBorrow": [
+    "LiveKit TRACK egress over WebSocket streaming raw pcm_s16le@48kHz per audio track \u2192 feed directly into faster-whisper at .100:18794. Skip room-composite for the transcription path; optionally ALSO fire a room-composite egress to MP4 if a replayable artifact is wanted. Use livekit egress AutoEgress so recording starts automatically when the room is created/flagged.",
+    "Per-participant track identity \u2192 speaker label mapping. Since skchat is an SFU-on-tailnet (LiveKit), each agent/human is already a distinct track \u2014 derive speaker names from LiveKit participant identity instead of running acoustic diarization. Only invoke pyannote when one track is known to be multi-voice.",
+    "WhisperX-style alignment (word_timestamps=True + forced alignment) for clean per-speaker, per-word transcripts; keep large-v3-turbo for live/backlog and large-v3 for archival quality.",
+    "Map-reduce summarization on qwen .100:8082 with a strict JSON schema: {title, date, attendees[], decisions[], action_items[{owner,task,due_date,priority,status}], open_questions[], next_steps[]}. Use the 4-layer structured-output prompt (schema + example + rules + self-validate) and cap list lengths. qwen's 64k ctx allows single-pass for most calls; fall back to map-reduce >~60 min.",
+    "Granola's 'augment my notes' hybrid: let the participant (or the agent) drop rough notes during the call; the post-call LLM pass MERGES human notes + transcript rather than summarizing transcript alone \u2014 dramatically higher-fidelity minutes. Fits skchat's agent-in-the-room model: Lumina can take live notes.",
+    "Zoom 'Custom Briefs': store the transcript once, generate multiple audience-tailored summaries on demand (internal terse / client / decision-log) by swapping the reduce prompt. Cheap because the expensive ASR step is already done.",
+    "Zoom-style action-item attribution heuristic in the prompt: explicitly instruct the model to detect assignment/imperative phrasing and bind owner+due_date; emit owners as participant identities so they can be routed (e.g. into skcapstone coord tasks / GTD capture).",
+    "Meetily as the architectural reference repo \u2014 Rust local-first capture + Whisper + Ollama summarization + local diarization; mine its pipeline structure (live transcription buffering, diarization-as-separate-process) since it solves the same problem you're solving.",
+    "Recording disclaimer/consent flow: a stay-or-leave consent banner when egress starts, mirroring Zoom's customizable disclaimer; record the consent event in the meeting metadata."
+   ],
+   "recommendationsForUs": [
+    "Build the pipeline as: LiveKit Track Egress (WebSocket, audio-only, pcm_s16le 48kHz, per participant) \u2192 faster-whisper .100:18794 (large-v3-turbo live / large-v3 for final) \u2192 per-track transcript merged + interleaved by timestamp into a single speaker-labelled transcript (speaker = LiveKit participant identity) \u2192 qwen .100:8082 map-reduce minutes with strict JSON schema \u2192 write minutes to skmem-pg docs table (mxbai-embedded, so minutes are searchable via hybrid_search_docs) and surface in skchat.",
+    "Make 'minutes by default' the UX: when a room is created with record=true (or an agent/host toggles 'Record & summarize'), fire AutoEgress for the transcription track stream AND set a post-call hook that runs the qwen reduce automatically and DMs/posts the minutes back into the skchat room + sk-alert the host. No separate 'generate summary' button \u2014 the artifact appears when the call ends. This is the Granola/Otter table-stakes expectation.",
+    "Run diarization (pyannote) ONLY as a fallback for tracks flagged multi-voice; default path uses track identity for zero-cost speaker labels. This sidesteps the pyannote HF-gated-model 401 friction and the dual-model VRAM pressure noted in your qwen3.6 VRAM-near-limit memory.",
+    "Respect the .100 VRAM constraint: qwen3.6 is near the VRAM ceiling and --parallel 1 serializes. Do NOT co-load pyannote+whisper+qwen simultaneously \u2014 run transcription to completion, free VRAM, then summarize. faster-whisper (CTranslate2) and qwen contend; consider running the whisper service and the summarize pass at different times, or pin whisper to CPU/iGPU if it competes (note: Arc iGPU corrupts generation per your memory, so keep whisper on the 5060 Ti or CPU, not Arc).",
+    "Add a consent gate to skchat recording: show a stay-or-leave disclaimer when egress starts, store a consent record in room metadata, and default-deny recording in rooms with external/guest participants unless explicitly accepted (matches the sovereign-conf-calls guest/sovereign split already in your plan).",
+    "Store transcript + minutes + (optional) composite MP4 with a retention policy and ownership tag; since everything is on-tailnet/sovereign you avoid GDPR cross-border issues, but still set per-room retention and make minutes the durable artifact (cheap, searchable) while raw audio/video is short-retention.",
+    "Route extracted action_items into existing infra: each {owner,task,due_date} \u2192 skcapstone coord_create or gtd_capture, so meeting minutes are actionable not just archival. This is the differentiator commercial tools charge for (Fireflies CRM push / Zoom Tasks).",
+    "Reuse the existing skchat transcribe_audio_file MCP tool path and capture_chat_to_memory pattern \u2014 wire the egress\u2192whisper\u2192qwen output through capture_to_memory so minutes land in skmem-pg automatically.",
+    "Offer Granola-style live note augmentation: let the in-room agent (Lumina) or host jot notes during the call; merge them into the reduce prompt for higher-fidelity minutes."
+   ],
+   "bestPractices2027": [
+    "Per-track audio capture > single mixed stream \u2014 preserve speaker separation at the source (SFU track identity) instead of recovering it via acoustic diarization.",
+    "ASR = pyannote/VAD-sliced + faster-whisper transcription + forced-alignment word timestamps; never rely on Whisper's native segmentation for diarized output.",
+    "Summarization = map-reduce over speaker-labelled transcript with strict JSON schema + 4-layer structured-output prompting + self-validation + capped list sizes.",
+    "Summary-by-default UX: the minutes/recap is an automatic artifact produced when recording is enabled and the call ends \u2014 not a manual action.",
+    "Sequential VRAM usage (transcribe, free, then summarize) on shared GPUs; diarization as a separate process.",
+    "Consent-first: recording disclaimer with stay-or-leave on egress start; self-host to eliminate cross-border data-transfer exposure.",
+    "One transcript, many views (Zoom Custom Briefs) \u2014 regenerate audience-tailored summaries on demand from the stored transcript.",
+    "Close the loop: convert extracted action items into real tasks (owner+due) in your task system, not just text.",
+    "Bot-free / device-or-SFU-native capture (Granola model) for trust-sensitive calls; visible-bot capture only where its presence is acceptable."
+   ],
+   "pitfalls": [
+    "Track egress recording the WRONG track when a server-side subscription manager calls UpdateSubscriptions on the egress participant \u2014 use a dedicated egress identity / pinned subscriptions.",
+    "Co-loading pyannote + whisper + qwen exhausts VRAM (documented on 24GB 4090 at batch_size=16); your .100 is already VRAM-near-limit and serialized (--parallel 1) \u2014 run models sequentially.",
+    "pyannote 3.x throws cryptic 401 Unauthorized if the two gated HF models' terms aren't accepted \u2014 a real blocker on a fresh sovereign box; prefer track-identity labels to avoid it where possible.",
+    "Arc iGPU corrupts LLM generation (your own root-cause note) \u2014 don't try to offload whisper or summarize to Arc; keep on 5060 Ti or CPU.",
+    "mxbai embedding ctx=512 truncates ~1100 chars \u2014 when storing minutes in skmem-pg, chunk minutes before embedding or you lose recall on long minutes.",
+    "Letting Whisper free-segment then naively assigning speakers yields drifting attribution; align word timestamps to speaker turns.",
+    "LLM summary hallucinating action items / owners not actually stated \u2014 cap list size, require source-grounding, and only attribute owners when explicitly named (Zoom's 'when clearly stated' rule).",
+    "Two-/all-party consent legal exposure if recording external participants without a notice \u2014 applies to audio even on video calls; bake a consent gate in before shipping.",
+    "Single-pass summarization on very long calls overruns even 64k ctx or degrades mid-context \u2014 use map-reduce past ~60-90 min.",
+    "Treating raw audio/video as the durable artifact \u2014 it's expensive and high-retention-risk; the searchable minutes + transcript should be the durable artifact, raw media short-retention."
+   ],
+   "sources": [
+    "https://docs.livekit.io/transport/media/ingress-egress/egress/track/",
+    "https://docs.livekit.io/transport/media/ingress-egress/egress/participant/",
+    "https://docs.livekit.io/transport/media/ingress-egress/egress/autoegress/",
+    "https://github.com/livekit/egress",
+    "https://github.com/SYSTRAN/faster-whisper",
+    "https://github.com/SYSTRAN/faster-whisper/discussions/99",
+    "https://modal.com/blog/choosing-whisper-variants",
+    "https://www.baseten.co/blog/the-fastest-whisper-transcription-with-streaming-and-diarization/",
+    "https://brasstranscripts.com/blog/whisper-speaker-diarization-guide",
+    "https://www.spheron.network/blog/whisper-v4-asr-gpu-cloud-production-guide/",
+    "https://meetily.ai/blog/best-self-hosted-meeting-transcription-tools-2026",
+    "https://github.com/Zackriya-Solutions/meetily",
+    "https://www.assemblyai.com/blog/summarize-meetings-llms-python",
+    "https://www.gladia.io/blog/best-prompts-for-summarizing-online-meetings-with-large-language-models",
+    "https://genaiunplugged.substack.com/p/structured-outputs-json-prompts-guide",
+    "https://github.com/inboxpraveen/LLM-Minutes-of-Meeting",
+    "https://www.useluminix.com/reports/industry-analysis/ai-meeting-notes-comparison-granola-vs-otter-vs-fireflies-vs-fathom-2026",
+    "https://zackproser.com/blog/best-ai-meeting-notes-2026",
+    "https://summarizemeeting.com/en/app-reviews/zoom-ai-companion",
+    "https://www.zoom.com/en/products/ai-assistant/features/ai-note-taking/",
+    "https://support.zoom.com/hc/en/article?id=zm_kb&sysparm_article=KB0068402",
+    "https://www.avoma.com/blog/call-recording-laws",
+    "https://www.getnextphone.com/blog/call-recording-laws-by-state"
+   ]
+  },
+  {
+   "dimension": "Plugin/module architecture for an extensible app (Flutter client + skcomms backend): module manifest, registry, contribution points (toolbar/screens/services), settings-driven enable + placement, tied to the live /api/v1/capabilities service-discovery doc",
+   "keyFindings": [
+    "Five reference systems converge on the SAME three-part pattern: (1) a static declarative MANIFEST, (2) lazy ACTIVATION, (3) CONTRIBUTION POINTS that name where UI/behavior plugs in. VS Code: package.json `contributes` + `activationEvents` (since 1.74 a declared `command` auto-activates, no explicit `onCommand` needed). Obsidian: manifest.json (id, minAppVersion) + a Plugin.onload() that calls add*/register* (addRibbonIcon, addStatusBarItem, registerView, addSettingTab) where EVERY add*/register* is auto-cleaned-up on unload. Nextcloud: appinfo/info.xml `<navigation>` entries with name/order/route/role(all|admin|settings) + enabled/disabled per-instance state. Matrix widgets: declarative widget def + runtime capability NEGOTIATION (requestCapabilities -> driver/user approval) over a postMessage WidgetApi/WidgetDriver host-guest split. Flutter: a registry+interface in a core package, plugins register at startup, plus `deferred as` imports / Play Feature Delivery for on-demand code loading.",
+    "The decisive idea to steal is VS Code's separation of `when` (per-placement VISIBILITY) from `enablement` (global AVAILABILITY). Map directly onto skchat: enablement = does the node's /api/v1/capabilities support this module's required service/transport; when/placement = user settings choosing whether it shows as a bottom-nav tab, a toolbar icon, or only in the swipe-up drawer. This is exactly the 'maps onto main toolbar' vs 'in the drawer' requirement.",
+    "skchat-app ALREADY has the hard parts half-built: lib/services/capabilities_service.dart fully parses the live `/api/v1/capabilities` doc into NodeCapabilities{transports[], services[]} with a CapStatus enum (up/configured/degraded/down/unconfigured), exposed via nodeCapabilitiesProvider (Riverpod FutureProvider). The skcomms side (skcomms/src/skcomms/capabilities.py build_capabilities) emits service ids: text, voice, video, file-transfer, data-streaming, federation, access-plane(sk-access), geo-cot(cot) and transports: file/syncthing/https-s2s/websocket/tailscale/webrtc/p2p/ble-mesh/lora/nostr. A module manifest's `requires` field can reference these exact ids verbatim \u2014 no new backend contract needed for the first cut.",
+    "The anti-pattern to fix is concrete and present: AppShell._tabs is a hard-coded const list of 5 _TabItem; app_router.dart hard-codes ~30 GoRoute entries; HubScreen is a hand-maintained list of _OpsTile that duplicates the route list. Adding/removing a feature today means editing 3 files in lockstep. skmap is the perfect first migration target \u2014 it's already a self-contained feature (lib/features/skmap/, route /skmap, only reachable via a hand-coded Hub tile) and the user explicitly wants to promote it onto the toolbar.",
+    "Flutter has no true runtime code sandboxing for first-party Dart (a Dart plugin is compiled in \u2014 `deferred as` only defers loading, not isolation). Genuine third-party/untrusted sandboxing in this stack is achievable ONLY for web-style modules via an iframe + postMessage bridge (the Matrix widget model) or by keeping the module out-of-process behind skcomms-api/capauth. So the realistic model is: TWO tiers \u2014 (A) compiled-in first-party 'modules' governed by manifest + capability gating + settings (no isolation, trusted), and (B) optional 'widget'-style external surfaces (iframe/WebView on web, capauth-scoped REST on native) for anything untrusted.",
+    "Settings persistence precedent already exists: theme_provider.dart and daemon_config.dart show the app's pattern (Riverpod provider backed by hive_flutter, which is already in pubspec). A ModulePrefs store (enabled set + placement map + order) should reuse hive, not introduce a new dependency."
+   ],
+   "whatToBorrow": [
+    "VS Code `contributes` + when/enablement split \u2014 model the manifest's contribution points as named slots: `nav` (bottom tab), `toolbar` (app-bar action \u2014 the maps-on-toolbar case), `drawer` (the swipe-up all-apps list), `screen` (a routable GoRoute), `settingsTab`. Borrow `group@order` string syntax for ordering and the `when`-context-key idea, but feed the context keys from capabilities + settings instead of editor state.",
+    "Obsidian's auto-cleanup register* lifecycle \u2014 give each module an onActivate(ModuleContext)/onDispose() where everything it registers (routes, providers, toolbar items) is tracked and torn down on disable, so toggling a module off in settings fully removes it with no leak. Also borrow Obsidian's single flat manifest.json with id + minAppVersion (-> minDaemonApi / minAppVersion) for compatibility gating.",
+    "Nextcloud info.xml `<navigation>` with order + role + per-instance enabled/disabled \u2014 directly model placement entries with `order`, a `role` (everyone vs operator-only, matching the existing Ops/operator surfaces), and an installed-but-disabled state. Nextcloud's 'bump version so settings re-register on update' is a good migration discipline.",
+    "Matrix widget capability NEGOTIATION (requestCapabilities -> approval) \u2014 adopt for the untrusted tier-B surfaces only: a module declares `requires: [service:geo-cot, transport:webrtc]`; the host checks the live capabilities doc AND (for sensitive scopes like file/access-plane) prompts the operator once, mirroring capauth scoping. Use the WidgetApi/WidgetDriver postMessage split as the literal design for any iframe-hosted module on web.",
+    "Flutter `deferred as` imports + go_router lazy route builders \u2014 wrap heavy module screen imports (skmap/flutter_map, livekit, conf) in deferred imports so disabled modules don't inflate cold start, exactly the on-demand-feature-module pattern. Keep flutter_modular OFF the table (it fights go_router, which the app already standardizes on) \u2014 build a thin custom registry instead.",
+    "flutter_riverpod registry pattern \u2014 expose the whole thing as `moduleRegistryProvider` (the manifests) + `enabledModulesProvider` (registry filtered by capabilities \u2229 settings) + `navModulesProvider`/`toolbarModulesProvider`/`drawerModulesProvider` (placement-filtered, watched by AppShell). This matches the app's existing Riverpod-everywhere style (nodeCapabilitiesProvider, themeProvider)."
+   ],
+   "recommendationsForUs": [
+    "Define a ModuleManifest Dart model in a new lib/core/modules/module_manifest.dart with fields: id (e.g. 'skmap'), title, icon, route (GoRoute path), version, minDaemonApi, requires (List<CapabilityRef> like 'service:geo-cot','transport:webrtc'), defaultPlacement (nav|toolbar|drawer), role (everyone|operator), order, and a builder/onActivate hook. Keep it a const-constructible class so first-party modules are declared in code (compiled-in tier), not loaded from disk.",
+    "Build lib/core/modules/module_registry.dart holding a const List<ModuleManifest> _builtinModules (migrate the current 30 routes + 5 tabs + Hub tiles into manifests). Expose moduleRegistryProvider. Add a capability gate: enabledModulesProvider = ref.watch(nodeCapabilitiesProvider) filtered so a module only lights up when EVERY `requires` ref resolves to a CapStatus of up/configured/degraded in the live doc \u2014 reuse the existing capabilities_service.dart parsing verbatim. Modules whose caps are down/unconfigured render greyed in the drawer (honest, like the existing status-dot mapping) rather than vanishing.",
+    "Replace AppShell._tabs (const) with `ref.watch(navModulesProvider)` and add a swipe-up 'all apps' drawer fed by `ref.watch(drawerModulesProvider)` (a DraggableScrollableSheet listing every enabled module grouped by role). Add a toolbar contribution slot in the per-screen AppBar fed by `toolbarModulesProvider` \u2014 this is what lets the user promote SkMap onto the main toolbar. AppShell._indexFor's hard-coded location.startsWith() chain should be derived from the manifest list instead of inlined.",
+    "Drive routing from the registry: in app_router.dart, generate the shell GoRoute children by mapping over the manifests (route + deferred builder) so adding a module no longer means editing app_router.dart. Keep the top-level non-shell routes (calls, viewer, join) hand-written \u2014 they're not user-toggleable modules.",
+    "Add a ModulePrefs settings store (lib/services/module_prefs.dart) backed by hive (already a dep, same pattern as theme_provider/daemon_config): persist {enabledIds:Set, placement:Map<id,nav|toolbar|drawer>, order:Map<id,int>}. Add a 'Modules' settings tab under the Me/profile screen (where capabilities_section.dart already lives) with a list of all manifests: a toggle (enable/disable, disabled-if-capability-unsupported with an explanatory subtitle pulled from the cap status) and a placement chooser (nav / toolbar / drawer) + drag-to-reorder. Settings \u2229 capabilities = final enabled set.",
+    "Backend: extend skcomms/src/skcomms/capabilities.py to optionally emit a `modules` block alongside transports/services \u2014 a per-node list of module ids the NODE wants surfaced (operator policy / which sub-apps this deployment ships), so the client can honor node-side enablement, not just client-side. Keep it additive (the existing transports/services contract is untouched; the Flutter parser already null-tolerates missing keys). Version the doc with a top-level `api` field so manifests' minDaemonApi can gate.",
+    "Pilot with ONE module end-to-end before generalizing: migrate skmap (self-contained, route /skmap, requires:['service:geo-cot'], defaultPlacement: drawer) into a manifest, delete its hand-coded Hub tile, prove the toggle + promote-to-toolbar + capability-gating loop, then mechanically migrate the remaining features (skos, coord, cluster, recordings, conf, spaces). Use the superpowers TDD/brainstorming skills and write a spec under docs/superpowers/specs/ first (the repo's established practice).",
+    "Reserve a tier-B 'widget' escape hatch for the future without building it now: document that untrusted/external sub-apps would mount via an iframe (web) / WebView (native) + a postMessage capability-negotiation bridge modeled on matrix-widget-api, scoped by capauth \u2014 so the manifest's `requires`/`role` fields are forward-compatible with that approval flow."
+   ],
+   "bestPractices2027": [
+    "Declarative manifest + lazy activation + named contribution points is the cross-ecosystem standard (VS Code, Obsidian, Nextcloud, JetBrains all share it) \u2014 don't invent a novel model.",
+    "Separate AVAILABILITY (capability/permission-gated, global) from VISIBILITY/PLACEMENT (user-settings-driven, per-slot) \u2014 the VS Code enablement-vs-when distinction; conflating them produces brittle UIs.",
+    "Auto-track and tear down everything a module registers (Obsidian register* model) so enable/disable is leak-free and reversible at runtime.",
+    "Gate features on RUNTIME capability discovery, not build flags \u2014 a module lights up only when the node actually supports its required service/transport (service-discovery-driven UI).",
+    "Use deferred/dynamic imports so disabled or rarely-used modules don't tax cold start (Flutter deferred components / on-demand feature modules).",
+    "For untrusted code, the only real sandbox in a Flutter/web stack is iframe+postMessage (Matrix widget) or out-of-process behind an authz boundary \u2014 compiled-in Dart is trusted by definition; design the two tiers explicitly.",
+    "Capability negotiation with explicit user/operator approval for sensitive scopes (Matrix requestCapabilities -> approval), rather than implicit grant.",
+    "Version the manifest/host contract (minAppVersion / minDaemonApi) and re-register on version bump (Nextcloud) so upgrades don't silently drop contributions."
+   ],
+   "pitfalls": [
+    "Adopting flutter_modular for the registry \u2014 it owns routing and DI and conflicts with go_router, which skchat-app already standardizes on (go_router 14, ShellRoute in app_router.dart). Build a thin custom registry over go_router instead.",
+    "Believing `deferred as` gives sandboxing/isolation \u2014 it only defers code download/parse; a compiled-in Dart module has full app access. Don't market tier-A modules as sandboxed.",
+    "Letting capability-gating HIDE modules silently \u2014 the existing app philosophy (capabilities.py docstring, CapStatus dot mapping) is HONESTY: show down/unconfigured modules greyed with a reason, don't make them vanish, or users think features are missing/broken.",
+    "Manifest/route/Hub-tile drift \u2014 today a feature lives in app_shell._tabs, app_router routes, AND HubScreen tiles; if the migration leaves any of these hand-maintained the same 3-file-edit problem returns. Generate nav + routes + drawer from the single manifest list.",
+    "Over-engineering a disk-loaded plugin format for v1 \u2014 all current sub-apps are first-party and compiled-in; a JSON-on-disk loader adds risk with no user today. Start with const manifests in Dart; add external loading only when a tier-B widget actually exists.",
+    "Breaking the /api/v1/capabilities contract \u2014 the Flutter parser and skcomms emitter are already in production (Me screen capabilities_section). Any `modules` addition must be additive and null-tolerant; don't restructure transports/services.",
+    "Ignoring the role dimension \u2014 several surfaces are operator-only (Ops hub, cluster, skos-control). Placement/visibility must respect a role field or non-operators get controls they shouldn't see.",
+    "Putting the swipe-up drawer over the existing PiPOverlay / incoming-call push in AppShell without coordinating z-order and the GoRouterState.of(context) listener \u2014 the shell already juggles call overlays and offline banners."
+   ],
+   "sources": [
+    "https://code.visualstudio.com/api/references/contribution-points",
+    "https://code.visualstudio.com/api/references/activation-events",
+    "https://code.visualstudio.com/api/references/extension-manifest",
+    "https://docs.obsidian.md/Reference/TypeScript+API/Plugin",
+    "https://docs.obsidian.md/Plugins/User+interface/Views",
+    "https://docs.nextcloud.com/server/latest/developer_manual/app/init.html",
+    "https://docs.nextcloud.com/server/latest/developer_manual/app/info.html",
+    "https://docs.nextcloud.com/server/latest/developer_manual/app/settings.html",
+    "https://github.com/matrix-org/matrix-widget-api/blob/master/README.md",
+    "https://docs.flutter.dev/perf/deferred-components",
+    "https://vibe-studio.ai/insights/creating-a-plugin-architecture-for-modular-flutter-apps",
+    "https://vibe-studio.ai/insights/designing-on-demand-feature-modules-in-flutter",
+    "/home/cbrd21/clawd/skcapstone-repos/skcomms/src/skcomms/capabilities.py",
+    "/home/cbrd21/clawd/skcapstone-repos/skchat-app/lib/services/capabilities_service.dart",
+    "/home/cbrd21/clawd/skcapstone-repos/skchat-app/lib/features/shell/app_shell.dart",
+    "/home/cbrd21/clawd/skcapstone-repos/skchat-app/lib/core/router/app_router.dart",
+    "/home/cbrd21/clawd/skcapstone-repos/skchat-app/lib/features/hub/hub_screen.dart",
+    "/home/cbrd21/clawd/skcapstone-repos/skchat/src/skchat/daemon_proxy.py"
+   ]
+  },
+  {
+   "dimension": "Location/maps sharing + high-value chat modules (pin-drop, live location, polls, events, whiteboard) as pluggable modules in skchat",
+   "keyFindings": [
+    "Two distinct location primitives exist in every mature chat app and should be modeled separately: (1) STATIC pin-drop = a single immutable message (Matrix m.location / MSC3488: a geo: RFC5870 URI 'geo:lat,lng;u=accuracy', optional description, m.ts, and m.asset type m.self vs m.pin) and (2) LIVE location = a long-lived, periodically-edited object (Telegram inputMediaGeoLive; Matrix m.beacon_info/MSC3489+3672).",
+    "Telegram's live-location design is the cleanest reference: start with inputMediaGeoLive carrying geo_point + accuracy_radius + heading(1-360deg) + period (validity/expiry) + proximity_notification_radius; the SAME message is updated in-place via messages.editMessage at most every `period` seconds; STOP is an explicit edit with inputGeoPointEmpty + stopped=true. Live sharing is identical in 1:1 and groups (broadcast to all members).",
+    "Live location is an EDIT-of-one-message, not a stream of new messages. This is the critical design choice: it keeps timelines clean, gives natural expiry, makes 'stop' explicit, and means a single pin animates on the map rather than spamming the chat. Matrix's m.beacon_info (state event holding metadata/expiry) + separate m.beacon location pulses follows the same split.",
+    "Telegram 2026 reduced live update cadence from 10s -> 2s and added an 'Until I stop' indefinite option alongside the classic 15min / 1h / 8h durations. Cadence should be adaptive (faster when moving/heading present, slower when stationary) to save battery and bandwidth.",
+    "Proximity alerts are a high-value, low-cost add-on: each live share carries an optional proximity_notification_radius; when another live-sharer in the same chat crosses it, the system emits a service/system message (Telegram messageActionGeoProximityReached, includes distance). This needs no extra UI surface, just server-side distance checks on each pulse.",
+    "GDPR/2026 regulatory posture makes opt-in mandatory and engineering-enforced: consent must be affirmative, specific, separate from other permissions, revocable as easily as granted, with contextual (just-in-time) disclosure, data minimization, and changes that 'propagate immediately to every system that touches the data.' Opt-out-by-default location is non-compliant.",
+    "skchat already has the exact extension surface needed: a PluginRegistry with on_outbound/on_inbound/on_command(slash) hooks (src/skchat/plugins.py), a ChatMessage envelope with a content_type enum + an extensible metadata dict (src/skchat/models.py), and an AttachmentService transport selector. But ContentType is currently text-only (PLAIN/MARKDOWN/SYSTEM) \u2014 it has no structured/typed-payload concept, which is the main gap for any module (location, poll, event).",
+    "The repo already has the two hard pieces most chat apps lack: a geo/map surface (skmap) and a CoT/TAK tactical bridge (cursor-on-target, ATAK/iTAK on the sovereign net per MEMORY). A location module is therefore mostly a wiring + privacy-policy job, not a from-scratch build \u2014 and live-location pulses can dual-publish as CoT PLI (Position Location Information) events to feed ATAK directly.",
+    "Highest-value non-location modules across WhatsApp/Telegram/Matrix/Slack in 2026, ranked by value/effort: polls (Matrix MSC3381 m.poll.start/m.poll.response \u2014 server aggregates votes, only latest vote per user counts, no fallback render so dumb clients ignore), events/scheduling (RSVP objects), file/media sharing (skchat already has AttachmentService), and collaborative whiteboard (highest effort \u2014 needs a CRDT)."
+   ],
+   "whatToBorrow": [
+    "Telegram live-location wire model verbatim as the skchat live-location payload: {geo:{lat,lng}, accuracy_radius_m, heading_deg(1-360|null), period_s|null(=indefinite), proximity_radius_m|null, stopped:bool}. Update via message-edit, terminate via stopped=true. Source: https://core.telegram.org/api/live-location and constructor inputMediaGeoLive.",
+    "Matrix MSC3488 m.location content for the STATIC pin: store the point as an RFC5870 geo: URI ('geo:37.78,-122.40;u=35') plus a `description` and `m.asset`:{type:'m.self'|'m.pin'} so 'my location' vs 'a dropped pin' are distinguishable. Carry a text/markdown fallback so non-location clients still render something. Source: matrix-spec-proposals 3488-location.md.",
+    "Matrix MSC3489/3672 'beacon' split: one durable beacon_info object (owner, expiry, live=true/false, description) + lightweight periodic location pulses keyed to it. Use MSC3672's ephemeral/non-persisted variant when history isn't wanted (privacy default). Source: matrix-spec-proposals PRs 3489, 3672.",
+    "Matrix MSC3381 polls model for a polls module: m.poll.start {question, kind: disclosed|undisclosed, max_selections, answers:[{id,text}]} + m.poll.response {answers:[ids]} where the SERVER aggregates and only the latest response per user (by ts) counts, and responses have no renderable fallback (dumb clients ignore them). Source: matrix-spec-proposals/proposals/3381-polls.md.",
+    "Telegram proximity_notification_radius + the messageActionGeoProximityReached system-message pattern (carries the crossing distance) \u2014 implement as a server-side check on each live pulse, emitting a ContentType.SYSTEM message into the chat. Cheap, high delight for groups/meetups/tactical use.",
+    "CoT/TAK PLI mapping: when a user shares live location, also emit a Cursor-on-Target event (uid, type a-f-G-U-C, point lat/lon/hae/ce/le, contact callsign, stale time = period) onto the existing CoT bridge so ATAK/iTAK see chat participants as map icons. Live-location `period` maps directly to CoT `stale`.",
+    "GDPR-2026 consent UX pattern: just-in-time permission prompt separate from any other permission, a precise-vs-approximate toggle (coarse rounds to ~city/neighborhood = data minimization), explicit duration picker (15m/1h/8h/until-stop), an always-visible 'currently sharing with N people, stop' banner, and revoke-as-easy-as-grant. Sources: secureprivacy.ai app-privacy-compliance-guide, termsfeed user-location-privacy-practices."
+   ],
+   "recommendationsForUs": [
+    "Build location as a first-class typed message, not a freeform attachment. Extend skchat ContentType (src/skchat/models.py) with LOCATION='application/skchat.location+json' (static pin) and LOCATION_LIVE='application/skchat.location-live+json', and put the structured payload in the existing ChatMessage.metadata dict so the SKComms transport envelope and E2E encryption are unchanged. Always set a human-readable text/markdown fallback in body so non-location clients degrade gracefully (the Matrix extensible-events principle).",
+    "Implement live location as edit-of-one-message + expiry, NOT a stream of new messages: create one 'live beacon' message, then have the sender push location pulses that UPDATE it (mirror Telegram messages.editMessage and the existing edit/reaction plumbing). Store {started_at, expires_at, last_seen, live:bool} so the map can show 'last updated 12s ago' and auto-expire. This keeps the timeline clean and makes 'stop' explicit (set live=false / stopped=true).",
+    "Ship it as a skchat plugin (src/skchat/plugins.py PluginRegistry) named e.g. skchat-location: register slash commands /location (pin), /live <15m|1h|8h|until-stop> [precise|approx], /stopshare via on_command; render incoming LOCATION* messages into the skmap surface via on_inbound. This matches the SKWorld host-plugin pattern (owned core + thin adapter) so it survives skchat updates and can be enabled per-deployment.",
+    "Make sharing strictly opt-in with these enforced defaults: NO location is ever sent without an explicit per-share action; default precision = APPROXIMATE (coarse/rounded ~city-block) with an explicit per-share 'precise' toggle; default duration is bounded (offer 15m/1h/8h, make 'until I stop' a deliberate extra tap); a persistent 'You are sharing live location with N people \u2014 Stop' banner; one-tap revoke; and an audit log entry per share start/stop (you already have security_audit_log via the skcapstone MCP \u2014 write to it).",
+    "Add adaptive pulse cadence with battery/bandwidth guards: ~2-5s when moving (heading present / position delta > threshold), back off to 30-60s when stationary, hard-stop at expires_at. Carry accuracy_radius and heading so skmap renders an accuracy circle + direction cone like the reference apps.",
+    "Wire proximity alerts and the CoT bridge in from day one since both surfaces already exist: on each live pulse, run a server-side distance check against other live-sharers in the same group and emit a ContentType.SYSTEM 'X is within Ym' message (opt-in radius per share); and dual-publish live pulses as CoT PLI events to the TAK bridge (period -> CoT stale) so chat participants appear as ATAK map icons. This is a differentiator no consumer app has.",
+    "Sequence the non-location modules by value/effort: (1) polls next \u2014 small, well-specified (adopt MSC3381 server-side aggregation, latest-vote-wins, no-fallback-render), reuses the same typed-payload+plugin pattern; (2) events/scheduling \u2014 a typed m.event-like payload {title, start, end, location(optional, can embed a pin), rsvp:[]} with /event + RSVP reactions, integrate with the existing gog calendar + sk-alert paths; (3) file/media is mostly done via AttachmentService \u2014 just add gallery/thumbnail + delete UI; (4) whiteboard LAST \u2014 it needs a CRDT (Yjs/Automerge) over a data channel, defer unless there's clear demand.",
+    "Define ONE generic 'typed module message' contract so every future module is plug-and-play: content_type = application/skchat.<module>+json, payload in metadata, mandatory text fallback, optional system-message side-effects, and a plugin that owns render(on_inbound)/compose(slash on_command)/aggregate(server). Location is the first instance; polls/events follow the identical shape. This avoids a bespoke code path per module."
+   ],
+   "bestPractices2027": [
+    "Model static pin and live location as two different object types \u2014 static = immutable message (geo: URI + asset type), live = a single editable/expiring beacon object updated in place, never a stream of timeline messages.",
+    "Live location is opt-in, time-boxed, and revocable: bounded default durations, a deliberate 'until I stop', an always-visible active-sharing indicator, and stop/revoke as easy as start (GDPR-2026 mandate).",
+    "Precision is a user choice with a privacy-preserving default: ship approximate/coarse by default, precise only on explicit per-share opt-in (data minimization).",
+    "Adaptive update cadence (faster moving, slower stationary, hard expiry) \u2014 Telegram moved to 2s when active in 2026 but you must back off to preserve battery/bandwidth.",
+    "Carry accuracy_radius + heading and render them (accuracy circle + direction cone) instead of a bare dot, so users can judge trust in the fix.",
+    "Just-in-time, layered consent presented at the moment of sharing and separate from other permissions; log each share start/stop to an audit trail.",
+    "Use extensible/typed events with a plain-text fallback so clients that don't understand a module degrade gracefully rather than break (Matrix MSC1767 extensible-events principle).",
+    "Server-aggregated state for collaborative modules (polls: latest-vote-wins, server tallies; proximity: server-side distance checks) rather than trusting each client to recompute."
+   ],
+   "pitfalls": [
+    "Sending live location as a stream of new messages (instead of editing one beacon) \u2014 floods the timeline, breaks notifications, and makes 'stop' and expiry ambiguous. Telegram and Matrix both deliberately avoid this.",
+    "Opt-out-by-default or auto-sharing \u2014 non-compliant under GDPR-2026 (consent must be affirmative/specific) and a trust killer. Background/continuous location especially must be explicit and explained.",
+    "Defaulting to precise location \u2014 leaks more than needed; coarse-by-default with explicit precise opt-in is the data-minimization expectation.",
+    "No hard expiry / no visible active-share indicator \u2014 leads to users unknowingly broadcasting indefinitely (the classic live-location privacy incident).",
+    "Fixed high-frequency pulse cadence \u2014 drains battery and saturates the transport when stationary; needs adaptive backoff.",
+    "Letting any user edit another user's live-location/beacon state event \u2014 the exact permission flaw flagged against early Matrix MSC3489 (use 'owned' state events / per-sender keys).",
+    "Building location as an opaque attachment blob \u2014 loses the typed payload, map rendering, expiry, and proximity logic; and gives no clean path to reuse for polls/events. Use a typed content_type + structured metadata instead.",
+    "skchat's current ContentType is text-only \u2014 shipping a module without first introducing a typed-payload contract will create a bespoke, un-reusable code path per module.",
+    "Whiteboard without a CRDT \u2014 naive last-write-wins sync produces lost strokes and conflicts; it genuinely needs Yjs/Automerge over a data channel, which is why it should be sequenced last.",
+    "Proximity alerts without per-share opt-in radius \u2014 surfacing distances between users by default is a privacy leak; the radius must be set deliberately by the sharer."
+   ],
+   "sources": [
+    "https://core.telegram.org/api/live-location",
+    "https://core.telegram.org/constructor/inputMediaGeoLive",
+    "https://core.telegram.org/bots/api",
+    "https://github.com/matrix-org/matrix-spec-proposals/pull/3489",
+    "https://github.com/matrix-org/matrix-spec-proposals/pull/3672",
+    "https://github.com/matrix-org/matrix-spec-proposals/pull/3488",
+    "https://github.com/matrix-org/matrix-spec-proposals/blob/main/proposals/3381-polls.md",
+    "https://github.com/matrix-org/matrix-spec-proposals/blob/main/proposals/1767-extensible-events.md",
+    "https://faq.whatsapp.com/480865177351335/",
+    "https://grokipedia.com/page/Live_location_WhatsApp",
+    "https://secureprivacy.ai/blog/app-privacy-compliance-guide",
+    "https://www.termsfeed.com/blog/user-location-privacy-practices/",
+    "https://thisisglance.com/learning-centre/what-privacy-rules-apply-to-location-data-collection",
+    "/home/cbrd21/clawd/skcapstone-repos/skchat/src/skchat/plugins.py",
+    "/home/cbrd21/clawd/skcapstone-repos/skchat/src/skchat/models.py",
+    "/home/cbrd21/clawd/skcapstone-repos/skchat/src/skchat/attachments.py"
+   ]
+  }
+ ],
+ "inventory": {
+  "haveAlready": [
+   {
+    "capability": "Text chat (1:1, groups, threads, reactions, typing, presence, ephemeral, file transfer)",
+    "where": "skchat: models.py/history.py(SQLite)/group.py(encrypted)/reactions.py/presence.py/outbox.py(retry); 40 MCP tools in mcp_server.py; rides skcomms transports (file/syncthing/https-s2s/websocket/nostr). Flutter: features/conversation, features/groups, features/chats. Transport derivation in skcomms/capabilities.py service id 'text'",
+    "status": "DONE / production"
+   },
+   {
+    "capability": "1:1 voice/video call (sovereign LiveKit, deterministic per-pair room, signed CALL_INVITE, ICE tier ladder)",
+    "where": "skchat/call_session.py (derive_room SHA256->base32, build/parse_invite_body), connectivity.py (ice_config: Tailscale>LAN>sovereign coturn ephemeral REST creds>OpenRelay free TURN>Google STUN), call_routes.py (/call/start ring, /call/answer, /call/incoming sig-gated, /call/peers, /connectivity/ice), livekit_routes.py (/livekit/token VideoGrants can_publish+can_subscribe, tailnet-gated mint, public_aware_livekit_url for Funnel guests). Flutter: features/calls (outgoing/incoming/in_call/livekit_call screens, call_provider, pip_overlay, call_quality_indicator). LiveKit SFU :7880 + coturn infra",
+    "status": "DONE / live"
+   },
+   {
+    "capability": "Group video/audio room 'on the fly' (SK Spaces: create/join/host/guest, raise-hand, invite-to-stage, mute/kick, speaker/listener roles, server-authoritative on-stage set)",
+    "where": "skchat/spaces/ (space.py derive_space_id, routes.py full REST: /spaces/create|join|join-host|join-guest|end|raise-hand|invite|remove-from-stage|mute|kick, roles.py, registry.py, tokens.py mint_space_token, moderation.py). Flutter: features/spaces/space_room_screen.dart (speaker rings, raised-hand queue, host actions, REC pill), spaces_directory_screen. Room auto-created by SFU on host connect",
+    "status": "DONE / live"
+   },
+   {
+    "capability": "Screenshare",
+    "where": "skchat-app features/spaces/screen_share_panel.dart \u2014 real LiveKit TrackSource.screenShareVideo track, publishes local + renders remote shares via VideoTrackRenderer; livekit_call_service.dart setScreenShareEnabled(). Exposed as a Space 'lane'",
+    "status": "DONE (app); no server-side policy/recording of the share track"
+   },
+   {
+    "capability": "Recording -> minutes (audio egress -> Whisper transcript -> LLM write-up -> posted to chat lane)",
+    "where": "skchat/spaces/recording.py (Recorder: LiveKit RoomCompositeEgressRequest audio_only OGG), recording_writeup.py (Transcriber/Summarizer/Poster seams; WhisperTranscriber via voice.VoiceRecorder, LLMSummarizer -> Summary/Key Points/Action Items, chat_lane_poster). routes.py /record/start (consent-gated via consent.py ConsentLedger + can_record) /record/stop (auto-writeup hook SKCHAT_SPACES_AUTO_WRITEUP). Also livekit_routes.py lumina_recorder.py per-track WAV capture + /recordings browser. Infra: faster-whisper .100:18794, qwen3.6 .100:8082. Flutter features/recordings",
+    "status": "DONE / opt-in"
+   },
+   {
+    "capability": "Agent-collaborative docs (shared live document in a Space)",
+    "where": "skchat-app features/spaces/doc_panel.dart \u2014 shared plaintext doc over the data 'doc' lane, debounced publish + catch-up replay. Plus whiteboard_panel.dart, watch_panel.dart (watch-together), terminal_panel.dart (term lane -> skreachd sandboxed exec via /spaces/{id}/lanes/term/run). Lane substrate: skchat/spaces/lanes.py LaneDispatcher+LaneStore (SQLite replay), /spaces/{id}/lanes/event + /lanes/{lane}/state",
+    "status": "PARTIAL \u2014 works but LAST-WRITE-WINS (explicitly not CRDT), no cursors/presence, no rich text, no agent-as-doc-peer"
+   },
+   {
+    "capability": "Location pin / live location (tactical map)",
+    "where": "skchat-app features/skmap/ (skmap_screen.dart flutter_map+OSM, friendly/hostile/marker CoT typing a-f-*/b-m-*, recenter/fit-all, tap->unit sheet; geo_units_source.dart adapter seam, skmap_providers.dart geoUnitsProvider StreamProvider). skcomms/capabilities.py 'geo-cot' service probes CoT/TAK :8087. Real ATAK/iTAK bridge + LUMINA AI teammate live on .158 (per MEMORY cot-bridge)",
+    "status": "PARTIAL \u2014 UI + CoT bridge exist but app feed is MOCK (single TODO at geo_units_source.dart:165 / skmap_providers.dart:23 to wire GET /api/v1/geo/units); no GeoStore route, no self-position publish, no live beacon"
+   },
+   {
+    "capability": "Plugin / module system",
+    "where": "skchat/plugins.py (ChatPlugin ABC, PluginRegistry: builtins + 'skchat.plugins' entry-points + ~/.skchat/plugins/ files; lifecycle load->activate->hooks on_inbound/on_outbound; plugins_builtin.py, plugins_skseal.py). skcomms transports = pluggable Transport ABC loaded by Router from config; skcomms/access/registry.py register_tool(scope=read|write|exec) for the access plane. Spaces 'lanes' are a de-facto module surface (chat/watch/whiteboard/doc/screenshare/terminal)",
+    "status": "DONE (3 distinct plugin surfaces)"
+   },
+   {
+    "capability": "Capability / service discovery (honest per-node advertise)",
+    "where": "skcomms/capabilities.py build_capabilities() -> {node, transports[], services[]} with up/configured/degraded/down/unconfigured derived from live transport health + cheap TCP probes (livekit:7880, nostr-relay:7447, sk-access:9386, cot:8087, signaling-broker:9390); served at /api/v1/capabilities. Flutter features/profile/widgets/capabilities_section.dart renders status dots",
+    "status": "DONE"
+   },
+   {
+    "capability": "Signaling / fast-path broker for P2P/WebRTC",
+    "where": "skcomms/transports/signaling_broker.py (BrokerSignaling over WS relay :9390) + signaling_mailbox.py (sovereign fallback) behind signaling_base.SignalingChannel; select_signaling prefers broker else mailbox. broker_server.py. p2p_manager/p2p_session/p2p_connector, webrtc.py, webrtc_media.py, audio_track/video_track",
+    "status": "DONE"
+   },
+   {
+    "capability": "Federation (cross-operator Spaces/SFU)",
+    "where": "skchat/spaces/federation/ (advertise.py focus-advertise on Nostr, discovery.py, authd.py sk-lk-authd capauth-signed FQID assertion -> mints local SFU token via /sfu/get, /sfu/candidates discovery, nonce/keystore/trust/assertion). Nostr relay :7447. Proven bidirectional two-SFU peer federation (per MEMORY)",
+    "status": "DONE / proven"
+   },
+   {
+    "capability": "Voice loop (STT->LLM->TTS) and agent-as-participant",
+    "where": "skchat/voice.py (Whisper :18794->LLM qwen3.6->TTS Piper :18797), voice_engine/ (engine/session/stt/tts/llm/conversation/persona/tools/builtin_tools), voice_stream.py, voice_ws_lite.py. scripts/lumina-livekit-agent.py + lumina-join-call.py = AI joins LiveKit room as real participant; livekit_routes.py /livekit/speak SendData action=speak. FaceTime avatar call feature",
+    "status": "DONE"
+   },
+   {
+    "capability": "P7 access plane (knowledge/file/exec MCP over tailnet)",
+    "where": "skcomms/access/ (server.py FastAPI+MCP SSE :9386, registry.py Scope read/write/exec RBAC, grants.py, knowledge.py, files.py exposed-root allowlist, exec.py, audit.py, routing.py, wiring.py). Flutter features/skos/ (access_client, access_token_signer, files_screen corpus search, control_screen node health, full-screen media viewer/gallery). capauth-signed",
+    "status": "DONE / live"
+   },
+   {
+    "capability": "Conference (shareable-link, sovereign vs guest, deep-link join)",
+    "where": "skchat/conf/routes.py + join_routes.py (/conf/{room}/token, /join/sovereign, guest invite verify InviteVerifier). Flutter features/conf/conf_screen.dart, features/join/join_screen.dart, app_router /join?room=&invite= / &sovereign=1, /conf ConfArgs",
+    "status": "DONE"
+   }
+  ],
+  "gaps": [
+   "E2EE for media is NOT implemented. connectivity.py/livekit only do transport security (DTLS-SRTP) + sovereign relay; the SFU can see all media. 2026 best practice = LiveKit Insertable-Streams E2EE (per-room or MLS/MEGOLM key provider, AES-GCM, ~0 server overhead). NOTE the tradeoff that bites US directly: server-side egress recording AND the AI-agent participants (lumina-livekit-agent, recording_writeup transcription) CANNOT read E2EE media \u2014 so we'd need a hybrid (E2EE for human-only rooms, opt-out when an agent/recorder is present, with explicit consent UI). This is the single biggest security gap for a sovereign suite.",
+   "Collaborative docs are last-write-wins, not CRDT. doc_panel.dart explicitly says 'simple last-write-wins (not CRDT)'. 2026 standard = Yjs (Y.Text/Y.Map, awareness protocol for cursors/presence, offline merge). No conflict-free merge, no multi-cursor, no rich text, and critically no 'agent as a CRDT peer' (the 2026 pattern for agent-collaborative editing \u2014 agent streams CRDT ops, not text diffs). The whiteboard panel likely has the same limitation.",
+   "SkMap live geo feed is a stub. geo_units_source.dart:165 / skmap_providers.dart:23 have a single TODO each to call GET /api/v1/geo/units; that route + a server-side GeoStore (fed by the CoT bridge stream) do not exist, and there is no self-position publish path (operator/agent location is hardcoded to the LUMINA seed). Need: (a) a geo route/SSE-or-WS stream of application/geo+json or CoT envelopes on the skchat/skcomms daemon, (b) a publish-my-location endpoint, (c) live-beacon TTL/staleness. The transport+UI+CoT bridge all exist \u2014 only the wire is missing.",
+   "No unified group VIDEO grid for ad-hoc calls. Spaces are AUDIO-only (recording.py audio_only=True, room screen renders rings not video tiles); 1:1 has video; screenshare renders video. Missing: a multi-party camera-video tile grid (the 'group video on the fly' literal ask) as a first-class surface distinct from audio Spaces + the screen_share panel. Reuse VideoTrackRenderer + the LiveKit grant already supports video \u2014 it's a UI/role gap, not infra.",
+   "No LiveKit Agents framework integration for meeting intelligence. Our agent join (lumina-livekit-agent.py) is bespoke; recording_writeup is batch (post-call OGG->Whisper->LLM). 2026 best practice = livekit/agents 1.5 (MCP-native, adaptive interruption) for LIVE in-call transcription captions + live minutes + agent that can speak/act mid-meeting. We have the pieces (qwen3.6, Whisper, MCP tool router from the telegram bridge) but not the real-time in-room transcription protocol / live caption surface.",
+   "Screenshare and watch-together tracks are not recorded or written-up. recording.py is audio_only; the egress doesn't capture the screenshare/whiteboard/doc lanes, so 'minutes' miss everything visual/shared. Consider video room-composite egress (with the E2EE caveat above) or lane-state snapshots folded into the write-up.",
+   "Spaces create/join trust the tailnet (S1/S2): routes.py /spaces/create comment says host_fqid is asserted not proven and it mints a roomAdmin token to whoever asks \u2014 'Do NOT expose publicly before S5 sk-lk-authd verifies a capauth-signed operator assertion'. The federation /sfu/get path IS capauth-verified, but the local create/join path is not yet. Closing this is required before any public/guest exposure of Spaces.",
+   "No persistent server-side doc/whiteboard store beyond lane replay. Lanes persist to ~/.skchat/lanes.db (LaneStore replay) but there's no document model, versioning, naming, or export \u2014 a 'shared doc' evaporates with the Space. Need a docs feature (list/open/export, ownership) if docs are to be a first-class collaboration artifact rather than an ephemeral lane."
+  ],
+  "reusable": [
+   "LiveKit token mint + VideoGrants (livekit_routes._mint_token, spaces.tokens.mint_space_token) already issue can_publish video grants \u2014 group video grid is a UI build on existing infra, no new grant work.",
+   "connectivity.ice_config tier ladder (Tailscale>LAN>sovereign coturn>free TURN>STUN) is transport-agnostic and reusable for any new WebRTC surface.",
+   "spaces.lanes LaneDispatcher/LaneStore (SQLite replay + /lanes/event + /lanes/{lane}/state catch-up) is the ready substrate to drop a Yjs/CRDT update channel onto \u2014 swap last-write-wins text for Yjs binary updates over the same lane.",
+   "recording_writeup.py seam design (Transcriber/Summarizer/Poster Protocols) cleanly accepts a LIVE transcriber + a richer (video/lane-aware) summarizer without rewriting the orchestrator.",
+   "skcomms.capabilities catalog is the single place to advertise new services (add 'e2ee', 'group-video', 'geo-live', 'crdt-docs') so the app's capabilities_section surfaces them automatically.",
+   "The telegram-bridge McpToolRouter (qwen3.6 + MCP tools over stdio, MAX_TOOL_ROUNDS) is the proven path to wire a LiveKit Agents in-room participant that can act, not just transcribe.",
+   "spaces.federation.authd (capauth-signed FQID assertion -> SFU token) is the template to harden the local /spaces/create create/join path (S5) and to gate E2EE key distribution per verified identity.",
+   "skmap is fully feed-agnostic (GeoUnitsSource stream adapter) \u2014 wiring the live feed is literally implementing one _fetch/stream method against a new daemon route; the CoT bridge already emits the envelopes.",
+   "scripts/lumina-livekit-agent.py + livekit_routes /livekit/speak SendData give a working agent-presence + in-room control-channel to build live captions/minutes on."
+  ]
+ }
+}
