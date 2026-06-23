@@ -138,6 +138,17 @@ try:
 except ImportError as _e:
     logger.warning("guest routes not registered: %s", _e)
 
+# Guest GROUP access — one-link, group-scoped, full-in-room, UNTRUSTED guests.
+# Operator invite mint/list/revoke + guest join + guest-scoped chat/file/call.
+# The whole surface is gated behind SKCHAT_GUEST_LINKS_ENABLED (default off →
+# operator routes 404, guest routes 403). No public ingress is wired.
+try:
+    from .guest_group_routes import register_guest_group_routes as _register_guest_group_routes
+
+    _register_guest_group_routes(app)
+except ImportError as _e:
+    logger.warning("guest group routes not registered: %s", _e)
+
 # Daemon API proxy for the Flutter app
 try:
     from .daemon_proxy import router as daemon_api_router
