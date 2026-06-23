@@ -349,3 +349,75 @@ This is where the real build is. Today identity is per-USER and `/api/v1/send` p
 - **MD-5 (deferred, gated) — E2EE per-device group key.** Only when the public/guest E2EE path ships: wrap group key to each device pubkey; rotate on device revoke. *AC:* an E2EE public room delivers to all of a user's devices; revoking a device rotates the key.
 
 **Net:** the calls requirement is essentially free (one token change + a client echo policy); the messaging requirement is a contained build (registry + fan-out + device-aware receipts/presence) that reuses our outbox and receipt model; **Janus is not needed.**
+## Guest Access — shareable-link, group-scoped, full-in-room, UNTRUSTED (2026-06-23)
+
+**Shipped (feature-flagged):** the operator texts a link; a recipient opens it,
+types a name, and joins **ONE specific group** as an **untrusted guest** with
+**FULL in-room functionality** — but no admin/expansion powers. This is the
+chat/file sibling of the call-only guest path (`guest.py` / `conf/routes.py`):
+it reuses that LiveKit machinery for the call leg and adds a group-scoped
+chat+file session on top. Branches: `feat/guest-group-access` (skchat +
+skchat-app). Spec: `docs/superpowers/specs/2026-06-23-guest-group-access.md`.
+
+### Feature flag (deferred public ingress)
+All guest-group routes are gated behind **`SKCHAT_GUEST_LINKS_ENABLED`**
+(default **off**): operator routes 404, guest routes 403 when off. **No public
+ingress is wired** — tested on the private tailnet URL first; public/funnel
+exposure is a later operator decision (the locked hybrid-E2EE policy says
+public/guest rooms would also get E2EE, deferred with the ingress).
+
+### Invite + token model
+- **Invite token** (the link secret): HS256 JWT (shared `SKCHAT_GUEST_TOKEN_SECRET`)
+  `{jti, tier:"group-invite", group_id, exp, once?}`. Room-scoped to the group,
+  revocable (shared JTI store with `guest.py`), optional expiry/single-use.
+  `join_url` is **relative** (`/join/<token>`); the app route is `/g/:token`.
+- **Guest session token** (server→browser bearer): HS256 JWT
+  `{jti, tier:"guest-session", group_id, guest_id, name, fp, exp}`, **scoped to
+  exactly one group_id**. Every guest API call carries it; the server pins the
+  request to its `group_id`.
+- **LiveKit guest call token**: publish audio/video/**screen** + subscribe,
+  **never** room_admin (sourced through the conf GUEST grant factory). Room =
+  `derive_group_room(group_id)` — the same room real members join.
+
+### On-the-fly key (browser identity)
+First open: the browser generates an **ECDSA P-256 keypair (WebCrypto)** and
+persists it in **localStorage** → the same link maps to the **same guest** on a
+return visit (auto-join, no re-setup). Identity = `guest:<slug(name)>#<fp>` where
+`<fp>` = first 16 hex of SHA-256 over the exported SPKI public key. **UNTRUSTED**
+(self-asserted, not capauth-verified → untrusted badge + low trust). Guests
+**sign** their messages with the browser key over the canonical
+`{body, group_id, ts}`; the server records the signature as **advisory** (proves
+same-browser continuity, not real-world identity).
+
+### Capability matrix (scoped to the invited group ONLY)
+| Capability | Guest |
+|---|---|
+| Read group conversation · send signed text · reactions/replies | ✅ |
+| Send + download files in the chat | ✅ |
+| Join the group call · screenshare | ✅ |
+| Invite/add members · mint links | ❌ 403 |
+| Create other rooms/groups | ❌ 403 |
+| See/access any OTHER conversation/room/file/peer | ❌ 403 |
+| Agent tools | ❌ (no agent surface exposed to guests) |
+| Group-admin (rename/remove/ACL) | ❌ 403 |
+
+### One-room isolation + no-invite/no-create (server-side)
+- Guests use a **separate narrow router** (`/api/v1/guest/*`); the operator
+  proxy (`/api/v1/*`) never accepts a guest token. The bound `group_id` is taken
+  from the **session token**, never a caller-supplied path/body id — any mismatch
+  → 403.
+- The guest surface is exactly: join / conversation / send / react / file
+  upload+download / call token. There is **no** guest endpoint for
+  invite/create/admin/peer-list/agent-tools — that surface does not exist.
+- **File isolation**: a per-group transfer→group allowlist gates downloads — a
+  guest can only fetch a `transfer_id` recorded as belonging to its bound group.
+
+### Frontend
+- **Operator**: `group_info_screen` → "Invite via link / Share link" → mints an
+  invite, shows the full link to copy/share.
+- **Guest landing `/g/:token`** (outside the authed shell): preview → prompt name
+  → generate+persist WebCrypto keypair → join → enter room (returning guest
+  auto-joins from cache).
+- **Guest room view**: full in-room kit (messages + reactions + attach/send +
+  download + Join call w/ screenshare), untrusted badge, **no** bottom nav / admin
+  / invite / add-member / peer list / files-browser-outside-chat.
