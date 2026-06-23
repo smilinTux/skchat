@@ -35,6 +35,16 @@ async def api_status():
     return _proxy("http://127.0.0.1:9383/api/v1/household/agents")
 
 
+@router.get("/v1/capabilities")
+async def api_capabilities():
+    """Same-origin proxy to the skcomms-api capability/service-discovery doc.
+
+    The Flutter web app reads ``{origin}/api/v1/capabilities`` so it can show
+    which transports + services this node actually has, without exposing the
+    daemon port. Backed by ``GET /api/v1/capabilities`` on skcomms-api (:9384)."""
+    return _proxy(f"{_SKCOMMS_API}/api/v1/capabilities")
+
+
 @router.get("/v1/household/agents")
 async def api_agents():
     return _proxy("http://127.0.0.1:9383/api/v1/household/agents")
