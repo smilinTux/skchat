@@ -317,6 +317,14 @@ async def api_status():
     return _proxy("http://127.0.0.1:9383/api/v1/household/agents")
 
 
+@router.get("/board")
+async def api_board():
+    """Same-origin proxy to the skcapstone dashboard (:7778) so the coord/Team
+    Board works over any origin (tailscale URL / funnel) — :7778 isn't exposed
+    through tailscale serve, only the webui is."""
+    return _proxy("http://127.0.0.1:7778/api/board")
+
+
 @router.get("/v1/capabilities")
 async def api_capabilities():
     """Same-origin proxy to the skcomms-api capability/service-discovery doc."""
