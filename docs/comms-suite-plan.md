@@ -267,3 +267,85 @@ Goal (Chef): browse *into* a zip on the fly, view/edit a single file inside a mu
 - **Write-back without full re-zip:** edit one entry → **append** the new (compressed) entry at the end + rewrite only the **central directory** (small, at the end) so it points to the new copy; old entry becomes orphaned dead-space reclaimable on a later "repack". O(edited-entry) not O(archive). Confirmed action; warns + offers repack for big archives.
 - All paths (archive + entry) validated through `_resolve_checked`; write-back is scope=write + audited. Same model extends to .tar (index-on-open) later.
 - Slots in as a **Files-module** capability (a `MediaKind.archive` + zip `View` + the tools above).
+
+---
+
+## Addendum: Multi-Device (same identity, many devices)
+
+**Requirement (Chef, 2026-06-23):** Be logged in as *himself* on multiple devices at once (laptop + phone), with **both devices simultaneously live** in (a) the same **DMs/groups** — every message appears on all his devices — and (b) the same **group calls** — he can join a call from either or both devices. Identity stays per-USER (capauth fqid `chef@skworld.io`); devices are facets of that one identity, not separate identities.
+
+### A. Janus decision — KEEP LiveKit only; do NOT add Janus
+
+**Decision: confirmed — LiveKit is sufficient and Janus would be redundant.** Janus adds nothing the multi-device requirement needs and costs us a parallel SFU to operate.
+
+Rationale, against our actual use (sovereign self-hosted; group video + screenshare; Flutter web + mobile-web; agent participants):
+- **Multi-device:** Janus offers *no* native "one user on many devices" primitive either — in both systems a device is a WebRTC peer/participant and you model "same user" yourself. So Janus buys nothing here.
+- **Everything we use, LiveKit already ships:** simulcast (VP8/H.264) + SVC (VP9/AV1), server-side **Egress** (track + composite, S3/RTMP — our Phase 6 minutes), web + Flutter + mobile + server SDKs, embedded TURN/TLS on 443, Redis-mesh clustering, and a clean **agent SDK** (Lumina joins as a real participant — already proven by `scripts/lumina-livekit-agent.py`). Janus is a lower-level gateway: more signalling code, smaller community, no first-class Flutter/agent story, plugin-shaped (its sweet spot is SIP/telephony bridging, IP-camera/IoT ingest, broadcast — none of which is our world).
+- **We already hide the SFU behind our own signaling** (capauth-signed `CALL_INVITE` over skcomms, `derive_room`, `/conf/{room}/token`), so the one thing Janus is praised for (SFU-agnostic signaling) we already own at the app layer.
+- **Net:** adding Janus = a second SFU to secure, cluster, and TURN — pure redundancy. Revisit ONLY if we ever need PSTN/SIP inbound or pure broadcast ingest; that is the single trigger, and even then it would sit *beside* LiveKit, not replace it.
+
+### B. Multi-device for CALLS (LiveKit)
+
+The constraint: **LiveKit enforces unique participant `identity` per room — a second join with the same identity kicks the first (`DUPLICATE_IDENTITY`).** So we must NOT put two of Chef's devices in a room under the bare identity `chef`.
+
+**Model — identity = user, participant = per-device (suffixed):**
+- LiveKit participant identity = `chef#<device_id>` (e.g. `chef#laptop-a91f`, `chef#pixel-7c20`). Stable per device (a short hash of the capauth device key — see §C registry).
+- Carry the *real* user in token metadata + display name so the UI groups devices: `name="Chef"`, `metadata={"user":"chef@skworld.io","device":"laptop"}`. The Flutter grid coalesces participants by `metadata.user` so Chef's two devices render as **one tile** (or one tile per device with a "your other device" badge), not two strangers.
+- **Token minting per device:** `_mint_token` in `livekit_routes.py` takes `identity` verbatim today — we change *callers* (`/livekit/token`, `/call/*`, group-call join) to pass `chef#<device_id>` and set `metadata`/`name`. No SFU change. The `derive_room()` room name is unchanged (it keys on the *user* fqids, not device), so both devices land in the same room.
+- **Agents (Lumina) fit unchanged:** an agent is one participant identity (`lumina`) — agents are single-instance, so the per-device suffix simply never applies to them. They already join as real participants.
+
+**Echo / two-mics-in-one-room (the real UX gotcha):** two of Chef's devices in the same room each capture and play audio → feedback loop + double active-speaker. Mitigation, in order:
+1. **Default: only one device publishes audio/video at a time.** The newest device to "go live" publishes; the others auto-mute mic + stop camera and become **monitor/subscribe-only** (still see/hear the room — "join from both" satisfied — but don't echo). One-tap "make this device active" hands the publish role over (it's just `setMicrophoneEnabled` toggles; no token change).
+2. If a user *insists* both publish (e.g. laptop screen-share + phone camera), keep mics muted on all but the active speaker and rely on the device's own AEC. Coalesce active-speaker by `metadata.user` so Chef never out-shouts himself in the speaker view.
+
+This is a **client-policy** layer (Flutter call controller) on top of unchanged LiveKit + a one-line token change. No Janus, no server work.
+
+### C. Multi-device for DMs / messages (the harder part)
+
+This is where the real build is. Today identity is per-USER and `/api/v1/send` persists to one local `ChatHistory` + delivers to the recipient; there is no concept of "the sender's *other* devices," so a message Chef sends/receives on the laptop never appears on his phone.
+
+**What the field does (and what we borrow):**
+- **Matrix** — server keeps a **device list** per user; new messages + key material fan out to *every* device; cross-device sync via the homeserver; **to-device messages** carry per-device key material; **cross-signing** lets one device vouch for the user's other devices so you verify the *person* once, not each device.
+- **Signal (Sesame)** — a **device registry** per account; sender encrypts/fan-outs a copy per recipient device; **sender-keys** for groups (one symmetric group key, per-sender signing) to avoid N² encryption; sync messages mirror your own sent/read state to your other devices.
+- **WhatsApp multi-device** — companion devices each hold their own key, server fans out per device, primary no longer required online.
+
+**Take-away for us:** the durable pattern is **(1) a device registry under one identity, (2) server-side fan-out of every message to all of that user's registered devices, (3) explicit state-sync (read/delivery) across devices, (4) the group key must reach each device.** We do server-side fan-out (we are a sovereign owner-centric node — not zero-trust E2EE-against-our-own-server), which is far simpler than Signal's per-device pairwise sessions and matches our DECISIONS-locked **hybrid E2EE** (no-E2EE on the sovereign tailnet; E2EE only public/guest).
+
+**Design on our stack:**
+
+1. **Device registry (new).** A `devices` table/store keyed by capauth fqid → list of `{device_id, label, pubkey, last_seen, push_channel}`. `device_id` = short hash of a per-device capauth key (so it's identity-bound and verifiable — reuse the per-agent capauth signing fix). Enrollment = a new device authenticates as the identity (capauth) and self-registers; cross-signing analog = the *existing* device approves the new one (QR/one-tap), so trust is established once per person. Lives next to identity (`capauth` + `identity_bridge.py`), surfaced to skchat.
+
+2. **Fan-out at `/api/v1/send` (the core change).** When persisting a message, deliver a **copy to every registered device of the recipient AND every *other* device of the sender** (sender self-sync, so the laptop-sent message shows on the phone). Concretely in `daemon_proxy.api_send` / `transport.send_message`: after the existing persist+deliver, loop the sender's and recipient's device lists and enqueue a per-device copy via the existing **`outbox`** (we already have retry/backoff). Group sends already `fan_out_send` per member — extend the member loop to **per-member-device**. Dedup by message id so a device that's the local persistor doesn't double-store.
+
+3. **State sync (read/delivery across devices).** `history.py` already has `record_receipt` with `{delivered, read}` sets. Make receipts **device-aware** (`delivered_by`/`read_by` keyed by `device_id`) and fan receipt updates back out the same way, so marking a thread read on the phone clears the badge on the laptop. This is a small extension to the existing receipt model, not a new subsystem.
+
+4. **Per-device presence.** `PresenceCache` becomes keyed by `(fqid, device_id)`; `who_is_online` aggregates to the user level ("Chef online — laptop + phone"). Lets the UI show *which* device is active and route call rings to all of them.
+
+5. **E2EE group key reach (only matters for public/guest rooms).** Under the locked hybrid policy, sovereign-tailnet rooms are not E2EE, so the group AES-256-GCM key is server-held and fan-out is trivial. For the E2EE public/guest case, the group key must be wrapped to **each device pubkey** in the registry (Signal sender-key model) — i.e. the registry's per-device pubkey is what you encrypt the group key to. This is the one place per-device crypto is real, and it only switches on when a room is E2EE.
+
+**What changes in code (delta):**
+- **New:** device registry store (`skchat` + `capauth`), enrollment/approval flow (QR/one-tap), `device_id` derivation.
+- **`daemon_proxy.py` `api_send` / `transport.send_message`:** per-device fan-out loop over recipient+sender device lists via `outbox`; dedup by msg id.
+- **`history.py`:** device-aware receipts (`delivered_by`/`read_by` by device_id); receipt fan-out.
+- **`presence.py`:** key by `(fqid, device_id)`; user-level aggregation in `who_is_online`.
+- **`livekit_routes.py` callers:** mint per-device participant identity `user#device_id` + `metadata.user`; Flutter call controller = active-publisher policy (echo fix) + coalesce-by-user in the grid.
+- **Flutter:** device manager UI (list/approve/revoke devices), "your other device" badges, active-device handoff control.
+
+### D. Recommendation + minimal plan
+
+**Free from LiveKit:** the entire call side. Per-device call presence in a room costs *one* token change (`user#device_id` + metadata) + a client-side active-publisher policy for echo. No server, no Janus.
+
+**Build (messaging side, the real work):** device registry + enrollment/approval + per-device fan-out at `/api/v1/send` (+ group member loop) + device-aware receipts + per-device presence. Reuse the **existing outbox** (retry/backoff) for delivery and the **existing receipt model** for state sync — don't build a new transport.
+
+**Don't over-engineer:** we are a sovereign owner-centric node, so do **server-side fan-out**, not Signal-style per-device pairwise Double-Ratchet sessions. Per-device crypto is needed *only* for E2EE public/guest rooms (wrap the group key per device pubkey) — and that's gated behind the already-locked hybrid-E2EE decision, so it's deferred until the public-funnel path ships.
+
+**Risks:** (1) fan-out dedup — a device that is the local persistor must not double-store (dedup by msg id). (2) Receipt storms — coalesce/debounce per-device receipt fan-out. (3) Device-key lifecycle — revoke a lost device cleanly (registry entry removal must stop fan-out + rotate the E2EE group key for public rooms). (4) Call echo — must default to single active publisher or two co-located devices feed back.
+
+**Sprint breakdown (suggested, slots after Phase 0/1 of the main plan):**
+- **MD-1 — Device registry + enrollment.** `devices` store under capauth identity; per-device capauth key + `device_id`; existing-device-approves-new (QR/one-tap) cross-signing analog; Flutter device manager (list/approve/revoke). *AC:* phone enrolls under `chef@skworld.io`, approved from the laptop, both appear in the registry.
+- **MD-2 — Message fan-out + self-sync.** Per-device delivery loop at `api_send`/`transport` over recipient+sender devices via `outbox`; per-member-device for groups; dedup by msg id. *AC:* a message sent on the laptop appears on the phone and vice-versa; incoming DMs appear on both; no duplicates.
+- **MD-3 — State sync.** Device-aware `record_receipt` (`delivered_by`/`read_by`) + receipt fan-out; per-device `PresenceCache` + user-level `who_is_online`. *AC:* reading on the phone clears the laptop's unread badge; presence shows both devices.
+- **MD-4 — Multi-device calls.** Per-device participant identity (`user#device_id` + `metadata.user`) in all token-mint callers; Flutter active-publisher policy (echo fix) + coalesce-by-user grid; ring all of a user's devices. *AC:* Chef joins one room from laptop + phone with no echo and one coalesced tile; he can hand the active mic between them.
+- **MD-5 (deferred, gated) — E2EE per-device group key.** Only when the public/guest E2EE path ships: wrap group key to each device pubkey; rotate on device revoke. *AC:* an E2EE public room delivers to all of a user's devices; revoking a device rotates the key.
+
+**Net:** the calls requirement is essentially free (one token change + a client echo policy); the messaging requirement is a contained build (registry + fan-out + device-aware receipts/presence) that reuses our outbox and receipt model; **Janus is not needed.**
