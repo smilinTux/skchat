@@ -234,3 +234,12 @@ Each phase is a **shippable module/plugin**. Branch convention: `feat/<module>` 
 - **Specs:** one per phase under `docs/superpowers/specs/`.
 
 This is the plan we execute from — Phase 0+1 first (module spine proven on the skmap pilot + typed-message foundation), then strictly in order, with the E2EE decision (Q1) resolved before Phase 3.
+---
+
+## DECISIONS (locked by Chef, 2026-06-23)
+1. **E2EE = hybrid** — no-E2EE on the sovereign tailnet (so Lumina-as-participant + recording work); E2EE auto-enabled only for public/funnel/guest rooms.
+2. **Recording → minutes = opt-in per call** (not default-on). AutoEgress only when the operator enables recording for that call.
+3. **Egress worker = .158 for now** (revisit if CPU/Chrome load competes with the live services).
+4. **Public-exposure gate = YES** — no public/guest room exposure until S5 capauth verification of operator assertions (`/spaces/create` currently trusts the tailnet).
+5. **Start = Phase 0 (module spine) + Phase 1 (hardened 1:1 chat).**
+- Defaults taken: CRDT=yrs (Loro watch), bots register CLI-only, Tier-B widgets = reserve manifest fields (build first-party only for now).
