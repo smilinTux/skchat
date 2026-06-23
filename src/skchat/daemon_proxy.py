@@ -101,21 +101,36 @@ def _get_brain():
     return _BRAIN
 
 
-def _persist(hist, sender: str, recipient: str, content: str, reply_to_id=None, thread_id=None):
+def _persist(
+    hist,
+    sender: str,
+    recipient: str,
+    content: str,
+    reply_to_id=None,
+    thread_id=None,
+    content_type: str | None = None,
+    rich: dict | None = None,
+):
     """Build a ChatMessage (with optional reply/thread linkage) and save it.
 
     ``ChatHistory.add_message`` only takes scalars, so we construct the model
-    directly to carry reply_to_id/thread_id, then ``save`` it.
+    directly to carry reply_to_id/thread_id (and the optional typed-message
+    ``content_type``/``rich`` payload — P1 contract), then ``save`` it.
     """
     from skchat.models import ChatMessage
 
-    msg = ChatMessage(
-        sender=sender,
-        recipient=recipient,
-        content=content,
-        reply_to_id=reply_to_id or None,
-        thread_id=thread_id or None,
-    )
+    fields: dict = {
+        "sender": sender,
+        "recipient": recipient,
+        "content": content,
+        "reply_to_id": reply_to_id or None,
+        "thread_id": thread_id or None,
+    }
+    if content_type:
+        fields["content_type"] = content_type
+    if rich is not None:
+        fields["rich"] = rich
+    msg = ChatMessage(**fields)
     hist.save(msg)
     return msg
 
@@ -828,6 +843,23 @@ async def api_send(request: Request):
     reply_to_id = body.get("reply_to_id") or body.get("reply_to") or None
     thread_id = body.get("thread_id") or None
     group_id = (body.get("group_id") or "").strip()
+
+    # Typed-message contract (P1): an optional content_type + rich payload.
+    # The Golden rule holds — an unknown type still rides its `body`/content.
+    content_type = (body.get("content_type") or "").strip() or None
+    rich = body.get("rich")
+
+    # Location typed message (Phase 4): server-side validate + coarse-by-default.
+    # The body (fallback text) is *derived* from the validated payload so it
+    # always matches the stored (possibly coarsened) coordinates.
+    if content_type == "location":
+        from skchat import location as _loc
+
+        try:
+            content, rich = _loc.shape_location_message(rich, content)
+        except _loc.LocationError as exc:
+            raise HTTPException(400, f"invalid location: {exc}")
+
     if not content:
         raise HTTPException(400, "empty message")
 
@@ -848,6 +880,7 @@ async def api_send(request: Request):
             msg = G.fan_out_send(
                 group, hist, OPERATOR_ID, content,
                 reply_to_id=reply_to_id, thread_id=group.id,
+                content_type=content_type, rich=rich,
             )
             try:
                 from skchat import webui as _webui
@@ -869,14 +902,24 @@ async def api_send(request: Request):
     if not _is_lumina(recipient):
         # Non-Lumina peers: persist only (no brain). Keeps the route honest.
         msg = _persist(
-            hist, OPERATOR_ID, recipient or "unknown", content, reply_to_id, thread_id
+            hist, OPERATOR_ID, recipient or "unknown", content, reply_to_id, thread_id,
+            content_type=content_type, rich=rich,
         )
         return JSONResponse(
-            {"ok": True, "id": msg.id, "recipient": recipient, "ts": msg.timestamp.isoformat()}
+            {
+                "ok": True,
+                "id": msg.id,
+                "recipient": recipient,
+                "ts": msg.timestamp.isoformat(),
+                "message": _msg_to_app(msg, self_id=OPERATOR_ID),
+            }
         )
 
     # 1. Persist the operator's message to Lumina (with reply/thread linkage).
-    user_msg = _persist(hist, OPERATOR_ID, LUMINA_URI, content, reply_to_id, thread_id)
+    user_msg = _persist(
+        hist, OPERATOR_ID, LUMINA_URI, content, reply_to_id, thread_id,
+        content_type=content_type, rich=rich,
+    )
 
     # 2. Build the prior-turn history for context (oldest-first role/content).
     prior = _lumina_messages(limit=40)
