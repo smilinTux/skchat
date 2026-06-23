@@ -616,6 +616,175 @@ async def api_group_remove_member(group_id: str, identity: str):
     )
 
 
+# --------------------------------------------------------------------------- #
+# Group A/V calls (Phase 3 — on-the-fly group video + screenshare)
+# --------------------------------------------------------------------------- #
+def _group_caller_uri(group) -> str:
+    """Return the operator's membership URI in *group* (the call caller).
+
+    The app runs as the local operator. The operator joins groups as
+    ``OPERATOR_ID`` (``create_group(creator_uri=OPERATOR_ID)``); if a different
+    membership form was stored we fall back to ``OPERATOR_ID`` so the membership
+    gate is evaluated against the real roster.
+    """
+    if group is not None and group.get_member(OPERATOR_ID) is not None:
+        return OPERATOR_ID
+    return OPERATOR_ID
+
+
+def _group_call_sfu_url(request: Request) -> str:
+    """The SFU wss URL appropriate for the requesting client (public-aware)."""
+    try:
+        from skchat.livekit_routes import public_aware_livekit_url
+
+        return public_aware_livekit_url(request)
+    except Exception:
+        import os as _os
+
+        return _os.getenv("SKCHAT_LIVEKIT_URL", "ws://skworld-100:7880")
+
+
+@router.post("/v1/groups/{group_id}/call/start")
+async def api_group_call_start(group_id: str, request: Request):
+    """Start (or join) a group A/V call: mint a member-scoped token + ring.
+
+    Body (all optional): ``{topic?, ring?:bool}``. ``ring`` defaults to true —
+    fans a signed CALL_INVITE out to every other member (reusing the 1:1 ring,
+    surfaced at ``GET /call/incoming``). Returns the deterministic room, the
+    caller's room-scoped token, the SFU url, and the member roster.
+
+    Refuses (403) if the caller is not a member; 404 if the group is unknown;
+    503 if LiveKit creds are not configured.
+    """
+    from skchat import daemon_proxy_groupcall as GC
+    from skchat import daemon_proxy_groups as G
+    from skchat.livekit_routes import _have_creds
+
+    group = G.load_group(group_id)
+    if group is None:
+        raise HTTPException(404, "group not found")
+    if not _have_creds():
+        raise HTTPException(503, "livekit not configured")
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    topic = (body.get("topic") or "").strip()
+    do_ring = body.get("ring", True)
+
+    caller = _group_caller_uri(group)
+    sfu_url = _group_call_sfu_url(request)
+    try:
+        ctx = GC.group_call_context(group, caller, sfu_url)
+    except PermissionError:
+        raise HTTPException(403, "not a member of this group")
+    except ImportError:
+        raise HTTPException(503, "livekit-api not installed")
+
+    rung: list[str] = []
+    if do_ring:
+        try:
+            rung = GC.ring_members(group, caller, ctx["room"], sfu_url, topic=topic)
+        except Exception:
+            logger.exception("group ring failed (call still proceeds)")
+    ctx["rung"] = rung
+    return JSONResponse(ctx)
+
+
+@router.post("/v1/groups/{group_id}/call/join")
+async def api_group_call_join(group_id: str, request: Request):
+    """Join an in-progress group call (mint a member-scoped token, no ring).
+
+    Same membership gate as ``/call/start`` — a late-joiner gets a room-scoped
+    token + the roster; the LiveKit room shows who is already present.
+    """
+    from skchat import daemon_proxy_groupcall as GC
+    from skchat import daemon_proxy_groups as G
+    from skchat.livekit_routes import _have_creds
+
+    group = G.load_group(group_id)
+    if group is None:
+        raise HTTPException(404, "group not found")
+    if not _have_creds():
+        raise HTTPException(503, "livekit not configured")
+
+    caller = _group_caller_uri(group)
+    sfu_url = _group_call_sfu_url(request)
+    try:
+        ctx = GC.group_call_context(group, caller, sfu_url)
+    except PermissionError:
+        raise HTTPException(403, "not a member of this group")
+    except ImportError:
+        raise HTTPException(503, "livekit-api not installed")
+    return JSONResponse(ctx)
+
+
+@router.get("/v1/groups/{group_id}/call/participants")
+async def api_group_call_participants(group_id: str):
+    """List participants currently connected to the group's LiveKit room.
+
+    Queries the SFU's RoomService (``ListParticipants``) for the deterministic
+    room. Returns ``{room, active, participants:[{identity, ...}]}``. Degrades
+    to an empty active-list (never 500) if the SFU/API is unreachable, so the UI
+    can still show the membership roster as "who could join".
+    """
+    from skchat import daemon_proxy_groupcall as GC
+    from skchat import daemon_proxy_groups as G
+
+    group = G.load_group(group_id)
+    if group is None:
+        raise HTTPException(404, "group not found")
+    room = GC.derive_group_room(group_id)
+    participants = await _livekit_list_participants(room)
+    return JSONResponse(
+        {
+            "room": room,
+            "active": len(participants),
+            "participants": participants,
+            "members": [G.member_to_app(m) for m in group.members],
+        }
+    )
+
+
+async def _livekit_list_participants(room: str) -> list[dict]:
+    """Best-effort SFU participant list for *room* (empty list on any failure)."""
+    import os as _os
+
+    try:
+        from livekit import api  # soft dep
+    except ImportError:
+        return []
+    url = _os.getenv("SKCHAT_LIVEKIT_URL", "ws://skworld-100:7880")
+    http_url = url.replace("ws://", "http://").replace("wss://", "https://")
+    key = _os.getenv("SKCHAT_LIVEKIT_API_KEY", "")
+    secret = _os.getenv("SKCHAT_LIVEKIT_API_SECRET", "")
+    if not (key and secret):
+        return []
+    lk = api.LiveKitAPI(http_url, key, secret)
+    try:
+        resp = await lk.room.list_participants(api.ListParticipantsRequest(room=room))
+        out = []
+        for p in getattr(resp, "participants", []) or []:
+            out.append(
+                {
+                    "identity": getattr(p, "identity", ""),
+                    "name": getattr(p, "name", ""),
+                    "state": str(getattr(p, "state", "")),
+                    "is_publisher": bool(getattr(p, "tracks", None)),
+                }
+            )
+        return out
+    except Exception as exc:
+        logger.debug("list_participants(%s) failed: %s", room, exc)
+        return []
+    finally:
+        try:
+            await lk.aclose()
+        except Exception:
+            pass
+
+
 @router.get("/v1/conversations/{peer_id}")
 async def api_conversation_history(peer_id: str):
     """One thread, oldest-first. Lumina's thread, GROUP threads, or empty.
