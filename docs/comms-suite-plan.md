@@ -243,3 +243,27 @@ This is the plan we execute from — Phase 0+1 first (module spine proven on the
 4. **Public-exposure gate = YES** — no public/guest room exposure until S5 capauth verification of operator assertions (`/spaces/create` currently trusts the tailnet).
 5. **Start = Phase 0 (module spine) + Phase 1 (hardened 1:1 chat).**
 - Defaults taken: CRDT=yrs (Loro watch), bots register CLI-only, Tier-B widgets = reserve manifest fields (build first-party only for now).
+
+## ADDENDA (2026-06-23)
+
+### Office editing — Collabora vs CRDT (the two-track answer)
+Two different needs, two different tools:
+- **Collabora Online (CODE)** — self-hosted LibreOffice-in-the-browser, real-time **human** collaborative editing of **.docx/.xlsx/.pptx/.odf** via the **WOPI** protocol (this is exactly what "Nextcloud Office"/richdocuments wraps). Best-of-breed for *real office documents* (formatted docs, spreadsheets, presentations) + viewing the office files already in skos Files. Heavy (a LibreOffice server, Docker) but self-hostable/sovereign.
+  - **Weakness:** it is a closed LibreOffice editing canvas — there is **no clean API for an AI agent to co-edit inside it** (you'd have to drive UNO/macros, clunky). So Collabora is *not* the surface for "Lumina drafts side-by-side with a live cursor."
+- **Yjs/yrs CRDT editor** (Phase 5) — our custom rich-text/block editor where **Lumina is a first-class CRDT peer** (live cursor, suggestion-mode). Best for agent-in-the-loop drafting; *not* office-format-native.
+
+**Decision (recommended): run BOTH as separate modules.**
+- `office` module = **Collabora/CODE via WOPI** → view + human-collab-edit .docx/.xlsx/.pptx in skos Files and in rooms. (Sovereign Docker deploy; gated by a new `office` capability/service.)
+- `docs` module (Phase 5) = **Yjs/CRDT** → Lumina-collaborative drafting.
+- **Bridge:** CRDT doc ⇄ office format via **LibreOffice headless** (`soffice --convert-to docx`) for import/export, so an agent-drafted doc can become a real .docx and a .docx can be opened for human collab in Collabora. Lumina drafts in CRDT → export to Collabora for polish, or vice-versa.
+- Collabora is a **Phase-5+ / Files-module** concern — does NOT block Phase 0/1.
+
+### ZIP / archive browsing (skos Files) — stream-don't-extract
+Goal (Chef): browse *into* a zip on the fly, view/edit a single file inside a multi-GB archive without extracting the whole thing.
+**Best-practice design (zip central directory is at the END → cheap at any size):**
+- `zip_list(path)` — read only the central directory → entry list `{name, size, compressed, is_dir, mtime}`. O(1) in archive size; works on a 5 GB zip instantly.
+- **Browse-as-virtual-folder:** in the Flutter browser a `.zip` is a container — tap to descend into it (a `View` over zip entries), entries render like files.
+- `zip_read(path, entry)` / stream `GET /media/file?path=...&zip_entry=...` — seek to that entry's local header, decompress **only that one entry**. Viewing an image/video inside the zip uses the existing media viewer. **Confirm before opening an entry > 50 MB** (memory) — exactly Chef's ask.
+- **Write-back without full re-zip:** edit one entry → **append** the new (compressed) entry at the end + rewrite only the **central directory** (small, at the end) so it points to the new copy; old entry becomes orphaned dead-space reclaimable on a later "repack". O(edited-entry) not O(archive). Confirmed action; warns + offers repack for big archives.
+- All paths (archive + entry) validated through `_resolve_checked`; write-back is scope=write + audited. Same model extends to .tar (index-on-open) later.
+- Slots in as a **Files-module** capability (a `MediaKind.archive` + zip `View` + the tools above).
