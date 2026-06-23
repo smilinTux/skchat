@@ -774,13 +774,34 @@ def register_conf_routes(
     async def flutter_app(rest: str) -> FileResponse:
         """Serve the Flutter web app (skchat-app build)."""
         base = Path(__file__).resolve().parent.parent / "static" / "app"
+
+        def _resp(p: Path) -> FileResponse:
+            # index.html + the JS entrypoints change on every redeploy. Without
+            # this, browsers (esp. iOS Safari) HTTP-cache main.dart.js and keep
+            # serving a STALE build after a deploy. Force revalidation on the
+            # files that change; hashed assets (canvaskit/fonts) cache normally.
+            volatile = {
+                "index.html",
+                "main.dart.js",
+                "flutter_bootstrap.js",
+                "flutter.js",
+                "flutter_service_worker.js",
+                "version.json",
+            }
+            headers = (
+                {"Cache-Control": "no-cache, must-revalidate"}
+                if p.name in volatile
+                else None
+            )
+            return FileResponse(p, headers=headers)
+
         if not rest:
-            return FileResponse(base / "index.html")
+            return _resp(base / "index.html")
         path = base / rest
         if path.exists() and path.is_file():
-            return FileResponse(path)
+            return _resp(path)
         # SPA fallback: return index.html for any unrecognized path
-        return FileResponse(base / "index.html")
+        return _resp(base / "index.html")
 
     @app.get("/conf/{room}", response_class=HTMLResponse)
     async def conf_page(room: str) -> HTMLResponse:
