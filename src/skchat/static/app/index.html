@@ -20,6 +20,18 @@
   <meta content="IE=Edge" http-equiv="X-UA-Compatible">
   <meta name="description" content="A new Flutter project.">
 
+  <!--
+    Viewport: tell mobile browsers to RESIZE the layout+visual viewport when the
+    soft keyboard (an "interactive widget") appears, instead of scrolling the
+    Flutter canvas to reveal the focused input. Without this, mobile Chrome/Safari
+    scroll the whole canvas up — the conversation goes blank and "shoots up" when
+    the composer is tapped. `interactive-widget=resizes-content` is honored by
+    Chrome 108+/Firefox 132+; Safari ignores it (still no WebKit support as of
+    2026), so the conversation list is ALSO bottom-anchored (reverse:true) in
+    Dart to keep the latest messages pinned above the keyboard on iOS.
+  -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content">
+
   <!-- iOS meta tags & icons -->
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black">
