@@ -223,6 +223,79 @@ def _msg_to_app(m, *, self_id: str) -> dict:
     }
 
 
+def _group_msg_to_app(m, *, group_id: str) -> dict:
+    """Map a stored group ``ChatMessage`` to the app's message JSON.
+
+    Same shared contract as ``_msg_to_app`` but the ``conversation_id`` is the
+    group id and directionality is "outbound iff the operator authored it".
+    ``sender_name`` is the member's short handle (so the bubble shows who spoke);
+    ``is_agent`` flags agent senders so the UI renders their soul colour.
+    """
+    from skchat.models import ContentType
+
+    sender = getattr(m, "sender", "") or ""
+    ts_iso = _iso(getattr(m, "timestamp", None)) or _now_iso()
+    body = getattr(m, "content", "") or ""
+    outbound = sender in (OPERATOR_ID, "chef", "chef@skworld.io")
+    short = sender.split(":")[-1].split("@")[0]
+    is_agent = _participant_is_agent(sender)
+
+    reactions_map = None
+    if hasattr(m, "reactions_map"):
+        reactions_map = m.reactions_map() or None
+    receipts = None
+    rcpt = getattr(m, "receipts", None)
+    if rcpt is not None:
+        receipts = {"delivered": list(rcpt.delivered), "read": list(rcpt.read)}
+    edit_history = None
+    eh = getattr(m, "edit_history", None)
+    if eh:
+        edit_history = [{"body": e.body, "ts": _iso(e.ts)} for e in eh]
+
+    return {
+        "id": getattr(m, "id", ""),
+        "conversation_id": group_id,
+        "sender": sender,
+        "content_type": ContentType.to_wire(getattr(m, "content_type", "markdown")),
+        "body": body,
+        "rich": getattr(m, "rich", None),
+        "ts": ts_iso,
+        "reply_to_id": getattr(m, "reply_to_id", None),
+        "thread_id": getattr(m, "thread_id", None) or group_id,
+        "edited_at": _iso(getattr(m, "edited_at", None)),
+        "edit_history": edit_history,
+        "reactions": reactions_map,
+        "receipts": receipts,
+        # legacy fields
+        "peer_id": group_id,
+        "content": body,
+        "timestamp": ts_iso,
+        "is_outbound": outbound,
+        "delivery_status": "sent",
+        "is_encrypted": False,
+        "is_agent": is_agent,
+        "sender_name": "You" if outbound else (short.title() or short),
+    }
+
+
+def _participant_is_agent(uri: str) -> bool:
+    short = (uri or "").split(":")[-1].split("@")[0].lower()
+    return short in {
+        "lumina", "jarvis", "opus", "ava", "ara", "artisan", "herald",
+        "sentinel", "architect", "scholar", "steward", "coder",
+    }
+
+
+def _group_messages(group_id: str, limit: int = 500) -> list[dict]:
+    """Load a group's thread (oldest-first) in the app message contract."""
+    from skchat import daemon_proxy_groups as G
+
+    hist = _get_history()
+    rows = G.group_thread_messages(hist, group_id, limit=limit)
+    rows.sort(key=lambda x: getattr(x, "timestamp", _now_iso()))
+    return [_group_msg_to_app(m, group_id=group_id) for m in rows]
+
+
 def _lumina_messages(limit: int = 200) -> list[dict]:
     """Load the operator↔Lumina thread, oldest-first, in app message shape."""
     hist = _get_history()
@@ -359,13 +432,31 @@ async def api_peers():
 
 @router.get("/v1/conversations")
 async def api_conversations():
-    """Conversation list. Lumina pinned first, with her live thread preview."""
+    """Conversation list. Lumina pinned first, then peers, then GROUPS.
+
+    Groups carry ``is_group:true`` + ``member_count`` so the Flutter
+    ``GroupsNotifier`` (filters on ``is_group``) and ``chatsProvider`` (unified
+    list) both pick them up from this one endpoint.
+    """
     try:
-        convos = [_lumina_conversation()] + _other_peers()
+        convos = [_lumina_conversation()] + _other_peers() + _group_conversations()
     except Exception:
         logger.exception("conversations list failed; returning Lumina only")
         convos = [_lumina_conversation()]
     return JSONResponse(convos)
+
+
+def _group_conversations() -> list[dict]:
+    """All persisted groups in the app conversation shape (``is_group:true``)."""
+    from skchat import daemon_proxy_groups as G
+
+    out: list[dict] = []
+    try:
+        for grp in G.list_groups():
+            out.append(G.group_to_conversation(grp))
+    except Exception:
+        logger.exception("group conversation list failed")
+    return out
 
 
 @router.get("/v1/inbox")
@@ -380,17 +471,173 @@ async def api_inbox():
 
 @router.get("/v1/groups")
 async def api_groups():
-    return JSONResponse([])
+    """List all groups (app conversation shape, ``is_group:true``)."""
+    return JSONResponse(_group_conversations())
+
+
+@router.post("/v1/groups")
+async def api_create_group(request: Request):
+    """Create a group. Body: ``{name, members?[], description?, acl?}``.
+
+    ``members`` is a list of ``{identity}`` (the Flutter client shape) or bare
+    handle strings. The creator (operator) is added as admin automatically.
+    Returns the ``CreateGroupResult`` contract.
+    """
+    from skchat import daemon_proxy_groups as G
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    name = (body.get("name") or "").strip()
+    if not name:
+        raise HTTPException(400, "name is required")
+    description = body.get("description") or ""
+    acl = body.get("acl") or None
+    raw_members = body.get("members") or []
+    members: list[str] = []
+    for m in raw_members:
+        if isinstance(m, dict):
+            ident = m.get("identity") or m.get("identity_uri") or ""
+        else:
+            ident = str(m)
+        if ident:
+            members.append(ident)
+
+    group = G.create_group(
+        name=name,
+        creator_uri=OPERATOR_ID,
+        members=members,
+        description=description,
+        acl=acl,
+    )
+    return JSONResponse(G.create_result(group))
+
+
+@router.put("/v1/groups/{group_id}")
+async def api_update_group(group_id: str, request: Request):
+    """Update group name/description/acl. Body: ``{name?, description?, acl?}``."""
+    from skchat import daemon_proxy_groups as G
+
+    group = G.load_group(group_id)
+    if group is None:
+        raise HTTPException(404, "group not found")
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    G.update_group(
+        group,
+        name=body.get("name"),
+        description=body.get("description"),
+        acl=body.get("acl"),
+    )
+    return JSONResponse({"ok": True, "group": G.group_to_conversation(group)})
+
+
+@router.get("/v1/groups/{group_id}/members")
+async def api_group_members(group_id: str):
+    """List a group's members in the app member shape."""
+    from skchat import daemon_proxy_groups as G
+
+    group = G.load_group(group_id)
+    if group is None:
+        raise HTTPException(404, "group not found")
+    return JSONResponse([G.member_to_app(m) for m in group.members])
+
+
+@router.post("/v1/groups/{group_id}/members")
+async def api_group_add_member(group_id: str, request: Request):
+    """Add (or re-role) a member. Body: ``{identity, role?}``.
+
+    If the id refers to a 1:1 conversation that is not yet a group, this
+    PROMOTES it to a group of the same id (carrying the existing history).
+    """
+    from skchat import daemon_proxy_groups as G
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    identity = (body.get("identity") or body.get("identity_uri") or "").strip()
+    role = (body.get("role") or "member").strip()
+    if not identity:
+        raise HTTPException(400, "identity is required")
+
+    group = G.load_group(group_id)
+    if group is None:
+        # Promote a 1:1 (or create a fresh group keyed by this id).
+        hist = _get_history()
+        group = G.promote_one_to_one(
+            hist, peer_id=group_id, new_member=identity, operator_uri=OPERATOR_ID
+        )
+        return JSONResponse(
+            {"ok": True, "promoted": True, "group": G.group_to_conversation(group),
+             "members": [G.member_to_app(m) for m in group.members]}
+        )
+
+    if not G.can_add_members(group, OPERATOR_ID):
+        raise HTTPException(403, "not allowed to add members")
+    added = G.add_member(group, identity, role=role)
+    return JSONResponse(
+        {"ok": True, "added": added,
+         "members": [G.member_to_app(m) for m in group.members]}
+    )
+
+
+@router.delete("/v1/groups/{group_id}/members/self")
+async def api_group_leave(group_id: str):
+    """Leave a group (remove the operator). Rotates the group key."""
+    from skchat import daemon_proxy_groups as G
+
+    group = G.load_group(group_id)
+    if group is None:
+        raise HTTPException(404, "group not found")
+    G.remove_member(group, OPERATOR_ID)
+    return JSONResponse({"ok": True, "left": group_id})
+
+
+@router.delete("/v1/groups/{group_id}/members/{identity:path}")
+async def api_group_remove_member(group_id: str, identity: str):
+    """Remove a member from a group. Rotates the group key (forward secrecy)."""
+    from skchat import daemon_proxy_groups as G
+
+    group = G.load_group(group_id)
+    if group is None:
+        raise HTTPException(404, "group not found")
+    if not G.can_add_members(group, OPERATOR_ID):
+        raise HTTPException(403, "not allowed to remove members")
+    removed = G.remove_member(group, identity)
+    if not removed:
+        raise HTTPException(404, "member not found")
+    return JSONResponse(
+        {"ok": True, "removed": identity,
+         "members": [G.member_to_app(m) for m in group.members]}
+    )
 
 
 @router.get("/v1/conversations/{peer_id}")
 async def api_conversation_history(peer_id: str):
-    """One thread, oldest-first. Lumina's thread is real; others are empty."""
+    """One thread, oldest-first. Lumina's thread, GROUP threads, or empty.
+
+    A group id resolves to its fanned-out group thread (same message contract
+    as a 1:1) so opening a group reuses the standard conversation view.
+    """
     if _is_lumina(peer_id):
         try:
             return JSONResponse(_lumina_messages(limit=500))
         except Exception:
             logger.exception("conversation history load failed")
+        return JSONResponse([])
+
+    # Group thread?
+    try:
+        from skchat import daemon_proxy_groups as G
+
+        if G.load_group(peer_id) is not None:
+            return JSONResponse(_group_messages(peer_id, limit=500))
+    except Exception:
+        logger.exception("group history load failed for %s", peer_id)
     return JSONResponse([])
 
 
@@ -411,10 +658,44 @@ async def api_send(request: Request):
     content = (body.get("message") or body.get("content") or "").strip()
     reply_to_id = body.get("reply_to_id") or body.get("reply_to") or None
     thread_id = body.get("thread_id") or None
+    group_id = (body.get("group_id") or "").strip()
     if not content:
         raise HTTPException(400, "empty message")
 
     hist = _get_history()
+
+    # Group send: fan out to members + persist on the group thread.
+    target_group = group_id or recipient
+    if target_group:
+        try:
+            from skchat import daemon_proxy_groups as G
+
+            group = G.load_group(target_group)
+        except Exception:
+            group = None
+        if group is not None:
+            if not G.can_post(group, OPERATOR_ID):
+                raise HTTPException(403, "this group is read-only (admins only)")
+            msg = G.fan_out_send(
+                group, hist, OPERATOR_ID, content,
+                reply_to_id=reply_to_id, thread_id=group.id,
+            )
+            try:
+                from skchat import webui as _webui
+
+                await _webui._ws_broadcast({"type": "new"})
+            except Exception:
+                logger.debug("ws broadcast unavailable", exc_info=True)
+            return JSONResponse(
+                {
+                    "ok": True,
+                    "id": msg.id,
+                    "recipient": group.id,
+                    "group_id": group.id,
+                    "ts": msg.timestamp.isoformat(),
+                    "message": _group_msg_to_app(msg, group_id=group.id),
+                }
+            )
 
     if not _is_lumina(recipient):
         # Non-Lumina peers: persist only (no brain). Keeps the route honest.
