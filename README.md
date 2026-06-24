@@ -160,6 +160,46 @@ flowchart TD
 | **[Architecture](docs/ARCHITECTURE.md)** | inbound/outbound message lifecycle, the @mention advocacy loop, group key state, voice pipeline, source-map, where-it-lives (mermaids) |
 | **[MCP reference](docs/mcp-reference.md)** | every MCP tool, its arguments, and usage from an agent host |
 | **[CLAUDE.md](CLAUDE.md)** | running the daemon, systemd units, identity, troubleshooting |
+| **[Crypto architecture](docs/crypto-architecture.md)** | quantum-resistance: honest claim status, current/future/gaps mermaids, SK-wide identity/key flow, per-surface remediation (S5/S6/S11 → Q2/Q3/Q4) |
+| **[Quantum-resistance master plan](docs/quantum-resistance-architecture.md)** | ecosystem source of truth: threat model, 11 surfaces, phased migration, epic `PQC-MIGRATION` |
+
+---
+
+## Security & Quantum-Resistance (requirement)
+
+skchat is a **confidentiality** surface, so it carries a hard quantum-resistance
+requirement. Honest current status + target:
+
+- **Already quantum-resistant (🟢):** the group-message cipher (AES-256-GCM,
+  `group.py:GroupMessageEncryptor`) and the at-rest store (HKDF-SHA256 + AES-256-GCM,
+  `encrypted_store.py`) are symmetric/hash — Grover-only, ≥128-bit worst case.
+  **Do not touch them.** Only their *key-wrapping / key-distribution* is the problem.
+- **Classical today (🔴, highest leverage):** **group-key distribution**
+  (`group.py:652 GroupKeyDistributor`) PGP-wraps a **static** `os.urandom(32)` group
+  key per member — break one member's classical key and you recover the AES group key
+  and decrypt **all** group history (Harvest-Now-Decrypt-Later). The 1:1 DM wrap
+  (`crypto.py`) is HNDL-vulnerable too; the at-rest store also has a *classical*
+  low-entropy bug (DEK derived from the PGP **fingerprint**), fixable regardless of
+  quantum.
+- **Target (going-forward bar):** hybrid post-quantum — **X25519 + ML-KEM-768 KEM**
+  (FIPS 203) with **per-epoch ratcheted** group keys (forward secrecy +
+  post-compromise security the static key has none of); combiner
+  `K = HKDF-SHA256(X25519_ss ‖ MLKEM768_ss)` (concatenate-then-KDF, never XOR/pure-PQ);
+  **ML-DSA-65 + Ed25519 hybrid signatures** (FIPS 204) later. HNDL-first, crypto-agile
+  (`kem_suite`/`epoch` ids + suite registry).
+- **Browser/Flutter gap:** WebCrypto has **no PQC** — native clients (Flutter/desktop)
+  get full hybrid via liboqs FFI; the web PWA is a documented reduced-assurance leg
+  (see `docs/crypto-architecture.md` §7). **No claim may imply the browser is E2E PQ.**
+
+**Honest-claim rule:** every claim cites surface + FIPS # + hybrid-vs-classical,
+backed by a runtime self-report. Never say "quantum-proof," unscoped "end-to-end
+quantum-resistant," or "CNSA-2.0" (we use the **-768 hybrid tier**). AES-256 is **not**
+"broken" by quantum.
+
+Diagrams (current / future / gaps), the SK-wide identity/key flow, and per-surface
+remediation: **[docs/crypto-architecture.md](docs/crypto-architecture.md)**.
+Master plan: **[docs/quantum-resistance-architecture.md](docs/quantum-resistance-architecture.md)**;
+epic `PQC-MIGRATION` (coord `e1d6ba2a`).
 
 ---
 

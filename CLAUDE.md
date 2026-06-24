@@ -421,6 +421,23 @@ The qwen3.6-27b-abliterated (Q3_K) backend on the .100 5060 Ti was retuned from
 saved). Now ~925 MB VRAM headroom, ~2.4 s gen, uncensored. Vision was traded for
 context — the bridge is text-only.
 
+## Security & Quantum-Resistance (requirement)
+skchat is a **confidentiality** surface and carries a hard quantum-resistance
+requirement. Honest status: AES-256-GCM message/at-rest ciphers are **already
+quantum-resistant** (symmetric, Grover-only — leave them); the classical problem is
+**key distribution** — `group.py:GroupKeyDistributor` PGP-wraps a *static*
+`os.urandom(32)` group key per member (HNDL: break one classical key → decrypt all
+group history), the 1:1 DM wrap (`crypto.py`), and the at-rest store's
+fingerprint-derived DEK (`encrypted_store.py`, also a classical low-entropy bug).
+**Target:** hybrid **X25519 + ML-KEM-768** KEM (FIPS 203) with per-epoch ratcheted
+group keys; combiner `HKDF(X25519_ss ‖ MLKEM768_ss)`; ML-DSA-65+Ed25519 sigs later;
+crypto-agile (`kem_suite`/`epoch` ids). **Browser/Flutter:** WebCrypto has no PQC —
+native gets full hybrid via liboqs FFI, the PWA is a documented reduced-assurance leg.
+**Claim rule:** cite surface + FIPS # + hybrid-vs-classical; never "quantum-proof,"
+unscoped "E2E quantum-resistant," or "CNSA-2.0." AES-256 is **not** quantum-broken.
+Full detail + diagrams: **`docs/crypto-architecture.md`**; master plan
+**`docs/quantum-resistance-architecture.md`**; epic `PQC-MIGRATION` (coord `e1d6ba2a`).
+
 ## Code Style
 - Line length: 99 chars (black + ruff)
 - Target: Python 3.10+
