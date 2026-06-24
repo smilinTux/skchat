@@ -1824,10 +1824,20 @@ async def _handle_create_group(args: dict) -> list[TextContent]:
     members_raw: list[dict] = args.get("members", [])
     creator = _get_identity()
 
+    # PQC cut-over: hybrid is the DEFAULT for new groups. Seed the creator's own
+    # hybrid prekey so they can read epoch 1.
+    try:
+        from . import pq_prekeys as _PQ
+
+        _creator_hybrid = _PQ.hybrid_pub_hex_for(creator)
+    except Exception:
+        _creator_hybrid = ""
+
     group = GroupChat.create(
         name=name,
         creator_uri=creator,
         description=description,
+        creator_hybrid_kem_public_hex=_creator_hybrid,
     )
 
     # Add members
@@ -1858,14 +1868,26 @@ async def _handle_create_group(args: dict) -> list[TextContent]:
         except ValueError:
             pt = ParticipantType.AGENT
 
+        # PQC: attach the member's hybrid prekey if we know it (else classical).
+        try:
+            from . import pq_prekeys as _PQ
+
+            _member_hybrid = _PQ.hybrid_pub_hex_for(identity)
+        except Exception:
+            _member_hybrid = ""
+
         member = group.add_member(
             identity_uri=identity,
             role=role,
             participant_type=pt,
             display_name=m.get("display_name", ""),
+            hybrid_kem_public_hex=_member_hybrid,
         )
         if member:
             added_members.append(identity)
+
+    # PQC: seed epoch 1 now that all members (with keys) are attached.
+    group.ensure_epoch()
 
     # Register and persist
     _get_groups()[group.id] = group
@@ -3173,10 +3195,19 @@ async def _handle_skchat_group_create(args: dict) -> list[TextContent]:
     description: str = args.get("description", "")
     creator = _get_identity()
 
+    # PQC cut-over: hybrid by DEFAULT; seed the creator's hybrid prekey.
+    try:
+        from . import pq_prekeys as _PQ
+
+        _creator_hybrid = _PQ.hybrid_pub_hex_for(creator)
+    except Exception:
+        _creator_hybrid = ""
+
     group = GroupChat.create(
         name=name,
         creator_uri=creator,
         description=description,
+        creator_hybrid_kem_public_hex=_creator_hybrid,
     )
 
     added: list[str] = []
@@ -3190,10 +3221,19 @@ async def _handle_skchat_group_create(args: dict) -> list[TextContent]:
                 identity = resolve_peer_name(identity)
             except Exception as exc:
                 logger.warning("resolve_peer_name(%r) failed for group member: %s", identity, exc)
-        member = group.add_member(identity_uri=identity)
+        try:
+            from . import pq_prekeys as _PQ
+
+            _member_hybrid = _PQ.hybrid_pub_hex_for(identity)
+        except Exception:
+            _member_hybrid = ""
+        member = group.add_member(
+            identity_uri=identity, hybrid_kem_public_hex=_member_hybrid
+        )
         if member:
             added.append(identity)
 
+    group.ensure_epoch()
     _get_groups()[group.id] = group
     _save_group(group)
 

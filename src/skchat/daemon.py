@@ -260,6 +260,7 @@ class ChatDaemon:
 
         def _init_subsystems_bg() -> None:
             nonlocal reaper, presence, queue, bridge, watchdog, engine, plugin_registry
+            self._init_pqc_prekey(identity)
             reaper = self._init_reaper(history)
             presence = self._init_presence(identity)
             queue = self._init_queue(skcomms, identity)
@@ -495,6 +496,28 @@ class ChatDaemon:
                 except Exception as exc:
                     logger.warning("Failed to send offline presence on shutdown: %s", exc)
             self._log(f"Daemon stopped. Received {self.total_received} message(s) total.")
+
+    def _init_pqc_prekey(self, identity: str) -> None:
+        """Publish this resident agent's hybrid PQ prekey on startup (PQC cut-over).
+
+        Generates (once) and exposes the agent's hybrid X25519+ML-KEM-768 prekey
+        so DMs addressed to it negotiate hybrid by default. Agent-aware: keyed by
+        ``SKAGENT`` (lumina keeps her legacy filenames). If liboqs is unavailable
+        the agent simply publishes a classical prekey and DMs to it stay
+        classical — an honest, non-fatal fallback (never raised).
+        """
+        try:
+            from . import pq_prekeys as PQ
+
+            agent = identity.replace("capauth:", "").split("@")[0] if identity else None
+            bundle = PQ.publish_self_prekey(agent)
+            suite = bundle.get("suite", "?")
+            self._log(
+                f"PQC prekey published for {agent or 'self'}: suite={suite}",
+                "info",
+            )
+        except Exception as exc:  # pragma: no cover - never fatal
+            self._log(f"PQC prekey publish skipped: {exc}", "warning")
 
     def _init_reaper(self, history: object) -> object:
         """Initialize the ephemeral message reaper.

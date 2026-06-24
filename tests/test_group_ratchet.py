@@ -366,7 +366,11 @@ def test_self_report_hybrid_group_reports_hybrid_pq():
 
 
 def test_self_report_classical_group_reports_classical():
-    g = GroupChat.create(name="Legacy", creator_uri="capauth:alice@skworld.io")
+    g = GroupChat.create(
+        name="Legacy",
+        creator_uri="capauth:alice@skworld.io",
+        kem_suite="rsa-pgp-wrap-v1",
+    )
     rpt = g.crypto_self_report()
     assert rpt["kem_suite"] == "rsa-pgp-wrap-v1"
     assert rpt["status"] == "classical"
@@ -379,7 +383,11 @@ def test_self_report_classical_group_reports_classical():
 
 
 def test_classical_group_unchanged_no_ratchet_fields_used():
-    g = GroupChat.create(name="Classical", creator_uri="capauth:alice@skworld.io")
+    g = GroupChat.create(
+        name="Classical",
+        creator_uri="capauth:alice@skworld.io",
+        kem_suite="rsa-pgp-wrap-v1",
+    )
     assert not g.is_hybrid
     assert g.epoch == 0
     assert g.epoch_secret_hex == ""
@@ -390,7 +398,11 @@ def test_classical_group_unchanged_no_ratchet_fields_used():
 
 
 def test_classical_rotate_key_behaviour_preserved():
-    g = GroupChat.create(name="Classical", creator_uri="capauth:alice@skworld.io")
+    g = GroupChat.create(
+        name="Classical",
+        creator_uri="capauth:alice@skworld.io",
+        kem_suite="rsa-pgp-wrap-v1",
+    )
     old_key = g.group_key
     old_v = g.key_version
     g.rotate_key(reason="manual")
