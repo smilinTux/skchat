@@ -1,16 +1,35 @@
 """Encrypted message storage — at-rest encryption for chat history.
 
 Wraps ChatHistory to encrypt message content before storage and decrypt
-on retrieval. Uses AES-256-GCM keyed from the user's CapAuth identity.
+on retrieval. Uses AES-256-GCM keyed from a high-entropy random
+data-encryption key (DEK).
 
-The storage key is derived from the user's PGP fingerprint using HKDF,
-so only the identity holder can read stored messages. The key never
-leaves the local machine.
+Key management — the DEK and its wrap (Phase 1 / Q4)
+----------------------------------------------------
+The at-rest **bulk cipher** is AES-256-GCM (symmetric, Grover-only,
+quantum-acceptable — never migrated). The DEK is a **random 32-byte key**
+(``os.urandom(32)``) — high-entropy, generated once and persisted **wrapped**.
+
+> **Fixed classical bug (Q4):** earlier versions derived the DEK from the PGP
+> **fingerprint** via HKDF. A fingerprint is low-entropy and often *public*, so
+> anyone who knew it could reconstruct the key — the at-rest encryption was
+> effectively keyed by a public value. The DEK is now random key material and is
+> sealed with a **hybrid post-quantum key-wrap** (X25519 + ML-KEM-768, see
+> :mod:`skchat.atrest_wrap`). The only secret is the recipient **hybrid private
+> key**, held locally 0600. A harvested encrypted store is not retroactively
+> decryptable even after a CRQC (HNDL-resistant).
+
+Back-compat / migration
+-----------------------
+Stores written by the old fingerprint-keyed scheme remain **readable**: pass the
+``fingerprint`` and old reads transparently fall back to the legacy key. Use
+:meth:`EncryptedChatHistory.migrate_store` to re-wrap an old store under the new
+hybrid scheme (decrypt-old → re-encrypt-new) with **no plaintext change**.
 
 Usage:
-    store = EncryptedChatHistory.from_identity()
-    store.store_message(msg)  # content encrypted at rest
-    messages = store.search_messages("hello")  # decrypted on read
+    store = EncryptedChatHistory.from_identity()   # hybrid-wrapped DEK
+    store.store_message(msg)                        # content encrypted at rest
+    messages = store.search_messages("hello")       # decrypted on read
 """
 
 from __future__ import annotations
@@ -19,6 +38,7 @@ import base64
 import hashlib
 import logging
 import os
+from pathlib import Path
 from typing import Optional
 
 from .history import ChatHistory
@@ -28,11 +48,15 @@ logger = logging.getLogger("skchat.encrypted_store")
 
 
 class StorageKeyDeriver:
-    """Derives an AES-256 storage key from a CapAuth identity.
+    """Legacy DEK derivation — **kept for back-compat reads / migration only**.
 
-    Uses HKDF (HMAC-based Key Derivation Function) with the PGP
-    fingerprint as input keying material and a fixed info string.
-    The derived key is deterministic for a given fingerprint.
+    .. deprecated::
+        Deriving the storage key from a PGP fingerprint is a classical
+        low-entropy bug (a fingerprint is public-ish). New stores use a random
+        DEK sealed with a hybrid KEM (see :class:`DekManager` /
+        :mod:`skchat.atrest_wrap`). This class survives ONLY so that stores
+        written by the old scheme can still be decrypted and migrated. Do not
+        use it to key new data.
     """
 
     INFO = b"skchat-encrypted-storage-v1"
@@ -44,7 +68,7 @@ class StorageKeyDeriver:
         fingerprint: str,
         salt: Optional[bytes] = None,
     ) -> bytes:
-        """Derive a 32-byte AES key from a PGP fingerprint.
+        """Derive a 32-byte AES key from a PGP fingerprint (LEGACY).
 
         Args:
             fingerprint: PGP key fingerprint (hex string).
@@ -78,8 +102,6 @@ class StorageKeyDeriver:
         Returns:
             bytes: 32-byte salt.
         """
-        from pathlib import Path
-
         salt_path = Path.home() / cls.SALT_FILE
         if salt_path.exists():
             return salt_path.read_bytes()
@@ -88,6 +110,99 @@ class StorageKeyDeriver:
         salt_path.parent.mkdir(parents=True, exist_ok=True)
         salt_path.write_bytes(salt)
         return salt
+
+
+class DekManager:
+    """Load-or-create the random DEK + its hybrid (X25519+ML-KEM-768) wrap.
+
+    Holds two on-disk artifacts under ``base_dir`` (default ``~/.skchat``):
+
+    * ``atrest_recipient.key`` — the recipient **hybrid private key** (2432 B,
+      mode 0600). This is the ONLY secret; lose it and the store is unreadable,
+      leak it and the store is exposed. Back it up under its own wrap.
+    * ``atrest_dek.wrap`` — the DEK sealed to that recipient's public key by
+      :func:`skchat.atrest_wrap.wrap_dek` (suite-tagged, versioned).
+
+    On first use both are created (fresh hybrid keypair + fresh random DEK,
+    immediately wrapped). Thereafter the DEK is recovered by unwrapping with the
+    private key. The cleartext DEK never touches disk.
+    """
+
+    RECIPIENT_KEY_FILE = "atrest_recipient.key"
+    DEK_WRAP_FILE = "atrest_dek.wrap"
+
+    def __init__(self, base_dir: Optional[Path] = None) -> None:
+        self.base_dir = Path(base_dir) if base_dir else (Path.home() / ".skchat")
+        self.recipient_key_path = self.base_dir / self.RECIPIENT_KEY_FILE
+        self.dek_wrap_path = self.base_dir / self.DEK_WRAP_FILE
+
+    # -- recipient hybrid keypair -------------------------------------------
+
+    def load_or_create_recipient(self) -> bytes:
+        """Return the recipient hybrid **private** key, creating it if absent."""
+        from . import atrest_wrap
+
+        if self.recipient_key_path.exists():
+            priv = self.recipient_key_path.read_bytes()
+            return priv
+
+        kp = atrest_wrap.new_recipient_keypair()
+        self.base_dir.mkdir(parents=True, exist_ok=True)
+        # Persist private key 0600; public key alongside for re-wrap convenience.
+        self.recipient_key_path.write_bytes(kp.private_key)
+        os.chmod(self.recipient_key_path, 0o600)
+        (self.base_dir / "atrest_recipient.pub").write_bytes(kp.public_key)
+        return kp.private_key
+
+    def recipient_public_from_private(self, private_key: bytes) -> bytes:
+        """Recover the 1216-byte hybrid public key from the private key.
+
+        The X25519 leg's public key is derived from its seed; the ML-KEM public
+        key is read from the sidecar ``atrest_recipient.pub`` if present (ML-KEM
+        secret keys do not cheaply yield their public half), else regenerated is
+        impossible — so we require the sidecar for re-wrap. For the common path
+        (wrap at creation time) the public key is taken directly from the freshly
+        generated keypair, so this is only needed for re-wrap of an existing key.
+        """
+        pub_path = self.base_dir / "atrest_recipient.pub"
+        if pub_path.exists():
+            return pub_path.read_bytes()
+        raise FileNotFoundError(
+            "recipient public key sidecar (atrest_recipient.pub) missing; "
+            "cannot re-wrap without it"
+        )
+
+    # -- DEK ----------------------------------------------------------------
+
+    def load_or_create_dek(self) -> bytes:
+        """Return the cleartext DEK, creating+wrapping a fresh one if absent."""
+        from . import atrest_wrap
+
+        priv = self.load_or_create_recipient()
+
+        if self.dek_wrap_path.exists():
+            blob = self.dek_wrap_path.read_bytes()
+            return atrest_wrap.unwrap_dek(blob, priv)
+
+        # Fresh random DEK (high-entropy — never fingerprint-derived).
+        dek = atrest_wrap.new_dek()
+        pub = (self.base_dir / "atrest_recipient.pub").read_bytes()
+        blob = atrest_wrap.wrap_dek(dek, pub)
+        self.base_dir.mkdir(parents=True, exist_ok=True)
+        self.dek_wrap_path.write_bytes(blob)
+        os.chmod(self.dek_wrap_path, 0o600)
+        return dek
+
+    def wrap_suite(self) -> Optional[str]:
+        """Suite id of the persisted DEK wrap (for the self-report), or None."""
+        from . import atrest_wrap
+
+        if not self.dek_wrap_path.exists():
+            return None
+        try:
+            return atrest_wrap.describe_blob(self.dek_wrap_path.read_bytes())["suite_id"]
+        except Exception:
+            return None
 
 
 class ContentEncryptor:
@@ -162,38 +277,71 @@ class EncryptedChatHistory:
 
     Args:
         history: Underlying ChatHistory instance.
-        storage_key: 32-byte AES-256 key for at-rest encryption.
+        storage_key: 32-byte AES-256 DEK for at-rest encryption.
+        legacy_key: Optional legacy (fingerprint-derived) key. When present,
+            content that fails to decrypt under ``storage_key`` is retried under
+            ``legacy_key`` — this is what keeps old-format stores readable until
+            migrated.
+        wrap_suite: Suite id of the DEK wrap, for the self-report.
     """
 
     ENCRYPTED_MARKER = "enc:aes256gcm:"
 
-    def __init__(self, history: ChatHistory, storage_key: bytes) -> None:
+    def __init__(
+        self,
+        history: ChatHistory,
+        storage_key: bytes,
+        legacy_key: Optional[bytes] = None,
+        wrap_suite: Optional[str] = None,
+    ) -> None:
         self._history = history
         self._key = storage_key
+        self._legacy_key = legacy_key
         self._encryptor = ContentEncryptor()
+        self._wrap_suite = wrap_suite
 
     @classmethod
     def from_identity(
         cls,
         fingerprint: Optional[str] = None,
         store_path: Optional[str] = None,
+        base_dir: Optional[Path] = None,
     ) -> "EncryptedChatHistory":
-        """Create an EncryptedChatHistory from the local CapAuth identity.
+        """Create an EncryptedChatHistory keyed by a hybrid-wrapped random DEK.
+
+        The DEK is loaded-or-created via :class:`DekManager` (random key sealed
+        with the hybrid X25519+ML-KEM-768 wrap) — it is **not** derived from the
+        fingerprint. The fingerprint is used ONLY to compute the legacy key so
+        old-format stores stay readable (and migratable).
 
         Args:
-            fingerprint: PGP fingerprint. Auto-detected if None.
+            fingerprint: PGP fingerprint, for legacy back-compat reads only.
+                Auto-detected if None.
             store_path: Override storage path.
+            base_dir: Override the directory holding the recipient key + DEK wrap.
 
         Returns:
             EncryptedChatHistory: Ready for encrypted storage.
         """
-        if fingerprint is None:
-            fingerprint = cls._get_fingerprint()
-
         history = ChatHistory.from_config(store_path)
-        key = StorageKeyDeriver.derive_key(fingerprint)
 
-        return cls(history=history, storage_key=key)
+        mgr = DekManager(base_dir=base_dir)
+        dek = mgr.load_or_create_dek()
+
+        # Legacy key (back-compat reads / migration). Best-effort — never fatal.
+        legacy_key = None
+        try:
+            fp = fingerprint if fingerprint is not None else cls._get_fingerprint()
+            legacy_key = StorageKeyDeriver.derive_key(fp)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("legacy key derivation skipped: %s", exc)
+
+        return cls(
+            history=history,
+            storage_key=dek,
+            legacy_key=legacy_key,
+            wrap_suite=mgr.wrap_suite(),
+        )
 
     @staticmethod
     def _get_fingerprint() -> str:
@@ -203,7 +351,6 @@ class EncryptedChatHistory:
             str: PGP fingerprint hex string.
         """
         import json
-        from pathlib import Path
 
         identity_file = Path.home() / ".skcapstone" / "identity" / "identity.json"
         if identity_file.exists():
@@ -337,8 +484,131 @@ class EncryptedChatHistory:
         """Count stored messages."""
         return self._history.message_count()
 
+    # -- self-report --------------------------------------------------------
+
+    def crypto_self_report(self) -> dict:
+        """Report the at-rest crypto posture of this store (PQC §4.4 evidence).
+
+        Mirrors Q2's ``GroupChat.crypto_self_report`` / sksecurity ``pqc_report``
+        approach: states the **wrap** suite (the asymmetric/HNDL-relevant layer),
+        not just the symmetric bulk cipher. When the DEK is sealed with the hybrid
+        suite, the at-rest surface is HNDL-resistant; the historical
+        fingerprint-keying note is gone (the DEK is random + hybrid-wrapped).
+        """
+        from . import atrest_wrap
+
+        wrap_suite = self._wrap_suite
+        is_hybrid = wrap_suite == atrest_wrap.DEFAULT_SUITE_ID
+        return {
+            "surface": "at-rest",
+            "component": "skchat (encrypted_store)",
+            "bulk_cipher": "aes256-gcm-v1",
+            "wrap_suite": wrap_suite or "unwrapped",
+            "wrap_status": "hybrid-pq" if is_hybrid else "classical-or-none",
+            "quantum_resistant": bool(is_hybrid),
+            "dek_source": "random os.urandom(32), hybrid-KEM-wrapped",
+            "fips_refs": (
+                ["FIPS 197", "SP 800-38D", "FIPS 203", "RFC 7748", "RFC 5869"]
+                if is_hybrid
+                else ["FIPS 197", "SP 800-38D"]
+            ),
+            "note": (
+                "DEK is high-entropy random, sealed with hybrid X25519+ML-KEM-768 "
+                "(skchat.atrest_wrap). Bulk AES-256-GCM is Grover-only. "
+                "Fingerprint-keying bug fixed — DEK no longer derived from the "
+                "(low-entropy/public) PGP fingerprint."
+            ),
+        }
+
+    # -- migration ----------------------------------------------------------
+
+    def migrate_store(self) -> dict:
+        """Re-wrap every stored message under the current (hybrid) DEK.
+
+        For each stored message: decrypt its content (trying the current DEK
+        first, then the legacy fingerprint key), then re-store it encrypted under
+        the current DEK. Old-format messages keyed by the legacy fingerprint are
+        thereby moved onto the random hybrid-wrapped DEK with **identical
+        plaintext**. Idempotent: content already under the current DEK is
+        re-encrypted to itself (a no-op for plaintext).
+
+        Returns:
+            dict: ``{migrated, skipped, failed}`` counts.
+
+        Note:
+            Requires the underlying ChatHistory to support enumeration
+            (``list_threads`` + ``get_thread_messages``) and in-place rewrite by id
+            (``update_message``). Callers with a custom backend can drive the same
+            decrypt-old → re-encrypt-new loop themselves using
+            :meth:`decrypt_content` / :meth:`reencrypt_content`.
+        """
+        migrated = skipped = failed = 0
+        threads = self._history.list_threads(limit=10_000)
+        for t in threads:
+            tid = t.get("thread_id") or t.get("id")
+            if not tid:
+                continue
+            for raw in self._history.get_thread_messages(tid, limit=100_000):
+                content = raw.get("content", "")
+                if not content.startswith(self.ENCRYPTED_MARKER):
+                    skipped += 1
+                    continue
+                try:
+                    plaintext = self.decrypt_content(content)
+                except ValueError:
+                    failed += 1
+                    continue
+                # Re-encrypt the plaintext under the current (hybrid-wrapped) DEK.
+                new_marked = self.reencrypt_content(plaintext)
+                if self._rewrite_message(raw, new_marked):
+                    migrated += 1
+                else:
+                    failed += 1
+        return {"migrated": migrated, "skipped": skipped, "failed": failed}
+
+    def _rewrite_message(self, raw: dict, new_marked_content: str) -> bool:
+        """Persist ``new_marked_content`` back onto the stored message ``raw``.
+
+        Reconstructs a :class:`ChatMessage` from the stored dict with the content
+        replaced and calls the backend's ``update_message`` (in-place JSONL line
+        rewrite). Returns False if the backend cannot update in place.
+        """
+        if not hasattr(self._history, "update_message"):
+            return False
+        try:
+            updated = {**raw, "content": new_marked_content}
+            updated.pop("decryption_error", None)
+            msg = ChatMessage.model_validate(updated)
+            return bool(self._history.update_message(msg))
+        except Exception as exc:  # noqa: BLE001 — never let one bad row abort all
+            logger.warning("migrate: could not rewrite message: %s", exc)
+            return False
+
+    def reencrypt_content(self, plaintext: str) -> str:
+        """Encrypt ``plaintext`` under the current DEK, returning marked content."""
+        return f"{self.ENCRYPTED_MARKER}{self._encryptor.encrypt(plaintext, self._key)}"
+
+    def decrypt_content(self, marked_content: str) -> str:
+        """Decrypt a stored, marked content string, trying current then legacy key.
+
+        This is the back-compat read primitive: it first tries the current
+        (hybrid-wrapped random) DEK, then the legacy fingerprint key. Raises
+        :class:`ValueError` if neither works.
+        """
+        if not marked_content.startswith(self.ENCRYPTED_MARKER):
+            return marked_content
+        encrypted_b64 = marked_content[len(self.ENCRYPTED_MARKER) :]
+        try:
+            return self._encryptor.decrypt(encrypted_b64, self._key)
+        except ValueError:
+            if self._legacy_key is not None:
+                return self._encryptor.decrypt(encrypted_b64, self._legacy_key)
+            raise
+
     def _decrypt_dict(self, msg_dict: dict) -> dict:
         """Decrypt the content field of a message dict if encrypted.
+
+        Tries the current DEK, then the legacy fingerprint key (back-compat).
 
         Args:
             msg_dict: Message dict from ChatHistory.
@@ -348,9 +618,8 @@ class EncryptedChatHistory:
         """
         content = msg_dict.get("content", "")
         if content.startswith(self.ENCRYPTED_MARKER):
-            encrypted_b64 = content[len(self.ENCRYPTED_MARKER) :]
             try:
-                msg_dict["content"] = self._encryptor.decrypt(encrypted_b64, self._key)
+                msg_dict["content"] = self.decrypt_content(content)
             except ValueError:
                 msg_dict["content"] = "[decryption failed]"
                 msg_dict["decryption_error"] = True
