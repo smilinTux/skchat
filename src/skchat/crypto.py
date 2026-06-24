@@ -10,6 +10,7 @@ only exposes signing/verification, not encryption/decryption.
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 from dataclasses import dataclass
@@ -24,6 +25,12 @@ from pgpy.constants import (
 from .models import ChatMessage
 
 logger = logging.getLogger(__name__)
+
+#: Wire marker for a hybrid-PQ sealed DM body stored in ``ChatMessage.content``.
+#: Classical PGP content starts with ``-----BEGIN PGP``; hybrid content starts
+#: with this prefix so both coexist in the same field (no model change, full
+#: back-compat: classical messages are byte-for-byte unchanged).
+PQDM_SCHEME = "pqdm1:"
 
 # Default peer store location — mirrors skcapstone's convention
 SKCAPSTONE_PEERS_DIR = Path.home() / ".skcapstone" / "peers"
@@ -291,6 +298,189 @@ class ChatCrypto:
 
         sig_ok = self.verify_signature(decrypted, sender_public_armor)
         return decrypted, sig_ok
+
+    # ------------------------------------------------------------------
+    # PQC Q3 — hybrid post-quantum DM sealing (HNDL fix, opt-in/negotiated).
+    #
+    # Adds a NEGOTIATED hybrid-KEM path *alongside* the classical PGP path.
+    # ``encrypt_message``/``decrypt_message`` are untouched -> classical peers are
+    # byte-for-byte unchanged. Hybrid engages only when the recipient advertises
+    # a hybrid prekey bundle (PQXDH-style). The negotiated suite is recorded in
+    # ``ChatMessage.metadata["kem_suite"]`` for the per-conversation self-report.
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def supports_hybrid() -> bool:
+        """Whether this build can do hybrid sealing (liboqs reachable)."""
+        try:
+            from skcomms.pqkem import is_available
+
+            return is_available()
+        except Exception:
+            return False
+
+    def negotiated_suite(self, recipient_bundle) -> str:
+        """Resolve the DM suite for a conversation with ``recipient_bundle``.
+
+        Hybrid (``x25519-mlkem768``) only when this side supports hybrid AND the
+        recipient advertises a hybrid prekey; else the classical suite
+        (negotiated downgrade). Single honest gate for the self-report and
+        :meth:`encrypt_message_auto`.
+
+        Args:
+            recipient_bundle: A ``skcomms.pqdm.PrekeyBundle`` (or dict / None).
+        """
+        from skcomms.pqdm import PrekeyBundle, negotiate_suite
+
+        bundle = (
+            recipient_bundle
+            if isinstance(recipient_bundle, PrekeyBundle)
+            else PrekeyBundle.from_dict(recipient_bundle)
+        )
+        return negotiate_suite(self.supports_hybrid(), bundle)
+
+    def encrypt_message_hybrid(
+        self,
+        message: ChatMessage,
+        recipient_bundle,
+    ) -> ChatMessage:
+        """Hybrid-seal a DM body to the recipient's hybrid prekey.
+
+        Encapsulates to the hybrid prekey (X25519+ML-KEM-768), AES-256-GCM seals
+        the body, binds the negotiated suite + the (sender, recipient) pair into
+        the downgrade-lock AAD, and stores ``PQDM_SCHEME + suite : base64(sealed)``
+        in ``content`` with ``encrypted=True``. The body is *also* signed with our
+        classical identity key (sig migrates in Phase 2). ``metadata["kem_suite"]``
+        records the negotiated suite for the self-report.
+
+        Args:
+            message: ChatMessage with plaintext content.
+            recipient_bundle: The recipient's hybrid ``PrekeyBundle``.
+
+        Returns:
+            ChatMessage: Encrypted (hybrid) + signed copy.
+
+        Raises:
+            EncryptionError: if hybrid sealing fails.
+        """
+        from skcomms.pqdm import HYBRID_SUITE, PrekeyBundle, seal
+
+        if message.encrypted:
+            return message
+        bundle = (
+            recipient_bundle
+            if isinstance(recipient_bundle, PrekeyBundle)
+            else PrekeyBundle.from_dict(recipient_bundle)
+        )
+        try:
+            sealed = seal(
+                message.content.encode("utf-8"),
+                bundle,
+                sender=message.sender,
+                recipient=message.recipient,
+            )
+            token = f"{PQDM_SCHEME}{HYBRID_SUITE}:" + base64.b64encode(sealed).decode(
+                "ascii"
+            )
+            # Sign the plaintext (classical, Phase-2 will go hybrid).
+            pgp_message = pgpy.PGPMessage.new(message.content.encode("utf-8"))
+            with self._private_key.unlock(self._passphrase):
+                sig = self._private_key.sign(pgp_message)
+            meta = dict(message.metadata)
+            meta["kem_suite"] = HYBRID_SUITE
+            return message.model_copy(
+                update={
+                    "content": token,
+                    "encrypted": True,
+                    "signature": str(sig),
+                    "metadata": meta,
+                }
+            )
+        except Exception as exc:
+            logger.warning("crypto.py: %s", exc)
+            raise EncryptionError(f"Failed to hybrid-encrypt message: {exc}") from exc
+
+    def encrypt_message_auto(
+        self,
+        message: ChatMessage,
+        recipient_public_armor: str,
+        recipient_bundle=None,
+    ) -> tuple[ChatMessage, str]:
+        """Encrypt honouring negotiation: hybrid if advertised, else classical.
+
+        The crypto-agile entry point. Hybrid-seals when the recipient advertises a
+        hybrid prekey AND this side supports hybrid (suite ``x25519-mlkem768``);
+        otherwise the *unchanged* classical PGP path (``encrypt_message``) — a
+        genuine negotiated downgrade, recorded honestly.
+
+        Returns:
+            ``(message, negotiated_suite)``.
+        """
+        from skcomms.pqdm import HYBRID_SUITE
+
+        suite = self.negotiated_suite(recipient_bundle)
+        if suite == HYBRID_SUITE:
+            return self.encrypt_message_hybrid(message, recipient_bundle), suite
+        msg = self.encrypt_message(message, recipient_public_armor)
+        # Record the classical suite for the self-report (back-compat: a peer
+        # that never sets metadata still works; this is additive).
+        if msg.metadata.get("kem_suite") != suite:
+            meta = dict(msg.metadata)
+            meta["kem_suite"] = suite
+            msg = msg.model_copy(update={"metadata": meta})
+        return msg, suite
+
+    @staticmethod
+    def is_hybrid_message(message: ChatMessage) -> bool:
+        """Whether a message carries a hybrid-PQ sealed body."""
+        c = message.content or ""
+        return bool(message.encrypted) and c.startswith(PQDM_SCHEME)
+
+    def decrypt_message_hybrid(
+        self,
+        message: ChatMessage,
+        hybrid_private: bytes,
+    ) -> ChatMessage:
+        """Open a hybrid-sealed DM with this agent's hybrid private key.
+
+        Binds the carried suite + (sender, recipient) into the AAD on open; a
+        downgrade/strip attempt fails to authenticate
+        (:class:`~skcomms.pqdm.DowngradeDetected` -> ``DecryptionError``).
+
+        Args:
+            message: ChatMessage with a hybrid-sealed body.
+            hybrid_private: This agent's 2432-byte hybrid private key.
+
+        Returns:
+            ChatMessage: Copy with decrypted plaintext content.
+
+        Raises:
+            DecryptionError: on malformed input or a detected downgrade/tamper.
+        """
+        from skcomms.pqdm import PqDmError, open_sealed
+
+        c = message.content or ""
+        if not c.startswith(PQDM_SCHEME):
+            raise DecryptionError("not a hybrid-sealed message")
+        rest = c[len(PQDM_SCHEME) :]
+        suite, _, b64 = rest.partition(":")
+        try:
+            sealed = base64.b64decode(b64)
+            plaintext = open_sealed(
+                sealed,
+                hybrid_private,
+                sender=message.sender,
+                recipient=message.recipient,
+                expected_suite=suite,
+            )
+        except PqDmError as exc:
+            raise DecryptionError(f"Failed to hybrid-decrypt message: {exc}") from exc
+        except Exception as exc:
+            logger.warning("crypto.py: %s", exc)
+            raise DecryptionError(f"Failed to hybrid-decrypt message: {exc}") from exc
+        return message.model_copy(
+            update={"content": plaintext.decode("utf-8"), "encrypted": False}
+        )
 
     def sign_message(self, message: ChatMessage) -> ChatMessage:
         """Sign a ChatMessage's content with our private key.
