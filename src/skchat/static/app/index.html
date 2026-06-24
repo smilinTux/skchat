@@ -46,6 +46,16 @@
 </head>
 <body>
   <!--
+    PQC Q5 — post-quantum (X25519 + ML-KEM-768) in the browser.
+    Bundles @noble/post-quantum's ml_kem768 (audited pure-JS lattice impl) onto
+    globalThis.skPqc so sk_pqc's web backend can do real ML-KEM-768 — closing the
+    WebCrypto-has-no-PQC gap. Loaded as a module BEFORE the Flutter bootstrap so
+    the symbol exists when the Dart web backend (createMlKem768Backend) runs.
+    Rebuild with: (cd web/pqc && npm install && npm run build).
+  -->
+  <script type="module" src="sk_pqc_noble.js"></script>
+
+  <!--
     You can customize the "flutter_bootstrap.js" script.
     This is useful to provide a custom configuration to the Flutter loader
     or to give the user feedback during the initialization process.

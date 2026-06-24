@@ -1,0 +1,16 @@
+{
+  "name": "skchat-pqc-bootstrap",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Bundles @noble/post-quantum ml_kem768 → globalThis.skPqc for sk_pqc's web backend (PQC-MIGRATION Q5).",
+  "type": "module",
+  "scripts": {
+    "build": "esbuild bootstrap.js --bundle --format=esm --minify --outfile=../sk_pqc_noble.js"
+  },
+  "dependencies": {
+    "@noble/post-quantum": "0.6.0"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.0"
+  }
+}
