@@ -400,6 +400,107 @@ async def api_health():
     return _proxy("http://127.0.0.1:9385/health")
 
 
+# --------------------------------------------------------------------------- #
+# PQC Q5 — hybrid-KEM prekey store + endpoints
+#
+# The app publishes its device prekey (POST /api/v1/prekey); peers fetch each
+# other's bundle (GET /api/v1/prekey/{peer}). Lumina publishes her OWN hybrid
+# prekey too, so chef-app <-> lumina goes hybrid post-quantum. The send path
+# (api_send) uses these to open inbound hybrid DMs + seal Lumina's replies.
+# --------------------------------------------------------------------------- #
+
+
+def _short_name(uri: str) -> str:
+    s = uri[len("capauth:"):] if uri.startswith("capauth:") else uri
+    return s.split("@")[0]
+
+
+def _open_hybrid_inbound(token: str, *, sender_short: str) -> str | None:
+    """Open a `pqdm1:` token addressed to Lumina. Returns plaintext or None."""
+    try:
+        from skchat import pq_prekeys as PQ
+        from skcomms.pqdm import open_sealed
+        import base64 as _b64
+
+        priv = PQ.lumina_private()
+        if priv is None:
+            return None
+        rest = token[len("pqdm1:"):]
+        suite, _, b64 = rest.partition(":")
+        sealed = _b64.b64decode(b64)
+        clear = open_sealed(
+            sealed, priv,
+            sender=sender_short, recipient="lumina", expected_suite=suite,
+        )
+        return clear.decode("utf-8")
+    except Exception:
+        logger.debug("hybrid inbound open failed", exc_info=True)
+        return None
+
+
+def _seal_hybrid_outbound(plaintext: str, *, recipient_short: str) -> str | None:
+    """Seal `plaintext` to the operator's stored prekey. Returns a `pqdm1:`
+    token or None (no prekey / no backend → caller keeps the plaintext)."""
+    try:
+        from skchat import pq_prekeys as PQ
+        from skcomms.pqdm import HYBRID_SUITE, PrekeyBundle, seal
+        import base64 as _b64
+
+        peer = PQ.load_peer_bundle(recipient_short)
+        if not peer:
+            return None
+        bundle = PrekeyBundle.from_dict(peer)
+        if not bundle.is_hybrid:
+            return None
+        sealed = seal(
+            plaintext.encode("utf-8"), bundle,
+            sender="lumina", recipient=recipient_short,
+        )
+        return f"pqdm1:{HYBRID_SUITE}:" + _b64.b64encode(sealed).decode("ascii")
+    except Exception:
+        logger.debug("hybrid outbound seal failed", exc_info=True)
+        return None
+
+
+@router.post("/v1/prekey")
+async def api_publish_prekey(request: Request):
+    """Publish a peer's (the app's) hybrid-KEM prekey bundle.
+
+    Body = a ``PrekeyBundle`` dict: ``{suite, hybrid_public_hex, signature?,
+    key_id?, device_id?}``. Stored keyed by the operator short name (``chef``)
+    unless an explicit ``owner`` is given. Returns ``{ok, stored, hybrid}``.
+    """
+    from skchat import pq_prekeys as PQ
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        raise HTTPException(400, "prekey bundle must be an object")
+    owner = _short_name((body.get("owner") or OPERATOR_ID))
+    PQ.store_peer_bundle(owner, body)
+    return JSONResponse(
+        {"ok": True, "stored": owner, "hybrid": PQ.peer_is_hybrid(owner)}
+    )
+
+
+@router.get("/v1/prekey/{peer:path}")
+async def api_get_prekey(peer: str):
+    """Fetch a peer's prekey bundle. ``lumina`` returns Lumina's OWN hybrid
+    prekey (generated on demand); any other peer returns its published bundle,
+    or a classical (non-hybrid) bundle if none was published."""
+    from skchat import pq_prekeys as PQ
+
+    short = _short_name(peer)
+    if short == "lumina":
+        return JSONResponse({"prekey": PQ.lumina_bundle()})
+    stored = PQ.load_peer_bundle(short)
+    if stored is None:
+        return JSONResponse({"prekey": {"suite": PQ.CLASSICAL_SUITE, "hybrid_public_hex": ""}})
+    return JSONResponse({"prekey": stored})
+
+
 @router.get("/v1/status")
 async def api_status():
     return _proxy("http://127.0.0.1:9383/api/v1/household/agents")
@@ -880,6 +981,16 @@ async def api_send(request: Request):
         except _loc.LocationError as exc:
             raise HTTPException(400, f"invalid location: {exc}")
 
+    # PQC Q5: if the operator's app sent a hybrid-sealed `pqdm1:` token, open it
+    # with Lumina's hybrid private key so the brain + history see plaintext. The
+    # conversation is recorded hybrid so the reply is sealed back symmetrically.
+    convo_is_hybrid = False
+    if content.startswith("pqdm1:"):
+        opened = _open_hybrid_inbound(content, sender_short="chef")
+        if opened is not None:
+            content = opened
+            convo_is_hybrid = True
+
     if not content:
         raise HTTPException(400, "empty message")
 
@@ -967,11 +1078,19 @@ async def api_send(request: Request):
             reply_text = "…(thinking failed — I came back empty. Try once more?)"
 
     # 4. Persist + return her reply — linked back to the user turn (and thread).
+    #    PQC Q5: if the conversation negotiated hybrid AND the operator published
+    #    a prekey, seal the reply so the app opens it hybrid-pq. Otherwise the
+    #    plaintext reply is stored unchanged (classical path).
+    reply_wire = reply_text
+    if convo_is_hybrid:
+        sealed = _seal_hybrid_outbound(reply_text, recipient_short="chef")
+        if sealed is not None:
+            reply_wire = sealed
     reply_msg = _persist(
         hist,
         LUMINA_URI,
         OPERATOR_ID,
-        reply_text,
+        reply_wire,
         reply_to_id=user_msg.id,
         thread_id=thread_id,
     )
