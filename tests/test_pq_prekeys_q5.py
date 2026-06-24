@@ -107,3 +107,72 @@ def test_outbound_seal_noop_without_peer_prekey(pq_home):
 
     # No prekey stored for this peer → classical (returns None, caller keeps text).
     assert DP._seal_hybrid_outbound("hello", recipient_short="nobody") is None
+
+
+def test_operator_outbound_token_not_openable_with_own_key(pq_home):
+    """BUG-1 rationale: an outbound DM is sealed to the RECIPIENT's prekey, so
+    the SENDER cannot decapsulate their own token with their own private key.
+
+    This is the exact reason the Flutter app must keep a local ``token →
+    plaintext`` cache to render its own sent hybrid DMs (the app never tries to
+    decapsulate its own outbound). Locking it here so a future refactor doesn't
+    assume the sender can open their own copy.
+    """
+    from skcomms.pqdm import (
+        DowngradeDetected,
+        HYBRID_SUITE,
+        PrekeyBundle,
+        open_sealed,
+        seal,
+    )
+
+    sender_kp = pqkem.hybrid_keypair()  # the operator's own device keypair
+    recipient_kp = pqkem.hybrid_keypair()  # Lumina's prekey
+
+    bundle = PrekeyBundle(
+        suite=HYBRID_SUITE, hybrid_public_hex=recipient_kp.public_key.hex()
+    )
+    sealed = seal(b"my own outbound", bundle, sender="chef", recipient="lumina")
+
+    # The recipient (Lumina) CAN open it.
+    clear = open_sealed(
+        sealed, recipient_kp.private_key,
+        sender="chef", recipient="lumina", expected_suite=HYBRID_SUITE,
+    )
+    assert clear == b"my own outbound"
+
+    # The SENDER cannot open their own outbound with their own key — it was
+    # encapsulated to the recipient's public key, not the sender's.
+    with pytest.raises(DowngradeDetected):
+        open_sealed(
+            sealed, sender_kp.private_key,
+            sender="chef", recipient="lumina", expected_suite=HYBRID_SUITE,
+        )
+
+
+def test_lumina_reply_aad_binding_matches_app_open(pq_home):
+    """The daemon seals Lumina's reply with sender=lumina, recipient=chef. The
+    app's ``openIncoming`` opens an inbound reply with sender=<peer> (lumina),
+    recipient=<localShort> (chef). Prove that exact party binding round-trips so
+    HER reply opens (not the 'could not decrypt' placeholder)."""
+    from skchat import daemon_proxy as DP
+    from skcomms.pqdm import open_sealed
+    import base64 as _b64
+
+    op_kp = pqkem.hybrid_keypair()
+    pq_home.store_peer_bundle(
+        "chef",
+        {"suite": pqdm.HYBRID_SUITE, "hybrid_public_hex": op_kp.public_key.hex()},
+    )
+    reply_token = DP._seal_hybrid_outbound("her reply 🔐", recipient_short="chef")
+    assert reply_token is not None and reply_token.startswith("pqdm1:")
+
+    rest = reply_token[len("pqdm1:"):]
+    suite, _, b64 = rest.partition(":")
+    sealed = _b64.b64decode(b64)
+    # App binds sender=lumina (the peer), recipient=chef (localShort).
+    clear = open_sealed(
+        sealed, op_kp.private_key,
+        sender="lumina", recipient="chef", expected_suite=suite,
+    )
+    assert clear.decode() == "her reply 🔐"
