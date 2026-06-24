@@ -550,6 +550,26 @@ async def api_update_group(group_id: str, request: Request):
     return JSONResponse({"ok": True, "group": G.group_to_conversation(group)})
 
 
+@router.delete("/v1/groups/{group_id}")
+async def api_delete_group(group_id: str):
+    """Delete a group entirely (admin-only). Removes the store file + tombstones.
+
+    Admin gate: only an admin of the group (the creator/operator) may delete it.
+    Non-admins get 403 — the app shows them "Leave group" instead. A missing
+    group is 404. On success the group file is removed and a ``<id>.deleted.json``
+    tombstone is written so it doesn't get resurrected by a re-list / re-sync.
+    """
+    from skchat import daemon_proxy_groups as G
+
+    group = G.load_group(group_id)
+    if group is None:
+        raise HTTPException(404, "group not found")
+    if not G.is_admin(group, OPERATOR_ID):
+        raise HTTPException(403, "only an admin can delete this group")
+    G.delete_group(group_id)
+    return JSONResponse({"ok": True, "deleted": group_id})
+
+
 @router.get("/v1/groups/{group_id}/members")
 async def api_group_members(group_id: str):
     """List a group's members in the app member shape."""
