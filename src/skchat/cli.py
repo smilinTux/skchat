@@ -5218,6 +5218,39 @@ def webui(port: int, no_browser: bool) -> None:
         raise SystemExit(1)
     webui_run(port=port, open_browser=not no_browser)
 
+@main.command(name="pqc-report")
+@click.option("--format", "output_format", default="text",
+              type=click.Choice(["text", "json"]))
+@click.option("--static", is_flag=True, default=False,
+              help="Show the model-DEFAULT posture instead of the live fleet.")
+def pqc_report_cmd(output_format, static):
+    """Show skchat's OWN PQC (quantum-resistance) posture.
+
+    Reports skchat's owned surfaces (group-key, DM confidentiality, at-rest
+    store) with the active suite + status + FIPS refs. Delegates to the
+    sksecurity honesty engine (build_project_report) so the claim discipline is
+    identical: a surface is hybrid-pq only when its live suite truly is, and no
+    global / end-to-end / "quantum-proof" claim is ever made.
+    """
+    import json as _json
+    try:
+        from sksecurity.pqc_report import (
+            build_project_report, format_project_report,
+        )
+    except Exception:
+        _print(
+            "\n  [yellow]sksecurity is not installed[/] — the PQC self-report "
+            "lives in sksecurity (the honesty engine).\n"
+            "  Install it, then re-run, or use: [cyan]sksecurity pqc-report "
+            "--project skchat[/]\n"
+        )
+        raise SystemExit(1)
+    rpt = build_project_report("skchat", live=not static)
+    if output_format == "json":
+        click.echo(_json.dumps(rpt, indent=2))
+    else:
+        click.echo(format_project_report(rpt))
+
 
 if __name__ == "__main__":
     main()
