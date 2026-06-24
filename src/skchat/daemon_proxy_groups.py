@@ -89,6 +89,9 @@ def list_groups() -> list:
 
     out = []
     for f in _groups_dir().glob("*.json"):
+        # Skip delete tombstones (``<id>.deleted.json``) — not real groups.
+        if f.name.endswith(".deleted.json"):
+            continue
         try:
             out.append(GroupChat.model_validate_json(f.read_text(encoding="utf-8")))
         except Exception as exc:
@@ -297,6 +300,50 @@ def remove_member(group, identity: str) -> bool:
     if removed:
         save_group(group)
     return removed
+
+
+def is_admin(group, identity: str) -> bool:
+    """True if *identity* (resolved) is an admin of *group*.
+
+    Used to gate destructive actions (group delete). The group ``created_by``
+    is also accepted so the original creator always counts as admin even if a
+    legacy persisted group never stamped the ADMIN role on the membership row.
+    """
+    uri = resolve_identity(identity)
+    if group.is_admin(uri):
+        return True
+    return bool(getattr(group, "created_by", "") and group.created_by == uri)
+
+
+def delete_group(group_id: str) -> bool:
+    """Delete a group: remove its store file + drop a tombstone. True if removed.
+
+    Removes ``~/.skchat/groups/<id>.json`` and writes a sibling
+    ``<id>.deleted.json`` tombstone (so a re-sync / re-list doesn't resurrect a
+    stale copy and any peer learns the room is gone). Idempotent — a missing
+    group still leaves a tombstone and returns False (nothing to remove).
+    """
+    import json
+
+    d = _groups_dir()
+    path = d / f"{group_id}.json"
+    tomb = d / f"{group_id}.deleted.json"
+    existed = path.exists()
+    try:
+        if existed:
+            path.unlink()
+    except Exception as exc:
+        logger.warning("delete_group: failed to unlink %s: %s", group_id, exc)
+    try:
+        tomb.write_text(
+            json.dumps({"id": group_id, "deleted_at": _now_iso(), "tombstone": True}),
+            encoding="utf-8",
+        )
+    except Exception as exc:
+        logger.warning("delete_group: failed to write tombstone for %s: %s", group_id, exc)
+    if existed:
+        logger.info("Deleted group %s", group_id[:8])
+    return existed
 
 
 def update_group(group, *, name: Optional[str] = None, description: Optional[str] = None,

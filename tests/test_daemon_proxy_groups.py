@@ -256,3 +256,53 @@ def test_missing_group_404s(client):
     assert client.get("/api/v1/groups/nope/members").status_code == 404
     assert client.put("/api/v1/groups/nope", json={"name": "x"}).status_code == 404
     assert client.delete("/api/v1/groups/nope/members/self").status_code == 404
+    assert client.delete("/api/v1/groups/nope").status_code == 404
+
+
+# --------------------------------------------------------------------------- #
+# Delete group (admin-only)
+# --------------------------------------------------------------------------- #
+def test_delete_group_admin_removes_and_tombstones(client):
+    """The creator (operator = admin) can delete: gone from list + store, tombstoned."""
+    res = _create(client, name="Doomed", members=["lumina"])
+    gid = res["group_id"]
+    # Present before.
+    assert any(g["peer_id"] == gid for g in client.get("/api/v1/groups").json())
+
+    r = client.delete(f"/api/v1/groups/{gid}")
+    assert r.status_code == 200, r.text
+    assert r.json()["deleted"] == gid
+
+    # Gone from the list + the unified conversations + the store (404 on members).
+    assert not any(g["peer_id"] == gid for g in client.get("/api/v1/groups").json())
+    assert not any(c["peer_id"] == gid for c in client.get("/api/v1/conversations").json())
+    assert client.get(f"/api/v1/groups/{gid}/members").status_code == 404
+    assert G.load_group(gid) is None
+
+    # A tombstone was written so a re-list / re-sync doesn't resurrect it.
+    tomb = G._groups_dir() / f"{gid}.deleted.json"
+    assert tomb.exists()
+
+
+def test_delete_group_non_admin_forbidden(client, monkeypatch):
+    """A non-admin operator cannot delete — 403, group untouched."""
+    gid = _create(client, name="NotYours", members=["lumina"])["group_id"]
+
+    # Simulate the caller NOT being an admin of this group.
+    monkeypatch.setattr(G, "is_admin", lambda group, identity: False)
+    r = client.delete(f"/api/v1/groups/{gid}")
+    assert r.status_code == 403, r.text
+
+    # Still present + nothing tombstoned.
+    assert G.load_group(gid) is not None
+    assert not (G._groups_dir() / f"{gid}.deleted.json").exists()
+
+
+def test_deleted_group_not_relisted(client):
+    """After delete, list_groups ignores the tombstone file (no phantom group)."""
+    gid = _create(client, name="Ghost")["group_id"]
+    client.delete(f"/api/v1/groups/{gid}")
+    groups = client.get("/api/v1/groups").json()
+    assert all(g["peer_id"] != gid for g in groups)
+    # Tombstone file exists but is not parsed as a group.
+    assert (G._groups_dir() / f"{gid}.deleted.json").exists()
