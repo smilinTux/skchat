@@ -27,7 +27,7 @@ import os
 import uuid
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Optional
+from typing import Any, ClassVar, Optional
 
 from pydantic import BaseModel, Field
 
@@ -154,6 +154,16 @@ class GroupChat(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
     rotation_history: list[dict[str, Any]] = Field(default_factory=list)
 
+    #: Default ``kem_suite`` for NEWLY CREATED groups (PQC confidentiality
+    #: cut-over). Hybrid is now the DEFAULT for new objects — a group created
+    #: through :meth:`create` is hybrid from epoch 1 for every member that has a
+    #: hybrid prekey. This is intentionally NOT the field default (the field on
+    #: line ~140 stays classical) so groups serialized WITHOUT a ``kem_suite``
+    #: (pre-cut-over, on disk) still deserialize and report as classical for
+    #: byte-for-byte back-compat. The cut-over lives at the create/factory layer,
+    #: never in deserialization.
+    DEFAULT_NEW_KEM_SUITE: ClassVar[str] = "x25519-mlkem768"
+
     @classmethod
     def create(
         cls,
@@ -161,28 +171,68 @@ class GroupChat(BaseModel):
         creator_uri: str,
         creator_public_key: str = "",
         description: str = "",
+        kem_suite: Optional[str] = None,
+        creator_hybrid_kem_public_hex: str = "",
+        member_hybrid_keys: Optional[dict[str, str]] = None,
     ) -> GroupChat:
         """Create a new group chat with the creator as admin.
+
+        **PQC cut-over:** hybrid (``x25519-mlkem768``) is now the DEFAULT
+        ``kem_suite`` for newly created groups. A group is hybrid from epoch 1
+        for every member that carries a hybrid prekey; members without one fall
+        back gracefully (classical wrap, flagged in the self-report) and are not
+        locked out. Pass ``kem_suite="rsa-pgp-wrap-v1"`` to force a classical
+        group explicitly.
 
         Args:
             name: Group display name.
             creator_uri: CapAuth identity URI of the creator.
             creator_public_key: Creator's PGP public key.
             description: Optional group description.
+            kem_suite: Suite id for this group. ``None`` (default) selects the
+                cut-over default :attr:`DEFAULT_NEW_KEM_SUITE` (hybrid). Pass an
+                explicit classical suite to opt out.
+            creator_hybrid_kem_public_hex: The creator's own hybrid-KEM public
+                key (hex of the 1216-byte ``skcomms.pqkem`` wire key), so the
+                creator can decrypt epoch-1. Empty = creator falls back classical.
+            member_hybrid_keys: ``identity_uri -> hex(hybrid pub)`` for any
+                members added at creation (used by the create paths to populate
+                hybrid keys from the prekey store before seeding epoch 1).
 
         Returns:
-            GroupChat: New group with creator as admin member.
+            GroupChat: New group with creator as admin member. If hybrid and at
+            least one member holds a hybrid key, epoch 1 is seeded; otherwise the
+            group is hybrid-tagged but stays at epoch 0 until a member uploads a
+            key (``ensure_epoch`` / ``migrate_to_hybrid`` seeds it later).
         """
+        from .group_ratchet import HYBRID_KEM_SUITE
+
+        suite = kem_suite if kem_suite is not None else cls.DEFAULT_NEW_KEM_SUITE
         group = cls(
             name=name,
             description=description,
             created_by=creator_uri,
+            kem_suite=suite,
         )
         group.add_member(
             identity_uri=creator_uri,
             role=MemberRole.ADMIN,
             public_key_armor=creator_public_key,
+            hybrid_kem_public_hex=creator_hybrid_kem_public_hex,
         )
+        if member_hybrid_keys:
+            for uri, pub_hex in member_hybrid_keys.items():
+                m = group.get_member(uri)
+                if m is not None and pub_hex:
+                    m.hybrid_kem_public_hex = pub_hex
+        # Seed epoch 1 only when hybrid AND at least one member can actually
+        # receive the wrapped epoch secret (avoids a "hybrid but epoch 0, nobody
+        # keyed" object). Distribution is local-only here (no transport); the
+        # create paths broadcast on their own schedule.
+        if suite == HYBRID_KEM_SUITE and any(
+            m.hybrid_kem_public_hex for m in group.members
+        ):
+            group.ensure_epoch()
         return group
 
     def add_member(

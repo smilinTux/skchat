@@ -15,10 +15,24 @@ def _make_group() -> GroupChat:
     return GroupChat.create(name="Q0 Test", creator_uri="capauth:lumina@skworld.io")
 
 
-def test_group_defaults_classical_kem_suite_and_epoch_zero():
-    g = _make_group()
+def test_group_field_default_classical_for_deserialization():
+    """The FIELD default stays classical so groups serialized WITHOUT a
+    kem_suite (pre-cut-over, on disk) deserialize + report as classical.
+
+    (The PQC cut-over changed the ``create()`` FACTORY default to hybrid — see
+    ``test_create_factory_defaults_hybrid`` — but never the field default, which
+    deserialization relies on for byte-for-byte back-compat.)
+    """
+    g = GroupChat(name="Q0 Test", created_by="capauth:lumina@skworld.io")
     assert g.kem_suite == "rsa-pgp-wrap-v1"
     assert g.epoch == 0
+
+
+def test_create_factory_defaults_hybrid():
+    """PQC cut-over: the create() factory defaults NEW groups to hybrid."""
+    g = _make_group()
+    assert g.kem_suite == "x25519-mlkem768"
+    assert g.is_hybrid is True
 
 
 def test_group_kem_suite_round_trips():

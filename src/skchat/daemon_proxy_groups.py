@@ -31,6 +31,7 @@ post (an announcement channel). ``who_can_add`` gates membership changes.
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -38,7 +39,14 @@ from typing import Any, Optional
 logger = logging.getLogger("skchat.daemon_proxy.groups")
 
 # The canonical group store — the SAME directory the MCP server + CLI use.
+# Kept as a module constant so existing callers/tests can monkeypatch it; the
+# resolver below prefers ``SKCHAT_HOME`` when set (so the daemon/CLI/migrate
+# engine + tests all agree on one location), else this default.
 _GROUPS_DIR = Path("~/.skchat/groups").expanduser()
+
+
+def _skchat_home() -> Path:
+    return Path(os.environ.get("SKCHAT_HOME", str(Path.home() / ".skchat"))).expanduser()
 
 # Default ACL for a new group (creator = admin).
 _DEFAULT_ACL: dict[str, Any] = {
@@ -56,8 +64,14 @@ def _now_iso() -> str:
 # Persistence (shared store)
 # --------------------------------------------------------------------------- #
 def _groups_dir() -> Path:
-    _GROUPS_DIR.mkdir(parents=True, exist_ok=True)
-    return _GROUPS_DIR
+    # SKCHAT_HOME wins when explicitly set; else honour a monkeypatched/overridden
+    # module-level _GROUPS_DIR; else the default under SKCHAT_HOME.
+    if os.environ.get("SKCHAT_HOME"):
+        d = _skchat_home() / "groups"
+    else:
+        d = _GROUPS_DIR
+    d.mkdir(parents=True, exist_ok=True)
+    return d
 
 
 def load_group(group_id: str):
@@ -250,23 +264,56 @@ def create_group(
     """
     from .group import GroupChat, MemberRole
 
-    group = GroupChat.create(name=name, creator_uri=creator_uri, description=description)
+    # PQC cut-over: resolve every member URI up-front so we can collect their
+    # hybrid prekeys and create the group hybrid-from-epoch-1 by DEFAULT (members
+    # without a prekey fall back classically and are flagged, not locked out).
+    member_uris = []
+    for raw in members or []:
+        uri = resolve_identity(raw)
+        if uri and uri != creator_uri and uri not in member_uris:
+            member_uris.append(uri)
+
+    creator_hybrid = ""
+    member_hybrid_keys: dict[str, str] = {}
+    try:
+        from . import pq_prekeys as _PQ
+
+        creator_hybrid = _PQ.hybrid_pub_hex_for(creator_uri)
+        member_hybrid_keys = _PQ.collect_member_hybrid_keys(member_uris)
+    except Exception as exc:  # pragma: no cover - prekey store optional
+        logger.debug("hybrid prekey collection skipped: %s", exc)
+
+    group = GroupChat.create(
+        name=name,
+        creator_uri=creator_uri,
+        description=description,
+        creator_hybrid_kem_public_hex=creator_hybrid,
+        member_hybrid_keys=member_hybrid_keys,
+    )
     merged_acl = dict(_DEFAULT_ACL)
     if acl:
         merged_acl.update({k: v for k, v in acl.items() if k in _DEFAULT_ACL})
     group.metadata["acl"] = merged_acl
 
-    for raw in members or []:
-        uri = resolve_identity(raw)
-        if not uri or uri == creator_uri:
-            continue
+    for uri in member_uris:
         group.add_member(
             identity_uri=uri,
             role=MemberRole.MEMBER,
             participant_type=_participant_type_for(uri),
+            hybrid_kem_public_hex=member_hybrid_keys.get(uri, ""),
         )
+    # If a hybrid key arrived only with the members (creator classical), make
+    # sure epoch 1 is seeded now that all members are attached.
+    group.ensure_epoch()
     save_group(group)
-    logger.info("Created group %s (%s) with %d members", group.id[:8], name, group.member_count)
+    logger.info(
+        "Created group %s (%s) with %d members [suite=%s epoch=%d]",
+        group.id[:8],
+        name,
+        group.member_count,
+        group.kem_suite,
+        group.epoch,
+    )
     return group
 
 

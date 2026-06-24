@@ -2866,29 +2866,51 @@ def _load_group(group_id: str) -> "Optional[GroupChat]":
 @group.command("create")
 @click.argument("name")
 @click.option("--description", "-d", default="", help="Group description.")
-def group_create(name: str, description: str) -> None:
+@click.option(
+    "--classical",
+    is_flag=True,
+    default=False,
+    help="Force a classical (PGP-wrap) group instead of the hybrid PQ default.",
+)
+def group_create(name: str, description: str, classical: bool) -> None:
     """Create a new group chat.
 
     You become the admin of the new group. Add members with
-    'skchat group add-member'.
+    'skchat group add-member'. New groups are HYBRID post-quantum
+    (x25519-mlkem768) by default; pass --classical to opt out.
 
     Examples:
 
         skchat group create "Project Alpha"
 
         skchat group create "Sovereign Squad" -d "Core team chat"
+
+        skchat group create "Legacy Peers" --classical
     """
     from .group import GroupChat
 
     identity = _get_identity()
+
+    creator_hybrid = ""
+    if not classical:
+        try:
+            from . import pq_prekeys as _PQ
+
+            creator_hybrid = _PQ.hybrid_pub_hex_for(identity)
+        except Exception:
+            creator_hybrid = ""
+
     grp = GroupChat.create(
         name=name,
         creator_uri=identity,
         description=description,
+        kem_suite="rsa-pgp-wrap-v1" if classical else None,
+        creator_hybrid_kem_public_hex=creator_hybrid,
     )
 
     _store_group(grp)
 
+    suite_line = f"{grp.kem_suite}" + (" (hybrid PQ)" if grp.is_hybrid else " (classical)")
     _print("")
     if HAS_RICH and console:
         console.print(
@@ -2897,6 +2919,7 @@ def group_create(name: str, description: str) -> None:
                 f"[bold]ID:[/] [dim]{grp.id}[/]\n"
                 f"[bold]Admin:[/] {identity}\n"
                 f"[bold]Description:[/] {description or '[dim]none[/]'}\n"
+                f"[bold]KEM suite:[/] {suite_line}\n"
                 f"[bold]Key version:[/] {grp.key_version}",
                 title="Group Created",
                 border_style="green",
@@ -2905,6 +2928,7 @@ def group_create(name: str, description: str) -> None:
     else:
         _print(f"  Created group '{name}' (ID: {grp.id[:12]})")
         _print(f"  Admin: {identity}")
+        _print(f"  KEM suite: {suite_line}")
     _print("")
 
 
@@ -3508,10 +3532,20 @@ def group_quick_start(name: str, members: tuple[str, ...], description: str) -> 
     from .group import GroupChat, ParticipantType
 
     identity = _get_identity()
+
+    # PQC cut-over: hybrid by DEFAULT; seed the creator's hybrid prekey.
+    try:
+        from . import pq_prekeys as _PQ
+
+        _creator_hybrid = _PQ.hybrid_pub_hex_for(identity)
+    except Exception:
+        _creator_hybrid = ""
+
     grp = GroupChat.create(
         name=name,
         creator_uri=identity,
         description=description,
+        creator_hybrid_kem_public_hex=_creator_hybrid,
     )
 
     resolved_members = []
@@ -3529,14 +3563,24 @@ def group_quick_start(name: str, members: tuple[str, ...], description: str) -> 
         base_name = resolved.split(":")[-1].split("@")[0].lower()
         ptype = ParticipantType.AGENT if base_name in agent_hints else ParticipantType.HUMAN
 
+        try:
+            from . import pq_prekeys as _PQ
+
+            _member_hybrid = _PQ.hybrid_pub_hex_for(resolved)
+        except Exception:
+            _member_hybrid = ""
+
         member = grp.add_member(
             identity_uri=resolved,
             participant_type=ptype,
             display_name=member_name if member_name != resolved else "",
+            hybrid_kem_public_hex=_member_hybrid,
         )
         if member:
             resolved_members.append((member_name, resolved, ptype.value))
 
+    # PQC: seed epoch 1 now that members (with keys) are attached.
+    grp.ensure_epoch()
     _store_group(grp)
 
     _print("")
@@ -3561,6 +3605,110 @@ def group_quick_start(name: str, members: tuple[str, ...], description: str) -> 
         for name, uri, ptype in resolved_members:
             _print(f"    + {name} ({ptype})")
     _print("")
+
+
+@main.group()
+def pqc() -> None:
+    """Post-quantum (PQC) confidentiality tools — prekeys, migration, report."""
+
+
+@pqc.command(name="prekey")
+@click.option("--agent", default=None, help="Agent short name (default: SKAGENT).")
+def pqc_prekey(agent: "Optional[str]") -> None:
+    """Generate (if needed) + show this agent's hybrid PQ prekey bundle."""
+    from . import pq_prekeys as PQ
+
+    bundle = PQ.publish_self_prekey(agent)
+    suite = bundle.get("suite")
+    hybrid = suite == PQ.HYBRID_SUITE
+    _print("")
+    _print(f"  Agent prekey suite : {suite}" + (" (hybrid PQ)" if hybrid else " (classical)"))
+    if hybrid:
+        _print(f"  Public key (hex)   : {bundle.get('hybrid_public_hex', '')[:32]}… "
+               f"({len(bundle.get('hybrid_public_hex',''))//2} bytes)")
+        _print(f"  Key id             : {bundle.get('key_id')}")
+    else:
+        _print("  No hybrid backend (liboqs) available — DMs to this agent stay classical.")
+    _print("")
+
+
+@pqc.command(name="migrate-fleet")
+@click.option("--dry-run", is_flag=True, default=False,
+              help="List what WOULD migrate; write nothing.")
+@click.option("--no-backup", is_flag=True, default=False,
+              help="Skip the pre-migration backup (NOT recommended).")
+@click.option("--yes", is_flag=True, default=False,
+              help="Proceed with live migration without the confirmation prompt.")
+def pqc_migrate_fleet(dry_run: bool, no_backup: bool, yes: bool) -> None:
+    """Migrate EXISTING groups + at-rest stores to hybrid PQ (safe).
+
+    Groups migrate only when ALL members have a hybrid prekey (others are
+    skipped + reported, never forced). The at-rest store is re-wrapped under the
+    hybrid DEK. A mandatory backup is taken before any write unless --no-backup.
+    Use --dry-run first to preview.
+    """
+    from . import pqc_migrate as PM
+
+    if dry_run:
+        plans = PM.plan_groups()
+        store_plan = PM.plan_store()
+        migrate = [p for p in plans if p.action == "migrate"]
+        already = [p for p in plans if p.action == "already-hybrid"]
+        skip = [p for p in plans if p.action == "skip"]
+        _print("")
+        _print("  PQC migrate-fleet — DRY RUN (no writes)")
+        _print(f"  groups: {len(plans)} total · {len(migrate)} would migrate · "
+               f"{len(already)} already hybrid · {len(skip)} skipped")
+        for p in migrate:
+            _print(f"    MIGRATE  {p.group_id[:8]} {p.name!r} "
+                   f"({p.members_with_key}/{p.members_total} keyed)")
+        for p in skip:
+            _print(f"    skip     {p.group_id[:8]} {p.name!r} — {p.reason}")
+        _print(f"  at-rest store: {store_plan.get('action')} — {store_plan.get('reason')}")
+        _print("")
+        return
+
+    if not yes:
+        click.confirm(
+            "Live migration will back up then re-key eligible groups + re-wrap "
+            "the at-rest store. Continue?",
+            abort=True,
+        )
+
+    res = PM.migrate_fleet(dry_run=False, do_backup=not no_backup)
+    g = res.groups
+    _print("")
+    _print(f"  Backup: {res.backup_path or '(skipped)'}")
+    _print(f"  Groups migrated : {len(g.get('migrated', []))}")
+    for m in g.get("migrated", []):
+        _print(f"    + {m['group_id'][:8]} {m['name']!r} → {m['suite']} epoch {m['epoch']}")
+    _print(f"  Groups already hybrid : {len(g.get('already_hybrid', []))}")
+    _print(f"  Groups skipped  : {len(g.get('skipped', []))}")
+    for s in g.get("skipped", []):
+        _print(f"    - {s['group_id'][:8]} — {s['reason']}")
+    if g.get("failed"):
+        _print(f"  Groups FAILED   : {len(g['failed'])}")
+        for fl in g["failed"]:
+            _print(f"    ! {fl['group_id'][:8]} — {fl['reason']}")
+    store = res.store.get("result")
+    if store is not None:
+        _print(f"  At-rest store   : {store} (suite={res.store.get('wrap_suite')}, "
+               f"qr={res.store.get('quantum_resistant')})")
+    else:
+        _print("  At-rest store   : none present")
+    _print("")
+
+
+@pqc.command(name="report")
+def pqc_report_cmd() -> None:
+    """Show the honest per-surface PQC self-report (delegates to sksecurity)."""
+    try:
+        from sksecurity.pqc_report import build_live_report, format_report
+
+        rpt = build_live_report()
+        _print(format_report(rpt))
+    except Exception as exc:
+        _print(f"  PQC report unavailable: {exc}")
 
 
 @main.command()

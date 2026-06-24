@@ -54,14 +54,48 @@ def bob_keys() -> tuple[str, str]:
 
 @pytest.fixture()
 def group(alice_keys: tuple[str, str]) -> GroupChat:
-    """A basic group with Alice as admin."""
+    """A basic CLASSICAL group with Alice as admin.
+
+    These tests exercise the classical PGP key-wrap distribution path, so the
+    fixture pins ``kem_suite="rsa-pgp-wrap-v1"`` explicitly. (Since the PQC
+    cut-over, :meth:`GroupChat.create` defaults NEW groups to the hybrid suite;
+    the hybrid-default + hybrid distribution behaviour is covered by
+    ``test_group_pqc_q0.py`` / ``test_group_ratchet.py`` and
+    ``test_create_defaults_hybrid`` below.)
+    """
     _, alice_pub = alice_keys
     return GroupChat.create(
         name="Dev Team",
         creator_uri="capauth:alice@skworld.io",
         creator_public_key=alice_pub,
         description="Main dev channel",
+        kem_suite="rsa-pgp-wrap-v1",
     )
+
+
+def test_create_defaults_hybrid(alice_keys: tuple[str, str]) -> None:
+    """PQC cut-over: a NEW group with no explicit suite defaults to hybrid."""
+    _, alice_pub = alice_keys
+    g = GroupChat.create(
+        name="Cutover",
+        creator_uri="capauth:alice@skworld.io",
+        creator_public_key=alice_pub,
+    )
+    assert g.kem_suite == "x25519-mlkem768"
+    assert g.is_hybrid is True
+
+
+def test_create_classical_optout(alice_keys: tuple[str, str]) -> None:
+    """An explicit classical suite still yields a classical group."""
+    _, alice_pub = alice_keys
+    g = GroupChat.create(
+        name="Legacy",
+        creator_uri="capauth:alice@skworld.io",
+        creator_public_key=alice_pub,
+        kem_suite="rsa-pgp-wrap-v1",
+    )
+    assert g.is_hybrid is False
+    assert g.epoch == 0
 
 
 class TestGroupChatCreation:
