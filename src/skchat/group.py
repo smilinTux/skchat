@@ -1,9 +1,18 @@
 """SKChat group messaging -- multi-participant encrypted conversations.
 
-Group chats use a shared AES-256 symmetric key for message encryption.
-The group key is distributed to each member by encrypting it with their
-PGP public key. When a member is removed, the group key is rotated
-and re-distributed to remaining members.
+Group chats use AES-256-GCM for message encryption. How the *key* is
+established depends on the group's crypto suite (``kem_suite``), which is the
+PQC crypto-agility gate:
+
+* **Classical** (``rsa-pgp-wrap-v1``, the Q0 default) — a static AES-256 group
+  key is distributed to each member by encrypting it with their PGP public key,
+  and rotated + re-distributed when a member is removed. This is the original,
+  HNDL-exposed behaviour and is preserved UNCHANGED for back-compat.
+* **Hybrid post-quantum** (``x25519-mlkem768``, PQC Q2) — a per-EPOCH secret is
+  wrapped to each member with a hybrid X25519+ML-KEM-768 KEM (``skcomms.pqkem``,
+  once per epoch), and per-message keys are derived from it by a symmetric KDF
+  ratchet (see ``skchat.group_ratchet``). Re-keying on add/remove + a
+  50-msg/7-day bound gives forward secrecy and post-compromise security.
 
 Humans and agents are first-class participants with identical messaging
 capabilities. The only distinction is tool invocation scope: admins can
@@ -68,6 +77,12 @@ class GroupMember(BaseModel):
     participant_type: ParticipantType = ParticipantType.HUMAN
     display_name: str = ""
     public_key_armor: str = ""
+    # PQC Q2 (additive, back-compatible): hybrid X25519+ML-KEM-768 public key
+    # (hex of the 1216-byte ``skcomms.pqkem`` wire key) used to wrap the
+    # per-epoch group secret. Empty for classical-only members; such members
+    # fall back gracefully (they are skipped during hybrid distribution and the
+    # self-report flags the gap). Never populated for classical groups.
+    hybrid_kem_public_hex: str = ""
     joined_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     tool_scope: list[str] = Field(
         default_factory=list,
@@ -102,9 +117,12 @@ class GroupChat(BaseModel):
             unchanged; this field only lets the object self-describe its suite
             for a future non-breaking swap (e.g. ``"x25519-mlkem768-v2"`` in
             Phase 1).
-        epoch: Ratchet epoch (PQC Q0 scaffolding), distinct from
-            ``key_version``. Always ``0`` until the Phase-1 per-epoch group
-            ratchet (Q2) lands; reserved now so the field is back-compatible.
+        epoch: Ratchet epoch (PQC Q2). Distinct from ``key_version``. For
+            classical (``rsa-pgp-wrap-v1``) groups this stays ``0`` and is
+            unused. For hybrid (``x25519-mlkem768``) groups it increments on
+            every re-key (add / remove / 50-msg / 7-day bound); each epoch has
+            its own ``epoch_secret_hex`` from which per-message keys derive
+            (see ``skchat.group_ratchet``).
         metadata: Extensible metadata.
     """
 
@@ -121,6 +139,18 @@ class GroupChat(BaseModel):
     # PQC Q0 crypto-agility scaffolding (additive, back-compatible).
     kem_suite: str = "rsa-pgp-wrap-v1"
     epoch: int = 0
+    # PQC Q2 hybrid-ratchet state (additive, back-compatible). Only populated
+    # when ``kem_suite`` is the hybrid suite; classical groups leave these at
+    # their defaults and behave EXACTLY as before. ``epoch_secret_hex`` is the
+    # secret for the current ``epoch`` from which per-message keys are derived
+    # (see ``skchat.group_ratchet``). ``message_index`` is the next outbound
+    # message index within the epoch (drives the per-message KDF + the 50-msg
+    # re-key bound).
+    epoch_secret_hex: str = ""
+    message_index: int = 0
+    rekey_msg_bound: int = 50
+    rekey_age_seconds: int = 7 * 24 * 3600
+    epoch_started_at: float = 0.0
     metadata: dict[str, Any] = Field(default_factory=dict)
     rotation_history: list[dict[str, Any]] = Field(default_factory=list)
 
@@ -164,6 +194,9 @@ class GroupChat(BaseModel):
         public_key_armor: str = "",
         tool_scope: Optional[list[str]] = None,
         is_ai: bool = False,
+        hybrid_kem_public_hex: str = "",
+        rekey: bool = False,
+        transport: Any = None,
     ) -> Optional[GroupMember]:
         """Add a new member to the group.
 
@@ -191,10 +224,18 @@ class GroupChat(BaseModel):
             participant_type=participant_type,
             display_name=display_name or identity_uri.split(":")[-1],
             public_key_armor=public_key_armor,
+            hybrid_kem_public_hex=hybrid_kem_public_hex,
             tool_scope=tool_scope or [],
         )
         self.members.append(member)
         self.updated_at = datetime.now(timezone.utc)
+        # PQC Q2: a new member must NOT be able to read prior epochs (forward
+        # secrecy for the group's past), so adding a member re-keys hybrid
+        # groups into a fresh epoch. Opt-in via ``rekey=True`` so existing
+        # callers / classical groups are unaffected. Classical groups never
+        # re-key on add (unchanged behaviour).
+        if rekey and self.is_hybrid:
+            self.rotate_key(reason=f"member_added:{identity_uri}", transport=transport)
         return member
 
     def remove_member(self, identity_uri: str, transport: Any = None) -> bool:
@@ -249,12 +290,33 @@ class GroupChat(BaseModel):
         member = self.get_member(identity_uri)
         return member is not None and member.role == MemberRole.ADMIN
 
+    @property
+    def is_hybrid(self) -> bool:
+        """Whether this group uses the PQC Q2 hybrid epoch-ratchet.
+
+        Gate condition for ALL new behaviour: classical (``rsa-pgp-wrap-v1``)
+        groups return ``False`` and take the unchanged classical path
+        everywhere. Only groups whose ``kem_suite`` is the hybrid suite
+        (``x25519-mlkem768``) ratchet.
+        """
+        from .group_ratchet import HYBRID_KEM_SUITE
+
+        return self.kem_suite == HYBRID_KEM_SUITE
+
     def rotate_key(self, reason: str = "manual", transport: Any = None) -> str:
         """Generate a new group key, record history, and optionally broadcast.
 
-        Called automatically when a member is removed to maintain
-        forward secrecy.  Can also be triggered manually for periodic
-        key hygiene or after a security concern.
+        Called automatically when a member is removed to maintain forward
+        secrecy. Can also be triggered manually for periodic key hygiene or
+        after a security concern.
+
+        **Crypto-agility gate:** for classical (``rsa-pgp-wrap-v1``) groups this
+        is the original behaviour, unchanged — a fresh ``os.urandom(32)`` group
+        key, ``key_version += 1``, optional PGP re-distribution. For hybrid
+        (``x25519-mlkem768``) groups it ALSO advances the epoch ratchet: a fresh
+        epoch secret, ``epoch += 1``, message index reset, and re-distribution
+        via the hybrid KEM (``group_ratchet.wrap_epoch_secret``). ``key_version``
+        still increments in both modes so legacy readers observe a changed key.
 
         Args:
             reason: Human-readable reason for the rotation (e.g.
@@ -263,8 +325,14 @@ class GroupChat(BaseModel):
                 method is called to push the new key to every remaining member.
 
         Returns:
-            str: The new group key (hex-encoded).
+            str: The new group key (hex-encoded) — for hybrid groups this is the
+            new epoch secret (hex); for classical groups the new AES key (hex),
+            exactly as before.
         """
+        if self.is_hybrid:
+            return self._advance_epoch(reason=reason, transport=transport)
+
+        # --- Classical path (UNCHANGED — rsa-pgp-wrap-v1) ------------------
         self.group_key = os.urandom(32).hex()
         self.key_version += 1
 
@@ -303,6 +371,282 @@ class GroupChat(BaseModel):
             reason,
         )
         return self.group_key
+
+    def _advance_epoch(self, reason: str = "manual", transport: Any = None) -> str:
+        """Advance the hybrid ratchet into a new epoch (FS + PCS).
+
+        Generates an independent fresh epoch secret (so a leaked previous epoch
+        gives no information about this one — PCS), increments ``epoch``, resets
+        the per-message index, and re-distributes the new epoch secret to every
+        member that holds a hybrid-KEM public key. Members removed before this
+        call never receive the new secret and so cannot derive any key in the new
+        epoch (FS). ``key_version`` is bumped too for legacy-reader parity.
+
+        Returns:
+            str: The new epoch secret (hex-encoded).
+        """
+        import time as _time
+
+        from .group_ratchet import new_epoch_secret
+
+        secret = new_epoch_secret()
+        self.epoch_secret_hex = secret.hex()
+        self.epoch += 1
+        self.message_index = 0
+        self.epoch_started_at = _time.time()
+        self.key_version += 1
+        # Keep ``group_key`` populated so any legacy/back-compat reader still
+        # sees a 64-hex value that CHANGED on rotation. It is NOT used to
+        # encrypt messages in hybrid mode (per-message keys derive from the
+        # epoch secret) — it is purely a compatibility shim.
+        self.group_key = secret.hex()
+
+        self.rotation_history.append(
+            {
+                "event": "epoch_advance",
+                "reason": reason,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "version": self.key_version,
+                "epoch": self.epoch,
+                "suite": self.kem_suite,
+            }
+        )
+
+        if transport is not None:
+            distributions = GroupKeyDistributor.distribute_key(self)
+            key_package = {
+                "type": "group_epoch_advance",
+                "group_id": self.id,
+                "key_version": self.key_version,
+                "epoch": self.epoch,
+                "kem_suite": self.kem_suite,
+                "reason": reason,
+                "distributions": distributions,
+            }
+            for member in self.members:
+                try:
+                    transport.send(member.identity_uri, key_package)
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to broadcast epoch advance to %s: %s",
+                        member.identity_uri,
+                        exc,
+                    )
+
+        logger.info(
+            "Group %s advanced to epoch %d (v%d, reason: %s)",
+            self.id[:8],
+            self.epoch,
+            self.key_version,
+            reason,
+        )
+        return self.epoch_secret_hex
+
+    def migrate_to_hybrid(
+        self,
+        member_hybrid_keys: Optional[dict[str, str]] = None,
+        transport: Any = None,
+    ) -> str:
+        """Migrate an existing classical group to the hybrid epoch-ratchet.
+
+        Opt-in, non-destructive migration path (PQC Q2). Flips ``kem_suite`` to
+        the hybrid suite, attaches each member's hybrid-KEM public key (hex),
+        and seeds epoch 1 with a fresh hybrid-distributed secret. Members for
+        which no hybrid key is supplied keep messaging but are skipped during
+        hybrid distribution (documented graceful fallback) — they are not locked
+        out; the self-report flags the gap until they upload a key.
+
+        Calling this on an already-hybrid group is a no-op re-key.
+
+        Args:
+            member_hybrid_keys: ``identity_uri -> hex(1216-byte hybrid pub)``.
+                Members not present keep their existing (possibly empty) key.
+            transport: Optional transport for distributing the first epoch.
+
+        Returns:
+            str: The new epoch secret (hex).
+        """
+        from .group_ratchet import HYBRID_KEM_SUITE
+
+        if member_hybrid_keys:
+            for uri, pub_hex in member_hybrid_keys.items():
+                m = self.get_member(uri)
+                if m is not None:
+                    m.hybrid_kem_public_hex = pub_hex
+        self.kem_suite = HYBRID_KEM_SUITE
+        # Seed the first hybrid epoch (epoch becomes 1 via _advance_epoch).
+        return self._advance_epoch(reason="migrate_to_hybrid", transport=transport)
+
+    def ensure_epoch(self, transport: Any = None) -> None:
+        """Make sure a hybrid group has a live epoch secret (lazy-seed).
+
+        No-op for classical groups and for hybrid groups that already have an
+        epoch secret. If a hybrid group reaches messaging with no secret yet
+        (e.g. ``kem_suite`` set directly without migrating), seed epoch 1.
+        """
+        if self.is_hybrid and not self.epoch_secret_hex:
+            self._advance_epoch(reason="lazy_seed", transport=transport)
+
+    def maybe_rekey(self, transport: Any = None) -> bool:
+        """Re-key if the 50-message / 7-day bound is reached (hybrid only).
+
+        Returns:
+            bool: True if a re-key (epoch advance) happened.
+        """
+        if not self.is_hybrid or not self.epoch_secret_hex:
+            return False
+        import time as _time
+
+        over_msgs = self.message_index >= self.rekey_msg_bound
+        over_age = (
+            self.epoch_started_at > 0
+            and (_time.time() - self.epoch_started_at) >= self.rekey_age_seconds
+        )
+        if over_msgs or over_age:
+            reason = "rekey_bound:messages" if over_msgs else "rekey_bound:age"
+            self.rotate_key(reason=reason, transport=transport)
+            return True
+        return False
+
+    def encrypt_message(self, plaintext: str) -> dict[str, Any]:
+        """Encrypt a message for this group, honouring the active suite.
+
+        For classical groups: AES-256-GCM under the static ``group_key`` (the
+        original behaviour, via ``GroupMessageEncryptor``).
+
+        For hybrid groups: derive the next per-message key from the current
+        epoch secret + message index (symmetric KDF ratchet), encrypt with
+        AES-256-GCM, advance the index, and re-key if the bound is hit. The
+        returned envelope carries ``(epoch, index)`` so receivers derive the
+        same key (loss/reorder tolerant). NO PQ material rides per message.
+
+        Returns:
+            dict: ``{"suite", "epoch", "index", "ciphertext"}``. For classical
+            groups ``epoch``/``index`` are ``None``.
+        """
+        if not self.is_hybrid:
+            return {
+                "suite": self.kem_suite,
+                "epoch": None,
+                "index": None,
+                "ciphertext": GroupMessageEncryptor.encrypt(plaintext, self.group_key),
+            }
+
+        self.ensure_epoch()
+        from .group_ratchet import EpochRatchet
+
+        ratchet = EpochRatchet(
+            epoch=self.epoch,
+            epoch_secret=bytes.fromhex(self.epoch_secret_hex),
+            message_index=self.message_index,
+            rekey_msg_bound=self.rekey_msg_bound,
+            rekey_age_seconds=self.rekey_age_seconds,
+        )
+        index, key = ratchet.next_outbound_key()
+        self.message_index = ratchet.message_index
+        ciphertext = GroupMessageEncryptor.encrypt(plaintext, key.hex())
+        envelope = {
+            "suite": self.kem_suite,
+            "epoch": self.epoch,
+            "index": index,
+            "ciphertext": ciphertext,
+        }
+        # Honour the per-epoch message bound (re-key for the NEXT message).
+        self.maybe_rekey()
+        return envelope
+
+    def decrypt_message(self, envelope: dict[str, Any]) -> str:
+        """Decrypt a message envelope produced by :meth:`encrypt_message`.
+
+        Hybrid envelopes are decrypted by re-deriving the per-message key from
+        the carried ``(epoch, index)`` against the current epoch secret — so any
+        order, with gaps, decrypts as long as the receiver holds that epoch's
+        secret. Classical envelopes use the static group key.
+        """
+        suite = envelope.get("suite", self.kem_suite)
+        ciphertext = envelope["ciphertext"]
+        if suite != self.kem_suite or not self.is_hybrid or envelope.get("epoch") is None:
+            return GroupMessageEncryptor.decrypt(ciphertext, self.group_key)
+
+        from .group_ratchet import derive_message_key
+
+        epoch = envelope["epoch"]
+        index = envelope["index"]
+        if epoch != self.epoch:
+            raise ValueError(
+                f"message is for epoch {epoch} but group is at epoch {self.epoch} "
+                "(epoch secret for the message's epoch is required to decrypt)"
+            )
+        key = derive_message_key(bytes.fromhex(self.epoch_secret_hex), epoch, index)
+        return GroupMessageEncryptor.decrypt(ciphertext, key.hex())
+
+    def crypto_self_report(self) -> dict[str, Any]:
+        """Per-group crypto-posture self-report (PQC §4.4 — reflects REALITY).
+
+        Resolves this group's actual ``kem_suite`` against the
+        ``skcomms.crypto_suites`` registry (single source of truth) so a hybrid
+        group reports ``x25519-mlkem768`` [hybrid-pq] while classical groups
+        still report ``rsa-pgp-wrap-v1`` [classical]. Never hard-codes the
+        quantum-resistance verdict — it comes from the registry.
+
+        Returns:
+            dict: ``{group_id, kem_suite, status, quantum_resistant, epoch,
+                key_version, primitives, fips_refs, members_with_hybrid_key,
+                members_total, note}``.
+        """
+        status = "classical"
+        quantum_resistant = False
+        primitives: list[str] = []
+        fips_refs: list[str] = []
+        try:
+            from skcomms.crypto_suites import get_suite
+
+            suite = get_suite(self.kem_suite)
+            if suite is not None:
+                d = suite.to_dict()
+                status = d["status"]
+                quantum_resistant = d["quantum_resistant"]
+                primitives = d["primitives"]
+                fips_refs = d["fips_refs"]
+        except Exception:  # pragma: no cover - registry optional
+            pass
+
+        with_hybrid = sum(1 for m in self.members if m.hybrid_kem_public_hex)
+        total = len(self.members)
+        if self.is_hybrid:
+            if with_hybrid == total:
+                note = (
+                    "Hybrid epoch-ratchet: per-epoch secret wrapped via "
+                    "X25519+ML-KEM-768. Per-message keys derive symmetrically "
+                    "from the epoch secret (AES-256-GCM bulk)."
+                )
+            else:
+                note = (
+                    f"Hybrid group, but {total - with_hybrid}/{total} member(s) "
+                    "lack a hybrid-KEM key and fall back gracefully (skipped in "
+                    "hybrid distribution). Self-report flags the gap; the group "
+                    "is not fully hybrid-protected until they upload a key."
+                )
+        else:
+            note = (
+                "Classical PGP-wrap of a static AES-256 group key (HNDL-exposed). "
+                "Migrate to x25519-mlkem768 via GroupChat.migrate_to_hybrid()."
+            )
+
+        return {
+            "surface": "group-key",
+            "group_id": self.id,
+            "kem_suite": self.kem_suite,
+            "status": status,
+            "quantum_resistant": quantum_resistant,
+            "epoch": self.epoch,
+            "key_version": self.key_version,
+            "primitives": primitives,
+            "fips_refs": fips_refs,
+            "members_with_hybrid_key": with_hybrid,
+            "members_total": total,
+            "note": note,
+        }
 
     def touch(self) -> None:
         """Update activity timestamp and increment message count."""
@@ -666,10 +1010,14 @@ class GroupChat(BaseModel):
 
 
 class GroupKeyDistributor:
-    """Distributes the group symmetric key to members via PGP.
+    """Distributes the group key to members.
 
-    Each member receives the group key encrypted with their
-    individual PGP public key. Only they can decrypt it.
+    For classical groups each member receives the static AES group key
+    encrypted with their individual PGP public key. For hybrid groups
+    (``x25519-mlkem768``) each member receives the current epoch secret wrapped
+    with their hybrid X25519+ML-KEM-768 public key (``distribute_epoch_secret``
+    / ``unwrap_epoch_secret_for_member``). The ``distribute_key`` entry point
+    dispatches on ``group.is_hybrid``.
     """
 
     @staticmethod
@@ -737,12 +1085,25 @@ class GroupKeyDistributor:
     def distribute_key(group: GroupChat) -> dict[str, Optional[str]]:
         """Encrypt and distribute the group key to all members.
 
+        **Crypto-agility gate:** for classical groups this PGP-wraps the static
+        AES group key per member (original behaviour, unchanged). For hybrid
+        (``x25519-mlkem768``) groups it instead wraps the **current epoch
+        secret** to each member's hybrid-KEM public key via
+        ``group_ratchet.wrap_epoch_secret`` (X25519+ML-KEM-768), returning the
+        hex-encoded per-member payload. Members without a hybrid key resolve to
+        ``None`` and fall back gracefully (documented).
+
         Args:
-            group: The group whose key to distribute.
+            group: The group whose key (classical) or epoch secret (hybrid) to
+                distribute.
 
         Returns:
-            dict: identity_uri -> encrypted_key_str (None if member has no pubkey).
+            dict: identity_uri -> wrapped payload (None if the member cannot be
+            wrapped: no PGP pubkey for classical, no hybrid key for hybrid).
         """
+        if group.is_hybrid:
+            return GroupKeyDistributor.distribute_epoch_secret(group)
+
         result: dict[str, Optional[str]] = {}
         for member in group.members:
             encrypted = GroupKeyDistributor.encrypt_key_for_member(
@@ -751,6 +1112,69 @@ class GroupKeyDistributor:
             )
             result[member.identity_uri] = encrypted
         return result
+
+    @staticmethod
+    def distribute_epoch_secret(group: GroupChat) -> dict[str, Optional[str]]:
+        """Wrap the group's current epoch secret to each member (hybrid KEM).
+
+        For each member holding a hybrid-KEM public key, the epoch secret is
+        wrapped once (the PQ material — ML-KEM ciphertext — is paid here, per
+        epoch, NOT per message). Members lacking a hybrid key map to ``None``
+        (graceful fallback). The result is hex-encoded for JSON transport.
+
+        Args:
+            group: A hybrid group with a live ``epoch_secret_hex``.
+
+        Returns:
+            dict: identity_uri -> hex(wrapped payload) or ``None``.
+        """
+        from .group_ratchet import wrap_epoch_secret
+
+        result: dict[str, Optional[str]] = {}
+        if not group.epoch_secret_hex:
+            return {m.identity_uri: None for m in group.members}
+        secret = bytes.fromhex(group.epoch_secret_hex)
+        for member in group.members:
+            if not member.hybrid_kem_public_hex:
+                result[member.identity_uri] = None
+                continue
+            try:
+                pub = bytes.fromhex(member.hybrid_kem_public_hex)
+                payload = wrap_epoch_secret(secret, pub)
+                result[member.identity_uri] = payload.hex()
+            except Exception as exc:
+                logger.warning(
+                    "Failed to hybrid-wrap epoch secret for %s: %s",
+                    member.identity_uri,
+                    exc,
+                )
+                result[member.identity_uri] = None
+        return result
+
+    @staticmethod
+    def unwrap_epoch_secret_for_member(
+        wrapped_hex: str,
+        member_hybrid_private_hex: str,
+    ) -> Optional[str]:
+        """Recover the epoch secret a member received (hybrid KEM decap).
+
+        Args:
+            wrapped_hex: Hex payload from ``distribute_epoch_secret``.
+            member_hybrid_private_hex: Hex of the member's 2432-byte hybrid
+                private key.
+
+        Returns:
+            Hex-encoded 32-byte epoch secret, or ``None`` on failure.
+        """
+        from .group_ratchet import unwrap_epoch_secret
+
+        try:
+            payload = bytes.fromhex(wrapped_hex)
+            priv = bytes.fromhex(member_hybrid_private_hex)
+            return unwrap_epoch_secret(payload, priv).hex()
+        except Exception as exc:
+            logger.warning("Failed to unwrap epoch secret: %s", exc)
+            return None
 
 
 class GroupMessageEncryptor:
