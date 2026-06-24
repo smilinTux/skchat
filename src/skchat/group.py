@@ -92,6 +92,19 @@ class GroupChat(BaseModel):
         message_count: Total messages sent in the group.
         group_key: AES-256 symmetric key (hex-encoded, 64 chars).
         key_version: Incremented on key rotation.
+        kem_suite: Machine-readable key-encapsulation cipher-suite id (PQC Q0
+            crypto-agility). Describes how the group key is *wrapped* for
+            distribution. Defaults to the current classical suite
+            (``"rsa-pgp-wrap-v1"``) so groups serialized *without* this field
+            still load and are correctly reported as classical. The id resolves
+            against ``skcomms.crypto_suites`` (single source of truth). Phase 0
+            changes **no crypto** — the static AES group key + PGP key-wrap are
+            unchanged; this field only lets the object self-describe its suite
+            for a future non-breaking swap (e.g. ``"x25519-mlkem768-v2"`` in
+            Phase 1).
+        epoch: Ratchet epoch (PQC Q0 scaffolding), distinct from
+            ``key_version``. Always ``0`` until the Phase-1 per-epoch group
+            ratchet (Q2) lands; reserved now so the field is back-compatible.
         metadata: Extensible metadata.
     """
 
@@ -105,6 +118,9 @@ class GroupChat(BaseModel):
     message_count: int = 0
     group_key: str = Field(default_factory=lambda: os.urandom(32).hex())
     key_version: int = 1
+    # PQC Q0 crypto-agility scaffolding (additive, back-compatible).
+    kem_suite: str = "rsa-pgp-wrap-v1"
+    epoch: int = 0
     metadata: dict[str, Any] = Field(default_factory=dict)
     rotation_history: list[dict[str, Any]] = Field(default_factory=list)
 
