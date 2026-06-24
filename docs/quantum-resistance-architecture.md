@@ -196,6 +196,46 @@ Each phase: **goal · surfaces · library · acceptance · risk · claim unlocke
 - **Risk:** medium. OpenPGP PQC is pre-RFC (interop GnuPG/Sequoia/RNP improving, not guaranteed) → keep composites **additive/reversible**. ML-DSA sigs ~3.3 KB (50× Ed25519) — budget envelope/QR/Nostr payload sizes.
 - **Claim unlocked:** **§0.3** — "hybrid PQ signatures (Ed25519+ML-DSA-65), SLH-DSA root option."
 
+> **▶ Phase 2 PROGRESS — 2026-06-24 (.158): signing backend BUILT, root NOT yet rotated.** See §5.1 below for the verified state.
+
+#### 5.1 Phase 2 progress — Sequoia PQC signing backend landed (additive-first; root still classical)
+
+**Status: backend BUILT and wired into capauth; the live sovereign root is STILL CLASSICAL.** Phase 2's signing/identity prerequisite is solved at the *tooling* level — but no quantum-safe key has been issued for the real root yet, and none will be until the gated rotation ceremony (§7 open decision #4 "Root-key rotation"; see the honesty caveats below).
+
+**Backend decision (evidence-based) — why Sequoia, not GnuPG.**
+- **GnuPG is DISQUALIFIED for this work.** Its post-quantum support is **encryption-only** (ML-KEM / Kyber key-wrap). It **cannot sign or certify** with ML-DSA or SLH-DSA. (Tracked at GnuPG dev 2.5.20; stable 2.6 not shipped.) A PQC *signing* root cannot be built on GnuPG today.
+- **Sequoia `sq` is the only backend that can host a PQC signing root.** We built **`sq` 1.4.0-pqc.1** (sequoia-openpgp 2.2.0-pqc.1) from crates.io:
+  ```
+  cargo install sequoia-sq --version 1.4.0-pqc.1 --locked \
+      --no-default-features --features crypto-openssl
+  ```
+  - **Toolchain:** rustc 1.96.0 via rustup (Sequoia needs ≥1.79; the system rustc 1.75 is too old — system rust left untouched).
+  - **Crypto provider:** linuxbrew **OpenSSL 3.6.2** (native ML-KEM / ML-DSA / SLH-DSA). Build env: `OPENSSL_DIR=/home/linuxbrew/.linuxbrew/opt/openssl@3`, `BINDGEN_EXTRA_CLANG_ARGS="-I$OPENSSL_DIR/include"`, `PKG_CONFIG_PATH=$OPENSSL_DIR/lib/pkgconfig`, `CARGO_TARGET_DIR=~/pqc-build/target`. apt deps: `pkg-config capnproto clang libsqlite3-dev patchelf`.
+  - **Durability:** `patchelf --set-rpath /home/linuxbrew/.linuxbrew/opt/openssl@3/lib ~/.cargo/bin/sq` so `sq` runs without `LD_LIBRARY_PATH`. Binary: `~/.cargo/bin/sq`. Build script `~/pqc-build/build-sq.sh`, log `~/pqc-build/build.log`.
+
+**Verified `sq` PQC capability (generate → sign → verify, end-to-end).**
+- `sq key generate` cipher-suites in this build: `mldsa65-ed25519`, `mldsa87-ed448` (plus classical `cv25519`, `rsa2k/3k/4k`). **No standalone SLH-DSA primary** is exposed by `sq` here — SLH-DSA (FIPS 205) exists only at the liboqs layer (liboqs 0.14.0 ships the full SLH-DSA family + ML-DSA-87 + ML-KEM-1024, no rebuild needed). This narrows the §3/S1 "SLH-DSA standalone root" option to a liboqs path, **not** an `sq`-native one.
+- **Strongest standards root `sq` can emit = `mldsa87-ed448`** (requires `--profile rfc9580`, i.e. OpenPGP v6):
+  - Primary: **ML-DSA-87 + Ed448** composite (FIPS 204, NIST L5; certify + sign + auth) — draft code point **31**.
+  - Encryption subkey: **ML-KEM-1024 + X448** composite (FIPS 203, L5) — draft code point **36**.
+  - v6/RFC 9580 fingerprints are **64 hex chars** (not 40).
+- Note: `sq sign` has **no `--password` flag** — signing with a password-protected key must go through the `sq` keystore or another path (open item to investigate before the ceremony).
+
+**capauth code already landed (capauth `main` @ `34dbcf0`).**
+- `src/capauth/crypto/sequoia_backend.py` — **`SequoiaBackend`** implements the `CryptoBackend` ABC (`crypto/base.py`): `generate_keypair` / `sign` / `verify` / `fingerprint_from_armor`, driving the `sq` subprocess.
+- `src/capauth/models.py` — new **`Algorithm.HYBRID_ED448_MLDSA87`** (`"hybrid-ed448-mldsa87"`) + suite id **`"mldsa87-ed448-v2"`**; new **`CryptoBackendType.SEQUOIA`**. `crypto/__init__.py`: `get_backend(SEQUOIA)` wired.
+- `tests/test_sequoia_backend.py` — 4 TDD tests (keygen → ML-DSA-87, sign/verify + tamper, fingerprint round-trip, factory).
+- Existing surfaces this slots beside: PGPy backend `crypto/pgpy_backend.py`; profile init `profile.py` (`init_profile → backend.generate_keypair`); challenge sign/verify `identity.py`; hybrid Q7 challenge `pqc_identity.py`; bunker remote-signer + DID `docs/CRYPTO_SPEC.md`, `did.py`.
+
+> **Relation to the §5/§6 plan:** this is the **Q6 "Sequoia migration"** prerequisite delivered, plus the `mldsa87-ed448` (L5) option reserved for the sovereign root per §7 decision #2's recommendation ("reserve ML-KEM-1024 / SLH-DSA only for the sovereign root"). It does **not** yet deliver Q7 (hybrid sigs on live envelopes/DID/challenge) for the root, and it does **not** rotate the root.
+
+**HONESTY CAVEATS (do not soften):**
+- **The root identity is STILL CLASSICAL.** Chef's real sovereign root (fingerprint `02BC0EB3CAD31DB691A753C70C5629AB893F9746`) has **not** been migrated. Only the *capability to issue* a PQC root exists. No claim may state or imply the root is post-quantum yet.
+- **Additive + reversible first.** The root-key rotation is a **deliberate, later, gated** step — a sovereign-trust ceremony performed with Chef's real key (§7.4). It is intentionally *not* done.
+- **Pre-RFC.** We issue against **draft-ietf-openpgp-pqc-17** (Standards Track, in the RFC-Editor queue, **not yet an RFC**). Draft code points used: 30 ML-DSA-65+Ed25519, **31 ML-DSA-87+Ed448**, 32–34 SLH-DSA standalone, 35 ML-KEM-768+X25519, **36 ML-KEM-1024+X448**. These can change before the RFC; composites stay additive/reversible.
+- **Per-surface scope still holds.** Already shipped *separately* from the root (Q7-adjacent, additive/opt-in): hybrid per-message + DID/challenge signatures — `skcomms.pqsig` (ML-DSA-65+Ed25519 composite) + `capauth.pqc_identity`; sksecurity ledger Entry #8. The **root** is a distinct surface and remains classical until the ceremony.
+- Standards to cite, as always: FIPS 203 / 204 / 205 + RFC 8032 (Ed448) / RFC 9580 (OpenPGP v6). Forbidden as ever: "quantum-proof," unscoped "end-to-end," global/unconditional PQ, "CNSA-2.0."
+
 ### Phase 3 — Transport / media (mostly external deps)
 - **Goal:** close transport legs we can, document the ones we can't.
 - **Surfaces:** S9 (CF→origin via OpenSSL 3.5), S8 (tailnet — document + optional PSK), S10 (LiveKit DTLS — track upstream).
