@@ -181,7 +181,10 @@ def create_group_invite(
     token = _jwt.encode(payload, _secret(), algorithm="HS256")
     return {
         "token": token,
-        "join_url": f"/join/{token}",
+        # Point at the Flutter app's guest route (hash-routed under /app/), NOT
+        # /join/<token> — that collided with the old conf `/join/<room>?invite=`
+        # page ("invite parameter is missing"). fullLink() prefixes the origin.
+        "join_url": f"/app/#/g/{token}",
         "jti": jti,
         "group_id": gid,
         "expires_at": exp,
