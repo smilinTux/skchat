@@ -193,6 +193,9 @@ def publish_self_prekey(agent: Optional[str] = None) -> dict:
     """
     agent = (agent or _current_agent()).split("@")[0]
     bundle = agent_bundle(agent)
+    # Register the agent in the SHARED peer store so co-resident agents resolve it
+    # via load_peer_bundle() (RFC-0001 P1: the local-fleet prekey "exchange").
+    store_peer_bundle(agent, bundle)
     if bundle.get("suite") == HYBRID_SUITE:
         logger.info("PQC: published hybrid prekey for resident agent %s", agent)
     else:
@@ -202,6 +205,23 @@ def publish_self_prekey(agent: Optional[str] = None) -> dict:
             agent,
         )
     return bundle
+
+
+def sync_fleet_prekeys() -> dict[str, str]:
+    """Publish every co-resident agent's prekey into the shared peer store.
+
+    Scans the PQ dir for ``<agent>_hybrid.pub`` keypairs and registers each one
+    (idempotent) so all co-resident agents can resolve each other and DMs negotiate
+    the Level-3 ratchet. Returns ``{agent: suite}``.
+    """
+    published: dict[str, str] = {}
+    for pub in sorted(_pqc_dir().glob("*_hybrid.pub")):
+        agent = pub.name[: -len("_hybrid.pub")]
+        if not agent:
+            continue
+        bundle = publish_self_prekey(agent)
+        published[agent] = bundle.get("suite", CLASSICAL_SUITE)
+    return published
 
 
 # --------------------------------------------------------------------------- #
