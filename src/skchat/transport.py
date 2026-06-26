@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 import uuid
 from pathlib import Path
@@ -200,6 +201,35 @@ class ChatTransport:
             logger.debug("federation target resolve failed for %s: %s", recipient, exc)
         return None
 
+    def _dm_ratchet_manager(self):
+        """Lazily build the 1:1 DM ratchet manager (RFC-0001 P1), or None.
+
+        Gated OFF by default: returns a manager only when ``SKCHAT_DM_RATCHET`` is
+        truthy AND a hybrid keypair is available. Cached (incl. the None result) so
+        a disabled/unavailable build never re-pays the construction cost. Any error
+        degrades to None → the classical path, never a send/receive failure.
+        """
+        cached = getattr(self, "_dm_mgr_cached", "unset")
+        if cached != "unset":
+            return cached
+        mgr = None
+        flag = os.getenv("SKCHAT_DM_RATCHET", "").strip().lower()
+        if self._crypto and flag not in ("", "0", "false", "no", "off"):
+            try:
+                from pathlib import Path
+
+                from .dm_manager import DmRatchetManager
+
+                agent = (self._identity or "").split(":")[-1].split("@")[0] or "lumina"
+                store_dir = Path(os.path.expanduser("~/.skchat/pqc"))
+                store_dir.mkdir(parents=True, exist_ok=True)
+                mgr = DmRatchetManager.for_agent(self._crypto, agent, store_dir)
+            except Exception as exc:
+                logger.warning("DM ratchet manager unavailable (classical fallback): %s", exc)
+                mgr = None
+        self._dm_mgr_cached = mgr
+        return mgr
+
     def send_message(
         self,
         message: ChatMessage,
@@ -222,8 +252,23 @@ class ChatTransport:
 
         if self._crypto and recipient_public_armor:
             try:
-                outbound = self._crypto.encrypt_message(outbound, recipient_public_armor)
-                outbound = self._crypto.sign_message(outbound)
+                # RFC-0001 P1: prefer the Level-3 DM ratchet when enabled + the peer
+                # has a hybrid prekey (env SKCHAT_DM_RATCHET). Ratchet bodies are
+                # AEAD-authenticated and intentionally UNSIGNED (deniable). Any miss
+                # falls back to the unchanged classical PGP path.
+                mgr = self._dm_ratchet_manager()
+                sealed = (
+                    mgr.seal(outbound)
+                    if mgr is not None and mgr.can_ratchet(message.recipient)
+                    else outbound
+                )
+                if self._crypto.is_ratchet_message(sealed):
+                    outbound = sealed  # ratchet-sealed — deniable, no PGP signature
+                else:
+                    outbound = self._crypto.encrypt_message(
+                        outbound, recipient_public_armor
+                    )
+                    outbound = self._crypto.sign_message(outbound)
             except Exception as exc:
                 logger.warning("Encryption failed, sending plaintext: %s", exc)
 
@@ -442,7 +487,17 @@ class ChatTransport:
                         logger.warning("transport.py: %s", e)
                         pass
 
-                if self._crypto and msg.encrypted:
+                # RFC-0001 P1: a pqdr1: ratchet body opens through the DM ratchet
+                # (AEAD-authenticated, unsigned) — skip the classical decrypt/verify.
+                _mgr = self._dm_ratchet_manager()
+                if _mgr is not None and _mgr.can_open(msg):
+                    try:
+                        msg = _mgr.open(msg)
+                    except Exception as exc:
+                        logger.warning(
+                            "Ratchet-decrypt failed for %s: %s", msg.id[:8], exc
+                        )
+                elif self._crypto and msg.encrypted:
                     try:
                         msg = self._crypto.decrypt_message(msg)
                     except Exception as exc:
