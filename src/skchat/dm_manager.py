@@ -34,6 +34,7 @@ from skchat.dm_store import DmSessionStore
 from skchat.models import ChatMessage
 
 _HYBRID_SUITE = "x25519-mlkem768"
+_RATCHET_CAP = "pqdr1"
 _STORE_KEY_INFO = b"skchat/dm-store-key/v1"
 
 
@@ -129,10 +130,15 @@ class DmRatchetManager:
 
         def _resolve(peer: str) -> Optional[bytes]:
             bundle = prekeys.load_peer_bundle(peer)
+            # Capability gate: only ratchet with peers that advertise the pqdr1
+            # wire format — an app/older client with a hybrid prekey but no
+            # ``ratchet`` capability stays on the classical/one-shot path so it
+            # never receives an undecryptable frame (RFC-0001 downgrade protection).
             if (
                 bundle
                 and bundle.get("suite") == _HYBRID_SUITE
                 and bundle.get("hybrid_public_hex")
+                and bundle.get("ratchet") == _RATCHET_CAP
             ):
                 try:
                     return bytes.fromhex(bundle["hybrid_public_hex"])

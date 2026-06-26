@@ -104,3 +104,22 @@ def test_for_agent_factory_roundtrip_via_real_prekeys(crypto, tmp_path, monkeypa
     sealed = alice.seal(ChatMessage(sender="alice", recipient="bob", content="real wiring"))
     assert ChatCrypto.is_ratchet_message(sealed)  # actually ratchet-sealed
     assert bob.open(sealed).content == "real wiring"
+
+
+def test_for_agent_skips_peer_without_ratchet_capability(crypto, tmp_path, monkeypatch):
+    """SAFETY: a peer with a hybrid prekey but NO pqdr1 capability (your app / an
+    older client) must NOT be ratcheted — else it gets unreadable frames."""
+    monkeypatch.setenv("SKCHAT_HOME", str(tmp_path / "home"))
+    from skchat import pq_prekeys as pk
+
+    if not pk.available():
+        pytest.skip("no PQ backend (liboqs) available")
+
+    pk.ensure_agent_keypair("alice")
+    pk.ensure_agent_keypair("legacy")
+    legacy = pk.agent_bundle("legacy")  # a real hybrid bundle...
+    legacy.pop("ratchet", None)  # ...but it does NOT advertise pqdr1 support
+    pk.store_peer_bundle("legacy", legacy)
+
+    mgr = DmRatchetManager.for_agent(crypto, "alice", tmp_path / "a")
+    assert mgr.can_ratchet("legacy") is False  # capability-gated → classical fallback

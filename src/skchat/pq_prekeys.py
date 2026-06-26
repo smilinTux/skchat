@@ -38,6 +38,9 @@ logger = logging.getLogger(__name__)
 HYBRID_SUITE = "x25519-mlkem768"
 CLASSICAL_SUITE = "x25519-pgp-wrap-v1"
 
+#: DM ratchet wire-format capability this build advertises (RFC-0001 P1).
+RATCHET_CAP = "pqdr1"
+
 
 def _pqc_dir() -> Path:
     home = Path(os.environ.get("SKCHAT_HOME", Path.home() / ".skchat"))
@@ -76,6 +79,10 @@ def store_peer_bundle(peer: str, bundle: dict) -> None:
         "signature": bundle.get("signature"),
         "key_id": bundle.get("key_id"),
         "device_id": bundle.get("device_id"),
+        # Capability advert: which DM ratchet wire format this client speaks.
+        # Absent for clients without the pqdr1 codec (app / older agents) so the
+        # sender stays classical for them (RFC-0001 downgrade protection).
+        "ratchet": bundle.get("ratchet"),
     }
     path.write_text(json.dumps(safe, indent=2))
 
@@ -180,6 +187,9 @@ def agent_bundle(agent: Optional[str] = None) -> dict:
         "signature": None,
         "key_id": pub.hex()[:16],
         "device_id": f"{agent}-daemon",
+        # This build speaks the pqdr1 DM ratchet — advertise it so capable peers
+        # negotiate Level-3 and incapable ones (app/older clients) stay classical.
+        "ratchet": RATCHET_CAP,
     }
 
 
