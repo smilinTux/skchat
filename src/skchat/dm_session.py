@@ -215,6 +215,52 @@ class DmSession:
         key = derive_dm_message_key(secret, frame.epoch, frame.index)
         return AESGCM(key).decrypt(frame.nonce, frame.body, _frame_aad(frame.epoch, frame.index))
 
+    # -- persistence ----------------------------------------------------------
+
+    def snapshot(self) -> dict:
+        """Capture the full ratchet state as a JSON-safe dict (epoch secrets hex).
+
+        The returned dict carries **key material** (the epoch secrets) — callers
+        MUST seal it at rest (see :class:`skchat.dm_store.DmSessionStore`), never
+        persist it in the clear.
+        """
+        r = self._ratchet
+        return {
+            "v": 1,
+            "peer": self.peer,
+            "rekey_msg_bound": self.rekey_msg_bound,
+            "rekey_age_seconds": self.rekey_age_seconds,
+            "epoch_secrets": {str(e): s.hex() for e, s in self._epoch_secrets.items()},
+            "ratchet": None
+            if r is None
+            else {
+                "epoch": r.epoch,
+                "message_index": r.message_index,
+                "epoch_started_at": r.epoch_started_at,
+            },
+        }
+
+    @classmethod
+    def restore(cls, snap: dict) -> "DmSession":
+        """Rebuild a session from :meth:`snapshot` — same secrets, same next index."""
+        s = cls(
+            peer=snap["peer"],
+            rekey_msg_bound=snap["rekey_msg_bound"],
+            rekey_age_seconds=snap["rekey_age_seconds"],
+        )
+        s._epoch_secrets = {int(e): bytes.fromhex(h) for e, h in snap["epoch_secrets"].items()}
+        rt = snap.get("ratchet")
+        if rt is not None:
+            s._ratchet = DmRatchet(
+                epoch=rt["epoch"],
+                epoch_secret=s._epoch_secrets[rt["epoch"]],
+                message_index=rt["message_index"],
+                rekey_msg_bound=s.rekey_msg_bound,
+                rekey_age_seconds=s.rekey_age_seconds,
+                epoch_started_at=rt["epoch_started_at"],
+            )
+        return s
+
     # -- test/introspection ---------------------------------------------------
 
     def _epoch_secret_for_test(self, epoch: int) -> Optional[bytes]:
