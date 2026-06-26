@@ -516,6 +516,12 @@ class ChatDaemon:
                 f"PQC prekey published for {agent or 'self'}: suite={suite}",
                 "info",
             )
+            # Keep the whole co-resident fleet registered in the shared peer store
+            # so their DMs negotiate the Level-3 ratchet across restarts (RFC-0001
+            # P1; bundles are durable on disk but this refreshes the capability).
+            fleet = PQ.sync_fleet_prekeys()
+            if fleet:
+                self._log(f"PQC fleet prekeys synced: {sorted(fleet)}", "info")
         except Exception as exc:  # pragma: no cover - never fatal
             self._log(f"PQC prekey publish skipped: {exc}", "warning")
 

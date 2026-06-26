@@ -27,16 +27,35 @@ def test_session_roundtrip_single_message():
     assert bob_s.open(frame, my_hybrid_priv=bob.private_key) == b"hi bob"
 
 
-def test_kam_only_on_first_frame_of_epoch():
+def test_kam_repeated_on_first_frames_then_stops():
+    """The KAM rides the first few frames of an epoch (robust to a lost/reordered
+    first frame over a reliable transport), then stops (per-epoch amortisation)."""
     bob = hybrid_keypair()
     alice = DmSession(peer="bob")
 
-    f0 = alice.seal(b"one", peer_hybrid_pub=bob.public_key)
-    f1 = alice.seal(b"two", peer_hybrid_pub=bob.public_key)
+    frames = [alice.seal(f"m{i}".encode(), peer_hybrid_pub=bob.public_key) for i in range(5)]
 
-    assert f0.kam is not None  # establishes epoch 0
-    assert f1.kam is None  # same epoch — no re-key, no KAM
-    assert (f0.index, f1.index) == (0, 1)
+    from skchat.dm_session import _KAM_REPEAT
+
+    for i in range(_KAM_REPEAT):
+        assert frames[i].kam is not None, f"frame {i} should carry the KAM"
+    assert frames[_KAM_REPEAT].kam is None  # KAM stops after the repeat window
+    assert [f.index for f in frames] == [0, 1, 2, 3, 4]
+
+
+def test_reordered_kam_frame_establishes_epoch():
+    """A later KAM-bearing frame can establish the epoch if the very first is lost."""
+    bob = hybrid_keypair()
+    alice = DmSession(peer="bob")
+    bob_s = DmSession(peer="alice")
+
+    f0 = alice.seal(b"first", peer_hybrid_pub=bob.public_key)
+    f1 = alice.seal(b"second", peer_hybrid_pub=bob.public_key)  # also carries the KAM
+
+    # f0 is lost; f1 (carrying a repeated KAM) arrives first and still establishes.
+    assert f1.kam is not None
+    assert bob_s.open(f1, my_hybrid_priv=bob.private_key) == b"second"
+    _ = f0
 
 
 def test_multi_message_in_epoch_roundtrip():

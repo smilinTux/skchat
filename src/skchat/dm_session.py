@@ -44,6 +44,11 @@ from skchat.dm_ratchet import (
 _FRAME_NONCE_LEN = 12
 _AAD_PREFIX = b"skchat/dm-frame/v1"
 
+#: The KAM (wrapped epoch secret) rides the first ``_KAM_REPEAT`` frames of each
+#: epoch, not just the first — so a lost/reordered first frame over a reliable
+#: transport doesn't strand the epoch. Still per-epoch-amortised (3 of ~50 frames).
+_KAM_REPEAT = 3
+
 #: Wire marker for a sealed DM *ratchet* frame stored in ``ChatMessage.content``.
 #: Mirrors the hybrid-DM ``pqdm1:`` token shape (``skchat.crypto.PQDM_SCHEME``):
 #: classical PGP starts with ``-----BEGIN PGP``, hybrid one-shot with ``pqdm1:``,
@@ -166,11 +171,12 @@ class DmSession:
         self.rekey_age_seconds = rekey_age_seconds
         self._ratchet: Optional[DmRatchet] = None
         self._epoch_secrets: dict[int, bytes] = {}
+        self._current_kam: Optional[bytes] = None  # KAM for the current epoch
 
     # -- sender ---------------------------------------------------------------
 
     def _begin_epoch(self, epoch: int, peer_hybrid_pub: bytes) -> bytes:
-        """Start a fresh epoch: new secret, set the outbound ratchet, return the KAM."""
+        """Start a fresh epoch: new secret, set the outbound ratchet, store the KAM."""
         secret = new_epoch_secret()
         self._epoch_secrets[epoch] = secret
         self._ratchet = DmRatchet(
@@ -179,22 +185,24 @@ class DmSession:
             rekey_msg_bound=self.rekey_msg_bound,
             rekey_age_seconds=self.rekey_age_seconds,
         )
-        return wrap_dm_epoch_secret(secret, peer_hybrid_pub)
+        self._current_kam = wrap_dm_epoch_secret(secret, peer_hybrid_pub)
+        return self._current_kam
 
     def seal(self, plaintext: bytes, peer_hybrid_pub: bytes) -> SealedDmFrame:
         """Seal a plaintext to the peer, (re)keying as needed.
 
         Establishes epoch 0 on first use, or rolls to the next epoch once the
-        current one hits its bound — the KAM rides on that epoch's first frame.
+        current one hits its bound — the KAM rides the first ``_KAM_REPEAT`` frames
+        of each epoch (robust to a lost/reordered first frame).
         """
-        kam: Optional[bytes] = None
         if self._ratchet is None:
-            kam = self._begin_epoch(0, peer_hybrid_pub)
+            self._begin_epoch(0, peer_hybrid_pub)
         elif self._ratchet.should_rekey():
-            kam = self._begin_epoch(self._ratchet.epoch + 1, peer_hybrid_pub)
+            self._begin_epoch(self._ratchet.epoch + 1, peer_hybrid_pub)
 
         idx, key = self._ratchet.next_outbound_key()
         epoch = self._ratchet.epoch
+        kam = self._current_kam if idx < _KAM_REPEAT else None
         nonce = os.urandom(_FRAME_NONCE_LEN)
         body = AESGCM(key).encrypt(nonce, plaintext, _frame_aad(epoch, idx))
         return SealedDmFrame(epoch=epoch, index=idx, nonce=nonce, body=body, kam=kam)
@@ -231,6 +239,7 @@ class DmSession:
             "rekey_msg_bound": self.rekey_msg_bound,
             "rekey_age_seconds": self.rekey_age_seconds,
             "epoch_secrets": {str(e): s.hex() for e, s in self._epoch_secrets.items()},
+            "current_kam": self._current_kam.hex() if self._current_kam else None,
             "ratchet": None
             if r is None
             else {
@@ -249,6 +258,8 @@ class DmSession:
             rekey_age_seconds=snap["rekey_age_seconds"],
         )
         s._epoch_secrets = {int(e): bytes.fromhex(h) for e, h in snap["epoch_secrets"].items()}
+        ck = snap.get("current_kam")
+        s._current_kam = bytes.fromhex(ck) if ck else None
         rt = snap.get("ratchet")
         if rt is not None:
             s._ratchet = DmRatchet(
