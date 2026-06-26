@@ -22,9 +22,10 @@ transport/persistence wiring is a thin adapter on top.
 
 from __future__ import annotations
 
+import base64
 import os
 import struct
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -42,6 +43,12 @@ from skchat.dm_ratchet import (
 
 _FRAME_NONCE_LEN = 12
 _AAD_PREFIX = b"skchat/dm-frame/v1"
+
+#: Wire marker for a sealed DM *ratchet* frame stored in ``ChatMessage.content``.
+#: Mirrors the hybrid-DM ``pqdm1:`` token shape (``skchat.crypto.PQDM_SCHEME``):
+#: classical PGP starts with ``-----BEGIN PGP``, hybrid one-shot with ``pqdm1:``,
+#: and a ratchet frame with this prefix — all three coexist in the same field.
+PQDR_SCHEME = "pqdr1:"
 
 
 def _frame_aad(epoch: int, index: int) -> bytes:
@@ -67,6 +74,81 @@ class SealedDmFrame:
     nonce: bytes
     body: bytes
     kam: Optional[bytes] = None
+
+    def to_token(self) -> str:
+        """Serialize to the ``pqdr1:`` wire token (``PQDR_SCHEME + base64(binary)``).
+
+        Explicit length-prefixed big-endian binary, so the form is self-describing
+        and the round-trip is exact — including the ``kam=None`` vs ``kam=present``
+        distinction (a one-byte presence flag separates "absent" from "empty")::
+
+            epoch(u64) || index(u64)
+              || nonce_len(u32) || nonce
+              || body_len(u32)  || body
+              || kam_flag(u8)   || [kam_len(u32) || kam]
+        """
+        parts = [
+            struct.pack(
+                ">QQ",
+                self.epoch & 0xFFFFFFFFFFFFFFFF,
+                self.index & 0xFFFFFFFFFFFFFFFF,
+            ),
+            struct.pack(">I", len(self.nonce)),
+            self.nonce,
+            struct.pack(">I", len(self.body)),
+            self.body,
+        ]
+        if self.kam is None:
+            parts.append(struct.pack(">B", 0))
+        else:
+            parts.append(struct.pack(">B", 1))
+            parts.append(struct.pack(">I", len(self.kam)))
+            parts.append(self.kam)
+        blob = b"".join(parts)
+        return PQDR_SCHEME + base64.b64encode(blob).decode("ascii")
+
+    @classmethod
+    def from_token(cls, token: str) -> "SealedDmFrame":
+        """Parse a ``pqdr1:`` token back into a :class:`SealedDmFrame`.
+
+        Raises:
+            ValueError: if the token is not ``pqdr1:``-schemed, not valid base64,
+                or the binary is truncated / malformed (never a crash on bad input).
+        """
+        if not isinstance(token, str) or not token.startswith(PQDR_SCHEME):
+            raise ValueError(f"not a {PQDR_SCHEME!r} ratchet token")
+        try:
+            blob = base64.b64decode(token[len(PQDR_SCHEME) :], validate=True)
+        except (ValueError, base64.binascii.Error) as exc:
+            raise ValueError(f"invalid base64 in ratchet token: {exc}") from exc
+
+        view = memoryview(blob)
+        off = 0
+
+        def _take(n: int) -> bytes:
+            nonlocal off
+            if off + n > len(view):
+                raise ValueError("truncated ratchet frame")
+            chunk = bytes(view[off : off + n])
+            off += n
+            return chunk
+
+        epoch, index = struct.unpack(">QQ", _take(16))
+        (nonce_len,) = struct.unpack(">I", _take(4))
+        nonce = _take(nonce_len)
+        (body_len,) = struct.unpack(">I", _take(4))
+        body = _take(body_len)
+        (kam_flag,) = struct.unpack(">B", _take(1))
+        if kam_flag == 0:
+            kam: Optional[bytes] = None
+        elif kam_flag == 1:
+            (kam_len,) = struct.unpack(">I", _take(4))
+            kam = _take(kam_len)
+        else:
+            raise ValueError(f"invalid kam presence flag: {kam_flag}")
+        if off != len(view):
+            raise ValueError("trailing bytes after ratchet frame")
+        return cls(epoch=epoch, index=index, nonce=nonce, body=body, kam=kam)
 
 
 class DmSession:

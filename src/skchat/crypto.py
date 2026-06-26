@@ -482,6 +482,104 @@ class ChatCrypto:
             update={"content": plaintext.decode("utf-8"), "encrypted": False}
         )
 
+    # ------------------------------------------------------------------
+    # Ratchet DM path — stateful per-epoch sealing (RFC-0001 P1).
+    #
+    # Drives a ``skchat.dm_session.DmSession`` (forward secrecy across epochs +
+    # PQ rekey heal) instead of the hybrid *one-shot* seal. The sealed frame is
+    # stored as a ``pqdr1:`` token in ``content`` (mirrors the ``pqdm1:`` shape).
+    # Pure methods — no daemon/persistence wiring here.
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def is_ratchet_message(message: ChatMessage) -> bool:
+        """Whether a message carries a sealed DM *ratchet* frame (``pqdr1:``)."""
+        from .dm_session import PQDR_SCHEME
+
+        c = message.content or ""
+        return c.startswith(PQDR_SCHEME)
+
+    def encrypt_message_ratchet(
+        self,
+        message: ChatMessage,
+        session,
+        peer_hybrid_pub: bytes,
+    ) -> ChatMessage:
+        """Seal a DM through the per-epoch ratchet ``session`` to the peer.
+
+        Calls ``session.seal(plaintext, peer_hybrid_pub)`` (which (re)keys the
+        epoch as needed and rides the wrapped epoch secret on the first frame of
+        each epoch), stores the frame as a ``pqdr1:`` token in ``content``, and
+        records the hybrid KEM suite (X25519 + ML-KEM-768, FIPS 203 ML-KEM) +
+        the ratchet mode in ``metadata``. Hybrid is secure if EITHER leg holds.
+
+        Args:
+            message: ChatMessage with plaintext content.
+            session: The :class:`skchat.dm_session.DmSession` for this peer.
+            peer_hybrid_pub: The peer's hybrid public key (KAM recipient).
+
+        Returns:
+            ChatMessage: Encrypted (ratchet) copy with a ``pqdr1:`` token body.
+
+        Raises:
+            EncryptionError: if ratchet sealing fails.
+        """
+        if message.encrypted:
+            return message
+        try:
+            frame = session.seal(message.content.encode("utf-8"), peer_hybrid_pub)
+            token = frame.to_token()
+            meta = dict(message.metadata)
+            meta["kem_suite"] = "x25519-mlkem768"
+            meta["ratchet"] = "dm-epoch"
+            return message.model_copy(
+                update={
+                    "content": token,
+                    "encrypted": True,
+                    "metadata": meta,
+                }
+            )
+        except Exception as exc:
+            logger.warning("crypto.py: %s", exc)
+            raise EncryptionError(f"Failed to ratchet-encrypt message: {exc}") from exc
+
+    def decrypt_message_ratchet(
+        self,
+        message: ChatMessage,
+        session,
+        my_hybrid_priv: bytes,
+    ) -> ChatMessage:
+        """Open a ratchet-sealed DM (``pqdr1:`` token) through ``session``.
+
+        Parses the token back into a ``SealedDmFrame``, accepts its KAM if it
+        opens a new epoch, and decrypts the frame for ``(epoch, index)``.
+
+        Args:
+            message: ChatMessage with a ``pqdr1:`` ratchet body.
+            session: The :class:`skchat.dm_session.DmSession` for this peer.
+            my_hybrid_priv: This agent's hybrid private key (unwraps the KAM).
+
+        Returns:
+            ChatMessage: Copy with decrypted plaintext content.
+
+        Raises:
+            DecryptionError: on a non-ratchet body, malformed token, or open failure.
+        """
+        from .dm_session import PQDR_SCHEME, SealedDmFrame
+
+        c = message.content or ""
+        if not c.startswith(PQDR_SCHEME):
+            raise DecryptionError("not a ratchet-sealed message")
+        try:
+            frame = SealedDmFrame.from_token(c)
+            plaintext = session.open(frame, my_hybrid_priv)
+        except Exception as exc:
+            logger.warning("crypto.py: %s", exc)
+            raise DecryptionError(f"Failed to ratchet-decrypt message: {exc}") from exc
+        return message.model_copy(
+            update={"content": plaintext.decode("utf-8"), "encrypted": False}
+        )
+
     def sign_message(self, message: ChatMessage) -> ChatMessage:
         """Sign a ChatMessage's content with our private key.
 
