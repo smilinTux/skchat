@@ -46,6 +46,28 @@ _LOCAL_PEERS: frozenset[str] = frozenset(
 )
 
 
+def _urllib_get_json(url: str, *, timeout: float = 4.0) -> Optional[object]:
+    """Real S2S getter: GET *url* and return parsed JSON (or None).
+
+    The production transport for :func:`prekey_exchange.fetch_peer_prekey` — a
+    plain stdlib ``urllib`` GET (no new dependency). Returns the decoded JSON
+    object, or ``None`` for an empty body / >=400 status. Network/parse errors
+    propagate to ``fetch_peer_prekey``, which already wraps the getter in
+    try/except and degrades to the classical path. Tests inject a stub instead,
+    so this is never exercised against the network in CI.
+    """
+    import urllib.request
+
+    req = urllib.request.Request(url, headers={"Accept": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
+        if getattr(resp, "status", 200) >= 400:
+            return None
+        data = resp.read()
+    if not data:
+        return None
+    return json.loads(data.decode("utf-8"))
+
+
 def _write_local_loopback(message: ChatMessage) -> None:
     """Write a plaintext envelope to ~/.skcomms/outbox/ for same-machine delivery.
 
@@ -146,6 +168,14 @@ class ChatTransport:
         self._fallback_transport = fallback_transport
         # Per-fingerprint inbox root; override in tests to use a tmp dir
         self._file_inbox_root: Path = _FILE_INBOX_ROOT
+        # First-contact prekey fetch (RFC-0001 P1 cross-node). Injectable so the
+        # wiring is unit-tested without the network: the HTTP getter and the
+        # federation inbox resolver default to the real implementations, and
+        # ``_prekey_fetch_attempted`` makes the pull one-shot per process so a
+        # classical / unroutable peer is never re-hammered.
+        self._prekey_http_get = _urllib_get_json
+        self._prekey_inbox_resolver: Optional[object] = None  # None => skcomms default
+        self._prekey_fetch_attempted: set[str] = set()
 
     @classmethod
     def from_config(
@@ -221,7 +251,13 @@ class ChatTransport:
                 from .dm_manager import DmRatchetManager
 
                 agent = (self._identity or "").split(":")[-1].split("@")[0] or "lumina"
-                store_dir = Path(os.path.expanduser("~/.skchat/pqc"))
+                # Co-locate the DM-session store with the prekey store: both honor
+                # SKCHAT_HOME (pq_prekeys uses it for ~/.skchat/pqc). Identical to
+                # the previous hard-coded path in production (SKCHAT_HOME unset →
+                # ~/.skchat), but keeps the at-rest store-key (derived from the
+                # SKCHAT_HOME-scoped hybrid key) and the session DB on one tree.
+                home = Path(os.environ.get("SKCHAT_HOME") or os.path.expanduser("~/.skchat"))
+                store_dir = home / "pqc"
                 store_dir.mkdir(parents=True, exist_ok=True)
                 mgr = DmRatchetManager.for_agent(self._crypto, agent, store_dir)
             except Exception as exc:
@@ -229,6 +265,63 @@ class ChatTransport:
                 mgr = None
         self._dm_mgr_cached = mgr
         return mgr
+
+    def _maybe_fetch_remote_prekey(self, peer: str) -> bool:
+        """First-contact: pull a federated peer's pqdr1 prekey over S2S, once.
+
+        Wires :func:`prekey_exchange.fetch_peer_prekey` into the live path so a
+        REMOTE peer (e.g. ``jarvis@<op>.<realm>`` on another node) — who never
+        lands in our local prekey store — can be ratcheted cross-node. Attempted
+        only when ALL of:
+
+          * the DM ratchet is enabled (``SKCHAT_DM_RATCHET`` — surfaced as a live
+            :class:`DmRatchetManager`; OFF ⇒ no fetch at all), AND
+          * we do NOT already have a ratchet-capable bundle for the peer, AND
+          * the peer resolves to a reachable remote node (``https-s2s`` inbox).
+
+        Downgrade-safe: an unroutable peer, a bundle without the ``pqdr1``
+        capability, or any error ⇒ stays classical, never raises. The pull is
+        one-shot per process (``_prekey_fetch_attempted``) so a classical /
+        unreachable peer is not re-fetched on every message.
+
+        Returns:
+            bool: True iff a ratchet-capable bundle is now stored locally.
+        """
+        mgr = self._dm_ratchet_manager()
+        if mgr is None:
+            return False  # ratchet disabled / no local hybrid keypair → classical
+        # Already resolvable as a ratchet-capable peer? nothing to fetch.
+        try:
+            if mgr.can_ratchet(peer):
+                return True
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("can_ratchet(%s) probe failed: %s", peer, exc)
+            return False
+
+        norm = peer.split(":", 1)[1] if peer.startswith("capauth:") else peer
+        short = norm.split("@", 1)[0]
+        if short in self._prekey_fetch_attempted:
+            return False  # one-shot per process — don't hammer a classical peer
+
+        fqid = self._federation_target(peer)
+        if not fqid:
+            return False  # not a reachable remote node → classical (no fetch)
+
+        self._prekey_fetch_attempted.add(short)
+        try:
+            from . import prekey_exchange
+
+            kwargs: dict = {"http_get": self._prekey_http_get}
+            if self._prekey_inbox_resolver is not None:
+                kwargs["inbox_resolver"] = self._prekey_inbox_resolver
+            stored = prekey_exchange.fetch_peer_prekey(fqid, **kwargs)
+            if prekey_exchange.is_ratchet_capable(stored):
+                logger.info("Fetched pqdr1 prekey for remote peer %s (cross-node ratchet)", short)
+                return True
+            return False
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("remote prekey fetch for %s failed (classical fallback): %s", peer, exc)
+            return False
 
     def send_message(
         self,
@@ -257,6 +350,11 @@ class ChatTransport:
                 # AEAD-authenticated and intentionally UNSIGNED (deniable). Any miss
                 # falls back to the unchanged classical PGP path.
                 mgr = self._dm_ratchet_manager()
+                if mgr is not None and not mgr.can_ratchet(message.recipient):
+                    # First-contact: pull a federated peer's pqdr1 prekey so this
+                    # cross-node DM can ratchet. No-op when already resolvable /
+                    # not a remote node — downgrade-safe (classical fallback).
+                    self._maybe_fetch_remote_prekey(message.recipient)
                 sealed = (
                     mgr.seal(outbound)
                     if mgr is not None and mgr.can_ratchet(message.recipient)
@@ -515,6 +613,11 @@ class ChatTransport:
                 msg = msg.model_copy(update={"delivery_status": DeliveryStatus.DELIVERED})
                 self._history.store_message(msg)
                 messages.append(msg)
+
+                # First-contact pre-warm: if this arrived from a reachable remote
+                # node and the ratchet is on, pull its pqdr1 prekey so our REPLY
+                # can ratchet cross-node. Best-effort + one-shot — never fatal.
+                self._maybe_fetch_remote_prekey(msg.sender)
 
             except Exception as exc:
                 logger.debug("Failed to process envelope: %s", exc)
