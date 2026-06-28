@@ -170,15 +170,23 @@ class DmSession:
         self.rekey_msg_bound = rekey_msg_bound
         self.rekey_age_seconds = rekey_age_seconds
         self._ratchet: Optional[DmRatchet] = None
-        self._epoch_secrets: dict[int, bytes] = {}
-        self._current_kam: Optional[bytes] = None  # KAM for the current epoch
+        # SEPARATE epoch namespaces for the two directions. The send and recv
+        # chains each number their epochs from 0 independently, so on a single
+        # shared per-peer session "send epoch 0" (a secret this side generated)
+        # and "recv epoch 0" (the peer's epoch-0 secret learned from its KAM)
+        # must NOT share a keyspace — otherwise a session that already sealed at
+        # epoch 0 would ignore the peer's epoch-0 KAM and true interleaved
+        # bidirectional traffic on ONE session would be impossible.
+        self._send_epoch_secrets: dict[int, bytes] = {}
+        self._recv_epoch_secrets: dict[int, bytes] = {}
+        self._current_kam: Optional[bytes] = None  # KAM for the current SEND epoch
 
     # -- sender ---------------------------------------------------------------
 
     def _begin_epoch(self, epoch: int, peer_hybrid_pub: bytes) -> bytes:
         """Start a fresh epoch: new secret, set the outbound ratchet, store the KAM."""
         secret = new_epoch_secret()
-        self._epoch_secrets[epoch] = secret
+        self._send_epoch_secrets[epoch] = secret
         self._ratchet = DmRatchet(
             epoch=epoch,
             epoch_secret=secret,
@@ -210,12 +218,18 @@ class DmSession:
     # -- receiver -------------------------------------------------------------
 
     def open(self, frame: SealedDmFrame, my_hybrid_priv: bytes) -> bytes:
-        """Open a sealed frame, accepting its KAM if it carries a new epoch."""
-        if frame.kam is not None and frame.epoch not in self._epoch_secrets:
-            self._epoch_secrets[frame.epoch] = unwrap_dm_epoch_secret(
+        """Open a sealed frame, accepting its KAM if it carries a new epoch.
+
+        Inbound frames key off the **recv** namespace only — so a frame's epoch
+        number is matched against epochs the PEER has opened, never against this
+        session's own send epochs. That is what lets a session re-key from the
+        peer's KAM even at an epoch number it has already sealed at itself.
+        """
+        if frame.kam is not None and frame.epoch not in self._recv_epoch_secrets:
+            self._recv_epoch_secrets[frame.epoch] = unwrap_dm_epoch_secret(
                 frame.kam, my_hybrid_priv
             )
-        secret = self._epoch_secrets.get(frame.epoch)
+        secret = self._recv_epoch_secrets.get(frame.epoch)
         if secret is None:
             raise DmRatchetError(
                 f"no epoch secret for epoch {frame.epoch} (missing key-agreement message)"
@@ -234,11 +248,20 @@ class DmSession:
         """
         r = self._ratchet
         return {
-            "v": 1,
+            # v2 splits the single ``epoch_secrets`` namespace into independent
+            # ``send_epoch_secrets`` / ``recv_epoch_secrets``. :meth:`restore`
+            # still reads the v1 single-namespace shape (back-compat), so existing
+            # sealed at-rest stores load unchanged.
+            "v": 2,
             "peer": self.peer,
             "rekey_msg_bound": self.rekey_msg_bound,
             "rekey_age_seconds": self.rekey_age_seconds,
-            "epoch_secrets": {str(e): s.hex() for e, s in self._epoch_secrets.items()},
+            "send_epoch_secrets": {
+                str(e): s.hex() for e, s in self._send_epoch_secrets.items()
+            },
+            "recv_epoch_secrets": {
+                str(e): s.hex() for e, s in self._recv_epoch_secrets.items()
+            },
             "current_kam": self._current_kam.hex() if self._current_kam else None,
             "ratchet": None
             if r is None
@@ -257,14 +280,34 @@ class DmSession:
             rekey_msg_bound=snap["rekey_msg_bound"],
             rekey_age_seconds=snap["rekey_age_seconds"],
         )
-        s._epoch_secrets = {int(e): bytes.fromhex(h) for e, h in snap["epoch_secrets"].items()}
+        if "send_epoch_secrets" in snap or "recv_epoch_secrets" in snap:
+            # v2: independent send/recv namespaces.
+            s._send_epoch_secrets = {
+                int(e): bytes.fromhex(h)
+                for e, h in snap.get("send_epoch_secrets", {}).items()
+            }
+            s._recv_epoch_secrets = {
+                int(e): bytes.fromhex(h)
+                for e, h in snap.get("recv_epoch_secrets", {}).items()
+            }
+        else:
+            # Legacy v1: a single ``epoch_secrets`` namespace that the old code
+            # shared across BOTH directions. We can't tell which entries were
+            # send vs recv, so seed BOTH namespaces from it: the send ratchet
+            # (rebuilt below) finds its current secret, and any previously-learned
+            # recv epoch still opens. Going forward, new epochs key independently.
+            legacy = {
+                int(e): bytes.fromhex(h) for e, h in snap.get("epoch_secrets", {}).items()
+            }
+            s._send_epoch_secrets = dict(legacy)
+            s._recv_epoch_secrets = dict(legacy)
         ck = snap.get("current_kam")
         s._current_kam = bytes.fromhex(ck) if ck else None
         rt = snap.get("ratchet")
         if rt is not None:
             s._ratchet = DmRatchet(
                 epoch=rt["epoch"],
-                epoch_secret=s._epoch_secrets[rt["epoch"]],
+                epoch_secret=s._send_epoch_secrets[rt["epoch"]],
                 message_index=rt["message_index"],
                 rekey_msg_bound=s.rekey_msg_bound,
                 rekey_age_seconds=s.rekey_age_seconds,
@@ -275,5 +318,17 @@ class DmSession:
     # -- test/introspection ---------------------------------------------------
 
     def _epoch_secret_for_test(self, epoch: int) -> Optional[bytes]:
-        """Return the stored secret for ``epoch`` (tests / introspection only)."""
-        return self._epoch_secrets.get(epoch)
+        """Return the stored **send** secret for ``epoch`` (tests / introspection).
+
+        Back-compat alias for :meth:`_send_epoch_secret_for_test` — existing tests
+        call this after sealing, expecting the outbound (send-chain) secret.
+        """
+        return self._send_epoch_secrets.get(epoch)
+
+    def _send_epoch_secret_for_test(self, epoch: int) -> Optional[bytes]:
+        """Return the stored **send**-chain secret for ``epoch`` (tests only)."""
+        return self._send_epoch_secrets.get(epoch)
+
+    def _recv_epoch_secret_for_test(self, epoch: int) -> Optional[bytes]:
+        """Return the stored **recv**-chain secret for ``epoch`` (tests only)."""
+        return self._recv_epoch_secrets.get(epoch)
