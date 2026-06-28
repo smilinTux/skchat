@@ -1,5 +1,7 @@
 # skchat — AI-Native Encrypted Chat 🐧
 
+[![Tests](https://github.com/smilinTux/skchat/actions/workflows/pytest.yml/badge.svg)](https://github.com/smilinTux/skchat/actions/workflows/pytest.yml)
+
 > **Chat should be sovereign — and your AI should be in the room.**
 > Text, voice, and files between humans and AI agents, end-to-end PGP-encrypted,
 > carried over your own transports, identified by your own keys. No SaaS, no
