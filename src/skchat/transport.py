@@ -196,6 +196,15 @@ class ChatTransport:
         Returns:
             ChatTransport: Configured instance.
         """
+        # Wire the agent's ChatCrypto into the live path if the caller didn't
+        # supply one — without this the daemon/CLI/webui built ChatTransport with
+        # crypto=None, leaving the DM ratchet inert (RFC-0001 P1) even with
+        # SKCHAT_DM_RATCHET=1. Best-effort: load_agent_crypto returns None on any
+        # failure, preserving the exact prior (classical/skcomms-signed) behaviour.
+        if kwargs.get("crypto") is None:
+            from .crypto import load_agent_crypto
+
+            kwargs["crypto"] = load_agent_crypto(identity)
         return cls(skcomms=skcomms, history=history, identity=identity, **kwargs)
 
     @property
@@ -343,32 +352,34 @@ class ChatTransport:
         """
         outbound = message.model_copy()
 
-        if self._crypto and recipient_public_armor:
+        # RFC-0001 P1: the Level-3 DM ratchet engages whenever it is enabled and the
+        # peer advertises a hybrid prekey — INDEPENDENT of a classical public armor.
+        # Federated cross-node DMs carry no recipient_public_armor but must still
+        # ratchet; the prior code gated the whole seal behind recipient_public_armor,
+        # so federated DMs silently went out plaintext. Ratchet bodies are AEAD-
+        # authenticated and intentionally UNSIGNED (deniable).
+        if self._crypto:
             try:
-                # RFC-0001 P1: prefer the Level-3 DM ratchet when enabled + the peer
-                # has a hybrid prekey (env SKCHAT_DM_RATCHET). Ratchet bodies are
-                # AEAD-authenticated and intentionally UNSIGNED (deniable). Any miss
-                # falls back to the unchanged classical PGP path.
                 mgr = self._dm_ratchet_manager()
-                if mgr is not None and not mgr.can_ratchet(message.recipient):
-                    # First-contact: pull a federated peer's pqdr1 prekey so this
-                    # cross-node DM can ratchet. No-op when already resolvable /
-                    # not a remote node — downgrade-safe (classical fallback).
-                    self._maybe_fetch_remote_prekey(message.recipient)
-                sealed = (
-                    mgr.seal(outbound)
-                    if mgr is not None and mgr.can_ratchet(message.recipient)
-                    else outbound
-                )
-                if self._crypto.is_ratchet_message(sealed):
-                    outbound = sealed  # ratchet-sealed — deniable, no PGP signature
-                else:
-                    outbound = self._crypto.encrypt_message(
-                        outbound, recipient_public_armor
-                    )
-                    outbound = self._crypto.sign_message(outbound)
+                if mgr is not None:
+                    if not mgr.can_ratchet(message.recipient):
+                        # First-contact: pull a remote peer's pqdr1 prekey, once.
+                        self._maybe_fetch_remote_prekey(message.recipient)
+                    if mgr.can_ratchet(message.recipient):
+                        sealed = mgr.seal(outbound)
+                        if self._crypto.is_ratchet_message(sealed):
+                            outbound = sealed  # ratchet-sealed — deniable, no signature
             except Exception as exc:
-                logger.warning("Encryption failed, sending plaintext: %s", exc)
+                logger.warning("DM ratchet seal failed (classical fallback): %s", exc)
+
+        # Classical PGP path: only when a recipient public key is available AND the
+        # body was not already ratchet-sealed above (unchanged legacy behaviour).
+        if self._crypto and recipient_public_armor and not outbound.encrypted:
+            try:
+                outbound = self._crypto.encrypt_message(outbound, recipient_public_armor)
+                outbound = self._crypto.sign_message(outbound)
+            except Exception as exc:
+                logger.warning("Classical encryption failed, sending plaintext: %s", exc)
 
         payload_json = outbound.model_dump_json()
 

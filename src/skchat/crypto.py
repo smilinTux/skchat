@@ -13,6 +13,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -778,3 +779,47 @@ def decrypt_message_body(encrypted: str, private_key_path: str) -> str:
     except Exception as exc:
         logger.warning("crypto.py: %s", exc)
         raise DecryptionError(f"Failed to decrypt content: {exc}") from exc
+
+
+def load_agent_crypto(identity: Optional[str] = None) -> Optional["ChatCrypto"]:
+    """Best-effort load the running agent's :class:`ChatCrypto` from its CapAuth key.
+
+    The live daemon/CLI/webui historically built :class:`~skchat.transport.ChatTransport`
+    with ``crypto=None``, which left the 1:1 DM ratchet inert on the live path
+    (:meth:`ChatTransport._dm_ratchet_manager` gates on a truthy ``crypto``) even with
+    ``SKCHAT_DM_RATCHET=1``. This resolves the agent's per-agent CapAuth signing key
+    (``~/.skcapstone/agents/<agent>/capauth/identity/private.asc`` — the same key
+    skcomms' ``EnvelopeSigner`` uses, loaded with an empty passphrase) and returns a
+    ready ``ChatCrypto`` so the live path can seal/open ratchet frames AND keep the
+    classical sign/encrypt path working.
+
+    Best-effort by design: any failure (no key file, unreadable, unexpected agent)
+    returns ``None`` so the caller stays on the exact prior behaviour (no crypto →
+    classical/skcomms-signed path), never a hard failure.
+
+    Args:
+        identity: The CapAuth identity URI (e.g. ``capauth:lumina@skworld.io``); the
+            agent short-name is derived from it, falling back to ``$SKAGENT`` then
+            ``lumina``.
+
+    Returns:
+        A :class:`ChatCrypto` for the agent, or ``None`` if it cannot be loaded.
+    """
+    try:
+        agent = (identity or "").split(":")[-1].split("@")[0].strip()
+        if not agent:
+            agent = (os.environ.get("SKAGENT") or "lumina").strip()
+        key_path = os.path.expanduser(
+            f"~/.skcapstone/agents/{agent}/capauth/identity/private.asc"
+        )
+        if not os.path.isfile(key_path):
+            logger.debug("load_agent_crypto: no key for agent %r at %s", agent, key_path)
+            return None
+        with open(key_path) as fh:
+            armor = fh.read()
+        crypto = ChatCrypto(armor, "")
+        logger.info("load_agent_crypto: live crypto wired for %r (fp %s)", agent, crypto.fingerprint)
+        return crypto
+    except Exception as exc:  # noqa: BLE001 — best-effort, never break transport init
+        logger.warning("load_agent_crypto failed (classical fallback): %s", exc)
+        return None
