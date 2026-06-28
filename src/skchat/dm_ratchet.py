@@ -16,7 +16,7 @@ way the group ratchet does, but pairwise:
 * The per-conversation **epoch secret** is distributed via the vetted hybrid KEM
   (``skcomms.pqkem`` — ``x25519-mlkem768``, HKDF(X25519 ‖ ML-KEM-768)) **once per
   epoch**, never per message — so the ~1.1 KB of ML-KEM ciphertext is amortised
-  (the Apple-PQ3 / SimpleX insight: per-message PQ does not pay for itself).
+  (the Apple-PQ3 insight: per-message PQ does not pay for itself).
 * Per-message keys derive symmetrically from the epoch secret, index-addressable
   (loss/reorder tolerant); AES-256-GCM stays the only bulk cipher.
 * **Periodic rekey** (50 messages OR 7 days) starts a fresh, independent epoch:
