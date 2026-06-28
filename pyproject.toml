@@ -48,6 +48,14 @@ skcapstone = [
 all = [
     "skchat-sovereign[cli]",
 ]
+sk-pqc = [
+    # coord 0a1f0a51: OPTIONAL re-export of the published sk_pqc lib. When present,
+    # the ratchet modules (dm_ratchet/group_ratchet) re-export sk_pqc's vetted
+    # code; when ABSENT (e.g. .41) they fall back to the local impl unchanged.
+    # NOT a hard runtime dep — never required to run. Install: pip install
+    # "skchat-sovereign[sk-pqc]"
+    "sk-pqc>=0.1",
+]
 dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.21",

@@ -31,6 +31,21 @@ All HKDF labels are distinct from :mod:`skchat.group_ratchet` (``dm-ratchet`` vs
 
 from __future__ import annotations
 
+# --- coord 0a1f0a51: prefer the published sk_pqc lib; fall back to local impl --
+# When the published ``sk_pqc`` package is installed this module re-exports its
+# vetted ratchet primitives (byte-identical to the local definitions below,
+# which were lifted verbatim into sk_pqc). On boxes WITHOUT sk-pqc (e.g. .41)
+# the import fails and the UNCHANGED local definitions below are used — same
+# behaviour either way, so the LIVE cross-node DM ratchet is unaffected. Hybrid
+# security holds while EITHER leg survives; never "quantum-proof". Footer wins.
+try:
+    from sk_pqc.dm_ratchet import *  # noqa: F401,F403  (published lib preferred)
+
+    _SK_PQC_BACKED = True
+except Exception:  # noqa: BLE001 — sk-pqc absent: use local fallback below
+    _SK_PQC_BACKED = False
+# --- local fallback definitions follow, UNCHANGED ----------------------------
+
 import os
 import struct
 import time
@@ -266,3 +281,11 @@ class DmRatchet:
             return True
         t = time.time() if now is None else now
         return (t - self.epoch_started_at) >= self.rekey_age_seconds
+
+
+# --- coord 0a1f0a51: when sk-pqc is installed, the published lib is authoritative
+# Re-export its public surface so the published objects WIN over the local
+# fallbacks defined above (identity: this module's symbols ARE sk_pqc's symbols).
+# When sk-pqc is absent this block is skipped and the local fallbacks stand.
+if _SK_PQC_BACKED:
+    from sk_pqc.dm_ratchet import *  # noqa: F401,F403
