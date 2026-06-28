@@ -189,7 +189,7 @@ Each phase: **goal · surfaces · library · acceptance · risk · claim unlocke
 - **Claim unlocked:** **§0.2** — "hybrid PQ KEM (X25519+ML-KEM-768) protecting transport, group keys, and long-lived data at rest; secret unless both primitives break." *This is the claim worth making.*
 
 ### Phase 2 — PQC signatures / identity
-- **Goal:** quantum-safe authentication for identity root + agent signing + envelope sigs.
+- **Goal:** quantum-resistant authentication for identity root + agent signing + envelope sigs.
 - **Surfaces:** S1 (root), S2 (challenge/DID), S3 (envelope sig), S6-sig (DM sig).
 - **Library:** **Sequoia-PGP** (or GopenPGP) for OpenPGP composites; liboqs-python ML-DSA-65 / SLH-DSA for non-PGP paths.
 - **Acceptance:** capauth issues **additive** composite subkeys (ML-DSA-65+Ed25519 alg 30; ML-KEM-768+X25519 alg 35) per draft-ietf-openpgp-pqc-17 **without removing classical keys**; root has an SLH-DSA option; classical-only verifiers still verify; rotation/migration path documented for the root.
@@ -200,7 +200,7 @@ Each phase: **goal · surfaces · library · acceptance · risk · claim unlocke
 
 #### 5.1 Phase 2 progress — Sequoia PQC signing backend landed (additive-first; root still classical)
 
-**Status: backend BUILT and wired into capauth; the live sovereign root is STILL CLASSICAL.** Phase 2's signing/identity prerequisite is solved at the *tooling* level — but no quantum-safe key has been issued for the real root yet, and none will be until the gated rotation ceremony (§7 open decision #4 "Root-key rotation"; see the honesty caveats below).
+**Status: backend BUILT and wired into capauth; the live sovereign root is STILL CLASSICAL.** Phase 2's signing/identity prerequisite is solved at the *tooling* level — but no quantum-resistant key has been issued for the real root yet, and none will be until the gated rotation ceremony (§7 open decision #4 "Root-key rotation"; see the honesty caveats below).
 
 **Backend decision (evidence-based) — why Sequoia, not GnuPG.**
 - **GnuPG is DISQUALIFIED for this work.** Its post-quantum support is **encryption-only** (ML-KEM / Kyber key-wrap). It **cannot sign or certify** with ML-DSA or SLH-DSA. (Tracked at GnuPG dev 2.5.20; stable 2.6 not shipped.) A PQC *signing* root cannot be built on GnuPG today.
@@ -260,7 +260,7 @@ Tag: `quantum-resistance`. Runs **alongside** the comms-suite epic; side-tabbabl
 | **Q4 — At-rest hybrid key-wrap + fingerprint-keying fix** *(Phase 1)* | Protect long-lived data at rest; fix low-entropy keying | `skchat/encrypted_store.py` (derive DEK from secret material / KMS, not fingerprint), new at-rest wrap layer (or `age` 1.3 recipients) over skmem-pg dumps / memory trees / root-key backup | DEKs wrapped with hybrid KEM; at-rest keying no longer fingerprint-derived; restore round-trip verified | Q1 | med (data migration / re-wrap of existing stores) |
 | **Q5 — Native Flutter PQC (oqs FFI) + web gap decision** *(Phase 1)* | skchat-app native clients do real hybrid KEM; web leg scoped | `skchat-app` FFI integration (`oqs`/`mlkem_native`), per-platform liboqs in CI; web PWA strategy per Chef decision (§7) | Native Android/iOS/desktop perform hybrid KEM (binary shipped per-arch); Python↔Dart cross-impl vectors match; web leg documented as reduced-assurance OR WASM-liboqs landed | Q1, Q3; **Chef decision** | high (per-platform binaries; browser audit risk) |
 | **Q6 — Sequoia migration + composite identity subkeys** *(Phase 2)* | Move off PGPy; issue additive PQC subkeys | swap PGPy→Sequoia in `capauth/.../pgpy_backend.py` path, `skcomms/signing.py`, `skchat/crypto.py`; capauth issues alg-30/alg-35 composites | Composite subkeys issued additively; classical verifiers still pass; no classical key removed; rotation path documented | Q1 (agility) | high (PGPy is a dead end; pre-RFC interop) |
-| **Q7 — Hybrid signatures on envelopes + DID/challenge** *(Phase 2)* | Quantum-safe auth, crypto-agile | `skcomms/signing.py` (`sig_suite` → ML-DSA-65+Ed25519), `capauth/identity.py`/`did.py`/`login.py` | Envelopes/DID/challenge carry hybrid sig; either-or verify during transition; payload-size budget validated (QR/Nostr) | Q6 | med (sig size 50× Ed25519) |
+| **Q7 — Hybrid signatures on envelopes + DID/challenge** *(Phase 2)* | Quantum-resistant auth, crypto-agile | `skcomms/signing.py` (`sig_suite` → ML-DSA-65+Ed25519), `capauth/identity.py`/`did.py`/`login.py` | Envelopes/DID/challenge carry hybrid sig; either-or verify during transition; payload-size budget validated (QR/Nostr) | Q6 | med (sig size 50× Ed25519) |
 | **Q8 — OpenSSL 3.5 origins + CF/tailnet/LiveKit doc** *(Phase 3)* | Close CF→origin TLS; document residual classical legs | rebuild daemon TLS terminators on OpenSSL 3.5; PQ CF Tunnel; self-report transport section | `openssl s_client -groups X25519MLKEM768` confirms CF→origin; tailnet/LiveKit residual documented; no E2E overclaim | Q0 (self-report) | low (mostly external) |
 | **Q9 — Claim audit + runtime self-report GA** *(cross-cutting)* | Make every §0 claim evidence-backed | finalize `sksecurity status` PQC self-report; claim-language review of all docs/marketing | Every external claim maps to a self-report line citing FIPS 203/204/205 + hybrid-vs-classical; overclaim scan clean | Q2–Q4 (Phase 1), Q8 | low |
 
@@ -280,7 +280,7 @@ Tag: `quantum-resistance`. Runs **alongside** the comms-suite epic; side-tabbabl
 
 3. **PGPy → Sequoia migration scope/timing.** PGPy 0.6.0 is a **dead end for PQC** (no ML-KEM/ML-DSA roadmap) and blocks all PGP-surface remediation. Sequoia is the realistic target but is the **single largest engineering lift**. Decide: do it in Phase 2 (signatures), or pull it earlier if we want PGP-native hybrid KEM instead of liboqs for the wrap?
 
-4. **Root-key rotation.** Phase 2 means generating a quantum-safe root (SLH-DSA or hybrid) and a rotation/cross-sign ceremony. This is a **sovereign-trust event** — needs Chef's real root key and a planned ritual. When?
+4. **Root-key rotation.** Phase 2 means generating a quantum-resistant root (SLH-DSA or hybrid) and a rotation/cross-sign ceremony. This is a **sovereign-trust event** — needs Chef's real root key and a planned ritual. When?
 
 5. **OpenPGP PQC is pre-RFC.** draft-ietf-openpgp-pqc-17 is in the RFC-Editor queue; interop (GnuPG/Sequoia/RNP) is early. Comfortable issuing **additive, reversible** composite subkeys now, or wait for the RFC number?
 
