@@ -250,7 +250,11 @@ class DmRatchetManager:
 
         store_dir = Path(store_dir)
         store_dir.mkdir(parents=True, exist_ok=True)
-        store = DmSessionStore(store_dir / "dm_sessions.db")
+        # Agent-namespaced session DB so multiple agents that share one SKCHAT_HOME
+        # (e.g. opus + jarvis on .41) don't collide in the peer-keyed dm_sessions
+        # table (DmSessionStore is `dm_sessions(peer PRIMARY KEY)`). Per-agent keypairs
+        # and prekeys are already per-agent-named, so only the session DB needed this.
+        store = DmSessionStore(store_dir / f"dm_sessions_{agent}.db")
         return cls(
             crypto,
             agent_public=pub,
