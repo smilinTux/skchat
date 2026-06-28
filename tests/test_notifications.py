@@ -182,9 +182,10 @@ def test_notification_level_values():
 class TestDesktopNotificationsEnabled:
     """The env gate that conftest uses to silence the whole suite."""
 
-    def test_unset_defaults_enabled(self, monkeypatch):
+    def test_unset_defaults_disabled(self, monkeypatch):
+        # OFF by default — desktop notifications are opt-in (per-message spam guard).
         monkeypatch.delenv("SK_DESKTOP_NOTIFY", raising=False)
-        assert desktop_notifications_enabled() is True
+        assert desktop_notifications_enabled() is False
 
     def test_explicit_one_enabled(self, monkeypatch):
         monkeypatch.setenv("SK_DESKTOP_NOTIFY", "1")

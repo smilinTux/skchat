@@ -11,25 +11,26 @@ import subprocess
 from enum import Enum
 
 _DISABLED_VALUES = {"0", "false", "no", "off", ""}
+_ENABLED_VALUES = {"1", "true", "yes", "on"}
 
 
 def desktop_notifications_enabled() -> bool:
     """Whether desktop notifications may actually be dispatched.
 
-    Enabled by default (production behavior is unchanged). Set the
-    ``SK_DESKTOP_NOTIFY`` env var to a falsey value (``0``/``false``/``no``/
-    ``off``) to suppress every desktop notification — used by the test suite
-    (``tests/conftest.py`` defaults it off so no test fires a real
-    notification) and useful for headless/cron runs. Opt back in by setting
-    ``SK_DESKTOP_NOTIFY=1``.
+    **OFF by default** — the daemon fires a desktop notification per *received*
+    message (``daemon.py``), which is notification spam on an active node. It is
+    therefore opt-IN: set ``SK_DESKTOP_NOTIFY`` to a truthy value
+    (``1``/``true``/``yes``/``on``) to enable it, e.g. for local debugging. Unset
+    or any falsey value keeps the node quiet (production default; headless/cron
+    runs and the test suite get silence for free).
 
     Returns:
-        True when notifications should be dispatched.
+        True only when ``SK_DESKTOP_NOTIFY`` is explicitly set truthy.
     """
     val = os.environ.get("SK_DESKTOP_NOTIFY")
     if val is None:
-        return True
-    return val.strip().lower() not in _DISABLED_VALUES
+        return False
+    return val.strip().lower() in _ENABLED_VALUES
 
 
 class NotificationLevel(Enum):
