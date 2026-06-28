@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import signal
 import sys
 import threading
@@ -800,7 +801,7 @@ class ChatDaemon:
             minutes = (uptime_seconds % 3600) // 60
             return f"{hours}h {minutes}m"
 
-    def _start_health_server(self, port: int = 9385) -> None:
+    def _start_health_server(self, port: int = int(os.environ.get("SKCHAT_HEALTH_PORT") or 9385)) -> None:
         """Start a tiny HTTP healthcheck server in a daemon thread.
 
         Serves GET /health → JSON with live daemon metrics.
@@ -1121,10 +1122,14 @@ class ChatDaemon:
         )
 
 
-DAEMON_PID_FILE = Path("~/.skchat/daemon.pid")
-DAEMON_LOG_FILE = Path("~/.skchat/daemon.log")
-DAEMON_STATS_FILE = Path("~/.skchat/daemon_stats.json")
-DAEMON_LOCK_FILE = Path("~/.skchat/daemon.lock")
+# SKCHAT_HOME-aware so MULTIPLE agent daemons can run on one box (e.g. opus on
+# ~/.skchat + jarvis on ~/.skchat-jarvis) without colliding on the single-instance
+# flock / pidfile. Computed at import from the daemon process's SKCHAT_HOME env.
+_DAEMON_HOME = Path(os.environ.get("SKCHAT_HOME") or "~/.skchat").expanduser()
+DAEMON_PID_FILE = _DAEMON_HOME / "daemon.pid"
+DAEMON_LOG_FILE = _DAEMON_HOME / "daemon.log"
+DAEMON_STATS_FILE = _DAEMON_HOME / "daemon_stats.json"
+DAEMON_LOCK_FILE = _DAEMON_HOME / "daemon.lock"
 _DAEMON_STATS_FILE = DAEMON_STATS_FILE  # internal alias used by _write_daemon_stats
 
 # Module-global holder for the single-instance flock. The lock is held for the
