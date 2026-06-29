@@ -176,6 +176,55 @@ class ChatTransport:
         self._prekey_http_get = _urllib_get_json
         self._prekey_inbox_resolver: Optional[object] = None  # None => skcomms default
         self._prekey_fetch_attempted: set[str] = set()
+        # Gate-4 sender-side token wallet (lazy). Consulted only when consent is ON
+        # (SKCOMMS_CONSENT_MODE set); cached None-or-instance so a disabled build
+        # never re-pays construction. See skchat.token_wallet.
+        self._token_wallet_cached: object = "unset"
+
+    def _consent_wallet(self):
+        """Lazily build the gate-4 :class:`TokenWallet`, or ``None`` when OFF.
+
+        Returns a wallet only when ``SKCOMMS_CONSENT_MODE`` is set (consent stays
+        OFF — and this stays ``None`` — by default). Any error degrades to ``None``
+        so the consent fast-path is purely additive and never breaks send/receive.
+        """
+        cached = self._token_wallet_cached
+        if cached != "unset":
+            return cached
+        wallet = None
+        if os.getenv("SKCOMMS_CONSENT_MODE", "").strip():
+            try:
+                from .token_wallet import TokenWallet
+
+                agent = (self._identity or "").split(":")[-1].split("@")[0] or "lumina"
+                wallet = TokenWallet(agent)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("TokenWallet unavailable (consent fast-path off): %s", exc)
+                wallet = None
+        self._token_wallet_cached = wallet
+        return wallet
+
+    def _maybe_store_consent_token(self, message: ChatMessage) -> None:
+        """Harvest a gate-4 token from an inbound ACCEPT/contact-grant, if present.
+
+        When a contact accepts our first-contact request they mint a per-contact
+        delivery token and mail it back in an ACCEPT message; this stashes it in the
+        wallet (keyed by the granting peer) so our future DMs to them fast-path. Gated
+        OFF by default and fully best-effort — never raises into the receive loop.
+        """
+        wallet = self._consent_wallet()
+        if wallet is None:
+            return
+        try:
+            from .token_wallet import extract_accept_token
+
+            grant = extract_accept_token(message)
+            if grant is not None:
+                peer, token = grant
+                wallet.store_token(peer, token)
+                logger.info("Stored gate-4 delivery token from %s", peer)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("consent token harvest failed: %s", exc)
 
     @classmethod
     def from_config(
@@ -380,6 +429,25 @@ class ChatTransport:
                 outbound = self._crypto.sign_message(outbound)
             except Exception as exc:
                 logger.warning("Classical encryption failed, sending plaintext: %s", exc)
+
+        # Gate-4 fast-path (opt-in): if we hold a per-contact delivery token for this
+        # recipient, attach it (metadata `consent_token`) so the recipient's gate-4
+        # verifies + DELIVERs instead of re-quarantining a now-known contact. Sits
+        # OUTSIDE any ratchet/PGP body so it is readable by the recipient's gate, and
+        # is a no-op (no behaviour change) unless SKCOMMS_CONSENT_MODE is set AND a
+        # token is stored.
+        _wallet = self._consent_wallet()
+        if _wallet is not None:
+            try:
+                from .token_wallet import CONSENT_TOKEN_KEY
+
+                _tok = _wallet.get_token(message.recipient)
+                if _tok:
+                    outbound = outbound.model_copy(
+                        update={"metadata": {**outbound.metadata, CONSENT_TOKEN_KEY: _tok}}
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("consent token attach skipped: %s", exc)
 
         payload_json = outbound.model_dump_json()
 
@@ -624,6 +692,10 @@ class ChatTransport:
                 msg = msg.model_copy(update={"delivery_status": DeliveryStatus.DELIVERED})
                 self._history.store_message(msg)
                 messages.append(msg)
+
+                # Gate-4: if this is a contact-grant/ACCEPT carrying a delivery token,
+                # stash it so our future DMs to this peer fast-path (opt-in, no-op off).
+                self._maybe_store_consent_token(msg)
 
                 # First-contact pre-warm: if this arrived from a reachable remote
                 # node and the ratchet is on, pull its pqdr1 prekey so our REPLY

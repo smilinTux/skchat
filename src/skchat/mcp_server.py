@@ -1419,6 +1419,70 @@ async def list_tools() -> list[Tool]:
                 "required": ["group_id"],
             },
         ),
+        Tool(
+            name="list_contact_requests",
+            description=(
+                "List the pending first-contact request queue for THIS agent — the "
+                "Signal-style 'message request' knocks from unknown senders that the "
+                "consent gate has quarantined (quiet by default). Use this to surface "
+                "incoming connection requests to the operator: 'X wants to connect — "
+                "accept?'. Returns each sender + when it knocked. Empty when nothing "
+                "is queued (or consent mode is off)."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        ),
+        Tool(
+            name="accept_contact_request",
+            description=(
+                "Accept a pending first-contact request: promote the sender to a known "
+                "contact, mint its per-contact delivery token, and clear the queued "
+                "knock. After this the sender's messages are delivered normally. "
+                "Idempotent."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "sender": {
+                        "type": "string",
+                        "description": (
+                            "Sender FQID to accept (as shown by "
+                            "list_contact_requests, e.g. 'alice@home.skworld')."
+                        ),
+                    },
+                },
+                "required": ["sender"],
+            },
+        ),
+        Tool(
+            name="decline_contact_request",
+            description=(
+                "Decline a pending first-contact request: drop the sender's queued "
+                "knock. By default the sender returns to UNKNOWN (re-quarantined on "
+                "next contact). Set block=true to also block the sender so future "
+                "traffic is dropped (MSC4155 per-sender block). Idempotent."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "sender": {
+                        "type": "string",
+                        "description": "Sender FQID to decline (e.g. 'alice@home.skworld').",
+                    },
+                    "block": {
+                        "type": "boolean",
+                        "description": (
+                            "When true, also block the sender (drop future traffic). "
+                            "Default: false (sender returns to UNKNOWN)."
+                        ),
+                    },
+                },
+                "required": ["sender"],
+            },
+        ),
     ]
 
 
@@ -1482,6 +1546,9 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         "skchat_who_is_online": _handle_who_is_online,
         "skchat_get_group_history": _handle_skchat_get_group_history,
         "skchat_conversation": _handle_skchat_conversation,
+        "list_contact_requests": _handle_list_contact_requests,
+        "accept_contact_request": _handle_accept_contact_request,
+        "decline_contact_request": _handle_decline_contact_request,
     }
     handler = handlers.get(name)
     if handler is None:
@@ -1491,6 +1558,103 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     except Exception as exc:
         logger.exception("Tool '%s' failed", name)
         return _error(f"{name} failed: {exc}")
+
+
+# ─────────────────────────────────────────────────────────────
+# Tool Handlers — Consent (AI-native first-contact surface)
+# ─────────────────────────────────────────────────────────────
+
+
+def _self_consent_agent() -> str:
+    """Resolve the short agent name (the consent backend's ``agent`` key).
+
+    The recipient of an incoming request is THIS node's own identity. The
+    skcomms consent primitives are keyed by the short agent name (e.g.
+    ``lumina``), so we prefer the explicit ``SKAGENT``/``SKCAPSTONE_AGENT``/
+    ``SKMEMORY_AGENT`` env (what the daemon + Telegram bridge already set) and
+    fall back to the local-part of the resolved CapAuth URI.
+
+    Returns:
+        str: Short agent name (e.g. ``lumina``); ``lumina`` as the floor.
+    """
+    import os
+
+    for var in ("SKAGENT", "SKCAPSTONE_AGENT", "SKMEMORY_AGENT"):
+        val = os.environ.get(var)
+        if val and val.strip():
+            return val.strip().lstrip("@")
+
+    uri = _get_identity()
+    if uri.startswith("capauth:"):
+        uri = uri[len("capauth:"):]
+    local = uri.split("@", 1)[0]
+    return local or "lumina"
+
+
+async def _handle_list_contact_requests(args: dict) -> list[TextContent]:
+    """Surface this agent's pending first-contact request queue.
+
+    Args:
+        args: Unused (the agent is this node's own identity).
+
+    Returns:
+        JSON ``{agent, count, requests:[{sender, envelope_id, received_at}]}``.
+    """
+    from skcomms import consent_requests
+
+    agent = _self_consent_agent()
+    requests = consent_requests.list_requests(agent)
+    return _json({"agent": agent, "count": len(requests), "requests": requests})
+
+
+async def _handle_accept_contact_request(args: dict) -> list[TextContent]:
+    """Accept a first-contact request: promote sender + mint delivery token.
+
+    Uses ``ConsentPipeline.on_accept`` (promote to known + mint per-contact
+    token), then clears the queued knock. Idempotent.
+
+    Args:
+        args: Requires ``sender`` (FQID to accept).
+
+    Returns:
+        JSON ``{agent, sender, result:"accepted", token}``.
+    """
+    sender = (args.get("sender") or "").strip()
+    if not sender:
+        return _error("accept_contact_request requires 'sender'")
+
+    from skcomms import consent_requests
+    from skcomms.consent_runtime import build_pipeline
+
+    agent = _self_consent_agent()
+    # on_accept = promote to known + mint the per-contact delivery token.
+    token = build_pipeline(agent).on_accept(sender)
+    # Clear the queued knock (idempotent; promotion already happened).
+    consent_requests.accept_request(agent, sender)
+    return _json(
+        {"agent": agent, "sender": sender, "result": "accepted", "token": token}
+    )
+
+
+async def _handle_decline_contact_request(args: dict) -> list[TextContent]:
+    """Decline a first-contact request: drop the knock, optionally block.
+
+    Args:
+        args: Requires ``sender``; optional ``block`` (default false).
+
+    Returns:
+        JSON ``{agent, sender, result:"declined"|"blocked"}``.
+    """
+    sender = (args.get("sender") or "").strip()
+    if not sender:
+        return _error("decline_contact_request requires 'sender'")
+    block = bool(args.get("block", False))
+
+    from skcomms import consent_requests
+
+    agent = _self_consent_agent()
+    result = consent_requests.decline_request(agent, sender, block=block)
+    return _json(result)
 
 
 # ─────────────────────────────────────────────────────────────

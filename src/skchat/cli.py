@@ -5252,5 +5252,224 @@ def pqc_report_cmd(output_format, static):
         click.echo(format_project_report(rpt))
 
 
+# ─────────────── consent (first-contact requests) ───────────────
+
+
+def _consent_agent() -> str:
+    """Resolve the running agent's short name for the consent gate.
+
+    Mirrors the rest of skchat's agent-aware resolution (SKAGENT, then the
+    SKCAPSTONE_AGENT / SKMEMORY_AGENT fallbacks, default ``lumina``) and strips
+    any ``@domain`` so it matches the per-agent consent store keys. The recipient
+    agent is the local node's self identity — exactly what the skcomms
+    ``consent_requests`` facade keys its per-agent SQLite stores on.
+    """
+    import os
+
+    return (
+        os.environ.get("SKAGENT")
+        or os.environ.get("SKCAPSTONE_AGENT")
+        or os.environ.get("SKMEMORY_AGENT")
+        or "lumina"
+    ).split("@")[0]
+
+
+@main.command(name="requests")
+def requests_cmd() -> None:
+    """List pending first-contact requests awaiting your review.
+
+    Unknown senders are quarantined (no notification) until you accept or
+    decline them — Signal "Message Request" semantics. This shows that queue.
+
+    Examples:
+
+        skchat requests
+    """
+    try:
+        from skcomms.consent_requests import list_requests
+    except Exception as exc:
+        _print(f"\n  [yellow]Consent gate unavailable[/] (skcomms): {exc}\n")
+        raise SystemExit(1)
+
+    agent = _consent_agent()
+    pending = list_requests(agent)
+
+    _print("")
+    if not pending:
+        _print("  [dim]No pending contact requests.[/]")
+        _print("")
+        return
+
+    if HAS_RICH and console:
+        table = Table(
+            show_header=True,
+            header_style="bold cyan",
+            box=None,
+            padding=(0, 2),
+            title=f"Pending contact requests for {agent} ({len(pending)})",
+        )
+        table.add_column("From", style="cyan")
+        table.add_column("When", style="dim")
+        table.add_column("Envelope", style="dim", max_width=18, no_wrap=True)
+        for req in pending:
+            table.add_row(
+                req.get("sender", "?"),
+                _ts_ago(req.get("received_at", "")),
+                str(req.get("envelope_id", ""))[:18],
+            )
+        console.print(table)
+        _print(
+            "\n  [dim]Accept with[/] [cyan]skchat accept <sender>[/]"
+            "  [dim]· decline with[/] [cyan]skchat decline <sender> [--block][/]"
+        )
+    else:
+        for req in pending:
+            _print(
+                f"  {req.get('sender', '?')}"
+                f"  ({_ts_ago(req.get('received_at', ''))})"
+            )
+    _print("")
+
+
+@main.command(name="accept")
+@click.argument("sender")
+def accept_cmd(sender: str) -> None:
+    """Accept a first-contact SENDER: promote to a known contact + mint a token.
+
+    Promotes the sender to your known-contacts roster, clears their queued
+    knock, and mints the per-contact delivery token the sender presents on
+    future messages.
+
+    Examples:
+
+        skchat accept alice@operator.realm
+    """
+    try:
+        from skcomms.consent_pipeline import ConsentPipeline
+    except Exception as exc:
+        _print(f"\n  [yellow]Consent gate unavailable[/] (skcomms): {exc}\n")
+        raise SystemExit(1)
+
+    agent = _consent_agent()
+    try:
+        token = ConsentPipeline(agent).on_accept(sender)
+        # on_accept marks the contact known + mints the token but leaves the
+        # original knock in the request queue; clear it so `skchat requests`
+        # no longer surfaces an already-accepted sender. (decline_request with
+        # no store/block just deletes the queued rows — it does NOT un-accept.)
+        try:
+            from skcomms.consent import RequestQueue
+
+            RequestQueue(agent).decline_request(sender)
+        except Exception as exc:  # queue-clear is best-effort, never fatal
+            logger.warning("accept: failed to clear queued knock for %s: %s", sender, exc)
+    except Exception as exc:
+        _print(f"\n  [red]Error:[/] failed to accept {sender}: {exc}\n")
+        raise SystemExit(1)
+
+    _print("")
+    if HAS_RICH and console:
+        console.print(
+            Panel(
+                f"[bold]Accepted[/] [cyan]{sender}[/]\n"
+                f"[bold]Delivery token:[/] [green]{token}[/]\n"
+                f"[dim]The sender presents this token on future messages.[/]",
+                title="Contact Accepted",
+                border_style="green",
+            )
+        )
+    else:
+        _print(f"  Accepted {sender}")
+        _print(f"  Token: {token}")
+    _print("")
+
+
+@main.command(name="decline")
+@click.argument("sender")
+@click.option(
+    "--block",
+    is_flag=True,
+    default=False,
+    help="Also block the sender so future traffic is dropped (not just declined).",
+)
+def decline_cmd(sender: str, block: bool) -> None:
+    """Decline a first-contact SENDER: clear their queued knock.
+
+    Without --block the sender simply returns to UNKNOWN (they may knock
+    again). With --block their future traffic is dropped outright.
+
+    Examples:
+
+        skchat decline alice@operator.realm
+
+        skchat decline spammer@bad.realm --block
+    """
+    try:
+        from skcomms.consent_requests import decline_request
+    except Exception as exc:
+        _print(f"\n  [yellow]Consent gate unavailable[/] (skcomms): {exc}\n")
+        raise SystemExit(1)
+
+    agent = _consent_agent()
+    try:
+        res = decline_request(agent, sender, block=block)
+    except Exception as exc:
+        _print(f"\n  [red]Error:[/] failed to decline {sender}: {exc}\n")
+        raise SystemExit(1)
+
+    verb = res.get("result", "declined")
+    _print("")
+    if HAS_RICH and console:
+        color = "red" if block else "yellow"
+        console.print(f"  [{color}]{verb.capitalize()}[/] [cyan]{sender}[/]")
+    else:
+        _print(f"  {verb.capitalize()} {sender}")
+    _print("")
+
+
+@main.command(name="contacts")
+def contacts_cmd() -> None:
+    """List your known (accepted) contacts.
+
+    These are senders you've accepted; their messages are delivered without
+    re-quarantine.
+
+    Examples:
+
+        skchat contacts
+    """
+    try:
+        from skcomms.consent_requests import list_known
+    except Exception as exc:
+        _print(f"\n  [yellow]Consent gate unavailable[/] (skcomms): {exc}\n")
+        raise SystemExit(1)
+
+    agent = _consent_agent()
+    known = list_known(agent)
+
+    _print("")
+    if not known:
+        _print("  [dim]No known contacts yet.[/]")
+        _print("")
+        return
+
+    if HAS_RICH and console:
+        table = Table(
+            show_header=True,
+            header_style="bold cyan",
+            box=None,
+            padding=(0, 2),
+            title=f"Known contacts for {agent} ({len(known)})",
+        )
+        table.add_column("Contact", style="cyan")
+        for fqid in known:
+            table.add_row(fqid)
+        console.print(table)
+    else:
+        for fqid in known:
+            _print(f"  {fqid}")
+    _print("")
+
+
 if __name__ == "__main__":
     main()
