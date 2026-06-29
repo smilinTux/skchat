@@ -68,6 +68,26 @@ def _urllib_get_json(url: str, *, timeout: float = 4.0) -> Optional[object]:
     return json.loads(data.decode("utf-8"))
 
 
+def _accepts_kwarg(fn: object, name: str) -> bool:
+    """Whether *fn* can be called with keyword *name* (named param or ``**kwargs``).
+
+    Used to forward the gate-4 ``consent_token`` onto ``skcomms.send_federated``
+    ONLY when that build supports it, so a node whose skcomms predates the envelope
+    ``consent_token`` field is never handed a kwarg it would reject. An
+    introspection failure (e.g. a C builtin or a Mock) is treated as "accepts" so
+    the token still flows where the callee is permissive.
+    """
+    import inspect
+
+    try:
+        params = inspect.signature(fn).parameters.values()
+    except (TypeError, ValueError):
+        return True
+    return any(
+        p.name == name or p.kind == inspect.Parameter.VAR_KEYWORD for p in params
+    )
+
+
 def _write_local_loopback(message: ChatMessage) -> None:
     """Write a plaintext envelope to ~/.skcomms/outbox/ for same-machine delivery.
 
@@ -431,11 +451,15 @@ class ChatTransport:
                 logger.warning("Classical encryption failed, sending plaintext: %s", exc)
 
         # Gate-4 fast-path (opt-in): if we hold a per-contact delivery token for this
-        # recipient, attach it (metadata `consent_token`) so the recipient's gate-4
-        # verifies + DELIVERs instead of re-quarantining a now-known contact. Sits
-        # OUTSIDE any ratchet/PGP body so it is readable by the recipient's gate, and
-        # is a no-op (no behaviour change) unless SKCOMMS_CONSENT_MODE is set AND a
+        # recipient, attach it so the recipient's gate-4 verifies + DELIVERs instead
+        # of re-quarantining a now-known contact. The token is lifted onto the OUTER
+        # skcomms ENVELOPE (``Envelope.consent_token``, via the send_federated kwarg
+        # below) — NOT only into the inner ChatMessage metadata, because an
+        # established contact's DM body is ratchet-sealed and therefore opaque to the
+        # receiving node. The inner-metadata copy is kept for local/non-federated
+        # rails. No-op (no behaviour change) unless SKCOMMS_CONSENT_MODE is set AND a
         # token is stored.
+        _consent_tok: Optional[str] = None
         _wallet = self._consent_wallet()
         if _wallet is not None:
             try:
@@ -443,6 +467,7 @@ class ChatTransport:
 
                 _tok = _wallet.get_token(message.recipient)
                 if _tok:
+                    _consent_tok = _tok
                     outbound = outbound.model_copy(
                         update={"metadata": {**outbound.metadata, CONSENT_TOKEN_KEY: _tok}}
                     )
@@ -476,11 +501,20 @@ class ChatTransport:
         fed_fqid = self._federation_target(message.recipient)
         if fed_fqid is not None and hasattr(self._skcomms, "send_federated"):
             try:
+                _fed_kw: dict = {
+                    "thread_id": message.thread_id,
+                    "in_reply_to": message.reply_to_id,
+                }
+                # Lift the held gate-4 token onto the federation ENVELOPE's
+                # consent_token (outside the sealed body). Feature-detected so a
+                # send_federated that predates the kwarg is never handed an arg it
+                # cannot accept — forward/back-compatible, never raises.
+                if _consent_tok and _accepts_kwarg(self._skcomms.send_federated, "consent_token"):
+                    _fed_kw["consent_token"] = _consent_tok
                 report = self._skcomms.send_federated(
                     fed_fqid,
                     payload_json,
-                    thread_id=message.thread_id,
-                    in_reply_to=message.reply_to_id,
+                    **_fed_kw,
                 )
                 delivered = getattr(report, "delivered", False)
                 if delivered:
