@@ -10,13 +10,14 @@ from __future__ import annotations
 import logging
 from typing import Callable
 
-from skcomms.glossa import codec, gloss
+from skcomms.glossa import gloss
 from skcomms.glossa.codebook import Codebook
 from skcomms.glossa.handshake import CapabilityDescriptor, negotiate
 from skcomms.glossa.message import Message
 
-from skchat.glossa_mesh import protocol
+from skchat.glossa_mesh import codec_ext as codec, protocol
 from skchat.glossa_mesh.bus import MeshBus
+from skchat.glossa_mesh.rate import RateController
 
 logger = logging.getLogger(__name__)
 
@@ -25,11 +26,19 @@ MessageCb = Callable[[str, Message], None]  # (sender_fqid, message)
 
 class GlossaMeshNode:
     def __init__(
-        self, *, descriptor: CapabilityDescriptor, bus: MeshBus, codebook: Codebook
+        self,
+        *,
+        descriptor: CapabilityDescriptor,
+        bus: MeshBus,
+        codebook: Codebook,
+        rate: RateController | None = None,
     ) -> None:
         self.descriptor = descriptor
         self.bus = bus
         self.codebook = codebook
+        # Optional G2 rate controller. None => encode at the raw group ceiling
+        # (fully backward-compatible with the pre-G2 fixed-tier behaviour).
+        self.rate = rate
         self._peers: dict[str, CapabilityDescriptor] = {}
         self._on_message: MessageCb | None = None
         self.audit_log: list[str] = []
@@ -58,11 +67,27 @@ class GlossaMeshNode:
             return self.descriptor.max_level
         return min(negotiate(self.descriptor, p).level for p in self._peers.values())
 
+    @property
+    def effective_level(self) -> int:
+        """The tier we actually encode at: the negotiated group ceiling, then
+        rate-adapted down (or back up) by the RateController when one is set.
+        Never exceeds group_level — the weakest peer still caps decodability."""
+        ceiling = self.group_level
+        if self.rate is None:
+            return ceiling
+        return self.rate.level(ceiling)
+
+    def observe(self, quality: float) -> None:
+        """Feed a [0,1] link-quality score to the rate controller (no-op if none
+        is attached). Poor conditions degrade the tier; sustained good upgrade it."""
+        if self.rate is not None:
+            self.rate.observe(quality)
+
     async def announce(self) -> None:
         await self.bus.broadcast(protocol.frame_announce(self.descriptor))
 
     async def say(self, m: Message) -> None:
-        level = self.group_level
+        level = self.effective_level
         body = codec.encode(m, level, self.codebook)
         self.audit_log.append(f"[tx L{level}] {gloss.to_english(m)}")
         await self.bus.broadcast(protocol.frame_message(level, body))
