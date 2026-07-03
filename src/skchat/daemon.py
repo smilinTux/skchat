@@ -272,7 +272,22 @@ class ChatDaemon:
             try:
                 from skchat.advocacy import AdvocacyEngine
 
-                engine = AdvocacyEngine(identity=identity)
+                # Allow an external responder (e.g. the Hermes skchat channel) to
+                # own replies for this identity: SKCHAT_ADVOCACY_DISABLED skips the
+                # daemon's auto-responder while keeping receive/presence/webrtc/
+                # attachments running. The receive loop guards `if engine:` so a
+                # None engine simply means "don't advocate" — messages still land
+                # in ChatHistory for the external responder to pick up.
+                if os.environ.get("SKCHAT_ADVOCACY_DISABLED", "").strip().lower() in (
+                    "1", "true", "yes", "on",
+                ):
+                    engine = None
+                    self._log(
+                        "AdvocacyEngine disabled (SKCHAT_ADVOCACY_DISABLED) — "
+                        "external responder owns replies",
+                    )
+                else:
+                    engine = AdvocacyEngine(identity=identity)
             except Exception as exc:
                 logger.warning("daemon.py: %s", exc)
                 self._log(f"AdvocacyEngine init skipped: {exc}", "warning")
