@@ -12,6 +12,8 @@ standards.
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-07-03
+
 ### Added
 
 - **SKGlossa G2 — runtime rate adaptation** (2026-07-03). New
