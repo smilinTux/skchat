@@ -6,11 +6,40 @@ daemon, and MCP server. Sits on **skcomms** (transport/envelopes) and **capauth*
 
 ## 1. Overview
 
-**Owns:** the conversation surface — local SQLite history, the model picker, the
-AdvocacyEngine `@mention` routing into the skcapstone consciousness loop, the webui +
-daemon, and the device hybrid-KEM prekey exchange.
+**Owns:** the conversation surface — local per-agent SQLite/JSONL history, the model
+picker, the AdvocacyEngine `@mention` routing into the skcapstone consciousness loop,
+the webui + daemon, the device hybrid-KEM prekey exchange, the **SKGlossa** codec/rate
+mesh (tier ladder + runtime rate adaptation), and the engine-backed **LiveKit** voice
+transport.
 
 **Does NOT do:** the envelope/signing protocol (skcomms) or the identity root (capauth).
+
+### 1a. Subsystems (merged tree)
+
+- **Per-agent store (`SKCHAT_HOME`).** `ChatHistory` resolves its JSONL + memory-store
+  paths from `SKCHAT_HOME` (via `_skchat_home()`), defaulting to `~/.skchat`. Two agent
+  daemons/webuis on one box no longer co-mingle a single store — an `opus` daemon +
+  webui run with `SKCHAT_HOME=~/.skchat-opus`, isolated from lumina's `~/.skchat`.
+  Single-agent behaviour is unchanged. `SKCHAT_ADVOCACY_DISABLED` lets an external
+  responder own replies without the built-in engine double-answering.
+- **SKGlossa mesh (`glossa_mesh/`).** A codec/rate layer above skcomms' L0/L1/L2 frame
+  ladder (skcomms stays unmodified). **G2** adds `rate.RateController` — an adaptive
+  tier selector with asymmetric hysteresis (degrade fast toward the robust L0 floor,
+  upgrade slowly) that only ever *proposes* a tier; `level(ceiling)` clamps it into
+  `[floor, ceiling]` so it can never exceed handshake-negotiated limits. **L3**
+  (`tokenstream.py`, re-exported via `codec_ext.py`) is a strictly-additive tier that
+  streams a Message as ordered CBOR tokens (`INTENT · ARG* · REF* · TEXT* · END`) so a
+  receiver can begin glossing before the full frame arrives; round-trip invariant
+  `decode_l3(encode_l3(m)) == m`. Tier-negotiated — a peer without L3 stays on the
+  prior tier (never an undecodable frame). This is codec/rate, **not** crypto.
+- **Engine-backed LiveKit transport (`transports/livekit.py`).** Re-homes the
+  lumina-call agent onto the unified `voice_engine` brain (persona · memory · routing ·
+  LLM · tools · STT/TTS). The transport owns the room/turn loop — per-participant energy
+  VAD, barge-in, the addressing gate, the roundtable turn-cap — pushing PCM into a
+  LiveKit `LocalAudioTrack`. Decision logic (`VADSegmenter`, `BargeInDetector`,
+  `AddressingGate`) is factored into pure injectable-clock classes, unit-tested without a
+  live room. `livekit` is a **soft dependency** — importing the module never requires the
+  RTC SDK (only `run_agent` / `build_room_session` do).
 
 ## 2. Architecture
 
@@ -19,17 +48,21 @@ flowchart LR
     NET([🌐 internet]) -->|"the ONLY public :443"| FUNNEL[["Tailscale Funnel<br/>path-route"]]
     FUNNEL -->|"/api/v1/prekey"| WEBUI[webui / daemon_proxy<br/>127.0.0.1:8765<br/>router prefix /api]
     WEBUI --> DAEMON[skchat daemon<br/>health 127.0.0.1:9385]
-    DAEMON --> SKCOMMS[skcomms.api<br/>127.0.0.1:9384]
-    DAEMON --> HIST[(local SQLite history)]
+    DAEMON --> GLOSSA[glossa_mesh<br/>tier ladder + RateController]
+    GLOSSA --> SKCOMMS[skcomms.api<br/>127.0.0.1:9384]
+    DAEMON --> HIST[("per-agent history<br/>$SKCHAT_HOME")]
+    DAEMON -.voice.-> LK[transports/livekit<br/>voice_engine brain]
     classDef pub fill:#fee,stroke:#c00;
     classDef priv fill:#efe,stroke:#0a0;
     class NET,FUNNEL pub
-    class WEBUI,DAEMON,SKCOMMS,HIST priv
+    class WEBUI,DAEMON,GLOSSA,SKCOMMS,HIST,LK priv
 ```
 
-A message is composed locally, persisted to SQLite, PGP-signed/encrypted, and handed to
-skcomms for delivery. The public surface is the device prekey exchange only; all chat
-bytes ride skcomms federation.
+A message is composed locally, persisted to the per-agent store (`$SKCHAT_HOME`),
+PGP-signed/encrypted, framed by the SKGlossa tier the link negotiated (with runtime
+rate adaptation inside that ceiling), and handed to skcomms for delivery. The public
+surface is the device prekey exchange only; all chat bytes ride skcomms federation.
+Voice legs run through the engine-backed LiveKit transport.
 
 ## 3. Build
 
@@ -38,7 +71,11 @@ SKVoice (`127.0.0.1:18800`), STT/TTS, and the LLM at `127.0.0.1:11434` — all t
 
 ## 4. Test
 
-`pytest` — unit + integration (crypto, prekey, daemon, history). Green bar gates release.
+`pytest` — unit + integration (crypto, prekey, daemon, history, per-agent store,
+`test_glossa_rate` / `test_glossa_tokenstream` for G2, `test_transport_livekit` for the
+voice transport). Green bar gates release. Some suites need optional deps
+(skcomms/fastapi/`audioop`); the codec/rate/transport/store tests are pure-Python and
+run without them.
 
 ## 5. Release / Deploy
 
@@ -88,4 +125,10 @@ transfer. CLI: `skchat webui`, `skchat daemon`, `skchat conf`.
 Crypto component. Hybrid-KEM device prekeys `HKDF(X25519 ‖ MLKEM768)`; per-message
 sign/encrypt via skcomms — see
 [CRYPTOGRAPHY_STANDARD.md](https://github.com/smilinTux/sk-standards/blob/main/standards/CRYPTOGRAPHY_STANDARD.md).
-VERSION_LIFECYCLE: Active v2. SemVer per `pyproject.toml`.
+The crypto surface lives in **capauth** (identity/keys) and **skcomms** (envelope
+sign/encrypt); skchat consumes it. The SKGlossa G2 additions (RateController +
+L3 token-stream) are **codec/rate**, not crypto — they change framing and tier
+selection, never key exchange, signing, or cipher choice, and each tier stays gated
+behind the same handshake negotiation (no new undecryptable-frame path). The per-agent
+`SKCHAT_HOME` store is filesystem isolation, likewise crypto-neutral.
+VERSION_LIFECYCLE: Active v2. SemVer per `pyproject.toml`. See `CHANGELOG.md`.
