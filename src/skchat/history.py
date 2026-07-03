@@ -10,6 +10,7 @@ vector-search / thread helpers remain available.
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
@@ -18,7 +19,16 @@ from .models import ChatMessage, Thread
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_HISTORY_DIR = Path("~/.skchat/history")
+
+def _skchat_home() -> Path:
+    """Resolve the skchat home dir, honouring ``SKCHAT_HOME``.
+
+    Lets multiple agent instances keep SEPARATE stores on one box (e.g. an
+    ``opus`` daemon + webui with ``SKCHAT_HOME=~/.skchat-opus``) without
+    co-mingling messages with the default ``~/.skchat`` agent. When
+    ``SKCHAT_HOME`` is unset the default is ``~/.skchat`` — unchanged behaviour.
+    """
+    return Path(os.environ.get("SKCHAT_HOME") or "~/.skchat").expanduser()
 
 
 class ChatHistory:
@@ -52,7 +62,7 @@ class ChatHistory:
         self._history_dir: Path = (
             Path(history_dir).expanduser()
             if history_dir is not None
-            else _DEFAULT_HISTORY_DIR.expanduser()
+            else _skchat_home() / "history"
         )
         self._history_dir.mkdir(parents=True, exist_ok=True)
 
@@ -66,7 +76,7 @@ class ChatHistory:
         Returns:
             MemoryStore backed by SQLite, or None if skmemory is unavailable.
         """
-        store_path = str(Path("~/.skchat/memory").expanduser())
+        store_path = str(_skchat_home() / "memory")
         Path(store_path).mkdir(parents=True, exist_ok=True)
         try:
             from skmemory import MemoryStore, SQLiteBackend
@@ -401,7 +411,7 @@ class ChatHistory:
         from pathlib import Path
 
         if store_path is None:
-            store_path = str(Path("~/.skchat/memory").expanduser())
+            store_path = str(_skchat_home() / "memory")
 
         Path(store_path).mkdir(parents=True, exist_ok=True)
 
