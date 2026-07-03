@@ -16,12 +16,13 @@ channel.
 
 from __future__ import annotations
 
-from skcomms.glossa import codec, gloss
+from skcomms.glossa import gloss
 from skcomms.glossa.codebook import Codebook, default_codebook
 from skcomms.glossa.handshake import CapabilityDescriptor, negotiate
 from skcomms.glossa.message import Message
 
-from skchat.glossa_mesh import protocol
+from skchat.glossa_mesh import codec_ext as codec, protocol
+from skchat.glossa_mesh.rate import RateController
 
 
 class GlossaMeshSession:
@@ -41,10 +42,13 @@ class GlossaMeshSession:
         descriptor: CapabilityDescriptor,
         codebook: Codebook | None = None,
         peers: list[CapabilityDescriptor] | None = None,
+        rate: RateController | None = None,
     ) -> None:
         self.descriptor = descriptor
         self.codebook = codebook or default_codebook()
         self._peers: list[CapabilityDescriptor] = list(peers or [])
+        # Optional G2 rate controller (None => encode at the raw group ceiling).
+        self.rate = rate
         self.audit_log: list[str] = []
 
     @property
@@ -55,6 +59,20 @@ class GlossaMeshSession:
             return self.descriptor.max_level
         return min(negotiate(self.descriptor, p).level for p in self._peers)
 
+    @property
+    def effective_level(self) -> int:
+        """Group ceiling, rate-adapted down/up by the RateController if set.
+        Never exceeds group_level (the weakest peer still caps decodability)."""
+        ceiling = self.group_level
+        if self.rate is None:
+            return ceiling
+        return self.rate.level(ceiling)
+
+    def observe(self, quality: float) -> None:
+        """Feed a [0,1] link-quality score to the rate controller (no-op if none)."""
+        if self.rate is not None:
+            self.rate.observe(quality)
+
     def add_peer(self, peer: CapabilityDescriptor) -> None:
         self._peers.append(peer)
 
@@ -64,7 +82,7 @@ class GlossaMeshSession:
         version. The gloss is computed by re-decoding the produced frame, so the
         returned gloss is provably what the frame says (the audit invariant).
         """
-        level = self.group_level
+        level = self.effective_level
         body = codec.encode(m, level, self.codebook)
         wire = protocol.frame_message(level, body)
         # AUDIT INVARIANT: gloss from the wire, not the source — prove decodability.
