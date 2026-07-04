@@ -109,6 +109,32 @@ def webrtc_turn_warning(env: Optional[dict] = None) -> Optional[str]:
     )
 
 
+def _is_group_message(msg: "ChatMessage", groups: list[str]) -> bool:
+    """True when *msg* is addressed to a group (vs. a 1:1 DM).
+
+    A message is group-shaped when its ``recipient`` carries the ``group:``
+    prefix or it has a ``thread_id`` set. When *groups* (the configured
+    ``SKCHAT_GROUPS`` allow-list) is non-empty, the message's group key must
+    also appear in it — this keeps the daemon from treating an unrelated
+    group's traffic as belonging to this agent's configured rooms.
+
+    Args:
+        msg: The incoming ``ChatMessage``.
+        groups: Configured group keys (e.g. ``["group:room1"]``) from
+            ``GroupResponderConfig.groups``.
+
+    Returns:
+        bool: True if this looks like a group message this agent should
+        consider handling.
+    """
+    rid = getattr(msg, "recipient", "") or ""
+    tid = getattr(msg, "thread_id", "") or ""
+    if not rid.startswith("group:") and not tid:
+        return False
+    key = rid if rid.startswith("group:") else f"group:{tid}"
+    return (not groups) or (key in groups) or (f"group:{tid}" in groups)
+
+
 class DaemonShutdown(Exception):
     """Raised to trigger graceful daemon shutdown."""
 
@@ -258,9 +284,12 @@ class ChatDaemon:
         watchdog = None
         engine = None
         plugin_registry = None
+        group_responder = None
+        group_cfg = None
 
         def _init_subsystems_bg() -> None:
             nonlocal reaper, presence, queue, bridge, watchdog, engine, plugin_registry
+            nonlocal group_responder, group_cfg
             self._init_pqc_prekey(identity)
             reaper = self._init_reaper(history)
             presence = self._init_presence(identity)
@@ -291,6 +320,21 @@ class ChatDaemon:
             except Exception as exc:
                 logger.warning("daemon.py: %s", exc)
                 self._log(f"AdvocacyEngine init skipped: {exc}", "warning")
+            try:
+                from .group_responder import GroupResponder, load_group_config
+
+                group_cfg = load_group_config(os.environ.get("SKAGENT", "lumina"))
+                if group_cfg.groups:
+                    group_responder = GroupResponder(group_cfg)
+                    self._log(
+                        f"GroupResponder ready for groups: {', '.join(group_cfg.groups)}"
+                    )
+                # else: SKCHAT_GROUPS unset/empty — group_responder stays None and
+                # the receive loop's guard (`if group_responder is not None`) is a
+                # complete no-op, so DM advocacy behaviour is unchanged.
+            except Exception as exc:
+                logger.warning("daemon.py: %s", exc)
+                self._log(f"GroupResponder init skipped: {exc}", "warning")
             try:
                 from .plugins import PluginRegistry
 
@@ -374,6 +418,61 @@ class ChatDaemon:
                                     )
                             except Exception as exc:
                                 logger.warning("notify-send failed: %s", exc)
+                            if group_responder is not None and _is_group_message(
+                                msg, group_cfg.groups
+                            ):
+                                try:
+                                    reply = group_responder.respond(msg)
+                                    if reply:
+                                        from .daemon_proxy_groups import load_group
+
+                                        gid = (msg.thread_id or msg.recipient).replace(
+                                            "group:", ""
+                                        )
+                                        grp = load_group(gid)
+                                        if grp is not None:
+                                            # Persist to group history locally
+                                            # (transport=None → no network). The
+                                            # group multicast over raw skcomms
+                                            # mis-routes to '*'; instead fan the
+                                            # reply out per-member via the same
+                                            # 1:1 DM path that is known to deliver.
+                                            grp.send(
+                                                reply,
+                                                sender=identity,
+                                                transport=None,
+                                                history=history,
+                                            )
+                                            from .models import ChatMessage
+
+                                            for member in grp.members:
+                                                if member.identity_uri == identity:
+                                                    continue
+                                                try:
+                                                    transport.send_message(
+                                                        ChatMessage(
+                                                            sender=identity,
+                                                            recipient=member.identity_uri,
+                                                            content=reply,
+                                                            thread_id=gid,
+                                                        )
+                                                    )
+                                                except Exception as fanout_exc:
+                                                    logger.warning(
+                                                        "group fan-out to %s failed: %s",
+                                                        member.identity_uri,
+                                                        fanout_exc,
+                                                    )
+                                            self.advocacy_responses += 1
+                                        else:
+                                            logger.warning(
+                                                "group responder: group %s not found for reply",
+                                                gid,
+                                            )
+                                except Exception as exc:
+                                    logger.warning("group responder failed: %s", exc)
+                                    self._log(f"Group responder error: {exc}", "warning")
+                                continue  # handled; don't also run DM advocacy/plugins
                             if engine:
                                 try:
                                     reply = engine.process_message(msg)
