@@ -473,6 +473,8 @@ _DEFAULT_TOOLS = [
     "web_search",
     # Source ingestion (feed the wiki): YouTube transcript + X/Twitter reader.
     "youtube_fetch", "twitter_fetch",
+    # Speak in Lumina's cloned voice (F5-TTS) + deliver as a Telegram voice message.
+    "voice_message",
     # Chef's secrets vault (skvault) — unlock with the chat word.
     "vault_unlock", "vault_status", "vault_list", "vault_get", "vault_lock",
 ]
