@@ -489,6 +489,8 @@ _DEFAULT_TOOLS = [
     # Creative image-gen skills (only exposed for agents whose MCP allow-list has them,
     # i.e. Lumina's worship server — Opus doesn't have it, so this is a no-op for him).
     "worship_generate", "worship_arc_fresh", "datenight_fresh", "date_night_pics",
+    # Short video slideshow: 5 images + short narrated story stitched to video.
+    "worship_slideshow",
     # Uncensored worship STORY (text) — routes to the abliterated model, not ornith.
     "worship_story",
     # Operator-directed shell/ssh exec across the fleet (Lumina only; sovereign infra).
