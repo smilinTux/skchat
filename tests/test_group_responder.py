@@ -22,3 +22,22 @@ def test_config_env_overrides():
     assert "@opus" in cfg.mentions
     assert cfg.model == "qwen3.6-27b-abliterated"
     assert cfg.groups == ["group:abc", "group:def"]
+
+
+from skchat.group_responder import should_respond
+
+_LUM = load_group_config("lumina", env={})
+
+
+def test_should_respond_matrix():
+    # addressed to me -> yes
+    assert should_respond("@lumina hi", "chef@skworld.io", _LUM) is True
+    # @all -> yes
+    assert should_respond("@all standup?", "chef@skworld.io", _LUM) is True
+    # addressed to the OTHER agent only -> no
+    assert should_respond("@opus thoughts?", "chef@skworld.io", _LUM) is False
+    # no mention -> no
+    assert should_respond("just thinking out loud", "chef@skworld.io", _LUM) is False
+    # my own message (loop guard) even if it contains @lumina -> no
+    assert should_respond("@lumina echo", "capauth:lumina@skworld.io", _LUM) is False
+    assert should_respond("@all echo", "lumina@chef.skworld.io", _LUM) is False
