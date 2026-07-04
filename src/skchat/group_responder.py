@@ -94,3 +94,40 @@ def generate(
     except Exception as exc:
         logger.warning("group generate failed: %s", exc)
         return None
+
+
+def _default_store():  # pragma: no cover - live skmemory
+    from skmemory import MemoryStore
+    return MemoryStore()
+
+
+def recall(query: str, store=None, limit: int = 5) -> str:
+    """Return a short 'Relevant memories' block for *query*, or '' on any failure."""
+    if not (query or "").strip():
+        return ""
+    try:
+        store = store or _default_store()
+        hits = store.search(query, limit=limit)
+    except Exception as exc:
+        logger.debug("group recall failed: %s", exc)
+        return ""
+    lines = []
+    for m in hits or []:
+        c = (getattr(m, "content", "") or "")[:240]
+        if c:
+            lines.append(f"- {c}")
+    return ("Relevant memories:\n" + "\n".join(lines)) if lines else ""
+
+
+def store_turn(user_text: str, reply: str, gid: str, store=None) -> None:
+    """Best-effort: snapshot the exchange to skmemory tagged with the group."""
+    try:
+        store = store or _default_store()
+        title = (user_text or reply or "group turn").strip()[:60]
+        content = f"User: {user_text}\n\nReply: {reply}".strip()[:4000]
+        store.snapshot(
+            title=title, content=content,
+            tags=["skchat", f"{gid}"], source="skchat", source_ref=gid,
+        )
+    except Exception as exc:
+        logger.debug("group store_turn failed: %s", exc)

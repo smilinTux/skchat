@@ -67,3 +67,36 @@ def test_generate_ok():
 def test_generate_http_error_returns_none():
     http = _Http(_Resp(500, {"error": "boom"}))
     assert generate([{"role": "user", "content": "hi"}], _LUM, http=http) is None
+
+
+from skchat.group_responder import recall, store_turn
+
+
+class _Mem:
+    def __init__(self, hits=()): self._hits, self.snaps = list(hits), []
+    def search(self, q, limit=5, **kw):
+        return self._hits
+    def snapshot(self, title, content, **kw): self.snaps.append((title, content, kw))
+
+
+class _Hit:
+    def __init__(self, c): self.content, self.title = c, "t"
+
+
+def test_recall_formats_hits():
+    mem = _Mem([_Hit("Chef likes teal"), _Hit("standup at 9")])
+    out = recall("colors", store=mem)
+    assert "Chef likes teal" in out and "standup at 9" in out
+
+
+def test_recall_empty_on_error():
+    class Boom:
+        def search(self, *a, **k): raise RuntimeError("db down")
+    assert recall("x", store=Boom()) == ""
+
+
+def test_store_turn_snapshots():
+    mem = _Mem()
+    store_turn("q?", "a!", "group:xyz", store=mem)
+    assert mem.snaps and mem.snaps[0][2]["source"] == "skchat"
+    assert "group:xyz" in mem.snaps[0][2]["tags"]
