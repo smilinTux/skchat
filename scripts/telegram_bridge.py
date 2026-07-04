@@ -204,6 +204,45 @@ def _send_html(token: str, chat_id, text: str) -> None:
             )
 
 
+def _send_typing(token: str, chat_id) -> None:
+    """Fire the Telegram 'typing…' chat action (client shows it for ~5s)."""
+    try:
+        body = json.dumps({"chat_id": chat_id, "action": "typing"}).encode()
+        urllib.request.urlopen(
+            urllib.request.Request(
+                f"https://api.telegram.org/bot{token}/sendChatAction",
+                data=body, headers={"Content-Type": "application/json"}),
+            timeout=10,
+        )
+    except Exception:
+        pass
+
+
+class _Typing:
+    """Keep the 'typing…' indicator alive (re-sent every 4s) for the whole
+    reply generation — matters for Opus escalations / tool loops that take a beat."""
+    def __init__(self, token: str, chat_id):
+        import threading
+        self._token, self._chat_id = token, chat_id
+        self._stop = threading.Event()
+        self._thread = None
+
+    def __enter__(self):
+        import threading
+        _send_typing(self._token, self._chat_id)  # immediate
+        def _loop():
+            while not self._stop.wait(4.0):
+                _send_typing(self._token, self._chat_id)
+        self._thread = threading.Thread(target=_loop, daemon=True)
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc):
+        self._stop.set()
+        if self._thread:
+            self._thread.join(timeout=1.0)
+
+
 def _tg_get_file_bytes(token: str, file_id: str) -> bytes | None:
     """Resolve a Telegram file_id to its download URL and fetch the bytes."""
     try:
@@ -657,7 +696,8 @@ async def main() -> None:
                     continue
 
                 try:
-                    reply = _llm(str(chat_id), incoming)
+                    with _Typing(TOKEN, chat_id):   # 'typing…' until the reply is ready
+                        reply = _llm(str(chat_id), incoming)
                 except Exception:
                     log.exception("LLM failed")
                     reply = f"({AGENT}) sorry — my language backend hiccuped, try again."
