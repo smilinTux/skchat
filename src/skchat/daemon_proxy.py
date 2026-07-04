@@ -585,6 +585,40 @@ async def api_inbox():
         return JSONResponse({"messages": []})
 
 
+@router.post("/v1/inbox")
+async def api_inbox_federation_proxy(request: Request):
+    """Federation S2S inbox — proxied to skcomms-api.
+
+    ``/api/v1/inbox`` is overloaded: the app GETs it (thread list, above) while
+    remote peers POST signed envelopes to it for delivery. When this webui is
+    the single 443 front door for ``/api/v1/*``, the app's GET must land here
+    (daemon_proxy) — but a POST must still reach the federation receiver
+    (skcomms-api, :9384) or agents stop receiving messages. Proxy the POST body
+    through verbatim so both work on one path.
+    """
+    import httpx
+    from fastapi import Response
+
+    body = await request.body()
+    ctype = request.headers.get("content-type", "application/json")
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.post(
+                "http://localhost:9384/api/v1/inbox",
+                content=body,
+                headers={"content-type": ctype},
+                timeout=20.0,
+            )
+        return Response(
+            content=r.content,
+            status_code=r.status_code,
+            media_type=r.headers.get("content-type", "application/json"),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("federation inbox proxy -> :9384 failed: %s", exc)
+        raise HTTPException(502, "federation inbox unreachable")
+
+
 @router.get("/v1/groups")
 async def api_groups():
     """List all groups (app conversation shape, ``is_group:true``)."""
