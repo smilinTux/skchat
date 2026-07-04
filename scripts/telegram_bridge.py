@@ -465,6 +465,8 @@ _DEFAULT_TOOLS = [
     "worship_generate", "worship_arc_fresh", "datenight_fresh", "date_night_pics",
     # Uncensored worship STORY (text) — routes to the abliterated model, not ornith.
     "worship_story",
+    # Operator-directed shell/ssh exec across the fleet (Lumina only; sovereign infra).
+    "shell_exec", "ssh_exec", "list_hosts",
 ]
 # Tools that render media and deliver it back into the chat get the chat_id
 # injected (so the model can't misroute delivery). Resolved generically at brain
