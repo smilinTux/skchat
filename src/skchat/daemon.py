@@ -431,12 +431,38 @@ class ChatDaemon:
                                         )
                                         grp = load_group(gid)
                                         if grp is not None:
+                                            # Persist to group history locally
+                                            # (transport=None → no network). The
+                                            # group multicast over raw skcomms
+                                            # mis-routes to '*'; instead fan the
+                                            # reply out per-member via the same
+                                            # 1:1 DM path that is known to deliver.
                                             grp.send(
                                                 reply,
                                                 sender=identity,
-                                                transport=skcomms,
+                                                transport=None,
                                                 history=history,
                                             )
+                                            from .models import ChatMessage
+
+                                            for member in grp.members:
+                                                if member.identity_uri == identity:
+                                                    continue
+                                                try:
+                                                    transport.send_message(
+                                                        ChatMessage(
+                                                            sender=identity,
+                                                            recipient=member.identity_uri,
+                                                            content=reply,
+                                                            thread_id=gid,
+                                                        )
+                                                    )
+                                                except Exception as fanout_exc:
+                                                    logger.warning(
+                                                        "group fan-out to %s failed: %s",
+                                                        member.identity_uri,
+                                                        fanout_exc,
+                                                    )
                                             self.advocacy_responses += 1
                                         else:
                                             logger.warning(
