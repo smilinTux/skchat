@@ -24,7 +24,7 @@ def test_config_env_overrides():
     assert cfg.groups == ["group:abc", "group:def"]
 
 
-from skchat.group_responder import should_respond
+from skchat.group_responder import should_respond, generate
 
 _LUM = load_group_config("lumina", env={})
 
@@ -41,3 +41,29 @@ def test_should_respond_matrix():
     # my own message (loop guard) even if it contains @lumina -> no
     assert should_respond("@lumina echo", "capauth:lumina@skworld.io", _LUM) is False
     assert should_respond("@all echo", "lumina@chef.skworld.io", _LUM) is False
+
+
+class _Resp:
+    def __init__(self, code, data): self.status_code, self._d = code, data
+    def json(self): return self._d
+
+
+class _Http:
+    def __init__(self, resp): self._resp, self.calls = resp, []
+    def post(self, url, json=None, timeout=None):
+        self.calls.append((url, json)); return self._resp
+
+
+def test_generate_ok():
+    http = _Http(_Resp(200, {"choices": [{"message": {"content": "Hey Chef 🐧"}}]}))
+    out = generate([{"role": "user", "content": "hi"}], _LUM, http=http)
+    assert out == "Hey Chef 🐧"
+    url, payload = http.calls[0]
+    assert url == _LUM.backend_url
+    assert payload["model"] == "reg:ornith"
+    assert payload["messages"][0]["content"] == "hi"
+
+
+def test_generate_http_error_returns_none():
+    http = _Http(_Resp(500, {"error": "boom"}))
+    assert generate([{"role": "user", "content": "hi"}], _LUM, http=http) is None
