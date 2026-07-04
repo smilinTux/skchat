@@ -41,6 +41,68 @@ TOKEN = os.environ.get("SKC_BRIDGE_TOKEN") or os.environ["TELEGRAM_OPUS_BOT_TOKE
 LLM_URL = os.environ.get("SKC_BRIDGE_LLM_URL", "http://192.168.0.100:8082/v1/chat/completions")
 LLM_MODEL = os.environ.get("SKC_BRIDGE_LLM_MODEL", "qwen3.6-27b-abliterated")
 AGENT = os.environ.get("SKC_BRIDGE_AGENT", "Opus")
+
+# ── Per-chat model routing (skmodels registry) ─────────────────────────────── #
+# Each Telegram chat can be pinned to a logical role (sk-default/sk-vision/…) with
+# the `/model` command. Two mechanisms, belt-and-suspenders:
+#   1) x-sk-context: chat:<id> header on every backend call, so if LLM_URL points
+#      at SKGateway (.41:18780) the gateway resolves the per-chat backend itself
+#      (precedence context > service > role > default).
+#   2) Local resolution via skos.models.resolve(context=...) — so the swap also
+#      takes effect when the bridge talks to a concrete backend directly (the
+#      current default LLM_URL is .100:8082, not the gateway). The resolved
+#      backend's url+model override LLM_URL/LLM_MODEL for that chat.
+# When skos.models isn't importable the bridge degrades to the static LLM_URL.
+try:
+    import skos.models as _skmodels  # noqa: E402
+except Exception:  # pragma: no cover - optional dep
+    _skmodels = None
+    log.warning("skos.models unavailable — /model routing disabled, using static LLM_URL")
+
+
+def _chat_context_key(chat_id) -> str:
+    """The skmodels context key for a Telegram chat (see registry `contexts:`)."""
+    return f"chat:{chat_id}"
+
+
+def _fresh_registry() -> None:
+    """Drop skos.models' path-keyed registry cache so the next resolve() re-reads
+    the file from disk. The registry is Syncthing-synced and can be toggled by
+    other processes (`skmodels set`, another host); this keeps the long-running
+    bridge live — a `/model` swap anywhere takes effect with no restart. Resolution
+    is once-per-message, so the tiny YAML re-read is negligible."""
+    if _skmodels is not None:
+        try:
+            _skmodels._invalidate()
+        except Exception:
+            log.debug("registry cache invalidate failed", exc_info=True)
+
+
+def _openai_chat_url(base_url: str) -> str:
+    """Normalize a backend `url` (…/v1 or full …/chat/completions) to the
+    chat-completions endpoint the bridge POSTs to."""
+    u = base_url.rstrip("/")
+    if u.endswith("/chat/completions"):
+        return u
+    if u.endswith("/v1"):
+        return u + "/chat/completions"
+    return u + "/v1/chat/completions"
+
+
+def _resolve_backend_for_chat(chat_id) -> tuple[str, str]:
+    """Resolve (url, model) for this chat via the skmodels registry, honoring any
+    `/model` toggle pinned on `chat:<id>`. Falls back to the static LLM_URL/MODEL
+    when skos.models is unavailable or resolution fails."""
+    if _skmodels is None:
+        return LLM_URL, LLM_MODEL
+    _fresh_registry()  # pick up external/synced toggles live (no restart)
+    try:
+        b = _skmodels.resolve(context=_chat_context_key(chat_id))
+        if b and b.url:
+            return _openai_chat_url(b.url), (b.model or LLM_MODEL)
+    except Exception:
+        log.debug("skmodels resolve failed for %s", chat_id, exc_info=True)
+    return LLM_URL, LLM_MODEL
 AGENT_HOME = os.environ.get("SKC_BRIDGE_AGENT_HOME", os.path.expanduser("~/.skcapstone/agents/opus"))
 
 
@@ -332,22 +394,35 @@ def _fit_messages(chat_key: str, user_text: str, mem_block: str = "") -> list:
     return msgs
 
 
-def _call(msgs: list, with_tools: bool = True) -> dict:
-    """One backend round-trip. Returns the raw assistant message dict."""
-    payload = {"model": LLM_MODEL, "messages": msgs, "max_tokens": MAX_TOKENS}
+def _call(msgs: list, with_tools: bool = True, *, url: str | None = None,
+          model: str | None = None, context_key: str = "") -> dict:
+    """One backend round-trip. Returns the raw assistant message dict.
+
+    `url`/`model` default to the static LLM_URL/LLM_MODEL but are overridden per
+    chat by the skmodels resolution. `context_key` (e.g. "chat:<id>") is attached
+    as the `x-sk-context` header so a gateway backend routes per-chat itself
+    (harmless to a direct backend, which ignores the header)."""
+    call_url = url or LLM_URL
+    call_model = model or LLM_MODEL
+    payload = {"model": call_model, "messages": msgs, "max_tokens": MAX_TOKENS}
     if with_tools and _TOOLS_CACHE:
         payload["tools"] = _TOOLS_CACHE
         payload["tool_choice"] = "auto"
     body = json.dumps(payload).encode()
-    req = urllib.request.Request(LLM_URL, data=body, headers={"Content-Type": "application/json"})
+    headers = {"Content-Type": "application/json"}
+    if context_key:
+        headers["x-sk-context"] = context_key
+    req = urllib.request.Request(call_url, data=body, headers=headers)
     out = json.loads(urllib.request.urlopen(req, timeout=180).read())
     return out["choices"][0]["message"]
 
 
-def _run_tool_loop(msgs: list, chat_id: str = "") -> str:
+def _run_tool_loop(msgs: list, chat_id: str = "", *, url: str | None = None,
+                   model: str | None = None) -> str:
     """Drive the qwen3.6 tool-calling loop: call → dispatch MCP → feed back."""
+    context_key = _chat_context_key(chat_id) if chat_id else ""
     for _round in range(MAX_TOOL_ROUNDS):
-        msg = _call(msgs, with_tools=True)
+        msg = _call(msgs, with_tools=True, url=url, model=model, context_key=context_key)
         calls = msg.get("tool_calls") or []
         if not calls:
             return (msg.get("content") or "").strip()
@@ -370,7 +445,7 @@ def _run_tool_loop(msgs: list, chat_id: str = "") -> str:
             msgs.append({"role": "tool", "tool_call_id": tc.get("id", ""),
                          "name": name, "content": result[:6000]})
     # Ran out of rounds — ask for a final answer without tools.
-    final = _call(msgs, with_tools=False)
+    final = _call(msgs, with_tools=False, url=url, model=model, context_key=context_key)
     return (final.get("content") or "").strip()
 
 
@@ -383,14 +458,19 @@ def _llm(chat_key: str, user_text: str) -> str:
     except Exception:
         log.debug("memory inject failed", exc_info=True)
     msgs = _fit_messages(chat_key, user_text, mem_block=mem_block)
+    # Per-chat model routing: resolve the backend for this chat (honors /model
+    # toggle on chat:<id>) and attach the x-sk-context header downstream.
+    url, model = _resolve_backend_for_chat(chat_key)
+    ctx_key = _chat_context_key(chat_key)
     try:
-        reply = _run_tool_loop(msgs, chat_id=chat_key)
+        reply = _run_tool_loop(msgs, chat_id=chat_key, url=url, model=model)
     except urllib.error.HTTPError as e:
         if e.code == 400:  # context overflow — retry minimal, no tools
             log.warning("400 from backend; retrying system+message only (no tools)")
             sys_only = [m for m in msgs if m["role"] == "system"]
             sys_only.append({"role": "user", "content": user_text})
-            reply = (_call(sys_only, with_tools=False).get("content") or "").strip()
+            reply = (_call(sys_only, with_tools=False, url=url, model=model,
+                           context_key=ctx_key).get("content") or "").strip()
         else:
             raise
     _history[chat_key].append({"role": "user", "content": user_text})
@@ -401,6 +481,70 @@ def _llm(chat_key: str, user_text: str) -> str:
     except Exception:
         log.debug("interaction store failed", exc_info=True)
     return reply
+
+
+def _handle_model_command(chat_id, text: str) -> str | None:
+    """Handle the `/model` slash command for live per-chat model swapping.
+
+    Returns the reply text to send (and the caller then skips the LLM), or None
+    when *text* is not a /model command.
+
+      /model            → show available roles + this chat's current model
+      /model list       → same
+      /model <role>     → pin chat:<id> to <role> (skmodels set) and confirm
+
+    Writes the toggle via skos.models.set_context (registry `contexts:`), the
+    same thing `skmodels set chat:<id> <role>` does — comment-preserving.
+    """
+    stripped = text.strip()
+    # Accept "/model", "/model@seaBird_Opus_bot" (group @-mention form), args after.
+    parts = stripped.split()
+    head = parts[0].split("@", 1)[0].lower() if parts else ""
+    if head != "/model":
+        return None
+    arg = parts[1].strip().lower() if len(parts) > 1 else ""
+
+    if _skmodels is None:
+        return ("(model routing unavailable — skos.models isn't importable in this "
+                "bridge's environment, so /model can't switch backends here.)")
+
+    _fresh_registry()  # reflect any external/synced changes in the roster + current
+    roles = _skmodels.list_roles() or {}
+    backends = _skmodels.list_backends() or {}
+
+    def _current_line() -> str:
+        b = _skmodels.resolve(context=_chat_context_key(chat_id))
+        pinned = (_skmodels.list_contexts() or {}).get(_chat_context_key(chat_id))
+        via = f"pinned → {pinned}" if pinned else "default"
+        vis = " [vision]" if getattr(b, "vision", False) else ""
+        return f"current: {b.name} ({b.model}){vis} — {via}"
+
+    if arg in ("", "list", "status", "get"):
+        lines = ["Available models (roles):"]
+        for role, target in roles.items():
+            bk = backends.get(target, {})
+            vtag = " [vision]" if bk.get("vision") else ""
+            lines.append(f"  {role} → {target}{vtag}")
+        lines.append("")
+        lines.append(_current_line())
+        lines.append("")
+        lines.append("Swap with:  /model <role>   (e.g. /model sk-vision)")
+        return "\n".join(lines)
+
+    # A swap request: validate the target is a known role OR a concrete backend.
+    if arg not in roles and arg not in backends:
+        valid = ", ".join(list(roles) + list(backends))
+        return f"unknown model '{arg}'. valid targets: {valid}"
+
+    try:
+        _skmodels.set_context(_chat_context_key(chat_id), arg)
+    except Exception:
+        log.exception("skmodels set_context failed")
+        return f"(failed to switch to {arg} — registry write error; check the bridge logs.)"
+    b = _skmodels.resolve(context=_chat_context_key(chat_id))
+    vis = " [vision]" if getattr(b, "vision", False) else ""
+    log.info("model swap: %s → %s (%s)", _chat_context_key(chat_id), arg, b.name)
+    return f"✅ switched this chat to {arg} → {b.name} ({b.model}){vis}. Replies now route there."
 
 
 # Voice-reply policy: "voice" (default) = speak back only when spoken to;
@@ -486,6 +630,17 @@ async def main() -> None:
                         hub.handle_inbound(m)
                     except Exception:
                         log.exception("handle_inbound failed (continuing)")
+
+                # Slash-command: live per-chat model swap. Handled locally (no LLM,
+                # no voice) — replies with the roster / confirms the toggle.
+                cmd_reply = _handle_model_command(chat_id, incoming)
+                if cmd_reply is not None:
+                    try:
+                        _send_html(TOKEN, chat_id, cmd_reply)
+                        log.info("replied (/model) to %s", chat_id)
+                    except Exception:
+                        log.exception("send failed (/model)")
+                    continue
 
                 try:
                     reply = _llm(str(chat_id), incoming)
