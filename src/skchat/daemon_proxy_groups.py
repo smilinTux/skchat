@@ -412,6 +412,29 @@ def update_group(group, *, name: Optional[str] = None, description: Optional[str
 # --------------------------------------------------------------------------- #
 # Messaging + history
 # --------------------------------------------------------------------------- #
+def _delivery_transport(identity: str):
+    """Build a ChatTransport for network delivery to member daemons, or None.
+
+    Group fan-out must reach each member's *daemon* (a separate process polling
+    its own inbox), not just the operator's local history — otherwise agents
+    never see the message and never respond. Best-effort: returns None if the
+    transport can't be built so persistence still succeeds.
+    """
+    try:
+        from skcomms import SKComms
+
+        from .history import ChatHistory
+        from .transport import ChatTransport
+
+        comm = SKComms.from_config()
+        if not getattr(comm, "router", None) or not comm.router.transports:
+            return None
+        return ChatTransport(skcomms=comm, history=ChatHistory(), identity=identity)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("group delivery transport unavailable: %s", exc)
+        return None
+
+
 def fan_out_send(group, hist, sender_uri: str, content: str,
                  reply_to_id: Optional[str] = None, thread_id: Optional[str] = None,
                  content_type: Optional[str] = None, rich: Optional[dict] = None):
@@ -445,23 +468,36 @@ def fan_out_send(group, hist, sender_uri: str, content: str,
     )
     hist.save(group_msg)
 
-    # Per-member copy (so each member's 1:1-style inbox/load(peer=uri) sees it).
+    # Network transport so each member's DAEMON actually receives the message
+    # (hist.save is local-display only). Without this the message shows in the
+    # operator's app but no agent ever sees it, so none respond.
+    _transport = _delivery_transport(sender_uri)
+
+    # Per-member copy (so each member's 1:1-style inbox/load(peer=uri) sees it)
+    # AND deliver it over the network so their daemon responds.
     for member in group.members:
         if member.identity_uri == sender_uri:
             continue
+        member_msg = _typed(
+            sender=sender_uri,
+            recipient=member.identity_uri,
+            content=content,
+            thread_id=group.id,
+            reply_to_id=reply_to_id or None,
+            metadata={"group_id": group.id, "group_name": group.name,
+                      "key_version": group.key_version},
+        )
         try:
-            hist.save(_typed(
-                sender=sender_uri,
-                recipient=member.identity_uri,
-                content=content,
-                thread_id=group.id,
-                reply_to_id=reply_to_id or None,
-                metadata={"group_id": group.id, "group_name": group.name,
-                          "key_version": group.key_version},
-            ))
+            hist.save(member_msg)
         except Exception as exc:
             logger.warning("fan_out_send: member copy for %s failed: %s",
                            member.identity_uri, exc)
+        if _transport is not None:
+            try:
+                _transport.send_message(member_msg)
+            except Exception as exc:
+                logger.warning("fan_out_send: delivery to %s failed: %s",
+                               member.identity_uri, exc)
 
     group.touch()
     group.metadata["last_message"] = content
