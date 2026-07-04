@@ -6,11 +6,14 @@ skgateway (reg:ornith), and return the reply. Talk-first (no tool-loop).
 """
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass, field
 from typing import Mapping, Optional
 
 from .advocacy import _token_match
+
+logger = logging.getLogger("skchat.group_responder")
 
 _DEFAULT_BACKEND = "http://localhost:18780/v1/chat/completions"
 _DEFAULT_MODEL = "reg:ornith"
@@ -66,3 +69,28 @@ def should_respond(content: str, sender: str, cfg: GroupResponderConfig) -> bool
         return False
     low = (content or "").lower()
     return any(_token_match(low, m) for m in cfg.mentions)
+
+
+def generate(
+    messages: list[dict], cfg: GroupResponderConfig, http=None
+) -> Optional[str]:
+    """POST an OpenAI-shaped chat completion to skgateway; return the reply text."""
+    if http is None:  # pragma: no cover - real client, exercised live
+        import httpx
+        http = httpx.Client()
+    payload = {
+        "model": cfg.model,
+        "messages": messages,
+        "max_tokens": cfg.max_reply_tokens,
+        "temperature": 0.8,
+    }
+    try:
+        resp = http.post(cfg.backend_url, json=payload, timeout=120.0)
+        if resp.status_code >= 400:
+            logger.warning("group generate: skgateway HTTP %s", resp.status_code)
+            return None
+        data = resp.json() or {}
+        return (data.get("choices") or [{}])[0].get("message", {}).get("content")
+    except Exception as exc:
+        logger.warning("group generate failed: %s", exc)
+        return None
