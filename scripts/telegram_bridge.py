@@ -435,10 +435,11 @@ def _build_system_prompt() -> str:
 
 SYSTEM = _build_system_prompt()
 
-# Hard operating-facts guardrail — appended so it can't be overridden by soul text.
-# Fixes two recurring failures: (1) confabulating a model identity ("Kimi K2.5"),
-# (2) inventing hardware specs instead of running the exec tools.
-SYSTEM += (
+# Hard operating-facts guardrail — appended AFTER system truncation in _fit_messages
+# (the soul prompt is ~26k chars, near the budget, so appending to SYSTEM here would
+# get truncated off). Fixes two recurring failures: (1) confabulating a model identity
+# ("Kimi K2.5"), (2) inventing hardware specs instead of running the exec tools.
+_OPERATING_FACTS = (
     "\n\n## OPERATING FACTS — these override anything above; never contradict them\n"
     "- **Your model:** you run ONLY on SKWorld's sovereign models, routed per-message by "
     "sk-auto: casual/creative chat → `ornith-1.0-9b` (on .100), infra/complex → "
@@ -704,7 +705,9 @@ def _fit_messages(chat_key: str, user_text: str, mem_block: str = "",
     full cache) so the history budget reflects the real tool-schema cost.
     """
     turn_tools = _TOOLS_CACHE if tools is None else tools
-    system = SYSTEM[: _SYS_BUDGET_TOK * _CHARS_PER_TOK]
+    # Truncate the soul prompt to budget, then ALWAYS append the operating-facts
+    # guardrail (model identity + no-fabrication rule) so it can't be cut off.
+    system = SYSTEM[: _SYS_BUDGET_TOK * _CHARS_PER_TOK] + _OPERATING_FACTS
     if mem_block:
         system = system + "\n\n" + mem_block
     msgs = [{"role": "system", "content": system}]
