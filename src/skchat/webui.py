@@ -456,6 +456,25 @@ def _skchat_home() -> Path:
     return Path(os.environ.get("SKCHAT_HOME", str(Path.home() / ".skchat")))
 
 
+def _load_group_by_id(gid: str):
+    """Load a GroupChat by id from this agent's ``<home>/groups/<gid>.json``.
+
+    Returns the ``GroupChat`` or ``None`` when *gid* names no group here (so a
+    normal 1:1 recipient falls through to the DM send path).
+    """
+    if not gid:
+        return None
+    from .group import GroupChat
+
+    path = _skchat_home() / "groups" / f"{gid}.json"
+    if not path.exists():
+        return None
+    try:
+        return GroupChat.model_validate_json(path.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return None
+
+
 # Transfer ids are path components served from disk — restrict to a safe charset
 # (no slashes / dotdot) so a request can never escape the per-subdir base.
 _TID_RE = _re.compile(r"^[A-Za-z0-9._-]+$")
@@ -1030,6 +1049,44 @@ async def api_send(payload: dict = Body(...)) -> JSONResponse:
     msg = ChatMessage(sender=identity, recipient=recipient, content=content)
 
     transport = _get_transport(identity)
+
+    # Group send: a "group:<id>" recipient (or a bare id matching a group record)
+    # must fan out to each member — the 1:1 send_and_store path can only reach a
+    # single peer, so a group recipient would silently go nowhere. Deliver to each
+    # non-self member via the DM transport with thread_id=<gid> (the same path the
+    # daemon's group responder uses), and persist one group-thread copy locally.
+    _gid = recipient[6:] if recipient.startswith("group:") else recipient
+    _grp = _load_group_by_id(_gid)
+    if _grp is not None:
+        history = _get_history()
+        own = ChatMessage(
+            sender=identity, recipient=f"group:{_grp.id}",
+            content=content, thread_id=_grp.id,
+        )
+        history.save(own)
+        for member in _grp.members:
+            if member.identity_uri == identity:
+                continue
+            try:
+                if transport:
+                    transport.send_message(
+                        ChatMessage(
+                            sender=identity, recipient=member.identity_uri,
+                            content=content, thread_id=_grp.id,
+                        )
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("group send to %s failed: %s", member.identity_uri, exc)
+        asyncio.create_task(_ws_broadcast({"type": "new"}))
+        return JSONResponse(
+            {
+                "ok": True,
+                "id": own.id,
+                "recipient": recipient,
+                "ts": own.timestamp.isoformat() if own.timestamp else None,
+            }
+        )
+
     if transport:
         # Same transport path as the HTML /send route.
         transport.send_and_store(recipient=recipient, content=content)
