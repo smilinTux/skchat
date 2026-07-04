@@ -777,6 +777,18 @@ def _run_tool_loop(msgs: list, chat_id: str = "", *, url: str | None = None,
     return (final.get("content") or "").strip(), concrete_model
 
 
+def _strip_think(text: str) -> str:
+    """Remove <think>…</think> reasoning blocks (Qwen abliterated emits them, often
+    empty) from a reply. Drops everything up to the last </think>, then any stray
+    open/close think tags. Never touches a reply that has none."""
+    if not text:
+        return text
+    if "</think>" in text:
+        text = text.rsplit("</think>", 1)[-1]
+    text = _re.sub(r"</?think>", "", text)
+    return text.strip()
+
+
 def _llm(chat_key: str, user_text: str) -> tuple[str, str | None]:
     import urllib.error
 
@@ -807,6 +819,9 @@ def _llm(chat_key: str, user_text: str) -> tuple[str, str | None]:
             reply = (msg.get("content") or "").strip()
         else:
             raise
+    # Strip <think>…</think> reasoning blocks the abliterated Qwen emits (incl. the
+    # empty "<think>\n\n</think>" prefix) so they never leak into chat/voice/memory.
+    reply = _strip_think(reply)
     # Concrete answering model for rating attribution: prefer what the backend
     # actually served (response["model"]); fall back to the resolved backend model.
     concrete_model = concrete_model or model
