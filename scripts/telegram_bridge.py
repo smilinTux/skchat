@@ -342,6 +342,9 @@ _DEFAULT_TOOLS = [
     "calendar_today", "calendar_week", "calendar_create_event",
     "nextcloud_notes_search_notes", "nextcloud_notes_create_note",
     "skseed_truth_check",
+    # Creative image-gen skills (only exposed for agents whose MCP allow-list has them,
+    # i.e. Lumina's worship server — Opus doesn't have it, so this is a no-op for him).
+    "worship_generate", "worship_arc_fresh", "datenight_fresh", "date_night_pics",
 ]
 # Tools that render media and deliver it back into the chat get the chat_id
 # injected (so the model can't misroute delivery). Resolved generically at brain
