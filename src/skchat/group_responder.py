@@ -10,6 +10,8 @@ import os
 from dataclasses import dataclass, field
 from typing import Mapping, Optional
 
+from .advocacy import _token_match
+
 _DEFAULT_BACKEND = "http://localhost:18780/v1/chat/completions"
 _DEFAULT_MODEL = "reg:ornith"
 # mentions that address every agent in the room
@@ -48,3 +50,19 @@ def load_group_config(
         max_reply_tokens=int(env.get("SKCHAT_GROUP_MAX_TOKENS") or 800),
         on_error=(env.get("SKCHAT_GROUP_ON_ERROR") or "silent").strip(),
     )
+
+
+def _is_self(sender: str, agent: str) -> bool:
+    """True when *sender* is this agent (any of its identity forms)."""
+    s = (sender or "").lower()
+    # matches capauth:opus@skworld.io, opus@chef.skworld.io, opus, etc.
+    handle = s.split(":", 1)[-1].split("@", 1)[0]
+    return handle == agent
+
+
+def should_respond(content: str, sender: str, cfg: GroupResponderConfig) -> bool:
+    """True iff this agent is explicitly addressed and the sender is not itself."""
+    if _is_self(sender, cfg.agent):
+        return False
+    low = (content or "").lower()
+    return any(_token_match(low, m) for m in cfg.mentions)
