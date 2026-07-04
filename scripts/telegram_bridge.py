@@ -103,16 +103,20 @@ def _resolve_backend_for_chat(chat_id) -> tuple[str, str]:
     try:
         reg = _skmodels.load_registry()
         ctx_key = _chat_context_key(chat_id)
-        # The role/backend that applies to THIS chat: its /model toggle, else the
-        # global default (currently sk-auto).
-        target = (reg.contexts or {}).get(ctx_key, reg.default_role)
+        # Per-bot default role (SKC_BRIDGE_DEFAULT_ROLE) overrides the registry's
+        # global default for THIS agent only — e.g. Lumina defaults to sk-creative
+        # (abliterated qwen = her personality/creative brain) while Opus stays on
+        # the global sk-auto. A per-chat `/model` toggle still wins over both.
+        default_role = os.environ.get("SKC_BRIDGE_DEFAULT_ROLE") or reg.default_role
+        pinned = (reg.contexts or {}).get(ctx_key)
+        target = pinned or default_role
         # sk-auto needs SKGateway's per-request difficulty classifier — the bot
         # can't classify. Route sk-auto chats THROUGH the local gateway (it reads
         # the same registry + attaches x-sk-context) so easy->ornith/hard->opus/
         # image->VL happens automatically. Pinned concrete roles go direct (fast).
         if target == "sk-auto" and _GATEWAY_URL:
             return _openai_chat_url(_GATEWAY_URL), "sk-auto"
-        b = _skmodels.resolve(context=ctx_key)
+        b = _skmodels.resolve(context=ctx_key) if pinned else _skmodels.resolve(role=default_role)
         if b and b.url:
             return _openai_chat_url(b.url), (b.model or LLM_MODEL)
     except Exception:
