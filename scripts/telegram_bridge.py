@@ -471,6 +471,10 @@ _DEFAULT_TOOLS = [
     "flux_generate", "security_scan", "wiki_search",
     # Sovereign web search via local SearXNG (Yandex default).
     "web_search",
+    # Source ingestion (feed the wiki): YouTube transcript + X/Twitter reader.
+    "youtube_fetch", "twitter_fetch",
+    # Chef's secrets vault (skvault) — unlock with the chat word.
+    "vault_unlock", "vault_status", "vault_list", "vault_get", "vault_lock",
 ]
 # Tools that render media and deliver it back into the chat get the chat_id
 # injected (so the model can't misroute delivery). Resolved generically at brain
