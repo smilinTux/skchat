@@ -467,6 +467,8 @@ _DEFAULT_TOOLS = [
     "worship_story",
     # Operator-directed shell/ssh exec across the fleet (Lumina only; sovereign infra).
     "shell_exec", "ssh_exec", "list_hosts",
+    # Script-only skills wrapped as tools: FLUX image gen (delivery), secret scan, wiki search.
+    "flux_generate", "security_scan", "wiki_search",
 ]
 # Tools that render media and deliver it back into the chat get the chat_id
 # injected (so the model can't misroute delivery). Resolved generically at brain
