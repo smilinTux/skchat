@@ -136,3 +136,17 @@ def test_respond_none_when_not_mentioned():
     r = GroupResponder(_LUM, prompt_builder=_Builder(), http=http, store=_Mem())
     assert r.respond(_mk("@opus only you")) is None
     assert http.calls == []  # never hit the backend
+
+
+def test_should_respond_agent_sender_loop_guard():
+    """Another agent's message never triggers a response (loop breaker)."""
+    lum = load_group_config("lumina", env={})
+    assert "opus" in lum.peer_agents  # default peer set excludes self
+    # peer agent sender -> no response, even on a direct @self or @all mention
+    assert should_respond("@lumina thoughts?", "capauth:opus@skworld.io", lum) is False
+    assert should_respond("good idea @all", "capauth:opus@skworld.io", lum) is False
+    assert should_respond("@all standup", "jarvis@chef.skworld.io", lum) is False
+    # human (chef) sender -> normal mention rules still apply
+    assert should_respond("@lumina hi", "chef@skworld.io", lum) is True
+    assert should_respond("@all standup", "chef@skworld.io", lum) is True
+    assert should_respond("just chatting", "chef@skworld.io", lum) is False
