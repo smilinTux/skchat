@@ -39,6 +39,9 @@ log = logging.getLogger("tg-bridge")
 
 TOKEN = os.environ.get("SKC_BRIDGE_TOKEN") or os.environ["TELEGRAM_OPUS_BOT_TOKEN"]
 LLM_URL = os.environ.get("SKC_BRIDGE_LLM_URL", "http://192.168.0.100:8082/v1/chat/completions")
+# Local SKGateway — sk-auto chats route here so its difficulty classifier picks
+# the model per message (easy->ornith, hard->opus, image->VL). Local hop on .158.
+_GATEWAY_URL = os.environ.get("SKC_BRIDGE_GATEWAY_URL", "http://127.0.0.1:18780/v1")
 LLM_MODEL = os.environ.get("SKC_BRIDGE_LLM_MODEL", "qwen3.6-27b-abliterated")
 AGENT = os.environ.get("SKC_BRIDGE_AGENT", "Opus")
 
@@ -97,7 +100,18 @@ def _resolve_backend_for_chat(chat_id) -> tuple[str, str]:
         return LLM_URL, LLM_MODEL
     _fresh_registry()  # pick up external/synced toggles live (no restart)
     try:
-        b = _skmodels.resolve(context=_chat_context_key(chat_id))
+        reg = _skmodels.load_registry()
+        ctx_key = _chat_context_key(chat_id)
+        # The role/backend that applies to THIS chat: its /model toggle, else the
+        # global default (currently sk-auto).
+        target = (reg.contexts or {}).get(ctx_key, reg.default_role)
+        # sk-auto needs SKGateway's per-request difficulty classifier — the bot
+        # can't classify. Route sk-auto chats THROUGH the local gateway (it reads
+        # the same registry + attaches x-sk-context) so easy->ornith/hard->opus/
+        # image->VL happens automatically. Pinned concrete roles go direct (fast).
+        if target == "sk-auto" and _GATEWAY_URL:
+            return _openai_chat_url(_GATEWAY_URL), "sk-auto"
+        b = _skmodels.resolve(context=ctx_key)
         if b and b.url:
             return _openai_chat_url(b.url), (b.model or LLM_MODEL)
     except Exception:
