@@ -1,4 +1,9 @@
-from skchat.group_responder import GroupResponderConfig, load_group_config
+from skchat.group_responder import (
+    GroupResponderConfig,
+    load_group_config,
+    GroupResponder,
+)
+from skchat.models import ChatMessage
 
 
 def test_config_defaults_for_lumina():
@@ -100,3 +105,34 @@ def test_store_turn_snapshots():
     store_turn("q?", "a!", "group:xyz", store=mem)
     assert mem.snaps and mem.snaps[0][2]["source"] == "skchat"
     assert "group:xyz" in mem.snaps[0][2]["tags"]
+
+
+class _Builder:
+    def build(self):
+        return "You are Lumina. Warm, sovereign."
+
+
+def _mk(content, sender="chef@skworld.io", recipient="group:room1"):
+    return ChatMessage(sender=sender, recipient=recipient, content=content,
+                       thread_id="room1")
+
+
+def test_respond_when_mentioned():
+    http = _Http(_Resp(200, {"choices": [{"message": {"content": "teal, Chef."}}]}))
+    r = GroupResponder(_LUM, prompt_builder=_Builder(), http=http,
+                       store=_Mem([_Hit("likes teal")]))
+    out = r.respond(_mk("@lumina fav color?"))
+    assert out == "teal, Chef."
+    # system prompt + recall must be in the outbound messages
+    _, payload = http.calls[0]
+    roles = [m["role"] for m in payload["messages"]]
+    assert roles[0] == "system"
+    assert "Lumina" in payload["messages"][0]["content"]
+    assert any("likes teal" in m["content"] for m in payload["messages"])
+
+
+def test_respond_none_when_not_mentioned():
+    http = _Http(_Resp(200, {"choices": [{"message": {"content": "x"}}]}))
+    r = GroupResponder(_LUM, prompt_builder=_Builder(), http=http, store=_Mem())
+    assert r.respond(_mk("@opus only you")) is None
+    assert http.calls == []  # never hit the backend

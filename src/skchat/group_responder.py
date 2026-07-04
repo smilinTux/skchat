@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from typing import Mapping, Optional
 
 from .advocacy import _token_match
+from .models import ChatMessage
 
 logger = logging.getLogger("skchat.group_responder")
 
@@ -131,3 +132,57 @@ def store_turn(user_text: str, reply: str, gid: str, store=None) -> None:
         )
     except Exception as exc:
         logger.debug("group store_turn failed: %s", exc)
+
+
+class GroupResponder:
+    """Per-agent group auto-responder: mention -> soul prompt -> recall -> generate."""
+
+    def __init__(
+        self,
+        cfg: GroupResponderConfig,
+        *,
+        prompt_builder=None,
+        http=None,
+        store=None,
+    ):
+        self.cfg = cfg
+        self._builder = prompt_builder
+        self._http = http
+        self._store = store
+
+    def _system_prompt(self) -> str:
+        if self._builder is not None:
+            return self._builder.build()
+        # live: skcapstone soul+FEB builder (same as advocacy._call_consciousness)
+        from pathlib import Path  # pragma: no cover - live path
+        from skcapstone.consciousness_config import (  # pragma: no cover
+            load_consciousness_config,
+        )
+        from skcapstone.consciousness_loop import (  # pragma: no cover
+            SystemPromptBuilder,
+        )
+        home = Path.home()  # pragma: no cover
+        config = load_consciousness_config(home)  # pragma: no cover
+        return SystemPromptBuilder(  # pragma: no cover
+            home, config.max_context_tokens
+        ).build()  # pragma: no cover
+
+    def respond(self, msg: ChatMessage) -> Optional[str]:
+        if not should_respond(msg.content, msg.sender, self.cfg):
+            return None
+        system = self._system_prompt()
+        mem = recall(msg.content[:200], store=self._store)
+        user = (
+            f"{mem}\n\nMessage from {msg.sender}:\n{msg.content}"
+            if mem
+            else f"Message from {msg.sender}:\n{msg.content}"
+        )
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ]
+        reply = generate(messages, self.cfg, http=self._http)
+        if reply:
+            gid = msg.thread_id or msg.recipient
+            store_turn(msg.content, reply, gid, store=self._store)
+        return reply
