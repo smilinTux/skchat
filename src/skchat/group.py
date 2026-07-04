@@ -317,14 +317,30 @@ class GroupChat(BaseModel):
     def get_member(self, identity_uri: str) -> Optional[GroupMember]:
         """Look up a member by identity URI.
 
+        Matches across identity forms — ``capauth:chef@skworld.io``,
+        ``chef@skworld.io`` (bare), and ``chef@chef.skworld`` (fqid) all resolve
+        to the same member — so a caller using one form (e.g. the operator id
+        ``chef@skworld.io``) still matches a member stored as
+        ``capauth:chef@skworld.io``. Without this, posting/ACL checks silently
+        treat the operator as a non-member.
+
         Args:
-            identity_uri: CapAuth identity URI.
+            identity_uri: Identity URI in any form.
 
         Returns:
             Optional[GroupMember]: The member if found.
         """
+
+        def _handle(u: str) -> str:
+            return (u or "").lower().split(":", 1)[-1].split("@", 1)[0]
+
+        target = _handle(identity_uri)
         return next(
-            (m for m in self.members if m.identity_uri == identity_uri),
+            (
+                m
+                for m in self.members
+                if m.identity_uri == identity_uri or _handle(m.identity_uri) == target
+            ),
             None,
         )
 

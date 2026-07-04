@@ -39,6 +39,42 @@ from . import __version__
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="SKChat Web UI")
+
+
+@app.middleware("http")
+async def _debug_log_app_requests(request, call_next):
+    """TEMP diagnostic: log the raw request the native app makes for sends/calls."""
+    import os as _os
+
+    if _os.environ.get("SKCHAT_DEBUG_REQ", "").strip() in ("1", "true", "yes"):
+        p = request.url.path
+        interesting = (
+            request.method in ("POST", "PUT")
+            or "call" in p
+            or "rtc" in p
+            or "livekit" in p
+            or "group" in p
+        )
+        if interesting:
+            try:
+                body = await request.body()
+
+                async def _receive():
+                    return {"type": "http.request", "body": body, "more_body": False}
+
+                request._receive = _receive
+                logger.info(
+                    "APP-REQ %s %s q=%s body=%s",
+                    request.method,
+                    p,
+                    dict(request.query_params),
+                    body.decode("utf-8", "replace")[:400],
+                )
+            except Exception as _e:  # noqa: BLE001
+                logger.info("APP-REQ %s %s (body read err: %s)", request.method, p, _e)
+    return await call_next(request)
+
+
 _SKCHAT_HOME = Path("~/.skchat").expanduser()
 
 # Upload size cap for the /upload endpoint (100 MiB).
