@@ -70,11 +70,9 @@ services:
       --no-multicast-peers
       --denied-peer-ip=0.0.0.0-0.255.255.255
       --denied-peer-ip=10.0.0.0-10.255.255.255
-      --denied-peer-ip=100.64.0.0-100.127.255.255
       --denied-peer-ip=127.0.0.0-127.255.255.255
       --denied-peer-ip=169.254.0.0-169.254.255.255
       --denied-peer-ip=172.16.0.0-172.31.255.255
-      --denied-peer-ip=192.168.0.0-192.168.255.255
       --denied-peer-ip=::1
       --denied-peer-ip=fd00::/8
       --cipher-list="HIGH"
@@ -83,11 +81,17 @@ services:
       --fingerprint
       --stale-nonce=0
     # ── denied-peer-ip rationale ──────────────────────────────────────────────
-    # Blocking RFC-1918 + loopback + link-local + Tailscale CGNAT (100.64/10)
-    # prevents SSRF-style relay abuse (a guest using TURN to reach internal LAN
-    # or tailnet hosts).  LAN peers do not need TURN (LAN → tier-2, no relay), so
-    # leave these in.  Drop the 192.168/172.16/10 rules ONLY if a real LAN peer
-    # must relay (unusual).
+    # Blocks RFC-1918 (10/172.16), loopback, link-local, Docker, and ULA to
+    # prevent SSRF-style relay abuse (a guest using TURN to reach internal hosts).
+    #
+    # ALLOWED (relay permitted): Tailscale CGNAT 100.64/10 and LAN 192.168/16.
+    # This is a sovereign TAILNET-FIRST deploy where every peer (agents + Chef's
+    # own devices) lives on the trusted tailnet (100.x) or home LAN (192.168.x).
+    # A Chef↔agent call whose direct/tier-2 path fails (mobile NAT, etc.) MUST be
+    # able to relay to those addresses — blocking 100.64/10 broke exactly that.
+    # The tailnet is WireGuard-authenticated + private, so relaying within it is
+    # trusted, not guest-exposed. Re-add the 100.64/192.168 denials only if this
+    # coturn is ever opened to untrusted public guests.
     #
     # ── TURN/TLS (port 5349) ──────────────────────────────────────────────────
     # Plain TURN (:3478) is sufficient for tailnet-first deploys (WireGuard already
