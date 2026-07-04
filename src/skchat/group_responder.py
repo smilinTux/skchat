@@ -21,12 +21,21 @@ _DEFAULT_MODEL = "reg:ornith"
 # mentions that address every agent in the room
 _BROADCAST_MENTIONS = ["@all", "@both", "@everyone"]
 
+# Known sovereign-agent handles. Used as the default "peer agents" set so that,
+# out of the box, one agent never auto-responds to another agent's message —
+# the loop breaker (see should_respond). Humans (e.g. chef) are NOT in this set.
+_KNOWN_AGENTS = [
+    "lumina", "opus", "jarvis", "ava", "artisan", "herald",
+    "sentinel", "architect", "scholar", "steward", "coder",
+]
+
 
 @dataclass
 class GroupResponderConfig:
     agent: str
     mentions: list[str]
     groups: list[str] = field(default_factory=list)
+    peer_agents: list[str] = field(default_factory=list)
     backend_url: str = _DEFAULT_BACKEND
     model: str = _DEFAULT_MODEL
     history_turns: int = 8
@@ -44,10 +53,18 @@ def load_group_config(
     mentions = [f"@{agent}"] + _BROADCAST_MENTIONS
     groups_raw = (env.get("SKCHAT_GROUPS") or "").strip()
     groups = [g.strip() for g in groups_raw.split(",") if g.strip()]
+    peers_raw = (env.get("SKCHAT_GROUP_AGENT_PEERS") or "").strip()
+    if peers_raw:
+        peer_agents = [p.strip().lower() for p in peers_raw.split(",") if p.strip()]
+    else:
+        # Safe default: every known agent except self. Prevents agent↔agent
+        # response loops even when the env var is not configured.
+        peer_agents = [a for a in _KNOWN_AGENTS if a != agent]
     return GroupResponderConfig(
         agent=agent,
         mentions=mentions,
         groups=groups,
+        peer_agents=peer_agents,
         backend_url=(env.get("SKCHAT_GROUP_BACKEND_URL") or _DEFAULT_BACKEND).strip(),
         model=(env.get("SKCHAT_GROUP_MODEL") or _DEFAULT_MODEL).strip(),
         history_turns=int(env.get("SKCHAT_GROUP_HISTORY_TURNS") or 8),
@@ -56,17 +73,32 @@ def load_group_config(
     )
 
 
+def _sender_handle(sender: str) -> str:
+    """Extract the bare handle from any identity form.
+
+    ``capauth:opus@skworld.io`` / ``opus@chef.skworld.io`` / ``opus`` -> ``opus``.
+    """
+    return (sender or "").lower().split(":", 1)[-1].split("@", 1)[0]
+
+
 def _is_self(sender: str, agent: str) -> bool:
     """True when *sender* is this agent (any of its identity forms)."""
-    s = (sender or "").lower()
-    # matches capauth:opus@skworld.io, opus@chef.skworld.io, opus, etc.
-    handle = s.split(":", 1)[-1].split("@", 1)[0]
-    return handle == agent
+    return _sender_handle(sender) == agent
 
 
 def should_respond(content: str, sender: str, cfg: GroupResponderConfig) -> bool:
-    """True iff this agent is explicitly addressed and the sender is not itself."""
+    """True iff this agent is explicitly addressed by a NON-agent (human) sender.
+
+    Loop breaker: another sovereign agent's message never auto-triggers a
+    response (even a direct ``@self`` mention), because an LLM reply can easily
+    contain ``@all`` / ``@opus`` at temperature and there is no depth cap — two
+    agents would ping-pong forever, hammering the gateway and spamming the room.
+    Only a human's mention drives a reply. Agent↔agent autonomous exchange is a
+    future feature that needs an explicit turn/depth limit.
+    """
     if _is_self(sender, cfg.agent):
+        return False
+    if _sender_handle(sender) in cfg.peer_agents:
         return False
     low = (content or "").lower()
     return any(_token_match(low, m) for m in cfg.mentions)
