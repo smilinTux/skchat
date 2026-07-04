@@ -26,6 +26,7 @@ import logging
 import os
 import subprocess
 import threading
+import time
 import urllib.request
 from pathlib import Path
 from typing import Optional
@@ -226,6 +227,10 @@ class _McpServer:
                 out.append(p.get("text", ""))
         return "\n".join(out).strip()
 
+    def is_running(self) -> bool:
+        """True while the subprocess is alive (poll() is None)."""
+        return self._proc is not None and self._proc.poll() is None
+
     def stop(self) -> None:
         if self._proc:
             try:
@@ -240,18 +245,71 @@ class _McpServer:
 
 
 class McpToolRouter:
-    """Loads the agent's MCP servers, exposes OpenAI tools, dispatches calls."""
+    """Loads the agent's MCP servers, exposes OpenAI tools, dispatches calls.
 
-    def __init__(self, home: Path, agent_name: str) -> None:
+    Two lifecycle modes:
+
+      * **eager** (default): every enabled server is spawned at ``start()`` and
+        kept alive for the process lifetime — the historical behavior.
+      * **lazy** (``SKC_BRIDGE_LAZY_TOOLS=1``, or ``lazy=True``): at ``start()``
+        each server is *probed* (start → tools/list → stop) so its tool SCHEMAS
+        are cached and advertised to the LLM, but no process is left running.
+        A server's stdio process is (re)spawned transparently on the first
+        ``dispatch()`` to one of its tools, kept warm, and reaped after
+        ``idle_sec`` of no use (checked opportunistically on each dispatch).
+
+    Either way the exposed OpenAI tool schemas (``openai_tools()``) are identical,
+    so the LLM sees the same tool surface — lazy only changes *when* the backing
+    process is alive.
+    """
+
+    def __init__(
+        self,
+        home: Path,
+        agent_name: str,
+        lazy: Optional[bool] = None,
+        idle_sec: Optional[int] = None,
+    ) -> None:
         self._home = Path(home)
         self._agent = agent_name
         self._servers: list[_McpServer] = []
         self._tool_index: dict[str, _McpServer] = {}
         self._openai_tools: list[dict] = []
+        # Lazy mode: explicit arg wins, else the SKC_BRIDGE_LAZY_TOOLS env gate.
+        if lazy is None:
+            lazy = os.environ.get("SKC_BRIDGE_LAZY_TOOLS", "").strip().lower() in (
+                "1", "true", "yes", "on")
+        self._lazy = bool(lazy)
+        self._idle_sec = int(
+            idle_sec if idle_sec is not None
+            else os.environ.get("SKC_BRIDGE_MCP_IDLE_SEC", "300"))
+        self._last_used: dict[str, float] = {}
+        self._life_lock = threading.Lock()  # guards lazy (re)start / reap
 
     def _config_path(self) -> Optional[Path]:
         cfg = self._home / "config" / f"{self._agent}-mcp.yaml"
         return cfg if cfg.exists() else None
+
+    def _register_tools(self, srv: _McpServer, allow: set) -> None:
+        """Index a (probed or live) server's tools + build their OpenAI schemas."""
+        for t in srv.tools:
+            tname = t.get("name")
+            if allow and tname not in allow:
+                continue
+            if tname in self._tool_index:
+                continue  # first server wins on name collision
+            self._tool_index[tname] = srv
+            self._openai_tools.append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": tname,
+                        "description": (t.get("description") or "")[:1024],
+                        "parameters": t.get("inputSchema")
+                        or {"type": "object", "properties": {}},
+                    },
+                }
+            )
 
     def start(self) -> None:
         cfg = self._config_path()
@@ -270,29 +328,18 @@ class McpToolRouter:
                 continue
             allow = set(sdef.get("expose_tools") or [])
             srv = _McpServer(name, sdef["command"], sdef.get("args", []), sdef.get("env", {}))
+            # Both modes need one boot start to learn the tool schemas.
             if not srv.start():
                 continue
+            if self._lazy:
+                # Schemas are cached in srv.tools; free the process until first use.
+                srv.stop()
+                self._last_used[srv.name] = 0.0
             self._servers.append(srv)
-            for t in srv.tools:
-                tname = t.get("name")
-                if allow and tname not in allow:
-                    continue
-                if tname in self._tool_index:
-                    continue  # first server wins on name collision
-                self._tool_index[tname] = srv
-                self._openai_tools.append(
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": tname,
-                            "description": (t.get("description") or "")[:1024],
-                            "parameters": t.get("inputSchema")
-                            or {"type": "object", "properties": {}},
-                        },
-                    }
-                )
+            self._register_tools(srv, allow)
         log.info(
-            "tool router ready: %d tools across %d servers (%s)",
+            "tool router ready%s: %d tools across %d servers (%s)",
+            " (lazy — servers probed & parked)" if self._lazy else "",
             len(self._openai_tools),
             len(self._servers),
             ", ".join(sorted(self._tool_index)),
@@ -304,15 +351,44 @@ class McpToolRouter:
     def has_tools(self) -> bool:
         return bool(self._openai_tools)
 
+    # -- lazy lifecycle helpers ------------------------------------------ #
+    def _ensure_running(self, srv: _McpServer) -> None:
+        """(Re)spawn a parked/dead server before a dispatch (lazy mode)."""
+        if srv.is_running():
+            return
+        log.info("lazy-start MCP server %s (on demand)", srv.name)
+        if not srv.start():
+            log.warning("lazy-start of MCP server %s failed", srv.name)
+
+    def _reap_idle(self, exclude: Optional[str] = None) -> None:
+        """Stop any running server idle longer than idle_sec (lazy mode)."""
+        now = time.monotonic()
+        for srv in self._servers:
+            if srv.name == exclude or not srv.is_running():
+                continue
+            last = self._last_used.get(srv.name, 0.0)
+            if now - last > self._idle_sec:
+                log.info("reaping idle MCP server %s (idle %.0fs)", srv.name, now - last)
+                srv.stop()
+
     def dispatch(self, name: str, arguments: dict) -> str:
         srv = self._tool_index.get(name)
         if not srv:
             return f"[no such tool: {name}]"
+        if self._lazy:
+            with self._life_lock:
+                self._ensure_running(srv)
+                self._last_used[srv.name] = time.monotonic()
         try:
-            return srv.call_tool(name, arguments) or "(no output)"
+            out = srv.call_tool(name, arguments) or "(no output)"
         except Exception as exc:
             log.warning("tool %s failed: %s", name, exc)
-            return f"[tool {name} failed: {exc}]"
+            out = f"[tool {name} failed: {exc}]"
+        if self._lazy:
+            with self._life_lock:
+                self._last_used[srv.name] = time.monotonic()
+                self._reap_idle(exclude=srv.name)
+        return out
 
     def stop(self) -> None:
         for s in self._servers:
