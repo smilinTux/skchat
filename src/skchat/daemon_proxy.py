@@ -328,6 +328,18 @@ def _lumina_messages(limit: int = 200) -> list[dict]:
         s, r = getattr(m, "sender", ""), getattr(m, "recipient", "")
         if not (_is_lumina(s) or _is_lumina(r)):
             continue
+        # Exclude GROUP / thread messages. A group's per-member copy is addressed
+        # to Lumina (recipient=capauth:lumina) but belongs to the GROUP thread —
+        # without this filter it bleeds into the 1:1 Lumina DM, so group messages
+        # (and group replies) wrongly appear in the direct chat.
+        meta = getattr(m, "metadata", None) or {}
+        if (
+            getattr(m, "thread_id", None)
+            or meta.get("group_id")
+            or str(r).startswith("group:")
+            or str(s).startswith("group:")
+        ):
+            continue
         msgs.append(m)
     msgs.sort(key=lambda x: getattr(x, "timestamp", _now_iso()))
     return [_msg_to_app(m, self_id=OPERATOR_ID) for m in msgs]
@@ -583,6 +595,45 @@ async def api_inbox():
     except Exception:
         logger.exception("inbox load failed")
         return JSONResponse({"messages": []})
+
+
+@router.post("/v1/inbox")
+async def api_inbox_federation_proxy(request: Request):
+    """Federation S2S inbox — proxied to skcomms-api.
+
+    ``/api/v1/inbox`` is overloaded: the app GETs it (thread list, above) while
+    remote peers POST signed envelopes to it for delivery. When this webui is
+    the single 443 front door for ``/api/v1/*``, the app's GET must land here
+    (daemon_proxy) — but a POST must still reach the federation receiver
+    (skcomms-api, :9384) or agents stop receiving messages. Proxy the POST body
+    through verbatim so both work on one path.
+    """
+    import httpx
+    from fastapi import Response
+
+    body = await request.body()
+    # Forward the request VERBATIM — all headers (signatures/auth live here) and
+    # query params — so the federation receiver sees exactly what the app sent.
+    # Only drop hop-by-hop headers that httpx must set itself.
+    _skip = {"host", "content-length", "connection", "transfer-encoding"}
+    fwd_headers = {k: v for k, v in request.headers.items() if k.lower() not in _skip}
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.post(
+                "http://localhost:9384/api/v1/inbox",
+                content=body,
+                headers=fwd_headers,
+                params=dict(request.query_params),
+                timeout=20.0,
+            )
+        resp_headers = {
+            k: v for k, v in r.headers.items()
+            if k.lower() not in ("content-length", "transfer-encoding", "connection")
+        }
+        return Response(content=r.content, status_code=r.status_code, headers=resp_headers)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("federation inbox proxy -> :9384 failed: %s", exc)
+        raise HTTPException(502, "federation inbox unreachable")
 
 
 @router.get("/v1/groups")

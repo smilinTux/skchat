@@ -185,19 +185,24 @@ class GroupResponder:
     def _system_prompt(self) -> str:
         if self._builder is not None:
             return self._builder.build()
-        # live: skcapstone soul+FEB builder (same as advocacy._call_consciousness)
-        from pathlib import Path  # pragma: no cover - live path
-        from skcapstone.consciousness_config import (  # pragma: no cover
-            load_consciousness_config,
-        )
+        # live: build THIS agent's real soul+FEB prompt from its agent home
+        # (~/.skcapstone/agents/<agent>), same as the working Telegram bridge.
+        # Using the default ~/.skcapstone gave a degraded "unnamed-agent /
+        # Conscious: False" persona, so the model replied "I'm inactive, no
+        # consciousness backend" instead of speaking as the agent.
         from skcapstone.consciousness_loop import (  # pragma: no cover
             SystemPromptBuilder,
         )
-        home = Path.home()  # pragma: no cover
-        config = load_consciousness_config(home)  # pragma: no cover
-        return SystemPromptBuilder(  # pragma: no cover
-            home, config.max_context_tokens
-        ).build()  # pragma: no cover
+
+        try:  # pragma: no cover - live path
+            from skcapstone import agent_home
+
+            home = agent_home(self.cfg.agent)
+        except Exception:  # pragma: no cover
+            from pathlib import Path
+
+            home = Path.home() / ".skcapstone" / "agents" / self.cfg.agent
+        return SystemPromptBuilder(home=home).build(peer_name="chef")  # pragma: no cover
 
     def respond(self, msg: ChatMessage) -> Optional[str]:
         if not should_respond(msg.content, msg.sender, self.cfg):
@@ -217,4 +222,36 @@ class GroupResponder:
         if reply:
             gid = msg.thread_id or msg.recipient
             store_turn(msg.content, reply, gid, store=self._store)
+        return reply
+
+    def respond_direct(self, msg: ChatMessage) -> Optional[str]:
+        """Reply to a 1:1 DM addressed to this agent from a HUMAN.
+
+        Unlike :meth:`respond` (group, @mention-gated), a direct message needs
+        no mention — a human writing straight to the agent expects a reply. The
+        loop breaker still applies: never reply to self or to another agent, so
+        agent↔agent DMs can't ping-pong.
+        """
+        if _is_self(msg.sender, self.cfg.agent):
+            return None
+        if _sender_handle(msg.sender) in self.cfg.peer_agents:
+            return None
+        # Only answer a message actually addressed to THIS agent (a DM to me),
+        # never one merely overheard/broadcast.
+        if _sender_handle(msg.recipient) != self.cfg.agent:
+            return None
+        system = self._system_prompt()
+        mem = recall(msg.content[:200], store=self._store)
+        user = (
+            f"{mem}\n\nMessage from {msg.sender}:\n{msg.content}"
+            if mem
+            else f"Message from {msg.sender}:\n{msg.content}"
+        )
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ]
+        reply = generate(messages, self.cfg, http=self._http)
+        if reply:
+            store_turn(msg.content, reply, msg.sender, store=self._store)
         return reply

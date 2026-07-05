@@ -473,6 +473,30 @@ class ChatDaemon:
                                     logger.warning("group responder failed: %s", exc)
                                     self._log(f"Group responder error: {exc}", "warning")
                                 continue  # handled; don't also run DM advocacy/plugins
+                            # Direct message to this agent (the app federation-
+                            # delivers DMs straight to the daemon, not the
+                            # daemon_proxy brain path). Reply via the clean,
+                            # loop-broken skgateway responder so DMs get answered
+                            # even with advocacy disabled. Skip presence beacons.
+                            if group_responder is not None and not (
+                                (msg.content or "").lstrip().startswith("<event ")
+                            ):
+                                try:
+                                    dm_reply = group_responder.respond_direct(msg)
+                                    if dm_reply:
+                                        from .models import ChatMessage
+
+                                        transport.send_message(
+                                            ChatMessage(
+                                                sender=identity,
+                                                recipient=msg.sender,
+                                                content=dm_reply,
+                                            )
+                                        )
+                                        self.advocacy_responses += 1
+                                        continue  # handled; skip advocacy/plugins
+                                except Exception as dm_exc:
+                                    logger.warning("direct responder failed: %s", dm_exc)
                             if engine:
                                 try:
                                     reply = engine.process_message(msg)
