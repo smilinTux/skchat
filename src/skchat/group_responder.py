@@ -185,19 +185,24 @@ class GroupResponder:
     def _system_prompt(self) -> str:
         if self._builder is not None:
             return self._builder.build()
-        # live: skcapstone soul+FEB builder (same as advocacy._call_consciousness)
-        from pathlib import Path  # pragma: no cover - live path
-        from skcapstone.consciousness_config import (  # pragma: no cover
-            load_consciousness_config,
-        )
+        # live: build THIS agent's real soul+FEB prompt from its agent home
+        # (~/.skcapstone/agents/<agent>), same as the working Telegram bridge.
+        # Using the default ~/.skcapstone gave a degraded "unnamed-agent /
+        # Conscious: False" persona, so the model replied "I'm inactive, no
+        # consciousness backend" instead of speaking as the agent.
         from skcapstone.consciousness_loop import (  # pragma: no cover
             SystemPromptBuilder,
         )
-        home = Path.home()  # pragma: no cover
-        config = load_consciousness_config(home)  # pragma: no cover
-        return SystemPromptBuilder(  # pragma: no cover
-            home, config.max_context_tokens
-        ).build()  # pragma: no cover
+
+        try:  # pragma: no cover - live path
+            from skcapstone import agent_home
+
+            home = agent_home(self.cfg.agent)
+        except Exception:  # pragma: no cover
+            from pathlib import Path
+
+            home = Path.home() / ".skcapstone" / "agents" / self.cfg.agent
+        return SystemPromptBuilder(home=home).build(peer_name="chef")  # pragma: no cover
 
     def respond(self, msg: ChatMessage) -> Optional[str]:
         if not should_respond(msg.content, msg.sender, self.cfg):
