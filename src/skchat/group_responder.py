@@ -218,3 +218,35 @@ class GroupResponder:
             gid = msg.thread_id or msg.recipient
             store_turn(msg.content, reply, gid, store=self._store)
         return reply
+
+    def respond_direct(self, msg: ChatMessage) -> Optional[str]:
+        """Reply to a 1:1 DM addressed to this agent from a HUMAN.
+
+        Unlike :meth:`respond` (group, @mention-gated), a direct message needs
+        no mention — a human writing straight to the agent expects a reply. The
+        loop breaker still applies: never reply to self or to another agent, so
+        agent↔agent DMs can't ping-pong.
+        """
+        if _is_self(msg.sender, self.cfg.agent):
+            return None
+        if _sender_handle(msg.sender) in self.cfg.peer_agents:
+            return None
+        # Only answer a message actually addressed to THIS agent (a DM to me),
+        # never one merely overheard/broadcast.
+        if _sender_handle(msg.recipient) != self.cfg.agent:
+            return None
+        system = self._system_prompt()
+        mem = recall(msg.content[:200], store=self._store)
+        user = (
+            f"{mem}\n\nMessage from {msg.sender}:\n{msg.content}"
+            if mem
+            else f"Message from {msg.sender}:\n{msg.content}"
+        )
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ]
+        reply = generate(messages, self.cfg, http=self._http)
+        if reply:
+            store_turn(msg.content, reply, msg.sender, store=self._store)
+        return reply
