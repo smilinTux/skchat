@@ -424,6 +424,14 @@ class ChatDaemon:
                                 try:
                                     reply = group_responder.respond(msg)
                                     if reply:
+                                        # Prefix with the agent's name so the group
+                                        # shows WHO replied (the app doesn't render
+                                        # the per-message sender label reliably).
+                                        _who = group_cfg.agent.capitalize()
+                                        if not reply.lstrip().lower().startswith(
+                                            (_who.lower(), f"**{_who.lower()}")
+                                        ):
+                                            reply = f"{_who}: {reply}"
                                         from .daemon_proxy_groups import load_group
 
                                         gid = (msg.thread_id or msg.recipient).replace(
