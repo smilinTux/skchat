@@ -90,3 +90,91 @@ def test_is_group_message_false_when_not_in_configured_groups():
         thread_id="other-room",
     )
     assert _is_group_message(msg, ["group:room1"]) is False
+
+
+class _RecordingHttp:
+    """Captures the messages payload sent to skgateway so history injection
+    can be asserted on directly (order + role mapping)."""
+
+    def __init__(self, reply="ok"):
+        self.calls = []
+        self._reply = reply
+
+    def post(self, url, json=None, timeout=None):
+        self.calls.append(json)
+        return _Resp2(self._reply)
+
+
+class _Resp2:
+    status_code = 200
+
+    def __init__(self, reply):
+        self._reply = reply
+
+    def json(self):
+        return {"choices": [{"message": {"content": self._reply}}]}
+
+
+def test_respond_injects_recent_group_history(monkeypatch):
+    """FIX 2: respond() threads recent group-thread turns between system + user
+    so the agent has conversational memory (no more "who are you" replies)."""
+    cfg = load_group_config("lumina", env={"SKCHAT_GROUPS": "group:room1"})
+    http = _RecordingHttp()
+    r = GroupResponder(cfg, prompt_builder=_Builder(), http=http, store=None)
+
+    class _Prior:
+        def __init__(self, sender, content):
+            self.sender = sender
+            self.content = content
+
+    prior_rows = [
+        _Prior("chef@skworld.io", "hi lumina"),
+        _Prior("capauth:lumina@skworld.io", "hi chef!"),
+        _Prior("capauth:opus@skworld.io", "<event just noise/>"),  # filtered out
+    ]
+    monkeypatch.setattr(
+        "skchat.daemon_proxy_groups.group_thread_messages",
+        lambda hist, gid, limit: prior_rows,
+    )
+    monkeypatch.setattr("skchat.history.ChatHistory", lambda *a, **kw: object())
+
+    msg = ChatMessage(
+        sender="chef@skworld.io",
+        recipient="group:room1",
+        content="@lumina what did opus say?",
+        thread_id="room1",
+    )
+    reply = r.respond(msg)
+    assert reply == "ok"
+
+    sent = http.calls[0]["messages"]
+    assert sent[0]["role"] == "system"
+    assert sent[1] == {"role": "user", "content": "chef: hi lumina"}
+    assert sent[2] == {"role": "assistant", "content": "lumina: hi chef!"}
+    # The presence/event noise row never made it into the prompt.
+    assert not any("noise" in m["content"] for m in sent)
+    assert sent[-1]["role"] == "user"
+    assert "what did opus say?" in sent[-1]["content"]
+
+
+def test_respond_history_failure_is_best_effort(monkeypatch):
+    """Any history-load failure is swallowed — the reply must still happen."""
+    cfg = load_group_config("lumina", env={"SKCHAT_GROUPS": "group:room1"})
+    http = _RecordingHttp()
+    r = GroupResponder(cfg, prompt_builder=_Builder(), http=http, store=None)
+
+    def _boom(*a, **kw):
+        raise RuntimeError("history backend down")
+
+    monkeypatch.setattr("skchat.daemon_proxy_groups.group_thread_messages", _boom)
+
+    msg = ChatMessage(
+        sender="chef@skworld.io",
+        recipient="group:room1",
+        content="@lumina hi",
+        thread_id="room1",
+    )
+    assert r.respond(msg) == "ok"
+    sent = http.calls[0]["messages"]
+    # Only system + the final user turn — no history turns injected.
+    assert len(sent) == 2

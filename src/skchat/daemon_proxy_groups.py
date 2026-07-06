@@ -492,7 +492,9 @@ def fan_out_send(group, hist, sender_uri: str, content: str,
         except Exception as exc:
             logger.warning("fan_out_send: member copy for %s failed: %s",
                            member.identity_uri, exc)
-        if _transport is not None:
+        # Prefer a direct same-box inbox write (reliable); fall back to the
+        # network transport only when the recipient isn't a local agent.
+        if not local_deliver_to_agent(member_msg) and _transport is not None:
             try:
                 _transport.send_message(member_msg)
             except Exception as exc:
@@ -504,6 +506,47 @@ def fan_out_send(group, hist, sender_uri: str, content: str,
     group.metadata["last_message_time"] = group_msg.timestamp.isoformat()
     save_group(group)
     return group_msg
+
+
+def local_deliver_to_agent(chat_msg) -> bool:
+    """Write a ChatMessage straight to a same-box agent's comms inbox.
+
+    Federation delivery (``transport.send_message`` -> https-s2s ->
+    skcomms-api) is flaky, so ``@all`` fan-out can intermittently reach only
+    one member (or none). For a recipient that lives on THIS box, skip the
+    network entirely: drop a :class:`skcomms.models.MessageEnvelope`
+    ``.skc.json`` file straight into ``~/.skcapstone/agents/<agent>/comms/
+    inbox/`` — exactly what ``skcomms.transports.file.FileTransport.receive``
+    reads, so the recipient's own daemon (``ChatTransport.poll_inbox``) picks
+    it up on its next poll, reliably.
+
+    Returns False if *chat_msg.recipient* is NOT a local agent (no
+    ``comms/inbox`` dir under its agent home) — the caller should then fall
+    back to ``transport.send_message`` (the network path).
+    """
+    recipient = getattr(chat_msg, "recipient", "") or ""
+    agent = recipient.split(":")[-1].split("@")[0].lower()
+    if not agent:
+        return False
+    inbox = Path.home() / ".skcapstone" / "agents" / agent / "comms" / "inbox"
+    if not inbox.exists():
+        return False
+    try:
+        from skcomms.models import MessageEnvelope, MessagePayload
+
+        env = MessageEnvelope(
+            sender=chat_msg.sender,
+            recipient=chat_msg.recipient,
+            payload=MessagePayload(content=chat_msg.model_dump_json(), content_type="text"),
+        )
+        target = inbox / f"{env.envelope_id}.skc.json"
+        tmp = target.with_suffix(target.suffix + ".tmp")
+        tmp.write_text(env.model_dump_json(), encoding="utf-8")
+        os.replace(tmp, target)
+        return True
+    except Exception as exc:
+        logger.warning("local_deliver_to_agent: delivery to %s failed: %s", agent, exc)
+        return False
 
 
 def group_thread_messages(hist, group_id: str, limit: int = 500) -> list:
