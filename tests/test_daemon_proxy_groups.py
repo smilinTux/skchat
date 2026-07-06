@@ -306,3 +306,74 @@ def test_deleted_group_not_relisted(client):
     assert all(g["peer_id"] != gid for g in groups)
     # Tombstone file exists but is not parsed as a group.
     assert (G._groups_dir() / f"{gid}.deleted.json").exists()
+
+
+# --------------------------------------------------------------------------- #
+# local_deliver_to_agent — reliable same-box delivery (bypasses flaky
+# federation transport.send_message entirely for a co-located agent).
+# --------------------------------------------------------------------------- #
+def test_local_deliver_to_agent_writes_envelope_for_local_agent(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    inbox = tmp_path / ".skcapstone" / "agents" / "lumina" / "comms" / "inbox"
+    inbox.mkdir(parents=True)
+
+    from skchat.models import ChatMessage
+
+    msg = ChatMessage(
+        sender="chef@skworld.io",
+        recipient="capauth:lumina@skworld.io",
+        content="@all hi",
+        thread_id="room1",
+    )
+    assert G.local_deliver_to_agent(msg) is True
+
+    files = list(inbox.glob("*.skc.json"))
+    assert len(files) == 1
+    # No leftover .tmp — the write is atomic (write .tmp, then os.replace).
+    assert not list(inbox.glob("*.tmp"))
+
+    from skcomms.models import MessageEnvelope
+
+    env = MessageEnvelope.model_validate_json(files[0].read_text())
+    assert env.sender == "chef@skworld.io"
+    assert env.recipient == "capauth:lumina@skworld.io"
+
+    # The envelope payload round-trips the exact ChatMessage the daemon's
+    # ChatTransport.poll_inbox expects (payload.content -> ChatMessage JSON).
+    inner = ChatMessage.model_validate_json(env.payload.content)
+    assert inner.content == "@all hi"
+    assert inner.sender == "chef@skworld.io"
+
+
+def test_local_deliver_to_agent_false_for_non_local_recipient(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    # No ~/.skcapstone/agents/<agent>/comms/inbox for this recipient.
+    from skchat.models import ChatMessage
+
+    msg = ChatMessage(
+        sender="chef@skworld.io",
+        recipient="capauth:stranger@skworld.io",
+        content="hi",
+    )
+    assert G.local_deliver_to_agent(msg) is False
+
+
+def test_fan_out_send_prefers_local_delivery_over_network(client, monkeypatch, tmp_path):
+    """A member with a local comms/inbox never hits the flaky network transport."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / ".skcapstone" / "agents" / "lumina" / "comms" / "inbox").mkdir(
+        parents=True
+    )
+
+    class _BoomTransport:
+        def send_message(self, msg):
+            raise AssertionError("network transport should not be used for a local agent")
+
+    monkeypatch.setattr(G, "_delivery_transport", lambda identity: _BoomTransport())
+
+    gid = _create(client, members=["lumina"])["group_id"]
+    r = client.post("/api/v1/send", json={"group_id": gid, "message": "reliable please"})
+    assert r.status_code == 200, r.text
+
+    inbox = tmp_path / ".skcapstone" / "agents" / "lumina" / "comms" / "inbox"
+    assert list(inbox.glob("*.skc.json"))
