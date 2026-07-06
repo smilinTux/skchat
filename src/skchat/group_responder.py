@@ -214,15 +214,47 @@ class GroupResponder:
             if mem
             else f"Message from {msg.sender}:\n{msg.content}"
         )
-        messages = [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ]
+        gid = msg.thread_id or msg.recipient
+        messages = [{"role": "system", "content": system}]
+        messages.extend(self._history_turns(gid))
+        messages.append({"role": "user", "content": user})
         reply = generate(messages, self.cfg, http=self._http)
         if reply:
-            gid = msg.thread_id or msg.recipient
             store_turn(msg.content, reply, gid, store=self._store)
         return reply
+
+    def _history_turns(self, gid: str) -> list[dict]:
+        """Recent group-thread turns, oldest-first, mapped to chat-completion roles.
+
+        Best-effort — any failure (missing group, history backend down, ...)
+        returns ``[]`` so a reply is never blocked by a broken history read.
+        Presence/typing noise (``<event ...>``, ``__TYPING__``) is skipped.
+        """
+        gid = (gid or "").replace("group:", "").strip()
+        if not gid:
+            return []
+        try:
+            from .daemon_proxy_groups import group_thread_messages
+            from .history import ChatHistory
+
+            hist = ChatHistory()
+            rows = group_thread_messages(hist, gid, limit=self.cfg.history_turns)
+        except Exception as exc:
+            logger.debug("group history load failed: %s", exc)
+            return []
+        turns: list[dict] = []
+        for m in rows:
+            content = (getattr(m, "content", "") or "").strip()
+            if not content:
+                continue
+            low = content.lstrip().lower()
+            if low.startswith("<event") or "__typing__" in low:
+                continue
+            sender = getattr(m, "sender", "") or ""
+            sender_short = _sender_handle(sender)
+            role = "assistant" if sender_short == self.cfg.agent else "user"
+            turns.append({"role": role, "content": f"{sender_short}: {content}"})
+        return turns[-self.cfg.history_turns:]
 
     def respond_direct(self, msg: ChatMessage) -> Optional[str]:
         """Reply to a 1:1 DM addressed to this agent from a HUMAN.
