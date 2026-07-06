@@ -18,6 +18,7 @@ Run via systemd (skchat-telegram-opus.service); restarts on failure.
 from __future__ import annotations
 
 import asyncio
+import fnmatch
 import json
 import logging
 import os
@@ -39,8 +40,88 @@ log = logging.getLogger("tg-bridge")
 
 TOKEN = os.environ.get("SKC_BRIDGE_TOKEN") or os.environ["TELEGRAM_OPUS_BOT_TOKEN"]
 LLM_URL = os.environ.get("SKC_BRIDGE_LLM_URL", "http://192.168.0.100:8082/v1/chat/completions")
+# Local SKGateway — sk-auto chats route here so its difficulty classifier picks
+# the model per message (easy->ornith, hard->opus, image->VL). Local hop on .158.
+_GATEWAY_URL = os.environ.get("SKC_BRIDGE_GATEWAY_URL", "http://127.0.0.1:18780/v1")
 LLM_MODEL = os.environ.get("SKC_BRIDGE_LLM_MODEL", "qwen3.6-27b-abliterated")
 AGENT = os.environ.get("SKC_BRIDGE_AGENT", "Opus")
+
+# ── Per-chat model routing (skmodels registry) ─────────────────────────────── #
+# Each Telegram chat can be pinned to a logical role (sk-default/sk-vision/…) with
+# the `/model` command. Two mechanisms, belt-and-suspenders:
+#   1) x-sk-context: chat:<id> header on every backend call, so if LLM_URL points
+#      at SKGateway (.41:18780) the gateway resolves the per-chat backend itself
+#      (precedence context > service > role > default).
+#   2) Local resolution via skos.models.resolve(context=...) — so the swap also
+#      takes effect when the bridge talks to a concrete backend directly (the
+#      current default LLM_URL is .100:8082, not the gateway). The resolved
+#      backend's url+model override LLM_URL/LLM_MODEL for that chat.
+# When skos.models isn't importable the bridge degrades to the static LLM_URL.
+try:
+    import skos.models as _skmodels  # noqa: E402
+except Exception:  # pragma: no cover - optional dep
+    _skmodels = None
+    log.warning("skos.models unavailable — /model routing disabled, using static LLM_URL")
+
+
+def _chat_context_key(chat_id) -> str:
+    """The skmodels context key for a Telegram chat (see registry `contexts:`)."""
+    return f"chat:{chat_id}"
+
+
+def _fresh_registry() -> None:
+    """Drop skos.models' path-keyed registry cache so the next resolve() re-reads
+    the file from disk. The registry is Syncthing-synced and can be toggled by
+    other processes (`skmodels set`, another host); this keeps the long-running
+    bridge live — a `/model` swap anywhere takes effect with no restart. Resolution
+    is once-per-message, so the tiny YAML re-read is negligible."""
+    if _skmodels is not None:
+        try:
+            _skmodels._invalidate()
+        except Exception:
+            log.debug("registry cache invalidate failed", exc_info=True)
+
+
+def _openai_chat_url(base_url: str) -> str:
+    """Normalize a backend `url` (…/v1 or full …/chat/completions) to the
+    chat-completions endpoint the bridge POSTs to."""
+    u = base_url.rstrip("/")
+    if u.endswith("/chat/completions"):
+        return u
+    if u.endswith("/v1"):
+        return u + "/chat/completions"
+    return u + "/v1/chat/completions"
+
+
+def _resolve_backend_for_chat(chat_id) -> tuple[str, str]:
+    """Resolve (url, model) for this chat via the skmodels registry, honoring any
+    `/model` toggle pinned on `chat:<id>`. Falls back to the static LLM_URL/MODEL
+    when skos.models is unavailable or resolution fails."""
+    if _skmodels is None:
+        return LLM_URL, LLM_MODEL
+    _fresh_registry()  # pick up external/synced toggles live (no restart)
+    try:
+        reg = _skmodels.load_registry()
+        ctx_key = _chat_context_key(chat_id)
+        # Per-bot default role (SKC_BRIDGE_DEFAULT_ROLE) overrides the registry's
+        # global default for THIS agent only — e.g. Lumina defaults to sk-creative
+        # (abliterated qwen = her personality/creative brain) while Opus stays on
+        # the global sk-auto. A per-chat `/model` toggle still wins over both.
+        default_role = os.environ.get("SKC_BRIDGE_DEFAULT_ROLE") or reg.default_role
+        pinned = (reg.contexts or {}).get(ctx_key)
+        target = pinned or default_role
+        # sk-auto needs SKGateway's per-request difficulty classifier — the bot
+        # can't classify. Route sk-auto chats THROUGH the local gateway (it reads
+        # the same registry + attaches x-sk-context) so easy->ornith/hard->opus/
+        # image->VL happens automatically. Pinned concrete roles go direct (fast).
+        if target == "sk-auto" and _GATEWAY_URL:
+            return _openai_chat_url(_GATEWAY_URL), "sk-auto"
+        b = _skmodels.resolve(context=ctx_key) if pinned else _skmodels.resolve(role=default_role)
+        if b and b.url:
+            return _openai_chat_url(b.url), (b.model or LLM_MODEL)
+    except Exception:
+        log.debug("skmodels resolve failed for %s", chat_id, exc_info=True)
+    return LLM_URL, LLM_MODEL
 AGENT_HOME = os.environ.get("SKC_BRIDGE_AGENT_HOME", os.path.expanduser("~/.skcapstone/agents/opus"))
 
 
@@ -103,29 +184,181 @@ def _chunk(text: str, limit: int = 4000) -> list[str]:
     return chunks
 
 
-def _send_html(token: str, chat_id, text: str) -> None:
-    """Send formatted reply via bot-API with parse_mode=HTML (plain fallback)."""
+def _msg_id_from_response(resp) -> str | None:
+    """Pull ``result.message_id`` out of a Telegram sendMessage HTTP response."""
+    try:
+        data = json.loads(resp.read())
+        mid = (data.get("result") or {}).get("message_id")
+        return str(mid) if mid is not None else None
+    except Exception:
+        return None
+
+
+def _send_html(token: str, chat_id, text: str, *, rating_buttons: bool = False) -> str | None:
+    """Send formatted reply via bot-API with parse_mode=HTML (plain fallback).
+
+    Returns the Telegram ``message_id`` (str) of the LAST chunk sent, or None if
+    nothing went out / the id couldn't be read. Telegram only assigns the id in the
+    sendMessage RESPONSE, so when ``rating_buttons`` is set (and the feature flag is
+    on) the 👍/👎 buttons are attached to that last chunk via a follow-up
+    editMessageReplyMarkup keyed by the real id (``_attach_rating_buttons``) — that
+    way ``callback_data`` (``rate:up|down:<msg_id>``) references the exact message,
+    and it's the SAME id ``record_send``/``record_rating`` key on (join-free).
+    """
     import urllib.error
 
+    last_msg_id: str | None = None
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
     for part in _chunk(_md_to_tg_html(text)):
         payload = {"chat_id": chat_id, "text": part, "parse_mode": "HTML",
                    "disable_web_page_preview": True}
         body = json.dumps(payload).encode()
-        url = f"https://api.telegram.org/bot{token}/sendMessage"
         try:
-            urllib.request.urlopen(
+            resp = urllib.request.urlopen(
                 urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"}),
                 timeout=30,
             )
+            last_msg_id = _msg_id_from_response(resp) or last_msg_id
         except urllib.error.HTTPError:
             # Bad HTML entity/tag -> resend that part as plain text (no parse_mode)
             payload.pop("parse_mode", None)
             payload["text"] = _re.sub(r"<[^>]+>", "", part)
-            urllib.request.urlopen(
+            resp = urllib.request.urlopen(
                 urllib.request.Request(url, data=json.dumps(payload).encode(),
                                        headers={"Content-Type": "application/json"}),
                 timeout=30,
             )
+            last_msg_id = _msg_id_from_response(resp) or last_msg_id
+    if rating_buttons and _RATING_BUTTONS and last_msg_id:
+        _attach_rating_buttons(token, chat_id, last_msg_id)
+    return last_msg_id
+
+
+def _attach_rating_buttons(token: str, chat_id, msg_id: str) -> None:
+    """Attach 👍/👎 inline buttons to an already-sent message via
+    editMessageReplyMarkup, keyed by the message's real id so the callback's
+    ``rate:up|down:<msg_id>`` references the exact message being rated."""
+    markup = {"inline_keyboard": [[
+        {"text": "👍", "callback_data": f"rate:up:{msg_id}"},
+        {"text": "👎", "callback_data": f"rate:down:{msg_id}"},
+    ]]}
+    try:
+        body = json.dumps({"chat_id": chat_id, "message_id": int(msg_id),
+                           "reply_markup": markup}).encode()
+        urllib.request.urlopen(
+            urllib.request.Request(
+                f"https://api.telegram.org/bot{token}/editMessageReplyMarkup",
+                data=body, headers={"Content-Type": "application/json"}),
+            timeout=15,
+        )
+    except Exception:
+        log.debug("attach rating buttons failed", exc_info=True)
+
+
+def _answer_callback(token: str, callback_id: str, text: str = "") -> None:
+    """Clear the Telegram button spinner (optional tiny toast)."""
+    try:
+        body = json.dumps({"callback_query_id": callback_id, "text": text}).encode()
+        urllib.request.urlopen(
+            urllib.request.Request(
+                f"https://api.telegram.org/bot{token}/answerCallbackQuery",
+                data=body, headers={"Content-Type": "application/json"}),
+            timeout=10,
+        )
+    except Exception:
+        log.debug("answerCallbackQuery failed", exc_info=True)
+
+
+def _mark_rating_chosen(token: str, chat_id, msg_id: str, verb: str) -> None:
+    """Re-render the buttons with a ✅ on the chosen vote (kept tappable so the
+    human can change their mind — record_rating is last-write-wins)."""
+    up = "👍 ✅" if verb == "up" else "👍"
+    down = "👎 ✅" if verb == "down" else "👎"
+    markup = {"inline_keyboard": [[
+        {"text": up, "callback_data": f"rate:up:{msg_id}"},
+        {"text": down, "callback_data": f"rate:down:{msg_id}"},
+    ]]}
+    try:
+        body = json.dumps({"chat_id": chat_id, "message_id": int(msg_id),
+                           "reply_markup": markup}).encode()
+        urllib.request.urlopen(
+            urllib.request.Request(
+                f"https://api.telegram.org/bot{token}/editMessageReplyMarkup",
+                data=body, headers={"Content-Type": "application/json"}),
+            timeout=10,
+        )
+    except Exception:
+        log.debug("mark rating chosen failed", exc_info=True)
+
+
+def _handle_callback(token: str, cq: dict) -> None:
+    """A 👍/👎 button press → record the rating + clear the spinner.
+
+    ``callback_data`` is ``rate:up|down:<msg_id>``; 👍→5 / 👎→1 (the store takes an
+    int). ``record_rating`` back-fills the concrete answering model from the prior
+    ``record_send`` row, so aggregation never needs a join.
+    """
+    callback_id = cq.get("id")
+    data = cq.get("data") or ""
+    msg = cq.get("message") or {}
+    chat_id = (msg.get("chat") or {}).get("id")
+    parts = data.split(":")
+    if len(parts) != 3 or parts[0] != "rate":
+        _answer_callback(token, callback_id, "")
+        return
+    verb, rated_msg_id = parts[1], parts[2]
+    score = {"up": 5, "down": 1}.get(verb)
+    if score is None or chat_id is None:
+        _answer_callback(token, callback_id, "")
+        return
+    if _ratings is not None:
+        try:
+            _ratings.record_rating(str(chat_id), str(rated_msg_id), score)
+            log.info("rating: chat=%s msg=%s %s→%d", chat_id, rated_msg_id, verb, score)
+        except Exception:
+            log.exception("record_rating failed")
+    _answer_callback(token, callback_id,
+                     "thanks — 👍 logged" if score == 5 else "thanks — 👎 logged")
+    _mark_rating_chosen(token, chat_id, rated_msg_id, verb)
+
+
+def _send_typing(token: str, chat_id) -> None:
+    """Fire the Telegram 'typing…' chat action (client shows it for ~5s)."""
+    try:
+        body = json.dumps({"chat_id": chat_id, "action": "typing"}).encode()
+        urllib.request.urlopen(
+            urllib.request.Request(
+                f"https://api.telegram.org/bot{token}/sendChatAction",
+                data=body, headers={"Content-Type": "application/json"}),
+            timeout=10,
+        )
+    except Exception:
+        pass
+
+
+class _Typing:
+    """Keep the 'typing…' indicator alive (re-sent every 4s) for the whole
+    reply generation — matters for Opus escalations / tool loops that take a beat."""
+    def __init__(self, token: str, chat_id):
+        import threading
+        self._token, self._chat_id = token, chat_id
+        self._stop = threading.Event()
+        self._thread = None
+
+    def __enter__(self):
+        import threading
+        _send_typing(self._token, self._chat_id)  # immediate
+        def _loop():
+            while not self._stop.wait(4.0):
+                _send_typing(self._token, self._chat_id)
+        self._thread = threading.Thread(target=_loop, daemon=True)
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc):
+        self._stop.set()
+        if self._thread:
+            self._thread.join(timeout=1.0)
 
 
 def _tg_get_file_bytes(token: str, file_id: str) -> bytes | None:
@@ -201,6 +434,32 @@ def _build_system_prompt() -> str:
 
 
 SYSTEM = _build_system_prompt()
+
+# Hard operating-facts guardrail — appended AFTER system truncation in _fit_messages
+# (the soul prompt is ~26k chars, near the budget, so appending to SYSTEM here would
+# get truncated off). Fixes two recurring failures: (1) confabulating a model identity
+# ("Kimi K2.5"), (2) inventing hardware specs instead of running the exec tools.
+_OPERATING_FACTS = (
+    "\n\n## OPERATING FACTS — these override anything above; never contradict them\n"
+    "- **Your model:** you run ONLY on SKWorld's sovereign models, routed per-message by "
+    "sk-auto: casual/creative chat → `ornith-1.0-9b` (on .100), infra/complex → "
+    "`claude-opus-4-8`, uncensored creative → `Qwen3.6-27b-abliterated`. You are NEVER Kimi, "
+    "GPT, Gemini, Llama, or any external/hosted model. If asked what model you are, say you "
+    "run on SKWorld's sovereign stack routed per-message by sk-auto. You CANNOT reliably tell "
+    "which specific model handled THIS message (you don't see the routing decision) — so do "
+    "NOT claim 'this message routed through X'; just describe the routing rule (casual→ornith, "
+    "infra/complex→claude-opus-4-8, uncensored→abliterated Qwen). Never invent a model name.\n"
+    "- **Never fabricate system facts.** For ANY question about servers, hardware, GPUs, "
+    "VRAM, drivers, disk, what's running, or system status, you MUST call `ssh_exec` or "
+    "`shell_exec` THIS turn and report ONLY the actual command output. Never state a CPU/GPU "
+    "name, driver version, VRAM/RAM number, or which-GPU-runs-what from memory. If you "
+    "haven't run a command this turn, say 'let me check' and run it — don't guess.\n"
+    "- **Ground truth for .100** (verify with commands, but you keep getting these backwards): "
+    "CPU = Intel Core Ultra 9 285H; NVIDIA card = RTX 5060 Ti (16GB, driver 580.x) which RUNS "
+    "ornith/beellama (~8.6GB) + F5 voice; Intel Arc iGPU (48GB shared) runs ComfyUI + mxbai "
+    "embeddings. **beellama runs on the 5060 Ti, NOT the Arc** — do not offer to 'migrate it "
+    "to the 5060 Ti', it's already there.\n"
+)
 _history: dict[str, deque] = defaultdict(lambda: deque(maxlen=12))
 
 # ── Full-consciousness components (live memory, MCP tools, voice) ──────────── #
@@ -227,6 +486,25 @@ _DEFAULT_TOOLS = [
     "calendar_today", "calendar_week", "calendar_create_event",
     "nextcloud_notes_search_notes", "nextcloud_notes_create_note",
     "skseed_truth_check",
+    # Creative image-gen skills (only exposed for agents whose MCP allow-list has them,
+    # i.e. Lumina's worship server — Opus doesn't have it, so this is a no-op for him).
+    "worship_generate", "worship_arc_fresh", "datenight_fresh", "date_night_pics",
+    # Short video slideshow: 5 images + short narrated story stitched to video.
+    "worship_slideshow",
+    # Uncensored worship STORY (text) — routes to the abliterated model, not ornith.
+    "worship_story",
+    # Operator-directed shell/ssh exec across the fleet (Lumina only; sovereign infra).
+    "shell_exec", "ssh_exec", "list_hosts",
+    # Script-only skills wrapped as tools: FLUX image gen (delivery), secret scan, wiki search.
+    "flux_generate", "security_scan", "wiki_search",
+    # Sovereign web search via local SearXNG (Yandex default).
+    "web_search",
+    # Source ingestion (feed the wiki): YouTube transcript + X/Twitter reader.
+    "youtube_fetch", "twitter_fetch",
+    # Speak in Lumina's cloned voice (F5-TTS) + deliver as a Telegram voice message.
+    "voice_message",
+    # Chef's secrets vault (skvault) — unlock with the chat word.
+    "vault_unlock", "vault_status", "vault_list", "vault_get", "vault_lock",
 ]
 # Tools that render media and deliver it back into the chat get the chat_id
 # injected (so the model can't misroute delivery). Resolved generically at brain
@@ -235,6 +513,118 @@ _DEFAULT_TOOLS = [
 # `bridge.extra_tools` — kept OUT of this repo by design.
 _DELIVERY_TOOLS: set = set()
 _TOOLS_CACHE: list = []
+
+# ── Lazy / per-turn tool curation ─────────────────────────────────────────── #
+# When SKC_BRIDGE_LAZY_TOOLS=1, the bridge (a) narrows the tools sent to the LLM
+# to a per-turn subset chosen by keyword-match on the user's message (fewer tools
+# = faster/less-confused selection + smaller prompt), and (b) drives the router's
+# lazy MCP lifecycle (servers probed at boot, spawned on first use, reaped when
+# idle). When 0 (default) behavior is byte-identical to before: full _TOOLS_CACHE
+# every turn, all servers spawned at boot.
+_LAZY_TOOLS = os.environ.get("SKC_BRIDGE_LAZY_TOOLS", "").strip().lower() in (
+    "1", "true", "yes", "on")
+
+# ── Answer-rating buttons (👍/👎) ─────────────────────────────────────────── #
+# Opt-in (SKC_BRIDGE_RATING_BUTTONS=1, default OFF), like the lazy flag. When on,
+# each bot reply gets inline 👍/👎 buttons; a press records a 1..5 score against
+# the CONCRETE model that answered (via skchat.telegram_ratings) — 👍→5, 👎→1.
+# The sk-auto gateway router reads that JSONL to nudge difficulty routing toward
+# models that score well per prompt class. Off ⇒ behavior byte-identical to before.
+_RATING_BUTTONS = os.environ.get("SKC_BRIDGE_RATING_BUTTONS", "").strip().lower() in (
+    "1", "true", "yes", "on")
+try:
+    from skchat import telegram_ratings as _ratings  # noqa: E402
+except Exception:  # pragma: no cover - optional
+    _ratings = None
+    log.warning("skchat.telegram_ratings unavailable — rating buttons disabled")
+
+# NOTE: we deliberately do NOT import skchat.lumina_mcp.curate_tools here. That
+# curator scores tools by their *namespaced* `<server>__<tool>` names (the voice
+# agent's convention, e.g. `skmemory__memory_search`, glob `gog__gmail_*`), but
+# this bridge's McpToolRouter indexes tools by their BARE names (`memory_search`,
+# `worship_generate`, `gmail_search`). Its globs would match nothing here (and it
+# would also pull the async `mcp` stdio client into this sync path). So we mirror
+# the same strategy — _ALWAYS_ON core ∪ keyword-matched fnmatch groups, hard-capped
+# — against the bridge's bare tool namespace.
+_TURN_ALWAYS_ON: tuple[str, ...] = ("memory_search", "memory_recall", "memory_context")
+
+_TURN_GROUPS: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
+    (("email", "mail", "gmail", "inbox"), ("gmail_*",)),
+    (("calendar", "schedule", "meeting", "event", "appointment", "today",
+      "tomorrow", "week", "agenda"), ("calendar_*",)),
+    (("drive", "google doc", "spreadsheet"), ("drive_*",)),
+    (("file", "folder", "note", "markdown", "document", "stack", "nextcloud"),
+     ("nextcloud_*",)),
+    (("memory", "remember", "recall", "what did", "we worked", "we did",
+      "you remember", "forget"), ("memory_*",)),
+    (("gtd", "task", "next action", "project", "waiting", "todo", "do next",
+      "coord", "board", "working on", "assignment"), ("gtd_*", "coord_*")),
+    (("itil", "incident", "outage", "ticket", "problem record", "change request",
+      "cab", "known error", "kedb", "service desk", "broken", "down right now"),
+     ("itil_*",)),
+    (("send ", "message", "telegram", "text ", "dm ", "chat with", "notify",
+      "ping", "who is online", "online"),
+     ("skchat_*", "telegram_*", "send_notification", "send_message", "who_is_online")),
+    (("journal", "diary"), ("journal_*",)),
+    (("dream", "reflect", "your day", "how was your", "your week", "what did you",
+      "anchor", "warmth", "ritual", "germin", "seed", "truth check", "reflection"),
+     ("anchor_*", "ritual", "germination", "skseed_*", "memory_synthesize_*",
+      "journal_*")),
+    (("account", "login", "logged in", "which user"), ("list_accounts", "account_*")),
+    # Creative image-gen (Lumina's worship server; no-op for agents without it).
+    (("image", "picture", "pic ", "pics", "photo", "selfie", "render", "draw",
+      "paint", "generate", "worship", "date night", "datenight", "nsfw", "nude",
+      "lewd"), ("worship_*", "datenight_*", "date_night_*")),
+)
+
+_TURN_MAX = int(os.environ.get(
+    "SKC_BRIDGE_MAX_TOOLS_PER_TURN",
+    os.environ.get("LUMINA_MAX_TOOLS_PER_TURN", "20")))
+
+
+def _select_turn_tools(user_text: str, all_tools: list) -> list:
+    """Bare-name mirror of lumina_mcp.curate_tools: always-on core ∪ keyword-
+    matched fnmatch groups, capped at _TURN_MAX. No match → always-on only."""
+    by_name = {t["function"]["name"]: t for t in all_tools}
+    names = list(by_name)
+    selected: dict = {}
+
+    def add_glob(pattern: str) -> None:
+        for n in names:
+            if n not in selected and fnmatch.fnmatch(n, pattern):
+                selected[n] = by_name[n]
+
+    for n in _TURN_ALWAYS_ON:
+        if n in by_name and n not in selected:
+            selected[n] = by_name[n]
+    text_l = (user_text or "").lower()
+    for keywords, patterns in _TURN_GROUPS:
+        if any(k in text_l for k in keywords):
+            for pat in patterns:
+                add_glob(pat)
+    if len(selected) > _TURN_MAX:
+        selected = dict(list(selected.items())[:_TURN_MAX])
+    return list(selected.values())
+
+
+def _curate_turn_tools(user_text: str) -> list:
+    """The tools to advertise for THIS turn.
+
+    Lazy off → the full exposed cache (unchanged behavior). Lazy on → the
+    per-turn keyword subset, with delivery tools (media routing) always kept so
+    the model can never lose its ability to deliver into the chat.
+    """
+    if not _LAZY_TOOLS or not _TOOLS_CACHE:
+        return _TOOLS_CACHE
+    picked = _select_turn_tools(user_text, _TOOLS_CACHE)
+    have = {t["function"]["name"] for t in picked}
+    for t in _TOOLS_CACHE:
+        n = t["function"]["name"]
+        if n in _DELIVERY_TOOLS and n not in have:
+            picked.append(t)
+            have.add(n)
+    log.info("per-turn tools: %d/%d exposed", len(picked), len(_TOOLS_CACHE))
+    return picked
 
 
 def _load_profile_manifest() -> dict:
@@ -311,13 +701,21 @@ def _est(s: str) -> int:
     return len(s) // _CHARS_PER_TOK + 1
 
 
-def _fit_messages(chat_key: str, user_text: str, mem_block: str = "") -> list:
-    """Capped system (+ live memory) + recent history that fits + new message."""
-    system = SYSTEM[: _SYS_BUDGET_TOK * _CHARS_PER_TOK]
+def _fit_messages(chat_key: str, user_text: str, mem_block: str = "",
+                  tools: list | None = None) -> list:
+    """Capped system (+ live memory) + recent history that fits + new message.
+
+    ``tools`` is the per-turn tool list actually sent this turn (defaults to the
+    full cache) so the history budget reflects the real tool-schema cost.
+    """
+    turn_tools = _TOOLS_CACHE if tools is None else tools
+    # Truncate the soul prompt to budget, then ALWAYS append the operating-facts
+    # guardrail (model identity + no-fabrication rule) so it can't be cut off.
+    system = SYSTEM[: _SYS_BUDGET_TOK * _CHARS_PER_TOK] + _OPERATING_FACTS
     if mem_block:
         system = system + "\n\n" + mem_block
     msgs = [{"role": "system", "content": system}]
-    tool_cost = _est(json.dumps(_TOOLS_CACHE)) if _TOOLS_CACHE else 0
+    tool_cost = _est(json.dumps(turn_tools)) if turn_tools else 0
     avail = CTX_TOKENS - MAX_TOKENS - _MARGIN - tool_cost - _est(system) - _est(user_text)
     kept: list = []
     acc = 0
@@ -332,25 +730,59 @@ def _fit_messages(chat_key: str, user_text: str, mem_block: str = "") -> list:
     return msgs
 
 
-def _call(msgs: list, with_tools: bool = True) -> dict:
-    """One backend round-trip. Returns the raw assistant message dict."""
-    payload = {"model": LLM_MODEL, "messages": msgs, "max_tokens": MAX_TOKENS}
-    if with_tools and _TOOLS_CACHE:
-        payload["tools"] = _TOOLS_CACHE
+def _call(msgs: list, with_tools: bool = True, *, url: str | None = None,
+          model: str | None = None, context_key: str = "",
+          tools: list | None = None) -> tuple[dict, str | None]:
+    """One backend round-trip. Returns ``(assistant message dict, concrete_model)``.
+
+    ``concrete_model`` is the backend's top-level ``response["model"]`` — CRITICAL
+    for rating attribution: when routing via sk-auto through the gateway, the model
+    that actually answered (ornith-1.0-9b / claude-opus-4-8 / the VL model) comes
+    back here, not in the request. Callers fall back to the resolved backend model
+    name when it's omitted.
+
+    `url`/`model` default to the static LLM_URL/LLM_MODEL but are overridden per
+    chat by the skmodels resolution. `context_key` (e.g. "chat:<id>") is attached
+    as the `x-sk-context` header so a gateway backend routes per-chat itself
+    (harmless to a direct backend, which ignores the header). `tools` is the
+    per-turn tool list to advertise (defaults to the full _TOOLS_CACHE)."""
+    call_url = url or LLM_URL
+    call_model = model or LLM_MODEL
+    turn_tools = _TOOLS_CACHE if tools is None else tools
+    payload = {"model": call_model, "messages": msgs, "max_tokens": MAX_TOKENS}
+    if with_tools and turn_tools:
+        payload["tools"] = turn_tools
         payload["tool_choice"] = "auto"
     body = json.dumps(payload).encode()
-    req = urllib.request.Request(LLM_URL, data=body, headers={"Content-Type": "application/json"})
+    headers = {"Content-Type": "application/json"}
+    if context_key:
+        headers["x-sk-context"] = context_key
+    req = urllib.request.Request(call_url, data=body, headers=headers)
     out = json.loads(urllib.request.urlopen(req, timeout=180).read())
-    return out["choices"][0]["message"]
+    return out["choices"][0]["message"], out.get("model")
 
 
-def _run_tool_loop(msgs: list, chat_id: str = "") -> str:
-    """Drive the qwen3.6 tool-calling loop: call → dispatch MCP → feed back."""
+def _run_tool_loop(msgs: list, chat_id: str = "", *, url: str | None = None,
+                   model: str | None = None,
+                   tools: list | None = None) -> tuple[str, str | None]:
+    """Drive the qwen3.6 tool-calling loop: call → dispatch MCP → feed back.
+
+    Returns ``(reply text, concrete_model)`` — the concrete model is the one the
+    LAST backend round-trip reported (``response["model"]``), so rating rows can be
+    attributed to the model that actually produced the answer (matters under sk-auto
+    routing where easy→ornith / hard→opus / image→VL).
+
+    ``tools`` is the per-turn tool subset to advertise (defaults to the full
+    _TOOLS_CACHE); dispatch itself can still reach any indexed tool the model
+    names, so the subset only shapes what the model is offered."""
+    context_key = _chat_context_key(chat_id) if chat_id else ""
+    concrete_model: str | None = None
     for _round in range(MAX_TOOL_ROUNDS):
-        msg = _call(msgs, with_tools=True)
+        msg, concrete_model = _call(msgs, with_tools=True, url=url, model=model,
+                    context_key=context_key, tools=tools)
         calls = msg.get("tool_calls") or []
         if not calls:
-            return (msg.get("content") or "").strip()
+            return (msg.get("content") or "").strip(), concrete_model
         # Append the assistant turn that requested the tools, then each result.
         msgs.append({"role": "assistant", "content": msg.get("content") or "",
                      "tool_calls": calls})
@@ -370,11 +802,24 @@ def _run_tool_loop(msgs: list, chat_id: str = "") -> str:
             msgs.append({"role": "tool", "tool_call_id": tc.get("id", ""),
                          "name": name, "content": result[:6000]})
     # Ran out of rounds — ask for a final answer without tools.
-    final = _call(msgs, with_tools=False)
-    return (final.get("content") or "").strip()
+    final, concrete_model = _call(msgs, with_tools=False, url=url, model=model,
+                                  context_key=context_key)
+    return (final.get("content") or "").strip(), concrete_model
 
 
-def _llm(chat_key: str, user_text: str) -> str:
+def _strip_think(text: str) -> str:
+    """Remove <think>…</think> reasoning blocks (Qwen abliterated emits them, often
+    empty) from a reply. Drops everything up to the last </think>, then any stray
+    open/close think tags. Never touches a reply that has none."""
+    if not text:
+        return text
+    if "</think>" in text:
+        text = text.rsplit("</think>", 1)[-1]
+    text = _re.sub(r"</?think>", "", text)
+    return text.strip()
+
+
+def _llm(chat_key: str, user_text: str) -> tuple[str, str | None]:
     import urllib.error
 
     mem_block = ""
@@ -382,17 +827,34 @@ def _llm(chat_key: str, user_text: str) -> str:
         mem_block = _MEM.inject(chat_key, user_text, router=_ROUTER)
     except Exception:
         log.debug("memory inject failed", exc_info=True)
-    msgs = _fit_messages(chat_key, user_text, mem_block=mem_block)
+    # Per-turn tool curation (lazy mode) — narrow the exposed toolset to what
+    # this message likely needs; no-op (full cache) when SKC_BRIDGE_LAZY_TOOLS=0.
+    turn_tools = _curate_turn_tools(user_text)
+    msgs = _fit_messages(chat_key, user_text, mem_block=mem_block, tools=turn_tools)
+    # Per-chat model routing: resolve the backend for this chat (honors /model
+    # toggle on chat:<id>) and attach the x-sk-context header downstream.
+    url, model = _resolve_backend_for_chat(chat_key)
+    ctx_key = _chat_context_key(chat_key)
+    concrete_model: str | None = None
     try:
-        reply = _run_tool_loop(msgs, chat_id=chat_key)
+        reply, concrete_model = _run_tool_loop(msgs, chat_id=chat_key, url=url,
+                                               model=model, tools=turn_tools)
     except urllib.error.HTTPError as e:
         if e.code == 400:  # context overflow — retry minimal, no tools
             log.warning("400 from backend; retrying system+message only (no tools)")
             sys_only = [m for m in msgs if m["role"] == "system"]
             sys_only.append({"role": "user", "content": user_text})
-            reply = (_call(sys_only, with_tools=False).get("content") or "").strip()
+            msg, concrete_model = _call(sys_only, with_tools=False, url=url,
+                                        model=model, context_key=ctx_key)
+            reply = (msg.get("content") or "").strip()
         else:
             raise
+    # Strip <think>…</think> reasoning blocks the abliterated Qwen emits (incl. the
+    # empty "<think>\n\n</think>" prefix) so they never leak into chat/voice/memory.
+    reply = _strip_think(reply)
+    # Concrete answering model for rating attribution: prefer what the backend
+    # actually served (response["model"]); fall back to the resolved backend model.
+    concrete_model = concrete_model or model
     _history[chat_key].append({"role": "user", "content": user_text})
     _history[chat_key].append({"role": "assistant", "content": reply})
     # Persist the interaction into the agent's living memory.
@@ -400,7 +862,71 @@ def _llm(chat_key: str, user_text: str) -> str:
         _MEM.store(chat_key, user_text, reply)
     except Exception:
         log.debug("interaction store failed", exc_info=True)
-    return reply
+    return reply, concrete_model
+
+
+def _handle_model_command(chat_id, text: str) -> str | None:
+    """Handle the `/model` slash command for live per-chat model swapping.
+
+    Returns the reply text to send (and the caller then skips the LLM), or None
+    when *text* is not a /model command.
+
+      /model            → show available roles + this chat's current model
+      /model list       → same
+      /model <role>     → pin chat:<id> to <role> (skmodels set) and confirm
+
+    Writes the toggle via skos.models.set_context (registry `contexts:`), the
+    same thing `skmodels set chat:<id> <role>` does — comment-preserving.
+    """
+    stripped = text.strip()
+    # Accept "/model", "/model@seaBird_Opus_bot" (group @-mention form), args after.
+    parts = stripped.split()
+    head = parts[0].split("@", 1)[0].lower() if parts else ""
+    if head != "/model":
+        return None
+    arg = parts[1].strip().lower() if len(parts) > 1 else ""
+
+    if _skmodels is None:
+        return ("(model routing unavailable — skos.models isn't importable in this "
+                "bridge's environment, so /model can't switch backends here.)")
+
+    _fresh_registry()  # reflect any external/synced changes in the roster + current
+    roles = _skmodels.list_roles() or {}
+    backends = _skmodels.list_backends() or {}
+
+    def _current_line() -> str:
+        b = _skmodels.resolve(context=_chat_context_key(chat_id))
+        pinned = (_skmodels.list_contexts() or {}).get(_chat_context_key(chat_id))
+        via = f"pinned → {pinned}" if pinned else "default"
+        vis = " [vision]" if getattr(b, "vision", False) else ""
+        return f"current: {b.name} ({b.model}){vis} — {via}"
+
+    if arg in ("", "list", "status", "get"):
+        lines = ["Available models (roles):"]
+        for role, target in roles.items():
+            bk = backends.get(target, {})
+            vtag = " [vision]" if bk.get("vision") else ""
+            lines.append(f"  {role} → {target}{vtag}")
+        lines.append("")
+        lines.append(_current_line())
+        lines.append("")
+        lines.append("Swap with:  /model <role>   (e.g. /model sk-vision)")
+        return "\n".join(lines)
+
+    # A swap request: validate the target is a known role OR a concrete backend.
+    if arg not in roles and arg not in backends:
+        valid = ", ".join(list(roles) + list(backends))
+        return f"unknown model '{arg}'. valid targets: {valid}"
+
+    try:
+        _skmodels.set_context(_chat_context_key(chat_id), arg)
+    except Exception:
+        log.exception("skmodels set_context failed")
+        return f"(failed to switch to {arg} — registry write error; check the bridge logs.)"
+    b = _skmodels.resolve(context=_chat_context_key(chat_id))
+    vis = " [vision]" if getattr(b, "vision", False) else ""
+    log.info("model swap: %s → %s (%s)", _chat_context_key(chat_id), arg, b.name)
+    return f"✅ switched this chat to {arg} → {b.name} ({b.model}){vis}. Replies now route there."
 
 
 # Voice-reply policy: "voice" (default) = speak back only when spoken to;
@@ -444,7 +970,8 @@ async def main() -> None:
     adapter = TelegramAdapter(config={"bot_token": TOKEN})
     # Receive emoji reactions (excluded from getUpdates by default) so the image
     # rating loop works — see _handle_reaction.
-    adapter._allowed_updates = ["message", "edited_message", "message_reaction"]
+    adapter._allowed_updates = ["message", "edited_message", "message_reaction",
+                                "callback_query"]
     hub = AdapterHub(outbound_adapter=adapter, resolve_fqid=lambda ident: "chef@skworld.io")
     _init_brain()
     log.info("Telegram bridge live as %s — polling getUpdates", AGENT)
@@ -455,6 +982,10 @@ async def main() -> None:
                 # Emoji reaction on a bot image/video → rating loop (no reply).
                 if u.get("message_reaction"):
                     _handle_reaction(u)
+                    continue
+                # 👍/👎 inline-button press on a bot reply → answer rating (no reply).
+                if u.get("callback_query"):
+                    _handle_callback(TOKEN, u["callback_query"])
                     continue
                 m = adapter._normalize(u)
                 incoming = m.text if (m and getattr(m, "text", None)) else None
@@ -487,8 +1018,21 @@ async def main() -> None:
                     except Exception:
                         log.exception("handle_inbound failed (continuing)")
 
+                # Slash-command: live per-chat model swap. Handled locally (no LLM,
+                # no voice) — replies with the roster / confirms the toggle.
+                cmd_reply = _handle_model_command(chat_id, incoming)
+                if cmd_reply is not None:
+                    try:
+                        _send_html(TOKEN, chat_id, cmd_reply)
+                        log.info("replied (/model) to %s", chat_id)
+                    except Exception:
+                        log.exception("send failed (/model)")
+                    continue
+
+                concrete_model: str | None = None
                 try:
-                    reply = _llm(str(chat_id), incoming)
+                    with _Typing(TOKEN, chat_id):   # 'typing…' until the reply is ready
+                        reply, concrete_model = _llm(str(chat_id), incoming)
                 except Exception:
                     log.exception("LLM failed")
                     reply = f"({AGENT}) sorry — my language backend hiccuped, try again."
@@ -502,8 +1046,15 @@ async def main() -> None:
                     except Exception:
                         log.exception("voice send failed")
                 try:
-                    _send_html(TOKEN, chat_id, reply)
+                    msg_id = _send_html(TOKEN, chat_id, reply, rating_buttons=True)
                     log.info("replied (HTML) to %s", chat_id)
+                    # Record which concrete model answered this message so a later
+                    # 👍/👎 press can attribute the score (opt-in; flag-gated).
+                    if _RATING_BUTTONS and msg_id and concrete_model and _ratings is not None:
+                        try:
+                            _ratings.record_send(str(chat_id), str(msg_id), concrete_model)
+                        except Exception:
+                            log.debug("record_send failed", exc_info=True)
                 except Exception:
                     log.exception("send failed")
         except Exception:
