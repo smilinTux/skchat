@@ -501,6 +501,9 @@ _DEFAULT_TOOLS = [
     "web_search",
     # Source ingestion (feed the wiki): YouTube transcript + X/Twitter reader.
     "youtube_fetch", "twitter_fetch",
+    # One-shot ingest (auto-detect url/image/media/text → skmem-pg + realm wiki) +
+    # SearXNG-grounded wiki stub filler.
+    "ingest", "fill_stub",
     # Speak in Lumina's cloned voice (F5-TTS) + deliver as a Telegram voice message.
     "voice_message",
     # Chef's secrets vault (skvault) — unlock with the chat word.
@@ -549,6 +552,9 @@ except Exception:  # pragma: no cover - optional
 _TURN_ALWAYS_ON: tuple[str, ...] = ("memory_search", "memory_recall", "memory_context")
 
 _TURN_GROUPS: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
+    (("ingest", "file this", "file it", "add to wiki", "add this to", "into the wiki",
+      "fill stub", "fill the stub", "fill in the stub", "transcribe", "realmwiki"),
+     ("ingest", "fill_stub", "youtube_fetch", "twitter_fetch", "wiki_search")),
     (("email", "mail", "gmail", "inbox"), ("gmail_*",)),
     (("calendar", "schedule", "meeting", "event", "appointment", "today",
       "tomorrow", "week", "agenda"), ("calendar_*",)),
