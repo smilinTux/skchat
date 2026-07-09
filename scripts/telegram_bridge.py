@@ -1033,7 +1033,11 @@ async def main() -> None:
     log.info("Telegram bridge live as %s — polling getUpdates", AGENT)
     while True:
         try:
-            updates = await adapter._poll()
+            # Seatbelt: a wedged httpx connection pool (observed after a Telegram
+            # ConnectTimeout) can make _poll() hang forever, silently killing the
+            # bot while systemd still sees it "active". Bound every poll so a hang
+            # raises TimeoutError → caught below → loop retries instead of wedging.
+            updates = await asyncio.wait_for(adapter._poll(), timeout=45)
             for u in updates:
                 # Emoji reaction on a bot image/video → rating loop (no reply).
                 if u.get("message_reaction"):
