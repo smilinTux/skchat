@@ -307,3 +307,131 @@ Rotation steps:
 - **Tailscale serve** must be configured on the host before deploying LiveKit (see the note block
   at the top of `livekit-stack.yml`).  coturn is reachable by its host public IP / domain only
   (off-tailnet guests); tailnet peers never hit coturn.
+
+---
+
+# Part II: systemd path (the live .158 deployment)
+
+Everything above describes the Docker/Swarm stack. The **live** skchat runs as
+per-user systemd units on .158, whose secrets are hand-edited EnvironmentFiles
+under `~/.config` plus a couple of inline drop-in values. This part documents the
+reproducible provisioning story for that path: names-only templates in the repo,
+one script that fills them from skvault with 0600 perms, and a dedicated scoped
+Postgres role that replaces the inline superuser DSN.
+
+## 8. Provisioning flow
+
+```bash
+# 1. unlock the sacred vault (gpg-agent SEAL), required once per session
+skvault unlock
+
+# 2. sanity: confirm the vault is open and every referenced entry resolves
+deploy/provision-secrets.sh unlock-check
+deploy/provision-secrets.sh check          # resolves every token, writes nothing
+
+# 3. materialise all EnvironmentFiles (0600) into ~/.config/... and friends
+deploy/provision-secrets.sh apply
+#    or a single target:
+deploy/provision-secrets.sh apply bridge-memory
+
+# safe preview (no vault access, no writes):
+deploy/provision-secrets.sh dry-run
+```
+
+- Templates: `deploy/env-templates/*.example` (names only, `${skvault:<title>}`
+  placeholders). The render engine is `deploy/render-secrets.py`.
+- The script never prints a secret value. It reports only the target path, the
+  file mode, and how many secrets were resolved.
+- It fails closed: a locked vault, a missing/ambiguous entry, or an unresolved
+  token aborts the whole file and writes nothing. Writes are atomic (temp file in
+  the target dir, `chmod 0600`, `os.replace`).
+- Sandbox testing: set `SKCHAT_PROVISION_DESTDIR=/tmp/somewhere` to prefix every
+  target path so a real run never touches `~/.config`.
+
+## 9. Live secret inventory (systemd path)
+
+Names only. `<agent>` variants share a title scheme. Every target is `chmod 0600`.
+
+| Env var | skvault entry title | Target file | Consumed by |
+|---|---|---|---|
+| `TELEGRAM_OPUS_BOT_TOKEN` | `skchat Telegram Opus Bot Token` | `~/.config/skchat/telegram-opus.env` | `skchat-telegram-opus.service` |
+| `SKC_BRIDGE_TOKEN` | `skchat Telegram Lumina Bot Token` | `~/.config/skchat/telegram-lumina.env` | `skchat-telegram-lumina.service` |
+| `SKMEMORY_PG_DSN` | `skchat Bridge Postgres Role` (password) | `~/.config/skchat/bridge-memory.env` | both telegram bridge drop-ins |
+| `SKCHAT_GUEST_TOKEN_SECRET` | `skchat Guest Token Secret` | `~/.config/skchat/guest-token.env` | `skchat-daemon.d/guest.conf`, `skchat-webui@lumina.d/guest.conf` |
+| `SKCHAT_LIVEKIT_API_SECRET` (lumina) | `skchat LiveKit API Secret (lumina)` | `~/.config/skchat/webui-lumina.env` | `skchat-webui@lumina.service` |
+| `SKCHAT_LIVEKIT_API_SECRET` (opus) | `skchat LiveKit API Secret (opus)` | `~/.config/skchat/webui-opus.env` | Opus webui |
+| `SKCHAT_LIVEKIT_API_SECRET` (chef) | `skchat LiveKit API Secret (chef)` | `~/.config/skchat/webui-chef.env` | Chef webui |
+| `SKCHAT_TURN_SECRET` | `skchat coturn TURN Secret` | all `webui-*.env` + `~/.skchat/coturn/coturn.secret` | webui + coturn container |
+| `SKCHAT_GUEST_TOKEN_SECRET` | `skchat Guest Token Secret` | `~/.config/skchat/webui-lumina.env` | `skchat-webui@lumina.service` |
+| livekit `keys:` (opus/lumina/chef) | `skchat LiveKit API Secret (<agent>)` | `~/.config/livekit/livekit.yaml` | `livekit-server.service` |
+
+Non-secret (safe in git / in the templates as literals): every `SKCHAT_*_URL`,
+port, `SKCHAT_LIVEKIT_API_KEY` (the key **id**, e.g. `skchat-lumina`, which must
+match a `keys:` name in `livekit.yaml`), `SKMEMORY_VECTOR_BACKEND`,
+`SKMEMORY_EMBED_URL/MODEL`, `SKCHAT_TURN_URLS/REALM`. Lines marked `CHANGE_ME` in
+the templates are host-specific non-secrets the installer sets per box (tailnet
+IP, public funnel URL, operator ids).
+
+> `NVIDIA_API_KEY` in `~/.config/lumina-creative/env` is owned by the
+> lumina-creative stack, not skchat; it is out of scope for this script. Rotate it
+> via that stack's own tooling.
+
+## 10. Scoped Postgres role for the bridge memory path (rotates the inline DSN)
+
+**Problem.** The live drop-ins
+`skchat-telegram-{opus,lumina}.service.d/override.conf` inline
+`SKMEMORY_PG_DSN=postgresql://postgres:<shared-pw>@localhost:5432/skmemory`, the
+**shared postgres superuser**, also used by skmemory and skingest. That is both a
+secret-in-a-drop-in and a massively over-privileged credential for what the
+bridge does.
+
+**Fix (do NOT rotate the shared superuser).** Create a dedicated least-privilege
+LOGIN role `skchat_bridge` and point the bridges at it. The bridge memory path
+(`skmemory/backends/pgvector_backend.py`) only needs:
+
+- `memories`: `SELECT, INSERT, UPDATE, DELETE`
+- `docs`: `SELECT` (read-only RAG grounding; docs are written by skingest)
+- `CONNECT` on `skmemory`, `USAGE` on schema `public`
+
+No sequence grants (memories.id is app-supplied), no superuser, nothing else. The
+exact SQL is `deploy/sql/skchat_bridge_role.sql` (rollback:
+`deploy/sql/skchat_bridge_role_rollback.sql`). It was validated against the live
+`skmem-pg` container in a `BEGIN; ... ROLLBACK;` transaction (scoped grants
+confirmed: `docs=SELECT`, `memories=DELETE,INSERT,SELECT,UPDATE`).
+
+**Cutover (a separate task, NOT performed by the provisioning task):**
+
+```bash
+# 1. pick a strong password, store it in skvault as "skchat Bridge Postgres Role"
+#    (username skchat_bridge). Then create the role in skmem-pg:
+docker exec -i skmem-pg psql -U postgres -d skmemory \
+  -v bridge_pw="<STRONG_PW>" -f deploy/sql/skchat_bridge_role.sql
+
+# 2. materialise the new DSN into bridge-memory.env (0600):
+skvault unlock && deploy/provision-secrets.sh apply bridge-memory
+
+# 3. reconcile the drop-ins: remove the inline SKMEMORY_PG_DSN= line and add
+#    EnvironmentFile=%h/.config/skchat/bridge-memory.env
+#    (see the reconcile-units task); then:
+systemctl --user daemon-reload
+systemctl --user restart skchat-telegram-opus.service skchat-telegram-lumina.service
+
+# 4. verify memory recall still works, then the old inline superuser DSN is gone.
+```
+
+Rollback: revert the drop-ins to the shared DSN, restart the bridges, then
+`deploy/sql/skchat_bridge_role_rollback.sql`.
+
+## 11. Rotation procedures (systemd path)
+
+| Secret | How to rotate |
+|---|---|
+| Telegram bot tokens | Regenerate via `@BotFather`, update the skvault entry, `provision-secrets.sh apply telegram-<agent>`, restart the bridge unit. |
+| `skchat_bridge` DB password | New password into skvault, re-run `skchat_bridge_role.sql` with `-v bridge_pw=<new>` (it `ALTER ROLE ... PASSWORD`s in place), `provision-secrets.sh apply bridge-memory`, restart both bridges. |
+| `SKCHAT_TURN_SECRET` | `openssl rand -hex 32`, update skvault, `provision-secrets.sh apply webui-lumina webui-opus webui-chef coturn`, restart coturn container + webui units (the secret feeds both). |
+| `SKCHAT_GUEST_TOKEN_SECRET` | New value into skvault, `provision-secrets.sh apply guest-token webui-lumina`, restart daemon + webui (both consume the same value; they must stay identical). |
+| LiveKit key secrets | New secret per key, update the three skvault entries, `provision-secrets.sh apply livekit webui-lumina webui-opus webui-chef`, restart `livekit-server` + webui units. |
+
+Never print a rotated value to a shell that logs history; let the script pull it
+from skvault. Never commit a filled-in `.env`, `livekit.yaml`, or `coturn.secret`.
+
