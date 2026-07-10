@@ -650,20 +650,24 @@ class ChatHistory:
         ]
 
     def get_thread(self, thread_id: str, limit: int = 50) -> list[ChatMessage]:
-        """Return all messages in *thread_id* from JSONL history, sorted oldest-first.
+        """Return the most recent messages in *thread_id*, sorted oldest-first.
 
         Scans the on-disk JSONL files (no SKMemory required) and filters by
-        ``message.thread_id == thread_id``.  Results are sorted by timestamp
-        ascending so callers receive a natural conversation order.
+        ``message.thread_id == thread_id``.  Day-files (and lines within a
+        file) are walked newest-first so that, once a thread has more than
+        ``limit`` messages, the *most recent* ``limit`` are kept rather than
+        the earliest ones. Results are then sorted by timestamp ascending so
+        callers receive a natural conversation order.
 
         Args:
             thread_id: Thread identifier to filter on.
             limit: Maximum messages to return.
 
         Returns:
-            list[ChatMessage] sorted by timestamp ascending.
+            list[ChatMessage]: The most recent ``limit`` messages, sorted by
+            timestamp ascending.
         """
-        files = sorted(self._history_dir.glob("*.jsonl"))  # oldest date first
+        files = sorted(self._history_dir.glob("*.jsonl"), reverse=True)  # newest date first
         results: list[ChatMessage] = []
         for path in files:
             if len(results) >= limit:
@@ -672,7 +676,7 @@ class ChatHistory:
                 lines = path.read_text(encoding="utf-8").splitlines()
             except OSError:
                 continue
-            for raw in lines:
+            for raw in reversed(lines):
                 raw = raw.strip()
                 if not raw:
                     continue

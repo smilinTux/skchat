@@ -435,6 +435,36 @@ class TestJsonlSaveLoad:
         thread = hist.get_thread("t-thread")
         assert [m.content for m in thread] == ["first", "second"]
 
+    def test_get_thread_returns_newest_when_over_limit(self, jsonl_history) -> None:
+        """When a thread exceeds `limit`, get_thread must return the most
+        recent `limit` messages (chronological ascending), not the oldest.
+
+        Regression test for CRITICAL defect #1 (bughunt 03): the old
+        implementation scanned day-files oldest-first and stopped once it
+        collected `limit` matches, so it silently returned the *earliest*
+        messages ever posted to the thread instead of the latest ones.
+        """
+        hist, hist_dir = jsonl_history
+        # 12 messages, one per day, Jan 1 -> Jan 12 2026, same thread.
+        for i in range(12):
+            ts = f"2026-01-{i + 1:02d}T10:00:00+00:00"
+            _write_msg_thread = ChatMessage(
+                sender="a",
+                recipient="b",
+                content=f"msg-{i}",
+                thread_id="room1",
+                timestamp=datetime.fromisoformat(ts),
+            )
+            path = hist_dir / f"{_write_msg_thread.timestamp.strftime('%Y-%m-%d')}.jsonl"
+            with path.open("a", encoding="utf-8") as fh:
+                fh.write(_write_msg_thread.model_dump_json() + "\n")
+
+        thread = hist.get_thread("room1", limit=8)
+        # Must be the newest 8 (msg-4..msg-11), not the oldest 8 (msg-0..msg-7).
+        assert [m.content for m in thread] == [f"msg-{i}" for i in range(4, 12)]
+        # Still chronologically ascending for display.
+        assert [m.timestamp for m in thread] == sorted(m.timestamp for m in thread)
+
 
 class TestStoreBackedRetrieval:
     """Helpers that go through the SKMemory store, using the FakeMemoryStore."""
