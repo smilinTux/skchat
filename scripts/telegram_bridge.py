@@ -12,6 +12,16 @@ Env:
   SKC_BRIDGE_LLM_URL       OpenAI /v1/chat/completions endpoint
   SKC_BRIDGE_LLM_MODEL     model name
   SKC_BRIDGE_AGENT         agent display/persona name (default: Opus)
+  SKCHAT_SRC / SKCOMMS_SRC optional path overrides to a checkout's src/
+                           directory for the skchat / skcomms imports. Only
+                           consulted when the packages are NOT already
+                           pip-installed into the running venv (installed
+                           packages are preferred); the final fallback is
+                           this checkout's own layout (<repo>/src plus the
+                           sibling ../skcomms/src). See scripts/bridge_paths.py.
+
+Run `telegram_bridge.py --check` for a dry import check (no token or network
+needed): it prints where skchat/skcomms resolved from and exits.
 
 Run via systemd (skchat-telegram-opus.service); restarts on failure.
 """
@@ -28,11 +38,35 @@ import time
 import urllib.request
 from collections import defaultdict, deque
 
-sys.path.insert(0, "/home/cbrd21/clawd/skcapstone-repos/skcomms/src")
-sys.path.insert(0, "/home/cbrd21/clawd/skcapstone-repos/skchat/src")
+# Portable import-path setup (no hardcoded machine paths): prefer the
+# installed skchat/skcomms packages (pip install -e into the venv); fall back
+# to the SKCHAT_SRC/SKCOMMS_SRC env overrides, then to this checkout's repo
+# layout (<repo>/src and the sibling ../skcomms/src). See scripts/bridge_paths.py.
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+if _SCRIPT_DIR not in sys.path:
+    # Sibling script modules (bridge_paths, bridge_consciousness). Already
+    # present when run as a script; needed when imported as a module (tests).
+    sys.path.insert(0, _SCRIPT_DIR)
+
+import bridge_paths as _bridge_paths  # noqa: E402
+
+_SRC_PATHS_ADDED = _bridge_paths.ensure_importable()
 
 from skcomms.adapters.telegram import TelegramAdapter  # noqa: E402
 from skchat.adapter_hub import AdapterHub  # noqa: E402
+
+# Dry import check: `telegram_bridge.py --check` proves the skchat/skcomms
+# imports resolve (installed packages or derived paths) and exits BEFORE any
+# token read, network call, or agent state is touched. Safe on the live box.
+if __name__ == "__main__" and "--check" in sys.argv:
+    import skchat as _skchat_pkg
+    import skcomms as _skcomms_pkg
+
+    print(f"skchat  -> {_skchat_pkg.__file__}")
+    print(f"skcomms -> {_skcomms_pkg.__file__}")
+    print(f"src paths added: {_SRC_PATHS_ADDED or 'none (installed packages)'}")
+    print("imports OK")
+    sys.exit(0)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 # Don't let the HTTP client log the bot token (it appears in the getUpdates URL).
