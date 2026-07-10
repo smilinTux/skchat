@@ -1,0 +1,57 @@
+# skchat-telegram@.service: templated SKChat Telegram bridge, one instance
+# per agent. The instance name (%i) is the lowercase agent name, e.g.
+#   systemctl --user enable --now skchat-telegram@opus.service
+#   systemctl --user enable --now skchat-telegram@lumina.service
+#
+# This template replaces the retired skchat-opus-bridge.service,
+# skchat-lumina-bridge.service, and skchat-bridges.target, whose ExecStart
+# pointed at a dead checkout path. The current bridge implementation is
+# scripts/telegram_bridge.py in the skchat repo.
+#
+# Portability: no absolute /home/<user> paths and no machine assumptions.
+# Everything machine-specific comes from %h (user home), %i (agent name),
+# and the per-agent environment file below.
+
+[Unit]
+Description=SKChat Telegram bridge (%i agent, scripts/telegram_bridge.py)
+Documentation=https://github.com/smilinTux/skchat
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h
+# Required per-agent environment file (referenced by name only, holds the
+# bot token, never committed to git). Create it before enabling:
+#   %h/.config/skchat/telegram-<agent>.env
+# Required key:
+#   SKC_BRIDGE_TOKEN          Telegram bot token for this agent's bot
+# Common optional keys (see scripts/telegram_bridge.py for the full list):
+#   SKC_BRIDGE_AGENT          display/persona name (default below: %i)
+#   SKC_BRIDGE_LLM_URL        OpenAI-compatible /v1/chat/completions endpoint
+#   SKC_BRIDGE_LLM_MODEL      model name
+#   SKC_BRIDGE_GATEWAY_URL    skgateway /v1 base for sk-auto routing
+#   SKC_BRIDGE_DEFAULT_ROLE   skmodels role pin (e.g. sk-creative)
+#   SKC_BRIDGE_CTX            context budget in tokens
+#   SKC_BRIDGE_MAX_TOKENS     reply token cap
+#   SKC_BRIDGE_SYS_BUDGET     system-prompt token budget
+#   SKCHAT_REPO               skchat checkout path, overrides the default below
+# Values in this file override the Environment= defaults below.
+EnvironmentFile=%h/.config/skchat/telegram-%i.env
+Environment=PYTHONUNBUFFERED=1
+Environment=SKAGENT=%i
+Environment=SKCAPSTONE_AGENT=%i
+Environment=SKMEMORY_AGENT=%i
+Environment=SKC_BRIDGE_AGENT=%i
+Environment=SKC_BRIDGE_AGENT_HOME=%h/.skcapstone/agents/%i
+Environment=SKCHAT_REPO=%h/clawd/skcapstone-repos/skchat
+Environment=PATH=%h/.skenv/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/.skenv/bin/python ${SKCHAT_REPO}/scripts/telegram_bridge.py
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=skchat-telegram-%i
+
+[Install]
+WantedBy=default.target

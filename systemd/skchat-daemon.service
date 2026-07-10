@@ -1,6 +1,20 @@
+# skchat-daemon.service: SKChat receive daemon (sovereign P2P chat).
+#
+# Type=forking matches how `skchat daemon start` actually daemonizes:
+# the CLI process Popens a detached child (skchat._daemon_entry,
+# start_new_session=True), writes the child PID to ~/.skchat/daemon.pid,
+# and exits. systemd then tracks the child via PIDFile.
+#
+# NOTE: WatchdogSec was removed on purpose. The daemon code does not call
+# sd_notify (no WATCHDOG=1 pings anywhere in src/ or scripts/), so any
+# WatchdogSec value makes systemd kill a healthy daemon in a loop on a
+# fresh install. Re-add WatchdogSec only together with sd_notify pings in
+# the poll loop (tracked as the bridge/daemon wedge-escalation task, P2.1
+# in docs/deploy-plan/skchat-bulletproof-deploy.md).
+
 [Unit]
-Description=SKChat receive daemon — sovereign P2P chat
-Documentation=https://skchat.io
+Description=SKChat receive daemon (sovereign P2P chat)
+Documentation=https://github.com/smilinTux/skchat
 After=network-online.target
 Wants=network-online.target
 
@@ -12,7 +26,6 @@ ExecStart=%h/.skenv/bin/skchat daemon start --interval 5 --log-file %h/.skchat/d
 ExecStop=/bin/kill -TERM $MAINPID
 Restart=on-failure
 RestartSec=5
-WatchdogSec=30
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=skchat
@@ -22,6 +35,12 @@ Environment=SKCAPSTONE_AGENT=opus
 Environment=SKMEMORY_AGENT=opus
 Environment=SKCHAT_IDENTITY=capauth:opus@skworld.io
 Environment=PATH=%h/.skenv/bin:/usr/local/bin:/usr/bin:/bin
+# Optional per-machine overrides (referenced by name only, never committed).
+# Values here override the Environment= defaults above. Recognized keys:
+#   SKAGENT / SKCAPSTONE_AGENT / SKMEMORY_AGENT  agent identity (default: opus)
+#   SKCHAT_IDENTITY                              capauth identity string
+#   SKCHAT_HOME                                  daemon state dir (default: ~/.skchat)
+EnvironmentFile=-%h/.config/skchat/daemon.env
 
 [Install]
 WantedBy=default.target
