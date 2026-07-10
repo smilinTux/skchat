@@ -336,6 +336,92 @@ class TestFileInboxPoll:
         assert messages[0].content == "via file inbox"
 
 
+class TestFileInboxStoreFailureIsNotLost:
+    """Regression tests: a transient store_message() failure must not lose
+
+    the message. The source .skc.json file must stay in place (not be
+    archived) so it is retried on the next poll, and the original content
+    must never be dropped or mangled into a fallback wrapper.
+    """
+
+    def test_store_failure_leaves_source_file_and_returns_no_message(self, tmp_path):
+        """store_message() raising means: no archive, no returned message."""
+        ct, _, mock_history = _make_transport(tmp_path)
+        ct._get_own_fingerprint = lambda: "TESTFP"  # type: ignore[method-assign]
+
+        inbox = ct._file_inbox_root / "TESTFP"  # type: ignore[attr-defined]
+        inbox.mkdir(parents=True)
+
+        msg = ChatMessage(
+            sender="capauth:carol@skworld.io",
+            recipient="capauth:test@skchat",
+            content="do not lose me",
+        )
+        envelope = {
+            "envelope_id": "deadbeef",
+            "payload": {"content": msg.model_dump_json()},
+        }
+        env_file = inbox / "deadbeef.skc.json"
+        env_file.write_text(json.dumps(envelope), encoding="utf-8")
+
+        mock_history.store_message.side_effect = RuntimeError("transient db error")
+
+        messages = ct._poll_file_inbox()
+
+        # Nothing was successfully stored, so nothing should be reported back.
+        assert messages == []
+        # The source file must still be present — not archived, not deleted.
+        assert env_file.exists()
+        archive_dir = ct._file_inbox_root / "archive" / "TESTFP"  # type: ignore[attr-defined]
+        assert not archive_dir.exists() or not list(archive_dir.glob("*.skc.json"))
+
+    def test_store_failure_then_success_recovers_original_content_on_retry(self, tmp_path):
+        """After a transient failure, the NEXT poll retries the same file and
+
+        stores the original (un-mangled) content — proving no silent loss and
+        no garbled-JSON re-wrap of the payload.
+        """
+        ct, _, mock_history = _make_transport(tmp_path)
+        ct._get_own_fingerprint = lambda: "TESTFP"  # type: ignore[method-assign]
+
+        inbox = ct._file_inbox_root / "TESTFP"  # type: ignore[attr-defined]
+        inbox.mkdir(parents=True)
+
+        msg = ChatMessage(
+            sender="capauth:carol@skworld.io",
+            recipient="capauth:test@skchat",
+            content="do not lose me",
+        )
+        envelope = {
+            "envelope_id": "deadbeef",
+            "payload": {"content": msg.model_dump_json()},
+        }
+        env_file = inbox / "deadbeef.skc.json"
+        env_file.write_text(json.dumps(envelope), encoding="utf-8")
+
+        # Fail exactly once, then succeed — simulates a transient error.
+        mock_history.store_message.side_effect = [RuntimeError("transient db error"), "mem-999"]
+
+        first_pass = ct._poll_file_inbox()
+        assert first_pass == []
+        assert env_file.exists()  # retained for retry
+
+        second_pass = ct._poll_file_inbox()
+
+        assert len(second_pass) == 1
+        # Content must be the ORIGINAL message content, not a garbled
+        # re-wrap of the whole envelope/payload JSON as free text.
+        assert second_pass[0].content == "do not lose me"
+        assert second_pass[0].sender == "capauth:carol@skworld.io"
+        assert second_pass[0].delivery_status == DeliveryStatus.DELIVERED
+
+        # Now that storage succeeded, the file is archived exactly once.
+        assert not env_file.exists()
+        archive_dir = ct._file_inbox_root / "archive" / "TESTFP"  # type: ignore[attr-defined]
+        archived = list(archive_dir.glob("*.skc.json"))
+        assert len(archived) == 1
+
+
 # ---------------------------------------------------------------------------
 # Loopback send tests
 # ---------------------------------------------------------------------------

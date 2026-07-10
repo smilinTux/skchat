@@ -956,6 +956,10 @@ class ChatTransport:
                 self._archive_file_inbox_entry(env_file, archive_dir)
                 continue
 
+            # Step 1: parse payload_content into a ChatMessage. This is a pure
+            # parsing step — it must NOT touch history/storage, so a storage
+            # failure below can never be confused with a parse failure.
+            msg: Optional[ChatMessage] = None
             try:
                 msg = ChatMessage.model_validate_json(payload_content)
                 # Normalize bare sender (no scheme) to full capauth URI
@@ -973,26 +977,16 @@ class ChatTransport:
                         logger.warning("transport.py: %s", e)
                         pass
                 msg = msg.model_copy(update={"delivery_status": DeliveryStatus.DELIVERED})
-                self._history.store_message(msg)
-                # Also append to the JSONL history that the webui /inbox reads
-                # (store_message only writes the SKMemory index). Without this,
-                # RECEIVED messages never surface in the client — only sent ones.
-                # Skip presence/CoT beacons (<event …>): they are not chat and
-                # would flood the history + client inbox (thousands per day) and
-                # can bog down the webui's /inbox read.
-                if not (msg.content or "").lstrip().startswith("<event "):
-                    try:
-                        self._history.save(msg)
-                    except Exception as save_exc:  # noqa: BLE001
-                        logger.debug("history.save on receive failed: %s", save_exc)
-                messages.append(msg)
             except Exception as exc:
                 logger.debug(
                     "File inbox entry %s is not a valid ChatMessage: %s — trying envelope sender",
                     env_file.name,
                     exc,
                 )
-                # Wrap as ChatMessage using envelope sender when payload parsing fails
+                # Wrap as ChatMessage using envelope sender when payload parsing fails.
+                # This is only a fallback for genuinely unparseable payloads, not
+                # for a downstream storage failure (see step 2 below).
+                msg = None
                 if envelope_sender_file:
                     try:
                         from .peer_discovery import PeerDiscovery as _PD4
@@ -1010,19 +1004,56 @@ class ChatTransport:
                             recipient=self._identity,
                             content=str(payload_content)[:4096] or "(empty)",
                         )
-                        _fallback_msg = _fallback_msg.model_copy(
+                        msg = _fallback_msg.model_copy(
                             update={"delivery_status": DeliveryStatus.DELIVERED}
                         )
-                        self._history.store_message(_fallback_msg)
-                        messages.append(_fallback_msg)
                         logger.debug(
                             "Wrapped file inbox entry from %s as ChatMessage",
                             _env_sender,
                         )
                     except Exception as exc2:
                         logger.debug("Cannot wrap file inbox entry %s: %s", env_file.name, exc2)
+                        msg = None
 
-            # Archive whether parse succeeded or failed (avoids re-processing)
+            if msg is None:
+                # Genuinely unparseable / unrecoverable payload: nothing to
+                # retry, so archive to avoid reprocessing forever.
+                logger.debug(
+                    "File inbox entry %s could not be parsed into a message — archiving",
+                    env_file.name,
+                )
+                self._archive_file_inbox_entry(env_file, archive_dir)
+                continue
+
+            # Step 2: attempt to persist. Only archive (remove the source file)
+            # once storage has *confirmed* succeeded. If store_message raises
+            # (e.g. a transient DB/history error), leave the source file in
+            # place so it is retried on the next poll instead of being
+            # silently dropped.
+            try:
+                self._history.store_message(msg)
+            except Exception as store_exc:  # noqa: BLE001
+                logger.warning(
+                    "Failed to store file inbox entry %s: %s — leaving in place for retry",
+                    env_file.name,
+                    store_exc,
+                )
+                continue
+
+            # Also append to the JSONL history that the webui /inbox reads
+            # (store_message only writes the SKMemory index). Without this,
+            # RECEIVED messages never surface in the client — only sent ones.
+            # Skip presence/CoT beacons (<event …>): they are not chat and
+            # would flood the history + client inbox (thousands per day) and
+            # can bog down the webui's /inbox read.
+            if not (msg.content or "").lstrip().startswith("<event "):
+                try:
+                    self._history.save(msg)
+                except Exception as save_exc:  # noqa: BLE001
+                    logger.debug("history.save on receive failed: %s", save_exc)
+            messages.append(msg)
+
+            # Archive only after a confirmed successful store.
             self._archive_file_inbox_entry(env_file, archive_dir)
 
         if messages:
