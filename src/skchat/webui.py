@@ -199,6 +199,21 @@ async def root() -> RedirectResponse:
     return RedirectResponse(url="/app/")
 
 
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    """Serve a favicon so browsers stop 404ing /favicon.ico (log noise).
+
+    Reuse the Flutter app's favicon.png if present, else answer 204 No Content
+    so the browser stops asking without logging an error.
+    """
+    from fastapi.responses import Response
+
+    icon = Path(__file__).parent / "static" / "app" / "favicon.png"
+    if icon.exists():
+        return FileResponse(str(icon), media_type="image/png")
+    return Response(status_code=204)
+
+
 @app.get("/media/file")
 async def media_file(path: str, node: str = ".158"):
     """Stream a file from an exposed root for the skos media viewer.

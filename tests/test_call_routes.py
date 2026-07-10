@@ -101,9 +101,74 @@ def test_connectivity_ice_for_paired_peer(client):
     assert "ice_servers" in data and "preferred_tier" in data
 
 
-def test_connectivity_ice_rejects_unpaired(client):
+def test_connectivity_ice_unpaired_peer_falls_back_not_404(client, monkeypatch):
+    # A guest/conf participant's peer id is never paired. It must NOT 404 (which
+    # would deny the guest any TURN config). The default TestClient host is
+    # off-tailnet, so an unpaired peer gets the relay tier (STUN/TURN), same as
+    # a paired one from the same client.
+    monkeypatch.delenv("SKCHAT_TURN_SECRET", raising=False)
+    monkeypatch.setenv("SKCHAT_PUBLIC_TURN_ENABLED", "true")
     r = client.get("/connectivity/ice", params={"peer": "nobody@x.y"})
-    assert r.status_code == 404
+    assert r.status_code == 200
+    data = r.json()
+    assert data["on_tailnet"] is False
+    assert data["preferred_tier"] == 3
+    assert data["ice_servers"]
+
+
+def test_connectivity_ice_guest_offtailnet_gets_sovereign_turn(monkeypatch):
+    # A guest (peer "guest-903ekz", never paired) off the tailnet must receive
+    # the SOVEREIGN turns: relay with a fresh ephemeral HMAC cred, not a 404.
+    monkeypatch.setattr(cr, "_list_peers", lambda: {"lumina@chef.skworld": {"fingerprint": "FP"}})
+    monkeypatch.setattr(cr, "_self_fqid", lambda: "opus@chef.skworld")
+    monkeypatch.setenv("SKCHAT_TURN_SECRET", "s3cr3t")
+    monkeypatch.setenv("SKCHAT_TURN_URLS", "turns:turn.skworld.io:5349,turn:turn.skworld.io:3478")
+    app = FastAPI()
+    cr.register_call_routes(app)
+    # testclient host is off-tailnet.
+    guest_client = TestClient(app)
+    r = guest_client.get("/connectivity/ice", params={"peer": "guest-903ekz"})
+    assert r.status_code == 200
+    data = r.json()
+    assert data["on_tailnet"] is False
+    assert data["preferred_tier"] == 3
+    turn_urls = [u for srv in data["ice_servers"] for u in srv["urls"] if u.startswith("turn")]
+    assert any(u.startswith("turns:turn.skworld.io") for u in turn_urls), turn_urls
+    # ephemeral cred must be present on the sovereign relay entry
+    relay = [srv for srv in data["ice_servers"] if srv.get("credential")]
+    assert relay and relay[0]["username"] and relay[0]["credential"]
+
+
+def test_connectivity_ice_guest_ontailnet_gets_relay_free_path(monkeypatch):
+    # An on-tailnet request with an unpaired guest peer gets the direct Tier-1
+    # (relay-free) config, same as a paired peer would from that client.
+    monkeypatch.setattr(cr, "_list_peers", lambda: {"lumina@chef.skworld": {"fingerprint": "FP"}})
+    monkeypatch.setattr(cr, "_self_fqid", lambda: "opus@chef.skworld")
+    app = FastAPI()
+    cr.register_call_routes(app)
+    tailnet_client = TestClient(app, client=("100.64.0.5", 12345))
+    r = tailnet_client.get("/connectivity/ice", params={"peer": "guest-903ekz"})
+    assert r.status_code == 200
+    data = r.json()
+    assert data["on_tailnet"] is True
+    assert data["preferred_tier"] == 1
+    assert data["ice_servers"] == []
+
+
+def test_connectivity_ice_no_peer_arg_still_returns_config(monkeypatch):
+    # The peer arg is now optional: a conf client may omit it entirely and still
+    # get an ICE config classified from its own connection.
+    monkeypatch.setattr(cr, "_list_peers", lambda: {"lumina@chef.skworld": {"fingerprint": "FP"}})
+    monkeypatch.setattr(cr, "_self_fqid", lambda: "opus@chef.skworld")
+    monkeypatch.delenv("SKCHAT_TURN_SECRET", raising=False)
+    monkeypatch.setenv("SKCHAT_PUBLIC_TURN_ENABLED", "true")
+    app = FastAPI()
+    cr.register_call_routes(app)
+    r = TestClient(app).get("/connectivity/ice")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["on_tailnet"] is False
+    assert data["ice_servers"]
 
 
 def test_connectivity_ice_offtailnet_caller_gets_relay_servers(client, monkeypatch):

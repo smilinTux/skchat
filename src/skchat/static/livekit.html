@@ -11,12 +11,18 @@
 <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
 <script src="https://unpkg.com/@excalidraw/excalidraw@0.17.6/dist/excalidraw.production.min.js" crossorigin></script>
-<!-- D5: Yjs CRDT UMD bundle — collaborative document lane.
-     Using the UMD build from unpkg (no bundler needed). Yjs 13.x is stable;
-     pin major to avoid breaking changes. y-websocket is NOT loaded — we
-     transport updates over the LiveKit data channel instead (sovereign, no
-     extra server). -->
-<script src="https://unpkg.com/yjs@13.6.20/dist/yjs.cjs" crossorigin></script>
+<!-- D5: Yjs CRDT (collaborative document lane).
+     The unpkg /dist/yjs.cjs build is CommonJS and throws "require is not
+     defined" in the browser. Load the ESM build and expose it as window.Y so
+     the classic-script code below (window.Y.Doc / applyUpdate / mergeUpdates /
+     encodeStateAsUpdate) resolves. y-websocket is NOT loaded: we transport
+     updates over the LiveKit data channel instead (sovereign, no extra server).
+     The doc lane inits lazily on call join and already guards on (!window.Y),
+     so the deferred module load is safe. Yjs 13.x is stable; pin major. -->
+<script type="module">
+  import * as Y from "https://esm.sh/yjs@13.6.20";
+  window.Y = Y;
+</script>
 <!-- 2027 design system: Inter + JetBrains Mono from Google Fonts CDN -->
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />

@@ -219,13 +219,30 @@ def register_call_routes(app: FastAPI) -> None:
         return JSONResponse({"peers": peers})
 
     @app.get("/connectivity/ice")
-    async def connectivity_ice(peer: str, request: Request) -> JSONResponse:
-        peer_fqid = _resolve_peer(peer)
+    async def connectivity_ice(request: Request, peer: str | None = None) -> JSONResponse:
         local_fqid = _self_fqid()
         # Derive on_tailnet from the actual requesting connection (see
         # _client_on_tailnet) instead of hardcoding it. An off-tailnet caller
         # (mobile data, home wifi w/o Tailscale, a public/Funnel guest) must
         # fall through to the STUN/TURN relay tier or its media never connects.
+        # This classification is what fundamentally selects the ICE tier; it does
+        # NOT depend on the peer being a paired peer.
         on_tailnet = _client_on_tailnet(request)
+        # Resolve the peer to a paired FQID for a real 1:1 call (keeps the
+        # peer_hint identity accurate). A conf/call GUEST (e.g. "guest-903ekz")
+        # or a self id is never paired, so _resolve_peer would 404. That must NOT
+        # deny a guest their TURN config: fall back to the raw peer string
+        # (informational only; the ephemeral TURN cred is keyed off local_fqid,
+        # is short-lived HMAC, and is exactly what off-tailnet guests need to
+        # relay media). Ambiguous bare names (409) still surface so p2p callers
+        # get the "use full FQID" guidance.
+        peer_fqid = local_fqid
+        if peer:
+            try:
+                peer_fqid = _resolve_peer(peer)
+            except HTTPException as exc:
+                if exc.status_code != 404:
+                    raise
+                peer_fqid = peer  # unpaired guest/self id (hint only), no 404
         cfg = ice_config(local_fqid, peer_fqid, peer_hint={"on_tailnet": on_tailnet})
         return JSONResponse(cfg)
