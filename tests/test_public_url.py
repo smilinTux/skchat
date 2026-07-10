@@ -249,3 +249,207 @@ def test_guest_join_no_public_set_always_tailnet(monkeypatch):
     )
     assert r.status_code == 200, r.text
     assert r.json()["lk_url"] == _TAILNET_URL
+
+
+# -- Shared-hostname Funnel deployment (the .158 reality) ---------------------
+#
+# The critical bug: on .158 the PUBLIC Funnel URL and the TAILNET URL share a
+# hostname and differ only by PORT:
+#     tailnet:  wss://noroc2027.tail204f0c.ts.net:8443   (tailnet-only)
+#     public:   wss://noroc2027.tail204f0c.ts.net/livekit-ws   (Funnel :443)
+# So Host / X-Forwarded-Host (port stripped) is IDENTICAL for both, and the old
+# host-only helper always returned :8443 -- which a cellular phone can never
+# reach. The reconciled helper uses the connection-layer signal (Tailscale
+# Funnel ingress / real client IP) exactly like /connectivity/ice, so a
+# Funnel-proxied off-tailnet caller is handed the public URL even though its
+# Host header looks tailnet.
+
+_SHARED_HOST = "noroc2027.tail204f0c.ts.net"
+_SHARED_TAILNET_URL = f"wss://{_SHARED_HOST}:8443"
+_SHARED_PUBLIC_URL = f"wss://{_SHARED_HOST}/livekit-ws"
+
+
+class _FakeClient:
+    def __init__(self, host: str):
+        self.host = host
+
+
+class _FakeConnRequest:
+    """Fake request exposing ``.headers`` AND ``.client`` (peer socket)."""
+
+    def __init__(self, headers: dict[str, str] | None = None, client_host: str | None = None):
+        self.headers = {k.lower(): v for k, v in (headers or {}).items()}
+        self.client = _FakeClient(client_host) if client_host is not None else None
+
+
+def test_helper_funnel_same_hostname_returns_public(monkeypatch):
+    """Funnel-proxied off-tailnet caller: same Host as tailnet, but the Funnel
+    ingress signal (loopback peer + Tailscale-Funnel-Request + public XFF) must
+    yield the PUBLIC url, not :8443."""
+    monkeypatch.setenv("SKCHAT_LIVEKIT_URL", _SHARED_TAILNET_URL)
+    monkeypatch.setenv("SKCHAT_LIVEKIT_PUBLIC_URL", _SHARED_PUBLIC_URL)
+    req = _FakeConnRequest(
+        headers={
+            "Host": _SHARED_HOST,  # identical to the tailnet host!
+            "Tailscale-Funnel-Request": "?1",
+            "X-Forwarded-For": "203.0.113.7",  # real off-tailnet client
+        },
+        client_host="127.0.0.1",  # tailscaled loopback proxy
+    )
+    assert public_aware_livekit_url(req) == _SHARED_PUBLIC_URL
+
+
+def test_helper_public_ip_no_funnel_header_returns_public(monkeypatch):
+    """A public real client IP (loopback proxy, no Funnel header) is off-tailnet."""
+    monkeypatch.setenv("SKCHAT_LIVEKIT_URL", _SHARED_TAILNET_URL)
+    monkeypatch.setenv("SKCHAT_LIVEKIT_PUBLIC_URL", _SHARED_PUBLIC_URL)
+    req = _FakeConnRequest(
+        headers={"Host": _SHARED_HOST, "X-Forwarded-For": "203.0.113.9"},
+        client_host="127.0.0.1",
+    )
+    assert public_aware_livekit_url(req) == _SHARED_PUBLIC_URL
+
+
+def test_helper_genuine_tailnet_peer_same_hostname_returns_tailnet(monkeypatch):
+    """A genuine tailnet caller (CGNAT 100.x peer, same Host, no Funnel header)
+    still gets the :8443 tailnet URL -- the fast path is unchanged."""
+    monkeypatch.setenv("SKCHAT_LIVEKIT_URL", _SHARED_TAILNET_URL)
+    monkeypatch.setenv("SKCHAT_LIVEKIT_PUBLIC_URL", _SHARED_PUBLIC_URL)
+    req = _FakeConnRequest(headers={"Host": _SHARED_HOST}, client_host="100.64.0.5")
+    assert public_aware_livekit_url(req) == _SHARED_TAILNET_URL
+
+
+def test_helper_forwarded_tailnet_client_returns_tailnet(monkeypatch):
+    """A tailnet client reaching us via the loopback proxy (XFF carries its 100.x
+    address, no Funnel header) is still on-tailnet -> :8443."""
+    monkeypatch.setenv("SKCHAT_LIVEKIT_URL", _SHARED_TAILNET_URL)
+    monkeypatch.setenv("SKCHAT_LIVEKIT_PUBLIC_URL", _SHARED_PUBLIC_URL)
+    req = _FakeConnRequest(
+        headers={"Host": _SHARED_HOST, "X-Forwarded-For": "100.100.5.9"},
+        client_host="127.0.0.1",
+    )
+    assert public_aware_livekit_url(req) == _SHARED_TAILNET_URL
+
+
+def test_helper_loopback_local_caller_returns_tailnet(monkeypatch):
+    """A bare loopback local caller (lumina-call.py, no Funnel header/XFF) is a
+    trusted local/tailnet caller -> :8443."""
+    monkeypatch.setenv("SKCHAT_LIVEKIT_URL", _SHARED_TAILNET_URL)
+    monkeypatch.setenv("SKCHAT_LIVEKIT_PUBLIC_URL", _SHARED_PUBLIC_URL)
+    req = _FakeConnRequest(headers={"Host": _SHARED_HOST}, client_host="127.0.0.1")
+    assert public_aware_livekit_url(req) == _SHARED_TAILNET_URL
+
+
+# -- Integration: /guest/join over Funnel with a shared hostname --------------
+
+
+def _funnel_headers(host: str = _SHARED_HOST) -> dict[str, str]:
+    return {
+        "Host": host,
+        "Tailscale-Funnel-Request": "?1",
+        "X-Forwarded-For": "203.0.113.7",
+    }
+
+
+def test_guest_join_funnel_same_hostname_gets_public(monkeypatch):
+    pytest.importorskip("livekit")
+    monkeypatch.setenv("SKCHAT_LIVEKIT_URL", _SHARED_TAILNET_URL)
+    monkeypatch.setenv("SKCHAT_LIVEKIT_PUBLIC_URL", _SHARED_PUBLIC_URL)
+    monkeypatch.setenv("SKCHAT_LIVEKIT_API_KEY", "k")
+    monkeypatch.setenv("SKCHAT_LIVEKIT_API_SECRET", "secret-0123456789")
+    monkeypatch.setenv("SKCHAT_GUEST_TOKEN_SECRET", "guest-secret-xyz")
+    # Direct socket peer is the tailscaled loopback proxy (Funnel terminus).
+    app = FastAPI()
+    from skchat.guest import register_guest_routes
+
+    register_guest_routes(app)
+    client = TestClient(app, client=("127.0.0.1", 54321))
+    token = _make_invite("room-funnel")
+    r = client.post(
+        "/guest/join",
+        json={"room": "room-funnel", "invite_token": token, "display_name": "G"},
+        headers=_funnel_headers(),
+    )
+    assert r.status_code == 200, r.text
+    # A cellular phone MUST NOT be handed the tailnet :8443 URL.
+    assert r.json()["lk_url"] == _SHARED_PUBLIC_URL
+    assert ":8443" not in r.json()["lk_url"]
+
+
+def test_guest_join_tailnet_peer_same_hostname_gets_tailnet(monkeypatch):
+    pytest.importorskip("livekit")
+    monkeypatch.setenv("SKCHAT_LIVEKIT_URL", _SHARED_TAILNET_URL)
+    monkeypatch.setenv("SKCHAT_LIVEKIT_PUBLIC_URL", _SHARED_PUBLIC_URL)
+    monkeypatch.setenv("SKCHAT_LIVEKIT_API_KEY", "k")
+    monkeypatch.setenv("SKCHAT_LIVEKIT_API_SECRET", "secret-0123456789")
+    monkeypatch.setenv("SKCHAT_GUEST_TOKEN_SECRET", "guest-secret-xyz")
+    app = FastAPI()
+    from skchat.guest import register_guest_routes
+
+    register_guest_routes(app)
+    # Genuine tailnet CGNAT peer, no Funnel header.
+    client = TestClient(app, client=("100.64.0.5", 12345))
+    token = _make_invite("room-tail")
+    r = client.post(
+        "/guest/join",
+        json={"room": "room-tail", "invite_token": token, "display_name": "G"},
+        headers={"Host": _SHARED_HOST},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["lk_url"] == _SHARED_TAILNET_URL
+
+
+# -- Integration: POST /conf/{room}/token over Funnel with a shared hostname ---
+
+
+def _make_conf_client(tmp_path, client_addr):
+    from skchat.conf.room import ConfRegistry
+    from skchat.conf.routes import register_conf_routes
+
+    app = FastAPI()
+    register_conf_routes(app, registry=ConfRegistry(path=tmp_path / "confs.json"))
+    return TestClient(app, client=client_addr)
+
+
+def test_conf_token_funnel_same_hostname_gets_public(monkeypatch, tmp_path):
+    pytest.importorskip("livekit")
+    monkeypatch.setenv("SKCHAT_LIVEKIT_URL", _SHARED_TAILNET_URL)
+    monkeypatch.setenv("SKCHAT_LIVEKIT_PUBLIC_URL", _SHARED_PUBLIC_URL)
+    monkeypatch.setenv("SKCHAT_LIVEKIT_API_KEY", "k")
+    monkeypatch.setenv("SKCHAT_LIVEKIT_API_SECRET", "secret-0123456789")
+    # Loopback peer = tailscaled Funnel terminus.
+    client = _make_conf_client(tmp_path, ("127.0.0.1", 54321))
+    created = client.post(
+        "/conf/create", json={"host_fqid": "lumina@chef.skworld", "title": "Standup"}
+    )
+    assert created.status_code == 200, created.text
+    room = created.json()["room"]
+    r = client.post(
+        f"/conf/{room}/token",
+        json={"identity": "guest@phone", "name": "Guest"},
+        headers=_funnel_headers(),
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["url"] == _SHARED_PUBLIC_URL
+    assert ":8443" not in r.json()["url"]
+
+
+def test_conf_token_tailnet_peer_same_hostname_gets_tailnet(monkeypatch, tmp_path):
+    pytest.importorskip("livekit")
+    monkeypatch.setenv("SKCHAT_LIVEKIT_URL", _SHARED_TAILNET_URL)
+    monkeypatch.setenv("SKCHAT_LIVEKIT_PUBLIC_URL", _SHARED_PUBLIC_URL)
+    monkeypatch.setenv("SKCHAT_LIVEKIT_API_KEY", "k")
+    monkeypatch.setenv("SKCHAT_LIVEKIT_API_SECRET", "secret-0123456789")
+    client = _make_conf_client(tmp_path, ("100.64.0.5", 12345))
+    created = client.post(
+        "/conf/create", json={"host_fqid": "lumina@chef.skworld", "title": "Standup"}
+    )
+    assert created.status_code == 200, created.text
+    room = created.json()["room"]
+    r = client.post(
+        f"/conf/{room}/token",
+        json={"identity": "peer@tailnet", "name": "Peer"},
+        headers={"Host": _SHARED_HOST},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["url"] == _SHARED_TAILNET_URL

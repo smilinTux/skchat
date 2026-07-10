@@ -29,6 +29,19 @@ def _url() -> str:
     return os.getenv("SKCHAT_LIVEKIT_URL", "ws://skworld-100:7880")
 
 
+def _public_url(request: Request) -> str:
+    """Public-aware SFU URL for a browser/guest: an off-tailnet caller (Tailscale
+    Funnel on cellular) gets the public wss URL, a tailnet caller keeps the
+    tailnet URL. Falls back to the tailnet default if the helper is unavailable.
+    See livekit_routes.public_aware_livekit_url."""
+    try:
+        from skchat.livekit_routes import public_aware_livekit_url
+
+        return public_aware_livekit_url(request)
+    except Exception:  # pragma: no cover - defensive fallback
+        return _url()
+
+
 def _have_creds() -> bool:
     return bool(os.getenv("SKCHAT_LIVEKIT_API_KEY") and os.getenv("SKCHAT_LIVEKIT_API_SECRET"))
 
@@ -125,12 +138,14 @@ def register_spaces_routes(
         if not space.host_fqid.strip() or requester != space.host_fqid:
             raise HTTPException(403, "host-only action")
 
-    def _token_response(identity: str, name: str, role: Role, space: Space) -> dict:
+    def _token_response(
+        identity: str, name: str, role: Role, space: Space, request: Request
+    ) -> dict:
         token = mint_space_token(identity, name, role, space.space_id, _DEFAULT_TTL)
         return {
             "space_id": space.space_id,
             "room": space.room,
-            "url": _url(),
+            "url": _public_url(request),
             "identity": identity,
             "name": name,
             "role": role.value,
@@ -160,7 +175,7 @@ def register_spaces_routes(
         reg.add(space)
         # C2: advertise this instance as the SFU focus for the new Space.
         _advertise_space(host_fqid=host, space_id=space.space_id, title=space.title)
-        return JSONResponse(_token_response(host, host.split("@")[0], Role.HOST, space))
+        return JSONResponse(_token_response(host, host.split("@")[0], Role.HOST, space, request))
 
     @app.post("/spaces/{space_id}/join")
     async def join_space(space_id: str, request: Request) -> JSONResponse:
@@ -172,7 +187,7 @@ def register_spaces_routes(
         if not identity:
             raise HTTPException(400, "identity required")
         name = body.get("name") or identity.split("@")[0]
-        return JSONResponse(_token_response(identity, name, Role.LISTENER, space))
+        return JSONResponse(_token_response(identity, name, Role.LISTENER, space, request))
 
     @app.post("/spaces/{space_id}/join-host")
     async def join_space_host(space_id: str, request: Request) -> JSONResponse:
@@ -183,7 +198,9 @@ def register_spaces_routes(
         body = await request.json()
         requester = (body.get("requester") or "").strip()
         _require_host(space, requester)
-        return JSONResponse(_token_response(requester, requester.split("@")[0], Role.HOST, space))
+        return JSONResponse(
+            _token_response(requester, requester.split("@")[0], Role.HOST, space, request)
+        )
 
     @app.post("/spaces/{space_id}/join-guest")
     async def join_space_guest(space_id: str, request: Request) -> JSONResponse:
@@ -203,7 +220,7 @@ def register_spaces_routes(
         except GuestJoinError as exc:
             raise HTTPException(403, f"invalid invite: {exc}") from exc
         return JSONResponse(
-            _token_response(guest.identity, guest.display or display, Role.LISTENER, space)
+            _token_response(guest.identity, guest.display or display, Role.LISTENER, space, request)
         )
 
     @app.get("/spaces")
@@ -417,7 +434,7 @@ def register_spaces_routes(
             return s is not None and s.status.value != "ended"
 
         try:
-            out = authorize(signed, sfu_ws_url=_url(), _space_live=_space_live)
+            out = authorize(signed, sfu_ws_url=_public_url(request), _space_live=_space_live)
         except AuthDenied as exc:
             raise HTTPException(403, str(exc)) from exc
         except FedAssertionError as exc:

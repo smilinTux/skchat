@@ -21,6 +21,7 @@ the rest of skchat keeps working.
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import logging
 import os
@@ -162,17 +163,111 @@ def _tailnet_host() -> str:
     return (urlsplit(url).hostname or "").lower()
 
 
+# Address ranges that count as genuinely on-tailnet / on-LAN. This is the SINGLE
+# source of truth: ``call_routes`` imports ``_ONTAILNET_NETS`` / ``_real_client_ip``
+# from here, so the public-aware URL selection and /connectivity/ice can never
+# disagree about who is on the tailnet. Loopback is DELIBERATELY excluded: this
+# host sits behind Tailscale Funnel, which terminates TLS locally and forwards to
+# the app over loopback, so a genuine off-tailnet phone on cellular arrives as
+# request.client.host == 127.0.0.1.
+_ONTAILNET_NETS = (
+    ipaddress.ip_network("100.64.0.0/10"),  # Tailscale CGNAT (tailnet IPv4)
+    ipaddress.ip_network("10.0.0.0/8"),  # RFC1918 LAN
+    ipaddress.ip_network("172.16.0.0/12"),  # RFC1918 LAN
+    ipaddress.ip_network("192.168.0.0/16"),  # RFC1918 LAN
+    ipaddress.ip_network("fc00::/7"),  # IPv6 ULA (incl. Tailscale fd7a:...)
+)
+
+
+def _parse_ip(raw: str | None) -> ipaddress._BaseAddress | None:
+    """Best-effort parse of an IP string, stripping any brackets/port; None on failure."""
+    if not raw:
+        return None
+    raw = raw.strip()
+    if raw.startswith("["):  # bracketed IPv6 literal, e.g. [::1]:8443
+        end = raw.find("]")
+        raw = raw[1:end] if end != -1 else raw[1:]
+    elif raw.count(":") == 1:  # host:port (a bare IPv6 literal has >1 colon)
+        raw = raw.split(":", 1)[0]
+    try:
+        return ipaddress.ip_address(raw)
+    except ValueError:
+        return None
+
+
+def _real_client_ip(request: object) -> ipaddress._BaseAddress | None:
+    """Resolve the true client IP, honoring reverse-proxy / Tailscale Funnel headers.
+
+    Canonical implementation (``call_routes`` imports this): the direct socket peer
+    (``request.client.host``) is not trustworthy on this host because Tailscale
+    Funnel and any reverse proxy terminate the connection locally and forward to
+    the app over loopback. When the direct peer is loopback (a local proxy) or
+    the request carries Funnel/forwarding signals, we honor the leftmost
+    ``X-Forwarded-For`` entry (the original client). A direct, non-loopback peer
+    with no forwarding is trusted as-is.
+    """
+    headers = getattr(request, "headers", None) or {}
+    client = getattr(request, "client", None)
+    direct_ip = _parse_ip(getattr(client, "host", None) if client is not None else None)
+
+    proxied = direct_ip is not None and direct_ip.is_loopback
+    funnel = bool(headers.get("tailscale-funnel-request"))
+    xff = headers.get("x-forwarded-for") or ""
+
+    if (proxied or funnel) and xff:
+        forwarded = _parse_ip(xff.split(",")[0])
+        if forwarded is not None:
+            return forwarded
+    return direct_ip
+
+
+def _request_off_tailnet(request: object) -> bool:
+    """True only when the request demonstrably arrived from OFF the tailnet.
+
+    This is the connection-layer signal that host-header matching cannot see:
+    when the public Funnel host and the tailnet host share a hostname (differing
+    only by port, e.g. ``noroc2027.tail204f0c.ts.net`` on public :443 vs tailnet
+    :8443), the Host header is identical for both, so we MUST fall back to the
+    ingress signal to tell a cellular guest apart from a tailnet peer.
+
+    Positive off-tailnet signals:
+      * the Tailscale Funnel ingress stamped the request
+        (``Tailscale-Funnel-Request``): by definition a public ingress with no
+        tailnet identity; or
+      * the resolved real client IP is a PUBLIC address (not loopback and not in
+        any tailnet/LAN range).
+
+    Returns False when there is no positive signal (a genuine tailnet/LAN
+    caller, a bare loopback local caller, or no client info) so the caller can
+    fall back to host-header discrimination.
+    """
+    headers = getattr(request, "headers", None) or {}
+    if headers.get("tailscale-funnel-request"):
+        return True
+    ip = _real_client_ip(request)
+    if ip is None or ip.is_loopback:
+        return False
+    return not any(ip in net for net in _ONTAILNET_NETS)
+
+
 def public_aware_livekit_url(request: object) -> str:
     """Return the SFU wss URL appropriate for the requesting client.
 
     Behavior:
       * If ``SKCHAT_LIVEKIT_PUBLIC_URL`` is unset/empty -> always the tailnet
         ``SKCHAT_LIVEKIT_URL`` (identical to pre-public behavior).
+      * If set, and the request demonstrably arrived from OFF the tailnet
+        (Tailscale Funnel ingress, or a public real client IP -- see
+        ``_request_off_tailnet``) -> the public URL. This is the robust signal
+        that works even when the public Funnel host and the tailnet host share a
+        hostname and differ only by port (:443 vs :8443), which is exactly the
+        .158 Funnel deployment: a cellular phone cannot reach the tailnet :8443
+        SFU, so it MUST be handed the public wss URL.
       * If set, and the request's Host / X-Forwarded-Host does NOT match the
-        tailnet host -> the request arrived over the public/Funnel host, so
-        return the public URL.
-      * If set, but the request host matches the tailnet host (or no host
-        header is present, i.e. a local/tailnet caller) -> the tailnet URL.
+        tailnet host -> the request arrived over a distinct public host, so
+        return the public URL (kept for name-based split deployments).
+      * Otherwise (host matches the tailnet host, or no host header, i.e. a
+        genuine local/tailnet caller) -> the tailnet URL.
 
     Read env at call time so a long-running process and the tests share one
     code path.
@@ -182,6 +277,14 @@ def public_aware_livekit_url(request: object) -> str:
     if not public_url:
         return tailnet_url
 
+    # 1) Connection-layer signal: robust even when public + tailnet hosts share a
+    #    hostname (Funnel :443 vs tailnet :8443). A Funnel-proxied cellular guest
+    #    is caught here regardless of its (tailnet-looking) Host header.
+    if _request_off_tailnet(request):
+        return public_url
+
+    # 2) Host-header discrimination: for deployments where the public host has a
+    #    distinct name from the tailnet host.
     req_host = _request_host(request)
     if not req_host:
         # No host header -> treat as a local/tailnet caller (unchanged default).

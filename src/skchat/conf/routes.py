@@ -767,7 +767,7 @@ def register_conf_routes(
             pass
         return JSONResponse({
             "token": token,
-            "url": _url(),
+            "url": _public_url(request),
             "role": role.value,
             "identity": assertion.fqid,
             "conf_id": conf.conf_id,

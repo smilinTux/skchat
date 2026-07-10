@@ -113,8 +113,17 @@ def register_join_routes(app: FastAPI) -> None:
     failures to 400 (malformed) / 403 (rejected assertion or replay).
     """
 
-    def _url() -> str:
-        return os.getenv("SKCHAT_LIVEKIT_URL", "ws://skworld-100:7880")
+    def _url(request: Request) -> str:
+        """Public-aware SFU URL: a sovereign joining from OFF the tailnet (e.g.
+        via Tailscale Funnel on cellular) is handed the public wss URL; a genuine
+        tailnet caller keeps the tailnet URL. Falls back to the tailnet default
+        if the helper is unavailable. See livekit_routes.public_aware_livekit_url."""
+        try:
+            from skchat.livekit_routes import public_aware_livekit_url
+
+            return public_aware_livekit_url(request)
+        except Exception:  # pragma: no cover - defensive fallback
+            return os.getenv("SKCHAT_LIVEKIT_URL", "ws://skworld-100:7880")
 
     @app.post("/join/sovereign")
     async def join_sovereign(request: Request) -> JSONResponse:
@@ -135,7 +144,9 @@ def register_join_routes(app: FastAPI) -> None:
         signed = {"claim": body["claim"], "sig": body["sig"]}
 
         try:
-            out = authorize_sovereign(signed, conf_ws_url=_url(), sovereign_admin=sovereign_admin)
+            out = authorize_sovereign(
+                signed, conf_ws_url=_url(request), sovereign_admin=sovereign_admin
+            )
         except JoinDenied as exc:
             raise HTTPException(403, str(exc)) from exc
         except FedAssertionError as exc:

@@ -6,7 +6,6 @@ Builds on the deterministic room (call_session) + LiveKit token mint
 
 from __future__ import annotations
 
-import ipaddress
 import json
 import logging
 
@@ -20,7 +19,13 @@ from .call_session import (
     parse_invite_body,
 )
 from .connectivity import ice_config
-from .livekit_routes import LIVEKIT_URL, _have_creds, _mint_token
+from .livekit_routes import (
+    _ONTAILNET_NETS,
+    LIVEKIT_URL,
+    _have_creds,
+    _mint_token,
+    _real_client_ip,
+)
 
 logger = logging.getLogger("skchat.call_routes")
 _TOKEN_TTL = 21600  # 6 hours; tokens are non-revocable, keep short relative to key rotation
@@ -72,68 +77,12 @@ def _read_inbox() -> list:
     return read_inbox()
 
 
-# Address ranges that count as "the caller can reach us directly, no relay".
-# Loopback (127.0.0.0/8, ::1) is DELIBERATELY EXCLUDED: this host sits behind
-# Tailscale Funnel (and can sit behind any reverse proxy), which terminates TLS
-# locally and forwards the request to the app over loopback. So a genuine
-# off-tailnet phone on cellular arrives as request.client.host == 127.0.0.1.
-# Trusting bare loopback would misclassify that caller as on-tailnet and hand
-# back an empty ice_servers list (Tier 1, no relay), and its media would never
-# connect. We instead resolve the *real* client from forwarded headers and only
-# treat genuine tailnet/LAN addresses as on-tailnet.
-_ONTAILNET_NETS = (
-    ipaddress.ip_network("100.64.0.0/10"),  # Tailscale CGNAT (tailnet IPv4)
-    ipaddress.ip_network("10.0.0.0/8"),  # RFC1918 LAN
-    ipaddress.ip_network("172.16.0.0/12"),  # RFC1918 LAN
-    ipaddress.ip_network("192.168.0.0/16"),  # RFC1918 LAN
-    ipaddress.ip_network("fc00::/7"),  # IPv6 ULA (incl. Tailscale fd7a:...)
-)
-
-
-def _parse_ip(raw: str | None) -> ipaddress._BaseAddress | None:
-    """Best-effort parse of an IP string, stripping any brackets/port; None on failure."""
-    if not raw:
-        return None
-    raw = raw.strip()
-    if raw.startswith("["):  # bracketed IPv6 literal, e.g. [::1]:8443
-        end = raw.find("]")
-        raw = raw[1:end] if end != -1 else raw[1:]
-    elif raw.count(":") == 1:  # host:port (a bare IPv6 literal has >1 colon)
-        raw = raw.split(":", 1)[0]
-    try:
-        return ipaddress.ip_address(raw)
-    except ValueError:
-        return None
-
-
-def _real_client_ip(request: Request) -> ipaddress._BaseAddress | None:
-    """Resolve the true client IP, honoring reverse-proxy / Tailscale Funnel headers.
-
-    The direct socket peer (``request.client.host``) is not trustworthy on this
-    host: Tailscale Funnel and any reverse proxy terminate the connection locally
-    and forward to the app over loopback, so the peer is 127.0.0.1 even for a
-    genuine off-tailnet caller. When the direct peer is loopback (a local proxy)
-    or the request carries Funnel/forwarding signals, we honor the leftmost
-    ``X-Forwarded-For`` entry (the original client) to recover the real address.
-    A direct, non-loopback peer with no forwarding is trusted as-is.
-    """
-    headers = getattr(request, "headers", None) or {}
-    client = getattr(request, "client", None)
-    direct_ip = _parse_ip(getattr(client, "host", None) if client is not None else None)
-
-    proxied = direct_ip is not None and direct_ip.is_loopback
-    # Tailscale Funnel stamps every proxied request with this header; its presence
-    # means the request came in over the public funnel ingress (no tailnet identity).
-    funnel = bool(headers.get("tailscale-funnel-request"))
-    xff = headers.get("x-forwarded-for") or ""
-
-    if (proxied or funnel) and xff:
-        forwarded = _parse_ip(xff.split(",")[0])
-        if forwarded is not None:
-            return forwarded
-    # Loopback with no usable forwarded header cannot prove tailnet membership:
-    # fall through with the loopback address so it is classified OFF-tailnet.
-    return direct_ip
+# The reachability model ("can the caller reach us directly, no relay") and the
+# forwarded-header IP resolution now live in ONE place, ``livekit_routes``, so
+# /connectivity/ice and the public-aware SFU URL selection can never disagree:
+# ``_ONTAILNET_NETS`` (tailnet/LAN ranges, loopback deliberately excluded),
+# ``_parse_ip`` and ``_real_client_ip`` (honor Tailscale Funnel + X-Forwarded-For
+# when the socket peer is a loopback proxy) are imported above.
 
 
 def _client_on_tailnet(request: Request) -> bool:
