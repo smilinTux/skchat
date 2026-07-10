@@ -288,11 +288,66 @@ class GroupChat(BaseModel):
             self.rotate_key(reason=f"member_added:{identity_uri}", transport=transport)
         return member
 
+    @staticmethod
+    def _identity_parts(identity_uri: str) -> tuple[str, Optional[str]]:
+        """Split an identity URI into ``(bare-handle, realm-or-None)``.
+
+        Strips a leading ``scheme:`` prefix (e.g. ``capauth:``) — that part is
+        purely cosmetic — then splits the remainder on the first ``@``. An
+        identity with no ``@`` at all (a truly bare handle, e.g. ``"chef"``)
+        has no realm information (``realm`` is ``None``).
+        """
+        s = (identity_uri or "").strip().lower()
+        s = s.split(":", 1)[-1]
+        if "@" in s:
+            handle, realm = s.split("@", 1)
+            return handle, realm
+        return s, None
+
+    @classmethod
+    def _same_principal(cls, a: str, b: str) -> bool:
+        """Whether two identity URIs refer to the SAME principal.
+
+        Different *forms* of one identity are the same principal — e.g.
+        ``capauth:chef@skworld.io`` and ``chef@skworld.io`` (the scheme prefix
+        is cosmetic). This is what the bare-handle match exists to fix: a
+        caller using the operator id ``chef@skworld.io`` still matches a
+        member stored as ``capauth:chef@skworld.io``, since both share the
+        same handle *and* the same realm.
+
+        Different realms/operators sharing the same short handle are NOT the
+        same principal — ``lumina@chef.skworld`` and ``lumina@bob.skworld``
+        are two different operators' agents that happen to share a name, and
+        must never collide (that collision was a cross-tenant admin/tool-scope
+        bypass). So: handles must always match; if BOTH sides carry a realm,
+        the realms must also match. Only when NEITHER side carries a realm at
+        all do we fall back to a handle-only match (there's no realm to
+        compare, so there's nothing to scope on).
+
+        Args:
+            a: First identity URI, any form.
+            b: Second identity URI, any form.
+
+        Returns:
+            bool: True if ``a`` and ``b`` denote the same principal.
+        """
+        handle_a, realm_a = cls._identity_parts(a)
+        handle_b, realm_b = cls._identity_parts(b)
+        if not handle_a or handle_a != handle_b:
+            return False
+        if realm_a is not None and realm_b is not None:
+            return realm_a == realm_b
+        return realm_a is None and realm_b is None
+
     def remove_member(self, identity_uri: str, transport: Any = None) -> bool:
         """Remove a member from the group and rotate the key.
 
-        The group key is rotated automatically so the removed member
-        cannot decrypt future messages (forward secrecy).
+        Uses the same realm-scoped identity matching as :meth:`get_member` (a
+        member found via an equivalent identity form — e.g. looked up as
+        ``chef@skworld.io`` but stored as ``capauth:chef@skworld.io`` — is
+        actually removed, not silently kept). The group key is rotated
+        automatically so the removed member cannot decrypt future messages
+        (forward secrecy).
 
         Args:
             identity_uri: CapAuth identity URI to remove.
@@ -302,7 +357,11 @@ class GroupChat(BaseModel):
             bool: True if the member was found and removed.
         """
         before = len(self.members)
-        self.members = [m for m in self.members if m.identity_uri != identity_uri]
+        self.members = [
+            m
+            for m in self.members
+            if not (m.identity_uri == identity_uri or self._same_principal(m.identity_uri, identity_uri))
+        ]
         removed = len(self.members) < before
 
         if removed:
@@ -317,12 +376,20 @@ class GroupChat(BaseModel):
     def get_member(self, identity_uri: str) -> Optional[GroupMember]:
         """Look up a member by identity URI.
 
-        Matches across identity forms — ``capauth:chef@skworld.io``,
-        ``chef@skworld.io`` (bare), and ``chef@chef.skworld`` (fqid) all resolve
-        to the same member — so a caller using one form (e.g. the operator id
-        ``chef@skworld.io``) still matches a member stored as
-        ``capauth:chef@skworld.io``. Without this, posting/ACL checks silently
-        treat the operator as a non-member.
+        Matches across identity forms for the SAME principal — e.g.
+        ``capauth:chef@skworld.io`` and ``chef@skworld.io`` (bare) both
+        resolve to the same member, since the ``capauth:`` scheme prefix is
+        cosmetic and the realm (``skworld.io``) is identical. Without this, a
+        caller using one form (e.g. the operator id ``chef@skworld.io``)
+        would fail to match a member stored under a differently-prefixed
+        form, and posting/ACL checks would silently treat the operator as a
+        non-member.
+
+        This match is realm-scoped: it will NOT collapse two DIFFERENT
+        realms/operators that happen to share a bare handle (e.g.
+        ``lumina@chef.skworld`` vs ``lumina@bob.skworld`` are different
+        principals and never match each other), which would otherwise be a
+        cross-tenant admin/tool-scope bypass. See :meth:`_same_principal`.
 
         Args:
             identity_uri: Identity URI in any form.
@@ -330,16 +397,11 @@ class GroupChat(BaseModel):
         Returns:
             Optional[GroupMember]: The member if found.
         """
-
-        def _handle(u: str) -> str:
-            return (u or "").lower().split(":", 1)[-1].split("@", 1)[0]
-
-        target = _handle(identity_uri)
         return next(
             (
                 m
                 for m in self.members
-                if m.identity_uri == identity_uri or _handle(m.identity_uri) == target
+                if m.identity_uri == identity_uri or self._same_principal(m.identity_uri, identity_uri)
             ),
             None,
         )
