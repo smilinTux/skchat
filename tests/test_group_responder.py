@@ -10,7 +10,7 @@ def test_config_defaults_for_lumina():
     cfg = load_group_config("lumina", env={})
     assert cfg.agent == "lumina"
     assert cfg.backend_url == "http://localhost:18780/v1/chat/completions"
-    assert cfg.model == "reg:ornith"
+    assert cfg.model == "sk-default"
     # self-mentions include the agent name; @all/@both always match
     assert "@lumina" in cfg.mentions
     assert "@all" in cfg.mentions and "@both" in cfg.mentions
@@ -65,7 +65,7 @@ def test_generate_ok():
     assert out == "Hey Chef 🐧"
     url, payload = http.calls[0]
     assert url == _LUM.backend_url
-    assert payload["model"] == "reg:ornith"
+    assert payload["model"] == "sk-default"
     assert payload["messages"][0]["content"] == "hi"
 
 

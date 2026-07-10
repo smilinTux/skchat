@@ -2,7 +2,8 @@
 
 Generalizes advocacy.py: when THIS agent is @-mentioned in a group message,
 build its soul+FEB prompt (skcapstone), recall memory (skmemory), generate via
-skgateway (reg:ornith), and return the reply. Talk-first (no tool-loop).
+skgateway (role sk-default — registry-routed; see registry.yaml roles.sk-default),
+and return the reply. Talk-first (no tool-loop).
 """
 from __future__ import annotations
 
@@ -17,7 +18,7 @@ from .models import ChatMessage
 logger = logging.getLogger("skchat.group_responder")
 
 _DEFAULT_BACKEND = "http://localhost:18780/v1/chat/completions"
-_DEFAULT_MODEL = "reg:ornith"
+_DEFAULT_MODEL = "sk-default"
 # mentions that address every agent in the room
 _BROADCAST_MENTIONS = ["@all", "@both", "@everyone"]
 

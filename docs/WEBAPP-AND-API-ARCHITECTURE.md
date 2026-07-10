@@ -209,7 +209,7 @@ GroupResponder.respond(msg)                   [group_responder.py:202]
   │  should_respond(): the agent only replies if a NON-agent human
   │  explicitly @-mentions it (loop-breaker — see §7).
   │  Builds soul+FEB system prompt, skmemory recall, calls skgateway
-  │  (SKCHAT_GROUP_BACKEND_URL, default reg:ornith @ :18780).
+  │  (SKCHAT_GROUP_BACKEND_URL, default role sk-default @ :18780 — registry-routed).
   ▼
 daemon.py reply delivery                       [daemon.py:421-460]
   │  Loads the group, persists the reply LOCALLY via grp.send(reply,
