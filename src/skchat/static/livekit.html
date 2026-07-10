@@ -646,6 +646,7 @@
     <button id="cam-toggle"   class="toggle off">📷 Cam OFF</button>
     <select id="mic-select" title="Microphone"></select>
     <select id="cam-select"  title="Camera"></select>
+    <span id="device-msg" class="pill" style="display:none;background:#2c2110;border-color:#6b4c1c;color:#f5d9a0"></span>
     <span class="pill" id="room-pill"></span>
     <span class="pill" id="peers-pill">0 peers</span>
   </div>
@@ -1814,23 +1815,105 @@ function preflight() {
   return true;
 }
 
+// ── Device picker: smart defaults + persistence ───────────────────────────────
+// Virtual / loopback camera labels to skip when auto-picking a default. These
+// devices enumerate but frequently cannot stream (getUserMedia throws
+// NotFoundError), which is exactly what a dead DroidCam virtual /dev/video0 did
+// to a live user while their real "Laptop Camera" sat unused. Match is a
+// case-insensitive substring test on the device label.
+const VIRTUAL_DEVICE_PATTERNS = ['droidcam', 'obs', 'v4l2loopback', 'virtual', 'snap camera', 'manycam', 'null'];
+const MIC_STORE_KEY = 'skchat.micDeviceId';
+const CAM_STORE_KEY = 'skchat.cameraDeviceId';
+
+function isVirtualLabel(label) {
+  const l = (label || '').toLowerCase();
+  return VIRTUAL_DEVICE_PATTERNS.some(p => l.includes(p));
+}
+
+// Pick a sensible default deviceId: prefer the first NON-virtual device; fall
+// back to the first device only if every candidate looks virtual.
+function pickDefaultDeviceId(list) {
+  if (!list.length) return '';
+  const real = list.find(d => !isVirtualLabel(d.label));
+  return (real || list[0]).deviceId;
+}
+
+// Small inline hint next to the pickers (e.g. "Camera unavailable, pick another").
+function setDeviceMsg(text) {
+  const el = $('#device-msg');
+  if (!el) return;
+  el.textContent = text || '';
+  el.style.display = text ? 'inline' : 'none';
+}
+
 // ── Device enumeration ────────────────────────────────────────────────────────
 async function enumerateDevices() {
   if (!navigator.mediaDevices?.enumerateDevices) return;
+  // Labels are only exposed AFTER a getUserMedia permission grant, so prompt
+  // once, then enumerate so the dropdowns show real device names.
   try {
     const tmp = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
     tmp.getTracks().forEach(t => t.stop());
   } catch (e) { log('device prompt rejected:', e.name, e.message); }
   const devs = await navigator.mediaDevices.enumerateDevices();
-  const mic = $('#mic-select'); mic.innerHTML = '';
-  const cam = $('#cam-select'); cam.innerHTML = '';
-  for (const d of devs) {
-    if (d.kind === 'audioinput') {
-      const o = document.createElement('option'); o.value = d.deviceId;
-      o.textContent = d.label || `Mic ${mic.length + 1}`; mic.appendChild(o);
-    } else if (d.kind === 'videoinput') {
-      const o = document.createElement('option'); o.value = d.deviceId;
-      o.textContent = d.label || `Cam ${cam.length + 1}`; cam.appendChild(o);
+  const mics = devs.filter(d => d.kind === 'audioinput');
+  const cams = devs.filter(d => d.kind === 'videoinput');
+  const mic = $('#mic-select');
+  const cam = $('#cam-select');
+
+  const fill = (sel, list, word) => {
+    sel.innerHTML = '';
+    list.forEach((d, i) => {
+      const o = document.createElement('option');
+      o.value = d.deviceId;
+      o.textContent = d.label || `${word} ${i + 1}`;
+      sel.appendChild(o);
+    });
+  };
+  fill(mic, mics, 'Mic');
+  fill(cam, cams, 'Camera');
+
+  // Selection precedence: a previously persisted explicit choice (if the device
+  // is still present) wins; otherwise use the smart default that skips virtual /
+  // loopback cameras. Do NOT blindly select the browser's first device.
+  const chooseFor = (sel, list, storeKey) => {
+    if (!list.length) return;
+    const saved = localStorage.getItem(storeKey);
+    if (saved && list.some(d => d.deviceId === saved)) { sel.value = saved; return; }
+    sel.value = pickDefaultDeviceId(list);
+  };
+  chooseFor(mic, mics, MIC_STORE_KEY);
+  chooseFor(cam, cams, CAM_STORE_KEY);
+}
+
+// Handle an explicit dropdown change: persist the choice and, if a track is live,
+// switch the published track to the selected device without dropping the call.
+async function onDeviceSelectChange(kind) {
+  const isCam = kind === 'videoinput';
+  const sel = $(isCam ? '#cam-select' : '#mic-select');
+  const deviceId = sel.value;
+  if (!deviceId) return;
+  localStorage.setItem(isCam ? CAM_STORE_KEY : MIC_STORE_KEY, deviceId);
+  setDeviceMsg('');
+  if (!room || !room.localParticipant) return;  // picked pre-join: applies on enable
+  const live = isCam ? room.localParticipant.isCameraEnabled : room.localParticipant.isMicrophoneEnabled;
+  if (!live) return;  // track not published yet; the dropdown value is used on enable
+  try {
+    if (typeof room.switchActiveDevice === 'function') {
+      // LiveKit-native: restarts the active track on the chosen device (exact).
+      await room.switchActiveDevice(kind, deviceId, true);
+    } else if (isCam) {
+      await room.localParticipant.setCameraEnabled(true, { deviceId: { exact: deviceId } });
+    } else {
+      await room.localParticipant.setMicrophoneEnabled(true, { deviceId: { exact: deviceId } });
+    }
+    log(`switched ${kind} →`, deviceId);
+  } catch (e) {
+    log(`switch ${kind} failed:`, e.name, e.message);
+    if (isCam && (e.name === 'NotFoundError' || e.name === 'NotReadableError')) {
+      setDeviceMsg('Camera unavailable, pick another from the list');
+    } else {
+      setDeviceMsg(`${isCam ? 'Camera' : 'Mic'} unavailable: ${e.message}`);
     }
   }
 }
@@ -2276,11 +2359,19 @@ async function toggleCam(force) {
   const want = force === undefined ? !room.localParticipant.isCameraEnabled : force;
   try {
     const deviceId = $('#cam-select').value || undefined;
-    await room.localParticipant.setCameraEnabled(want, { deviceId });
-    setCamUI(want); log('cam →', want);
+    await room.localParticipant.setCameraEnabled(want, deviceId ? { deviceId } : undefined);
+    setCamUI(want); if (want) setDeviceMsg(''); log('cam →', want);
   } catch (e) {
     log('cam toggle failed:', e.name, e.message);
-    showError(`Camera blocked: ${e.message}. ${window.isSecureContext ? '' : 'You are on HTTP — see banner.'}`);
+    // NotFoundError / NotReadableError = the chosen camera cannot stream (e.g. a
+    // dead DroidCam loopback). Surface a small inline hint and leave the rest of
+    // the call (audio) intact instead of blowing up the whole join.
+    if (e.name === 'NotFoundError' || e.name === 'NotReadableError') {
+      setDeviceMsg('Camera unavailable, pick another from the list');
+      setCamUI(false);
+    } else {
+      showError(`Camera blocked: ${e.message}. ${window.isSecureContext ? '' : 'You are on HTTP (see banner).'}`);
+    }
   }
 }
 
@@ -2295,8 +2386,8 @@ $('#connect').addEventListener('click', () => {
 $('#leave').addEventListener('click', leave);
 $('#mic-toggle').addEventListener('click', () => toggleMic());
 $('#cam-toggle').addEventListener('click', () => toggleCam());
-$('#mic-select').addEventListener('change', () => { if (room?.localParticipant.isMicrophoneEnabled) toggleMic(true); });
-$('#cam-select').addEventListener('change',  () => { if (room?.localParticipant.isCameraEnabled)    toggleCam(true); });
+$('#mic-select').addEventListener('change', () => onDeviceSelectChange('audioinput'));
+$('#cam-select').addEventListener('change',  () => onDeviceSelectChange('videoinput'));
 $('#speak-send').addEventListener('click', speakAsLumina);
 $('#speak-text').addEventListener('keydown', e => { if (e.key === 'Enter') speakAsLumina(); });
 
@@ -2411,6 +2502,11 @@ setInterval(refreshRecordingState, 5000);
   if (!cfg.available) { setStatus('', 'server: livekit not configured'); $('#connect').disabled = true; return; }
   setStatus('', secure ? 'ready' : 'ready (no media — insecure context)');
   if (secure) await enumerateDevices();
+
+  // Refresh the pickers when cameras/mics are plugged in or removed.
+  if (secure && navigator.mediaDevices?.addEventListener) {
+    navigator.mediaDevices.addEventListener('devicechange', () => { enumerateDevices().catch(() => {}); });
+  }
 
   // Probe screen-share support and hide the button if unsupported
   if (!navigator.mediaDevices?.getDisplayMedia) {
