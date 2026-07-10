@@ -417,6 +417,27 @@ class ChatDaemon:
             except Exception as exc:
                 logger.warning("notify-send failed: %s", exc)
             if group_responder is not None and _is_group_message(msg, group_cfg.groups):
+                gid = (msg.thread_id or msg.recipient).replace("group:", "")
+                # Persist a canonical group-thread copy of the INCOMING message
+                # (recipient == "group:<gid>") so the shared thread — what the
+                # webui's GET /api/v1/conversations/<gid> reads, via
+                # daemon_proxy_groups.group_thread_messages's
+                # recipient=="group:<gid>" filter — shows it even when
+                # should_respond() vetoes a reply. Without this, a peer
+                # agent's fanned-in reply (loop-breaker skips other agents) or
+                # an unmentioned human turn is received but never surfaces in
+                # THIS agent's own view of the group thread: received
+                # messages normally land with recipient=<this agent's own
+                # identity URI> (the fan-out shape), which
+                # group_thread_messages filters OUT.
+                canonical_recipient = f"group:{gid}"
+                if msg.recipient != canonical_recipient:
+                    try:
+                        history.save(msg.model_copy(update={"recipient": canonical_recipient}))
+                    except Exception as exc:
+                        logger.warning(
+                            "group message persist failed for %s: %s", gid, exc
+                        )
                 try:
                     reply = group_responder.respond(msg)
                     if reply:
@@ -426,7 +447,6 @@ class ChatDaemon:
                         ):
                             reply = f"{_who}: {reply}"
                         from .daemon_proxy_groups import load_group
-                        gid = (msg.thread_id or msg.recipient).replace("group:", "")
                         grp = load_group(gid)
                         if grp is not None:
                             grp.send(reply, sender=identity, transport=None, history=history)
