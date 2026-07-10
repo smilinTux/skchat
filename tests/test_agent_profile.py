@@ -338,8 +338,14 @@ class TestFetchContext:
         assert "jarvis" in ctx.lower()
         assert "chef" in ctx.lower()
 
-    def test_dm_still_pair_filters(self, tmp_path: Path) -> None:
+    def test_dm_still_pair_filters(self, tmp_path: Path, monkeypatch) -> None:
         from skchat.context import fetch_context
+
+        # Hermetic: ChatHistory(store=None) auto-creates a default SKMemory
+        # store under the skchat home. Point SKCHAT_HOME at tmp so a live
+        # box's real chef/lumina DM history cannot satisfy get_conversation
+        # and mask the JSONL pair-filter fallback under test.
+        monkeypatch.setenv("SKCHAT_HOME", str(tmp_path / "skchat-home"))
 
         history, chef, lumina, jarvis, group = self._build_history(tmp_path)
 

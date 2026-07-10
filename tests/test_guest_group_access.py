@@ -91,7 +91,9 @@ def _auth(session):
 def test_invite_mint_and_join_makes_untrusted_member(client):
     grp = _make_group()
     inv = _invite(client, grp.id)
-    assert inv["join_url"] == f"/join/{inv['token']}"
+    # join_url points at the Flutter app's guest route (hash-routed under
+    # /app/), NOT the old /join/<token> page (collided with conf /join).
+    assert inv["join_url"] == f"/app/#/g/{inv['token']}"
     assert inv["group_id"] == grp.id
 
     r = _join(client, inv["token"])
