@@ -37,15 +37,15 @@ DEST="${SKCHAT_PROVISION_DESTDIR:-}"
 declare -A MAP=(
   [telegram-opus]="telegram-opus.env.example|$HOME/.config/skchat/telegram-opus.env|"
   [telegram-lumina]="telegram-lumina.env.example|$HOME/.config/skchat/telegram-lumina.env|"
-  [bridge-memory]="bridge-memory.env.example|$HOME/.config/skchat/bridge-memory.env|"
-  [guest-token]="guest-token.env.example|$HOME/.config/skchat/guest-token.env|"
+  [memory-pg]="memory-pg.env.example|$HOME/.config/skchat/memory-pg.env|"
+  [guest]="guest.env.example|$HOME/.config/skchat/guest.env|"
   [webui-lumina]="webui-lumina.env.example|$HOME/.config/skchat/webui-lumina.env|"
   [webui-opus]="webui-opus.env.example|$HOME/.config/skchat/webui-opus.env|"
   [webui-chef]="webui-chef.env.example|$HOME/.config/skchat/webui-chef.env|"
   [livekit]="livekit.yaml.example|$HOME/.config/livekit/livekit.yaml|"
   [coturn]="coturn.secret.example|$HOME/.skchat/coturn/coturn.secret|--strip-final-newline"
 )
-ORDER=(telegram-opus telegram-lumina bridge-memory guest-token \
+ORDER=(telegram-opus telegram-lumina memory-pg guest \
        webui-lumina webui-opus webui-chef livekit coturn)
 
 die() { echo "provision-secrets: $*" >&2; exit 1; }

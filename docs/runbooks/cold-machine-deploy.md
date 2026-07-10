@@ -31,7 +31,7 @@ reproducible from git: no archaeology of a live `~/.config/systemd/user`.
 | Docker (rootless or with socket access) | coturn container is systemd-owned Docker | `docker info` |
 | Tailscale up, host joined the tailnet | LiveKit + Nostr bind the tailnet IP | `tailscale ip -4` |
 | Postgres reachable (`skmem-pg` on the primary, or a local mirror) | bridge memory path | `psql <dsn> -c 'select 1'` |
-| Ollama/mxbai embed endpoint reachable | bridge memory recall embeds queries | see `bridge-memory.env` |
+| Ollama/mxbai embed endpoint reachable | bridge memory recall embeds queries | see `memory-pg.env` |
 
 If the box is not the Postgres host, it only needs network reach to `skmem-pg`
 (`:5432` on the primary, `:5433` on the .41 mirror). It does not run its own PG.
@@ -123,33 +123,27 @@ Targets written by `apply` (short name -> path):
 |------------|------|-------|
 | `telegram-opus` | `~/.config/skchat/telegram-opus.env` | `TELEGRAM_OPUS_BOT_TOKEN` |
 | `telegram-lumina` | `~/.config/skchat/telegram-lumina.env` | `SKC_BRIDGE_TOKEN` |
-| `bridge-memory` | `~/.config/skchat/bridge-memory.env` | `SKMEMORY_PG_DSN` (scoped role, see Section 3) |
-| `guest-token` | `~/.config/skchat/guest-token.env` | `SKCHAT_GUEST_TOKEN_SECRET` |
+| `memory-pg` | `~/.config/skchat/memory-pg.env` | `SKMEMORY_PG_DSN` (scoped role, see Section 3) |
+| `guest` | `~/.config/skchat/guest.env` | `SKCHAT_GUEST_TOKEN_SECRET` |
 | `webui-lumina/opus/chef` | `~/.config/skchat/webui-<agent>.env` | webui config + LiveKit/TURN secrets |
 | `livekit` | `~/.config/livekit/livekit.yaml` | LiveKit API key/secret pairs |
 | `coturn` | `~/.skchat/coturn/coturn.secret` | coturn shared secret (0600, no trailing newline) |
 
-### KNOWN NAMING RECONCILIATION (do this after `apply`)
+### Filenames match the drop-ins (no reconciliation needed)
 
-The provisioning `MAP` and the committed drop-ins currently use **different
-filenames** for two files. The units reference (see `systemd/dropins/`):
+`provision-secrets.sh` writes exactly the paths the committed drop-ins read
+(see `systemd/dropins/`):
 
 - `~/.config/skchat/guest.env`  (referenced by `skchat-daemon.d/guest.conf` and `skchat-webui@lumina.d/guest.conf`)
 - `~/.config/skchat/memory-pg.env`  (referenced by both `skchat-telegram-*.d/override.conf`)
 
-but `provision-secrets.sh` writes `guest-token.env` and `bridge-memory.env`.
-`systemd/install.sh`'s preflight also expects `guest.env` / `memory-pg.env`.
-Until the names are unified in the tooling, bridge the two after `apply`:
+`systemd/install.sh`'s preflight expects the same two names, so a clean `apply`
+lands every file where the units and the installer look for it. No symlink
+bridging step.
 
-```bash
-cd ~/.config/skchat
-ln -sf guest-token.env   guest.env       # unit expects guest.env
-ln -sf bridge-memory.env memory-pg.env   # units expect memory-pg.env
-```
-
-(The units use the optional `-` EnvironmentFile prefix, so a wrong name does not
-crash the service, it silently degrades: guest links off, memory recall off.
-That is exactly the failure this step prevents.)
+(The units use the optional `-` EnvironmentFile prefix, so a wrong name would not
+crash the service, it would silently degrade: guest links off, memory recall off.
+Matching the names is what keeps that from happening.)
 
 The call agent also needs `~/.config/lumina-creative/env` (`NVIDIA_API_KEY`);
 provision it from the vault or place it out-of-band before starting
@@ -181,11 +175,11 @@ psql "postgresql://postgres:<superuser_pw>@<pghost>:5432/skmemory" \
 The script prints the resulting grant set (`memories: DELETE,INSERT,SELECT,UPDATE`
 and `docs: SELECT`) for verification. Re-running rotates the password idempotently.
 
-Then set `SKMEMORY_PG_DSN` in `bridge-memory.env` to the scoped role, and confirm
+Then set `SKMEMORY_PG_DSN` in `memory-pg.env` to the scoped role, and confirm
 it authenticates before you start the bridges:
 
 ```bash
-# bridge-memory.env should contain:
+# memory-pg.env should contain:
 #   SKMEMORY_PG_DSN=postgresql://skchat_bridge:<STRONG_PASSWORD>@localhost:5432/skmemory
 psql "postgresql://skchat_bridge:${BRIDGE_PW}@localhost:5432/skmemory" -c '\dp memories' \
   && echo "scoped role authenticates"
@@ -217,7 +211,7 @@ cd ~/clawd/skcapstone-repos/skchat/systemd
 The secret preflight will WARN (not fail) for any missing EnvironmentFile. On a
 correctly provisioned box every line should read `[OK]`. If you see
 `[MISS] .config/skchat/guest.env` or `.config/skchat/memory-pg.env`, you skipped
-the naming-reconciliation step in Section 2.
+`provision-secrets.sh apply` in Section 2 (or ran it against a locked vault).
 
 To enable + start the live-enabled set (daemons, both bridges, call, webui@lumina,
 piper, nostr, app-web, livekit, coturn, jarvis-heartbeat, telegram-catchup.timer):
@@ -258,7 +252,7 @@ U start skchat-piper-tts.service          # :18797 CPU TTS
 U start skchat-daemon.service             # :9385 lumina  (+ :9384 skcomms health)
 U start skchat-daemon-opus.service        # :9388 opus
 
-# Tier 2: bridges (need daemon + bridge-memory DSN + bot tokens)
+# Tier 2: bridges (need daemon + memory-pg DSN + bot tokens)
 U start skchat-telegram-opus.service
 U start skchat-telegram-lumina.service
 

@@ -332,7 +332,7 @@ deploy/provision-secrets.sh check          # resolves every token, writes nothin
 # 3. materialise all EnvironmentFiles (0600) into ~/.config/... and friends
 deploy/provision-secrets.sh apply
 #    or a single target:
-deploy/provision-secrets.sh apply bridge-memory
+deploy/provision-secrets.sh apply memory-pg
 
 # safe preview (no vault access, no writes):
 deploy/provision-secrets.sh dry-run
@@ -356,8 +356,8 @@ Names only. `<agent>` variants share a title scheme. Every target is `chmod 0600
 |---|---|---|---|
 | `TELEGRAM_OPUS_BOT_TOKEN` | `skchat Telegram Opus Bot Token` | `~/.config/skchat/telegram-opus.env` | `skchat-telegram-opus.service` |
 | `SKC_BRIDGE_TOKEN` | `skchat Telegram Lumina Bot Token` | `~/.config/skchat/telegram-lumina.env` | `skchat-telegram-lumina.service` |
-| `SKMEMORY_PG_DSN` | `skchat Bridge Postgres Role` (password) | `~/.config/skchat/bridge-memory.env` | both telegram bridge drop-ins |
-| `SKCHAT_GUEST_TOKEN_SECRET` | `skchat Guest Token Secret` | `~/.config/skchat/guest-token.env` | `skchat-daemon.d/guest.conf`, `skchat-webui@lumina.d/guest.conf` |
+| `SKMEMORY_PG_DSN` | `skchat Bridge Postgres Role` (password) | `~/.config/skchat/memory-pg.env` | both telegram bridge drop-ins |
+| `SKCHAT_GUEST_TOKEN_SECRET` | `skchat Guest Token Secret` | `~/.config/skchat/guest.env` | `skchat-daemon.d/guest.conf`, `skchat-webui@lumina.d/guest.conf` |
 | `SKCHAT_LIVEKIT_API_SECRET` (lumina) | `skchat LiveKit API Secret (lumina)` | `~/.config/skchat/webui-lumina.env` | `skchat-webui@lumina.service` |
 | `SKCHAT_LIVEKIT_API_SECRET` (opus) | `skchat LiveKit API Secret (opus)` | `~/.config/skchat/webui-opus.env` | Opus webui |
 | `SKCHAT_LIVEKIT_API_SECRET` (chef) | `skchat LiveKit API Secret (chef)` | `~/.config/skchat/webui-chef.env` | Chef webui |
@@ -407,11 +407,11 @@ confirmed: `docs=SELECT`, `memories=DELETE,INSERT,SELECT,UPDATE`).
 docker exec -i skmem-pg psql -U postgres -d skmemory \
   -v bridge_pw="<STRONG_PW>" -f deploy/sql/skchat_bridge_role.sql
 
-# 2. materialise the new DSN into bridge-memory.env (0600):
-skvault unlock && deploy/provision-secrets.sh apply bridge-memory
+# 2. materialise the new DSN into memory-pg.env (0600):
+skvault unlock && deploy/provision-secrets.sh apply memory-pg
 
 # 3. reconcile the drop-ins: remove the inline SKMEMORY_PG_DSN= line and add
-#    EnvironmentFile=%h/.config/skchat/bridge-memory.env
+#    EnvironmentFile=%h/.config/skchat/memory-pg.env
 #    (see the reconcile-units task); then:
 systemctl --user daemon-reload
 systemctl --user restart skchat-telegram-opus.service skchat-telegram-lumina.service
@@ -427,9 +427,9 @@ Rollback: revert the drop-ins to the shared DSN, restart the bridges, then
 | Secret | How to rotate |
 |---|---|
 | Telegram bot tokens | Regenerate via `@BotFather`, update the skvault entry, `provision-secrets.sh apply telegram-<agent>`, restart the bridge unit. |
-| `skchat_bridge` DB password | New password into skvault, re-run `skchat_bridge_role.sql` with `-v bridge_pw=<new>` (it `ALTER ROLE ... PASSWORD`s in place), `provision-secrets.sh apply bridge-memory`, restart both bridges. |
+| `skchat_bridge` DB password | New password into skvault, re-run `skchat_bridge_role.sql` with `-v bridge_pw=<new>` (it `ALTER ROLE ... PASSWORD`s in place), `provision-secrets.sh apply memory-pg`, restart both bridges. |
 | `SKCHAT_TURN_SECRET` | `openssl rand -hex 32`, update skvault, `provision-secrets.sh apply webui-lumina webui-opus webui-chef coturn`, restart coturn container + webui units (the secret feeds both). |
-| `SKCHAT_GUEST_TOKEN_SECRET` | New value into skvault, `provision-secrets.sh apply guest-token webui-lumina`, restart daemon + webui (both consume the same value; they must stay identical). |
+| `SKCHAT_GUEST_TOKEN_SECRET` | New value into skvault, `provision-secrets.sh apply guest webui-lumina`, restart daemon + webui (both consume the same value; they must stay identical). |
 | LiveKit key secrets | New secret per key, update the three skvault entries, `provision-secrets.sh apply livekit webui-lumina webui-opus webui-chef`, restart `livekit-server` + webui units. |
 
 Never print a rotated value to a shell that logs history; let the script pull it
