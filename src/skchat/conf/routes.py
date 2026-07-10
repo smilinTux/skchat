@@ -176,6 +176,10 @@ def register_conf_routes(
     """
     reg = registry or ConfRegistry()
     run_cmd = runner or _default_runner
+    # The long-lived agent spawn honors the SAME injected runner (tests must
+    # never spawn a real systemd scope); only the production default differs
+    # (fire-and-forget Popen instead of a blocking subprocess.run).
+    agent_run = runner or _agent_runner
 
     def _advertise_conf(*, host_fqid: str, room: str, title: str) -> None:
         """Best-effort focus-advertise on conf create — never fails the create."""
@@ -366,7 +370,7 @@ def register_conf_routes(
             greeting,
         ]
         try:
-            proc = _agent_runner(cmd)
+            proc = agent_run(cmd)
         except FileNotFoundError as exc:
             raise HTTPException(503, "systemd-run unavailable; cannot launch conf agent") from exc
         except Exception as exc:  # noqa: BLE001 - any spawn failure → graceful error

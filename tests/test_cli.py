@@ -922,16 +922,27 @@ class TestBridgeStatusCommand:
 class TestStatusCommand:
     """Tests for the 'skchat status' command."""
 
+    @patch(
+        "skchat.daemon.daemon_status",
+        return_value={"running": False, "messages_received": 0, "messages_sent": 0},
+    )
     @patch("skchat.cli._get_history")
     @patch("skchat.cli._get_identity", return_value="capauth:local@skchat")
     def test_status(
         self,
         mock_id: MagicMock,
         mock_hist_fn: MagicMock,
+        mock_ds: MagicMock,
         mock_history: MagicMock,
         runner: CliRunner,
     ) -> None:
-        """Happy path: status shows identity and counts."""
+        """Happy path: status shows identity and counts.
+
+        daemon_status is patched to a canned stopped state so the test is
+        hermetic: on a box with a live daemon (or a stats file left behind
+        by one) the real daemon counts would preempt the history fallback
+        and the mocked message_count (42) would never render.
+        """
         mock_hist_fn.return_value = mock_history
 
         result = runner.invoke(main, ["status"])

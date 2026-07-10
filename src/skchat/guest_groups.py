@@ -156,8 +156,9 @@ def create_group_invite(
     """Mint a signed, room-scoped invite token for ``group_id``.
 
     Returns ``{token, join_url, jti, group_id, expires_at, ttl, single_use}``.
-    ``join_url`` is **relative** (``/join/<token>``) so it works behind any
-    origin (tailnet/funnel) the operator shares from.
+    ``join_url`` is **relative** (``/app/#/g/<token>``, the Flutter guest
+    route) so it works behind any origin (tailnet/funnel) the operator
+    shares from.
     """
     import jwt as _jwt
 
