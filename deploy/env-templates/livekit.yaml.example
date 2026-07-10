@@ -1,0 +1,20 @@
+# livekit.yaml  ->  ~/.config/livekit/livekit.yaml   (chmod 0600)
+# LiveKit SFU config. The three entries under keys: are API key id -> API secret
+# pairs; the SECRETS are provisioned by deploy/provision-secrets.sh from skvault.
+#
+# NAMES ONLY. Non-secret topology (ports, tailnet bind IP) carries real defaults;
+# CHANGE_ME is host-specific. Never commit the real key secrets.
+port: 7880
+bind_addresses:
+  - CHANGE_ME_tailnet_ip   # e.g. 100.108.59.57
+rtc:
+  tcp_port: 7881
+  port_range_start: 50000
+  port_range_end: 50200
+  use_external_ip: false
+  node_ip: CHANGE_ME_tailnet_ip
+keys:
+  skchat-opus: ${skvault:skchat LiveKit API Secret (opus)}
+  skchat-lumina: ${skvault:skchat LiveKit API Secret (lumina)}
+  skchat-chef: ${skvault:skchat LiveKit API Secret (chef)}
+log_level: info
