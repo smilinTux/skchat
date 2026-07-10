@@ -72,15 +72,24 @@ def should_advocate(content: str) -> bool:
 def _token_match(content_lower: str, prefix: str) -> bool:
     """Return True when *prefix* appears as a token boundary in *content_lower*.
 
-    A token boundary means the character immediately after the prefix (if any)
-    is a whitespace, comma, colon, or end-of-string.
+    A token boundary means BOTH:
+      - the character immediately before the prefix (if any) is not
+        alphanumeric (start-of-string also counts as a boundary), and
+      - the character immediately after the prefix (if any) is a whitespace,
+        comma, colon, or end-of-string (any non-alpha character).
+
+    The left-side check prevents an email address such as
+    ``sam.opus@opus-mail.com`` or ``danielle@lumina-imports.com`` from
+    false-matching ``@opus``/``@lumina``: the character right before the
+    matched ``@`` is a word character (part of the local-part/domain), so it
+    is not a real mention.
 
     Args:
         content_lower: Already-lowercased haystack.
         prefix: Lowercase trigger prefix (e.g. "@opus").
 
     Returns:
-        bool: True on a token-boundary match.
+        bool: True on a token-boundary match (both sides).
     """
     start = 0
     while True:
@@ -88,8 +97,13 @@ def _token_match(content_lower: str, prefix: str) -> bool:
         if idx == -1:
             return False
         end = idx + len(prefix)
-        # Accept if at end of string or followed by a non-alpha character.
-        if end >= len(content_lower) or not content_lower[end].isalpha():
+        # Left boundary: start-of-string, or the preceding char is not
+        # alphanumeric (so "@opus" isn't preceded by a word character, as in
+        # "sam.opus@opus-mail.com").
+        left_ok = idx == 0 or not content_lower[idx - 1].isalnum()
+        # Right boundary: end-of-string, or followed by a non-alpha character.
+        right_ok = end >= len(content_lower) or not content_lower[end].isalpha()
+        if left_ok and right_ok:
             return True
         start = idx + 1
 

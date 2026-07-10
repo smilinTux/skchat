@@ -48,6 +48,36 @@ def test_should_respond_matrix():
     assert should_respond("@all echo", "lumina@chef.skworld.io", _LUM) is False
 
 
+def test_should_respond_email_address_does_not_falsely_trigger():
+    """Regression for defect #3 (wave-a/03-bughunt-responder.md): an email
+    address containing "@lumina" as a domain fragment must NOT be treated as
+    a mention — _token_match() is shared with advocacy.should_advocate()."""
+    assert (
+        should_respond(
+            "reach danielle at danielle@lumina-imports.com about the invoice",
+            "chef@skworld.io",
+            _LUM,
+        )
+        is False
+    )
+    _OPUS = load_group_config("opus", env={})
+    assert (
+        should_respond(
+            "please cc sam.opus@opus-mail.com on the reply",
+            "chef@skworld.io",
+            _OPUS,
+        )
+        is False
+    )
+
+
+def test_should_respond_real_mention_after_punctuation_still_matches():
+    """A real mention preceded by punctuation/whitespace (not a word char)
+    must still match after tightening the left-boundary check."""
+    assert should_respond("(cc: @lumina) can you take this?", "chef@skworld.io", _LUM) is True
+    assert should_respond("chef,@lumina you around?", "chef@skworld.io", _LUM) is True
+
+
 class _Resp:
     def __init__(self, code, data): self.status_code, self._d = code, data
     def json(self): return self._d
