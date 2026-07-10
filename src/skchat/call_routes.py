@@ -6,6 +6,7 @@ Builds on the deterministic room (call_session) + LiveKit token mint
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import logging
 
@@ -71,34 +72,88 @@ def _read_inbox() -> list:
     return read_inbox()
 
 
-# Private/loopback address prefixes trusted as "caller is on the tailnet/LAN".
-# Mirrors guest.py's _PRIVATE_PREFIXES / _client_is_private posture so the two
-# tailnet-detection call sites agree.
-_PRIVATE_PREFIXES = (
-    "127.",
-    "10.",
-    "192.168.",
-    "100.",  # Tailscale CGNAT range (100.64.0.0/10)
-    "::1",
-    "fd",  # ULA / Tailscale IPv6
+# Address ranges that count as "the caller can reach us directly, no relay".
+# Loopback (127.0.0.0/8, ::1) is DELIBERATELY EXCLUDED: this host sits behind
+# Tailscale Funnel (and can sit behind any reverse proxy), which terminates TLS
+# locally and forwards the request to the app over loopback. So a genuine
+# off-tailnet phone on cellular arrives as request.client.host == 127.0.0.1.
+# Trusting bare loopback would misclassify that caller as on-tailnet and hand
+# back an empty ice_servers list (Tier 1, no relay), and its media would never
+# connect. We instead resolve the *real* client from forwarded headers and only
+# treat genuine tailnet/LAN addresses as on-tailnet.
+_ONTAILNET_NETS = (
+    ipaddress.ip_network("100.64.0.0/10"),  # Tailscale CGNAT (tailnet IPv4)
+    ipaddress.ip_network("10.0.0.0/8"),  # RFC1918 LAN
+    ipaddress.ip_network("172.16.0.0/12"),  # RFC1918 LAN
+    ipaddress.ip_network("192.168.0.0/16"),  # RFC1918 LAN
+    ipaddress.ip_network("fc00::/7"),  # IPv6 ULA (incl. Tailscale fd7a:...)
 )
 
 
-def _client_on_tailnet(request: Request) -> bool:
-    """True if the *requesting caller's* own connection is loopback/private/tailnet.
+def _parse_ip(raw: str | None) -> ipaddress._BaseAddress | None:
+    """Best-effort parse of an IP string, stripping any brackets/port; None on failure."""
+    if not raw:
+        return None
+    raw = raw.strip()
+    if raw.startswith("["):  # bracketed IPv6 literal, e.g. [::1]:8443
+        end = raw.find("]")
+        raw = raw[1:end] if end != -1 else raw[1:]
+    elif raw.count(":") == 1:  # host:port (a bare IPv6 literal has >1 colon)
+        raw = raw.split(":", 1)[0]
+    try:
+        return ipaddress.ip_address(raw)
+    except ValueError:
+        return None
 
-    This is the reachability that matters for /connectivity/ice: it's the
-    browser making this request that needs to know whether it can rely on
-    direct host candidates, not the peer it's calling. Deliberately per-request
-    (not a constant) so off-tailnet browsers (mobile data, home wifi w/o
-    Tailscale, a public/Funnel guest) get real STUN/TURN servers instead of an
-    empty ice_servers list.
+
+def _real_client_ip(request: Request) -> ipaddress._BaseAddress | None:
+    """Resolve the true client IP, honoring reverse-proxy / Tailscale Funnel headers.
+
+    The direct socket peer (``request.client.host``) is not trustworthy on this
+    host: Tailscale Funnel and any reverse proxy terminate the connection locally
+    and forward to the app over loopback, so the peer is 127.0.0.1 even for a
+    genuine off-tailnet caller. When the direct peer is loopback (a local proxy)
+    or the request carries Funnel/forwarding signals, we honor the leftmost
+    ``X-Forwarded-For`` entry (the original client) to recover the real address.
+    A direct, non-loopback peer with no forwarding is trusted as-is.
     """
+    headers = getattr(request, "headers", None) or {}
     client = getattr(request, "client", None)
-    host = getattr(client, "host", None) if client is not None else None
-    if not host:
-        return False  # no client info -> don't assume tailnet
-    return host.startswith(_PRIVATE_PREFIXES)
+    direct_ip = _parse_ip(getattr(client, "host", None) if client is not None else None)
+
+    proxied = direct_ip is not None and direct_ip.is_loopback
+    # Tailscale Funnel stamps every proxied request with this header; its presence
+    # means the request came in over the public funnel ingress (no tailnet identity).
+    funnel = bool(headers.get("tailscale-funnel-request"))
+    xff = headers.get("x-forwarded-for") or ""
+
+    if (proxied or funnel) and xff:
+        forwarded = _parse_ip(xff.split(",")[0])
+        if forwarded is not None:
+            return forwarded
+    # Loopback with no usable forwarded header cannot prove tailnet membership:
+    # fall through with the loopback address so it is classified OFF-tailnet.
+    return direct_ip
+
+
+def _client_on_tailnet(request: Request) -> bool:
+    """True ONLY for a genuine tailnet/LAN caller (direct host candidates suffice).
+
+    This is the reachability that matters for /connectivity/ice: the browser
+    making this request needs to know whether it can rely on direct host
+    candidates, not the peer it is calling. Off-tailnet callers (mobile data,
+    home wifi w/o Tailscale, a public/Funnel guest) MUST return False so they
+    fall through to the STUN/TURN relay tier instead of getting an empty
+    ice_servers list. A Funnel-proxied loopback request and any public IP are
+    OFF-tailnet; only tailnet CGNAT (100.64.0.0/10), RFC1918 LAN, or IPv6 ULA
+    count as on-tailnet.
+    """
+    ip = _real_client_ip(request)
+    if ip is None:
+        return False  # no usable client info -> don't assume tailnet
+    if ip.is_loopback:
+        return False  # loopback (incl. Funnel-proxied) is never treated as tailnet
+    return any(ip in net for net in _ONTAILNET_NETS)
 
 
 def _resolve_peer(peer: str) -> str:
@@ -219,7 +274,7 @@ def register_call_routes(app: FastAPI) -> None:
         peer_fqid = _resolve_peer(peer)
         local_fqid = _self_fqid()
         # Derive on_tailnet from the actual requesting connection (see
-        # _client_on_tailnet) instead of hardcoding it — an off-tailnet caller
+        # _client_on_tailnet) instead of hardcoding it. An off-tailnet caller
         # (mobile data, home wifi w/o Tailscale, a public/Funnel guest) must
         # fall through to the STUN/TURN relay tier or its media never connects.
         on_tailnet = _client_on_tailnet(request)

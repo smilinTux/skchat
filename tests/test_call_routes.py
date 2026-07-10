@@ -137,6 +137,91 @@ def test_connectivity_ice_tailnet_caller_gets_tailnet_path(monkeypatch):
     assert data["ice_servers"] == []
 
 
+def test_connectivity_ice_funnel_loopback_caller_gets_relay(monkeypatch):
+    # Regression: behind Tailscale Funnel, a genuine off-tailnet phone's HTTPS
+    # request is proxied by tailscaled and arrives at the app as loopback
+    # (127.0.0.1). It must NOT be misclassified as on-tailnet. The real client
+    # (a public IP) is carried in X-Forwarded-For + the Tailscale-Funnel-Request
+    # signal, so the caller must fall through to the STUN/TURN relay tier.
+    monkeypatch.setattr(cr, "_list_peers", lambda: {"lumina@chef.skworld": {"fingerprint": "FP"}})
+    monkeypatch.setattr(cr, "_self_fqid", lambda: "opus@chef.skworld")
+    monkeypatch.delenv("SKCHAT_TURN_SECRET", raising=False)
+    monkeypatch.setenv("SKCHAT_PUBLIC_TURN_ENABLED", "true")
+    app = FastAPI()
+    cr.register_call_routes(app)
+    # Direct peer is loopback (the local tailscaled proxy).
+    funnel_client = TestClient(app, client=("127.0.0.1", 54321))
+    r = funnel_client.get(
+        "/connectivity/ice",
+        params={"peer": "lumina@chef.skworld"},
+        headers={
+            "Tailscale-Funnel-Request": "?1",
+            "X-Forwarded-For": "203.0.113.7",  # the real off-tailnet client
+        },
+    )
+    assert r.status_code == 200
+    data = r.json()
+    assert data["on_tailnet"] is False
+    assert data["preferred_tier"] == 3
+    assert data["ice_servers"], "expected STUN/TURN servers for a Funnel-proxied off-tailnet caller"
+
+
+def test_connectivity_ice_forwarded_tailnet_client_stays_direct(monkeypatch):
+    # A real tailnet client (100.64.0.0/10) reaching us via the loopback proxy
+    # (X-Forwarded-For carries its 100.x address) must still be treated as
+    # on-tailnet and get the relay-free Tier-1 path.
+    monkeypatch.setattr(cr, "_list_peers", lambda: {"lumina@chef.skworld": {"fingerprint": "FP"}})
+    monkeypatch.setattr(cr, "_self_fqid", lambda: "opus@chef.skworld")
+    app = FastAPI()
+    cr.register_call_routes(app)
+    proxied = TestClient(app, client=("127.0.0.1", 54321))
+    r = proxied.get(
+        "/connectivity/ice",
+        params={"peer": "lumina@chef.skworld"},
+        headers={"X-Forwarded-For": "100.100.5.9"},
+    )
+    assert r.status_code == 200
+    data = r.json()
+    assert data["on_tailnet"] is True
+    assert data["preferred_tier"] == 1
+    assert data["ice_servers"] == []
+
+
+def test_connectivity_ice_lan_caller_stays_direct(monkeypatch):
+    # A LAN 192.168.x caller behaves as before: on-tailnet-equivalent direct
+    # path (Tier 1, no relay).
+    monkeypatch.setattr(cr, "_list_peers", lambda: {"lumina@chef.skworld": {"fingerprint": "FP"}})
+    monkeypatch.setattr(cr, "_self_fqid", lambda: "opus@chef.skworld")
+    app = FastAPI()
+    cr.register_call_routes(app)
+    lan_client = TestClient(app, client=("192.168.0.42", 40000))
+    r = lan_client.get("/connectivity/ice", params={"peer": "lumina@chef.skworld"})
+    assert r.status_code == 200
+    data = r.json()
+    assert data["on_tailnet"] is True
+    assert data["preferred_tier"] == 1
+    assert data["ice_servers"] == []
+
+
+def test_connectivity_ice_bare_loopback_no_forward_gets_relay(monkeypatch):
+    # Bare loopback with no forwarding info can no longer prove tailnet
+    # membership (it could be a Funnel request that stripped headers), so it is
+    # classified OFF-tailnet and reaches the relay tier.
+    monkeypatch.setattr(cr, "_list_peers", lambda: {"lumina@chef.skworld": {"fingerprint": "FP"}})
+    monkeypatch.setattr(cr, "_self_fqid", lambda: "opus@chef.skworld")
+    monkeypatch.delenv("SKCHAT_TURN_SECRET", raising=False)
+    monkeypatch.setenv("SKCHAT_PUBLIC_TURN_ENABLED", "true")
+    app = FastAPI()
+    cr.register_call_routes(app)
+    loopback_client = TestClient(app, client=("127.0.0.1", 12345))
+    r = loopback_client.get("/connectivity/ice", params={"peer": "lumina@chef.skworld"})
+    assert r.status_code == 200
+    data = r.json()
+    assert data["on_tailnet"] is False
+    assert data["preferred_tier"] == 3
+    assert data["ice_servers"]
+
+
 def test_call_start_503_no_creds(client, monkeypatch):
     monkeypatch.setattr(cr, "_have_creds", lambda: False)
     r = client.post("/call/start", json={"peer": "lumina@chef.skworld"})
