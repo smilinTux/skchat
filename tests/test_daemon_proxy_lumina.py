@@ -50,6 +50,7 @@ def client(tmp_path, monkeypatch):
     app.include_router(daemon_proxy.router)
     c = TestClient(app)
     c._brain = brain  # type: ignore[attr-defined]
+    c._hist = hist  # type: ignore[attr-defined]
     return c
 
 
@@ -105,6 +106,77 @@ def test_send_to_lumina_persists_pair_and_returns_reply(client):
 def test_send_empty_message_is_400(client):
     r = client.post("/api/v1/send", json={"recipient": "lumina", "message": "   "})
     assert r.status_code == 400
+
+
+def test_group_faninto_is_excluded_but_threaded_dm_is_kept(client, monkeypatch):
+    """Regression for bughunt defect #2 (over-broad thread_id exclusion).
+
+    ``_lumina_messages()`` must drop a real GROUP fan-out copy addressed to
+    Lumina (``metadata.group_id`` set, or ``thread_id`` matching a
+    persisted group) while KEEPING a genuine 1:1 DM that merely carries a
+    client-supplied ``thread_id`` for in-chat threading. Previously any
+    truthy ``thread_id`` was treated as "must be a group message" and both
+    cases were dropped.
+    """
+    from skchat import daemon_proxy_groups as G
+    from skchat.models import ChatMessage
+
+    # Isolate the group store so `load_group` doesn't touch a real ~/.skchat.
+    monkeypatch.setattr(G, "_GROUPS_DIR", client._hist._history_dir.parent / "groups")
+
+    hist = client._hist
+
+    # (a) A genuine GROUP fan-out copy: persisted group id used as thread_id,
+    # plus a per-member copy addressed straight to Lumina. Must be excluded.
+    from skchat.group import GroupChat
+
+    group = GroupChat(
+        id="grp-real-123",
+        name="Penguins",
+        created_by="capauth:chef@skworld.io",
+    )
+    G.save_group(group)
+
+    group_copy = ChatMessage(
+        sender="capauth:chef@skworld.io",
+        recipient=daemon_proxy.LUMINA_URI,
+        content="group fan-out copy",
+        thread_id="grp-real-123",
+        metadata={"group_id": "grp-real-123"},
+    )
+    hist.save(group_copy)
+
+    # (b) A genuine 1:1 DM that the client threaded with its own thread_id.
+    # No group exists with this id -> must be KEPT, not dropped.
+    dm_reply = ChatMessage(
+        sender="capauth:chef@skworld.io",
+        recipient=daemon_proxy.LUMINA_URI,
+        content="a threaded 1:1 reply",
+        thread_id="reply-thread-abc",
+    )
+    hist.save(dm_reply)
+
+    lumina_reply = ChatMessage(
+        sender=daemon_proxy.LUMINA_URI,
+        recipient="capauth:chef@skworld.io",
+        content="my threaded 1:1 answer",
+        thread_id="reply-thread-abc",
+    )
+    hist.save(lumina_reply)
+
+    msgs = daemon_proxy._lumina_messages()
+    contents = [m["content"] for m in msgs]
+
+    assert "group fan-out copy" not in contents
+    assert "a threaded 1:1 reply" in contents
+    assert "my threaded 1:1 answer" in contents
+
+    # Same contract holds through the real HTTP surface.
+    inbox = client.get("/api/v1/inbox").json()["messages"]
+    inbox_contents = [m["content"] for m in inbox]
+    assert "group fan-out copy" not in inbox_contents
+    assert "a threaded 1:1 reply" in inbox_contents
+    assert "my threaded 1:1 answer" in inbox_contents
 
 
 def test_brain_failure_persists_graceful_reply_not_500(client, monkeypatch):
