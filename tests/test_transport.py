@@ -155,6 +155,38 @@ class TestPollInbox:
 
         assert messages == []
 
+    def test_non_chatmessage_payload_wrap_logs_at_debug_not_warning(
+        self, transport, mock_skcomms, caplog
+    ):
+        """A non-JSON payload (e.g. a TAK/CoT `<event ...>` presence beacon)
+        that falls back to the plain-text-wrap path is an EXPECTED, fully
+        handled condition — it must log at DEBUG, matching the precedent
+        already established by the sibling _poll_file_inbox path (see
+        transport.py's "Step 1: parse payload_content..." comment there).
+        Logging this at WARNING (the pre-fix behavior) is what caused the
+        chronic "1 validation error for ChatMessage" log-noise shadow.
+        """
+        envelope = MagicMock()
+        envelope.sender = "capauth:jarvis@skworld.io"
+        envelope.recipient = "capauth:test@skchat"
+        envelope.payload.content = (
+            '<event version="2.0" uid="JARVIS-abc123" type="a-f-G-U-C" '
+            'how="m-g" time="2026-07-09T23:52:07Z"></event>'
+        )
+        mock_skcomms.receive.return_value = [envelope]
+
+        with caplog.at_level("DEBUG", logger="skchat.transport"):
+            messages = transport.poll_inbox()
+
+        # Still handled (wrapped as a plain-text ChatMessage), not dropped.
+        assert len(messages) == 1
+
+        warning_records = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert not any(
+            "validation error" in r.message or "transport.py:" in r.message
+            for r in warning_records
+        ), f"expected the ChatMessage parse-fallback to log at DEBUG, got: {warning_records}"
+
 
 class TestSendAndStore:
     """Tests for ChatTransport.send_and_store() convenience method."""
