@@ -2,7 +2,8 @@
 
 Generalizes advocacy.py: when THIS agent is @-mentioned in a group message,
 build its soul+FEB prompt (skcapstone), recall memory (skmemory), generate via
-skgateway (reg:ornith), and return the reply. Talk-first (no tool-loop).
+skgateway (role sk-default — registry-routed; see registry.yaml roles.sk-default),
+and return the reply. Talk-first (no tool-loop).
 """
 from __future__ import annotations
 
@@ -17,7 +18,7 @@ from .models import ChatMessage
 logger = logging.getLogger("skchat.group_responder")
 
 _DEFAULT_BACKEND = "http://localhost:18780/v1/chat/completions"
-_DEFAULT_MODEL = "reg:ornith"
+_DEFAULT_MODEL = "sk-default"
 # mentions that address every agent in the room
 _BROADCAST_MENTIONS = ["@all", "@both", "@everyone"]
 
@@ -40,7 +41,6 @@ class GroupResponderConfig:
     model: str = _DEFAULT_MODEL
     history_turns: int = 8
     max_reply_tokens: int = 800
-    on_error: str = "silent"  # "silent" | "note"
 
 
 def load_group_config(
@@ -69,7 +69,6 @@ def load_group_config(
         model=(env.get("SKCHAT_GROUP_MODEL") or _DEFAULT_MODEL).strip(),
         history_turns=int(env.get("SKCHAT_GROUP_HISTORY_TURNS") or 8),
         max_reply_tokens=int(env.get("SKCHAT_GROUP_MAX_TOKENS") or 800),
-        on_error=(env.get("SKCHAT_GROUP_ON_ERROR") or "silent").strip(),
     )
 
 
@@ -182,9 +181,9 @@ class GroupResponder:
         self._http = http
         self._store = store
 
-    def _system_prompt(self) -> str:
+    def _system_prompt(self, peer_name: Optional[str] = None) -> str:
         if self._builder is not None:
-            return self._builder.build()
+            return self._builder.build(peer_name=peer_name or "chef")
         # live: build THIS agent's real soul+FEB prompt from its agent home
         # (~/.skcapstone/agents/<agent>), same as the working Telegram bridge.
         # Using the default ~/.skcapstone gave a degraded "unnamed-agent /
@@ -202,12 +201,17 @@ class GroupResponder:
             from pathlib import Path
 
             home = Path.home() / ".skcapstone" / "agents" / self.cfg.agent
-        return SystemPromptBuilder(home=home).build(peer_name="chef")  # pragma: no cover
+        # Address the soul prompt to the actual human sender, not always
+        # "chef" — a non-chef human in a group would otherwise get a soul
+        # prompt built against the wrong relationship/warmth context.
+        return SystemPromptBuilder(home=home).build(
+            peer_name=peer_name or "chef"
+        )  # pragma: no cover
 
     def respond(self, msg: ChatMessage) -> Optional[str]:
         if not should_respond(msg.content, msg.sender, self.cfg):
             return None
-        system = self._system_prompt()
+        system = self._system_prompt(peer_name=_sender_handle(msg.sender))
         mem = recall(msg.content[:200], store=self._store)
         user = (
             f"{mem}\n\nMessage from {msg.sender}:\n{msg.content}"
@@ -272,7 +276,7 @@ class GroupResponder:
         # never one merely overheard/broadcast.
         if _sender_handle(msg.recipient) != self.cfg.agent:
             return None
-        system = self._system_prompt()
+        system = self._system_prompt(peer_name=_sender_handle(msg.sender))
         mem = recall(msg.content[:200], store=self._store)
         user = (
             f"{mem}\n\nMessage from {msg.sender}:\n{msg.content}"

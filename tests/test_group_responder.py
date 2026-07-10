@@ -10,11 +10,10 @@ def test_config_defaults_for_lumina():
     cfg = load_group_config("lumina", env={})
     assert cfg.agent == "lumina"
     assert cfg.backend_url == "http://localhost:18780/v1/chat/completions"
-    assert cfg.model == "reg:ornith"
+    assert cfg.model == "sk-default"
     # self-mentions include the agent name; @all/@both always match
     assert "@lumina" in cfg.mentions
     assert "@all" in cfg.mentions and "@both" in cfg.mentions
-    assert cfg.on_error == "silent"
 
 
 def test_config_env_overrides():
@@ -95,7 +94,7 @@ def test_generate_ok():
     assert out == "Hey Chef 🐧"
     url, payload = http.calls[0]
     assert url == _LUM.backend_url
-    assert payload["model"] == "reg:ornith"
+    assert payload["model"] == "sk-default"
     assert payload["messages"][0]["content"] == "hi"
 
 
@@ -138,7 +137,11 @@ def test_store_turn_snapshots():
 
 
 class _Builder:
-    def build(self):
+    def __init__(self):
+        self.last_peer_name = None
+
+    def build(self, peer_name=None):
+        self.last_peer_name = peer_name
         return "You are Lumina. Warm, sovereign."
 
 
@@ -166,6 +169,21 @@ def test_respond_none_when_not_mentioned():
     r = GroupResponder(_LUM, prompt_builder=_Builder(), http=http, store=_Mem())
     assert r.respond(_mk("@opus only you")) is None
     assert http.calls == []  # never hit the backend
+
+
+def test_respond_uses_actual_sender_as_peer_name():
+    """The soul-prompt peer should be the real (bare-handle) sender, not always 'chef'."""
+    http = _Http(_Resp(200, {"choices": [{"message": {"content": "hi dave"}}]}))
+    builder = _Builder()
+    r = GroupResponder(_LUM, prompt_builder=builder, http=http, store=_Mem())
+    r.respond(_mk("@lumina hi", sender="dave@skworld.io"))
+    assert builder.last_peer_name == "dave"
+
+    # a message from chef still addresses chef
+    builder2 = _Builder()
+    r2 = GroupResponder(_LUM, prompt_builder=builder2, http=http, store=_Mem())
+    r2.respond(_mk("@lumina hi", sender="chef@skworld.io"))
+    assert builder2.last_peer_name == "chef"
 
 
 def test_should_respond_agent_sender_loop_guard():
