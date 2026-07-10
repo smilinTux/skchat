@@ -41,7 +41,6 @@ class GroupResponderConfig:
     model: str = _DEFAULT_MODEL
     history_turns: int = 8
     max_reply_tokens: int = 800
-    on_error: str = "silent"  # "silent" | "note"
 
 
 def load_group_config(
@@ -70,7 +69,6 @@ def load_group_config(
         model=(env.get("SKCHAT_GROUP_MODEL") or _DEFAULT_MODEL).strip(),
         history_turns=int(env.get("SKCHAT_GROUP_HISTORY_TURNS") or 8),
         max_reply_tokens=int(env.get("SKCHAT_GROUP_MAX_TOKENS") or 800),
-        on_error=(env.get("SKCHAT_GROUP_ON_ERROR") or "silent").strip(),
     )
 
 

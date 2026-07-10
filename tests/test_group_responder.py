@@ -14,7 +14,6 @@ def test_config_defaults_for_lumina():
     # self-mentions include the agent name; @all/@both always match
     assert "@lumina" in cfg.mentions
     assert "@all" in cfg.mentions and "@both" in cfg.mentions
-    assert cfg.on_error == "silent"
 
 
 def test_config_env_overrides():
