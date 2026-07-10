@@ -1,0 +1,26 @@
+# skchat-nostr-relay.service: SK Nostr discovery relay (in-memory) on :7447.
+#
+# Reconciled from live .158. The base unit binds loopback; the override.conf
+# drop-in rebinds it to the host tailnet IP so peers on the tailnet can reach
+# it. That IP is host-specific: edit dropins/skchat-nostr-relay.service.d on a
+# new host. In-memory only (no persistence yet; tracked as P3.2 in the plan).
+
+[Unit]
+Description=SK Nostr discovery relay (in-memory) :7447
+Documentation=https://github.com/smilinTux/skchat
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Environment=NOSTR_RELAY_HOST=127.0.0.1
+Environment=NOSTR_RELAY_PORT=7447
+Environment=PATH=%h/.skenv/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/.skenv/bin/python %h/clawd/skcapstone-repos/skchat/scripts/nostr_relay.py
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=skchat-nostr-relay
+
+[Install]
+WantedBy=default.target

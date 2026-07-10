@@ -1,0 +1,26 @@
+# skchat-app-web.service: static file server for the built Flutter web client.
+#
+# Serves skchat-app/build/web on :8088. This is a stopgap dev-style server
+# (python3 -m http.server); P3.3 in the deploy plan replaces it with a
+# versioned artifact behind a real proxy. Reconciled from live .158 with the
+# hardcoded /home/cbrd21 path replaced by %h so it is portable.
+#
+# Requires the Flutter web build to exist at the WorkingDirectory below. Build
+# it on a machine with headroom (NOT .158): see docs/deploy-plan.
+
+[Unit]
+Description=SKChat Flutter web static server (:8088)
+Documentation=https://github.com/smilinTux/skchat
+After=network.target
+
+[Service]
+WorkingDirectory=%h/clawd/skcapstone-repos/skchat-app/build/web
+ExecStart=/usr/bin/python3 -m http.server 8088 --bind 0.0.0.0
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=skchat-app-web
+
+[Install]
+WantedBy=default.target

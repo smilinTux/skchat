@@ -1,0 +1,40 @@
+# skchat-coturn.service: sovereign coturn TURN relay (Docker), owned by systemd.
+#
+# COTURN OWNERSHIP DECISION (G10, split-brain reconciliation): systemd is the
+# SINGLE owner of the coturn container lifecycle. The container is started with
+# `--restart no` (see coturn/start-coturn.sh) so Docker's restart policy does
+# NOT fight systemd; systemd's Restart=on-failure is the only supervisor.
+# On .158 the container was previously started out-of-band with
+# `--restart unless-stopped` while this unit sat inactive; that is exactly the
+# split-brain this reconciliation removes.
+#
+# oneshot + RemainAfterExit: ExecStart launches the detached container and
+# returns; systemd considers the unit active while the container runs. ExecStop
+# stops the container; the ExecStartPre `rm -f` makes restart idempotent.
+#
+# The start script reads the shared TURN secret from
+# %h/.skchat/coturn/coturn.secret (0600, never committed). Provision it from
+# coturn/coturn.secret.example. The realm and secret-file path are overridable
+# via COTURN_REALM / COTURN_SECRET_FILE in the environment.
+
+[Unit]
+Description=SKChat sovereign coturn TURN relay (Docker, systemd-owned)
+Documentation=https://github.com/smilinTux/skchat
+After=docker.service network-online.target
+Wants=docker.service network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Environment=COTURN_REALM=noroc2027.tail204f0c.ts.net
+Environment=COTURN_SECRET_FILE=%h/.skchat/coturn/coturn.secret
+ExecStartPre=-/usr/bin/docker rm -f skchat-coturn
+ExecStart=%h/.skchat/coturn/start-coturn.sh
+ExecStop=/usr/bin/docker stop skchat-coturn
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

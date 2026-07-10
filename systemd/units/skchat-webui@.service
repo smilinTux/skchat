@@ -1,0 +1,39 @@
+# skchat-webui@.service: SKChat web UI and voice-chat server, one instance per
+# agent (%i). On .158 the live instance is skchat-webui@lumina.service.
+#
+#   systemctl --user enable --now skchat-webui@lumina.service
+#
+# Reconciled from live .158. All per-agent config comes from the required
+# EnvironmentFile %h/.config/skchat/webui-<agent>.env (holds SKCHAT_PORT and the
+# LiveKit/TURN secrets, never committed). The ExecStartPost hook advertises the
+# webui in the skcapstone service registry (examples/register_webui.py must be
+# installed at %h/.config/skchat/register_webui.py; it degrades silently if
+# skcapstone is unavailable).
+#
+# Instance-specific drop-ins live under
+# dropins/skchat-webui@<instance>.service.d/ (e.g. @lumina guest.conf).
+
+[Unit]
+Description=SKChat Web UI and Voice Chat Server (%i)
+Documentation=https://github.com/smilinTux/skchat
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/clawd/skcapstone-repos/skchat
+Environment=PATH=%h/.skenv/bin:/usr/local/bin:/usr/bin:/bin
+Environment=VIRTUAL_ENV=%h/.skenv
+Environment=SKCAPSTONE_AGENT=%i
+Environment=SKAGENT=%i
+Environment=SKMEMORY_AGENT=%i
+EnvironmentFile=%h/.config/skchat/webui-%i.env
+ExecStart=%h/.skenv/bin/skchat webui --port ${SKCHAT_PORT} --no-browser
+ExecStartPost=%h/.skenv/bin/python %h/.config/skchat/register_webui.py
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

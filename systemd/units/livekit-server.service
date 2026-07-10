@@ -1,0 +1,24 @@
+# livekit-server.service: LiveKit SFU bound to the tailnet.
+#
+# Reconciled from live .158. Config lives at %h/.config/livekit/livekit.yaml
+# (holds three API key/secret pairs, never committed). Provision it from
+# examples/livekit.yaml.example. The wait-tailnet.conf drop-in gates startup
+# until the tailscale0 100.x address exists (the config binds that IP).
+
+[Unit]
+Description=LiveKit SFU (tailnet)
+Documentation=https://github.com/smilinTux/skchat
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/livekit-server --config %h/.config/livekit/livekit.yaml
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=livekit-server
+
+[Install]
+WantedBy=default.target
