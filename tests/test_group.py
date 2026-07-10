@@ -142,11 +142,90 @@ class TestGroupChatCreation:
         """Removing unknown member returns False."""
         assert group.remove_member("capauth:nobody@test") is False
 
+    def test_remove_member_equivalent_form_is_actually_removed(
+        self, group: GroupChat
+    ) -> None:
+        """A member added under one identity form IS removed via an equivalent form.
+
+        Regression test: ``remove_member`` used to do raw string equality
+        while ``get_member`` normalized identity forms, so a member found by
+        ``get_member`` under an equivalent form was silently NOT removed (no
+        exception, no key rotation) — a forward-secrecy no-op. Add under the
+        ``capauth:`` form, remove via the equivalent bare/same-realm form.
+        """
+        group.add_member(identity_uri="capauth:carol@skworld.io")
+        assert group.get_member("carol@skworld.io") is not None
+        old_key = group.group_key
+        old_version = group.key_version
+
+        removed = group.remove_member("carol@skworld.io")
+
+        assert removed is True
+        assert group.get_member("carol@skworld.io") is None
+        assert group.get_member("capauth:carol@skworld.io") is None
+        assert group.group_key != old_key
+        assert group.key_version == old_version + 1
+
+    def test_remove_member_cross_realm_same_handle_does_not_remove(
+        self, group: GroupChat
+    ) -> None:
+        """Removal must respect the same realm-scoping as get_member.
+
+        A different operator's agent sharing only the bare handle must not
+        be able to remove (or be mistaken for) a same-handle member in a
+        different realm.
+        """
+        group.add_member(identity_uri="capauth:lumina@chef.skworld")
+        removed = group.remove_member("lumina@bob.skworld")
+        assert removed is False
+        assert group.get_member("lumina@chef.skworld") is not None
+
     def test_get_member(self, group: GroupChat) -> None:
         """Members can be looked up by URI."""
         member = group.get_member("capauth:alice@skworld.io")
         assert member is not None
         assert member.role == MemberRole.ADMIN
+
+    def test_get_member_same_principal_different_form_matches(
+        self, group: GroupChat
+    ) -> None:
+        """Same principal, different string form, SAME realm — should match.
+
+        This is the legitimate case the bare-handle match exists for: the
+        operator id ``alice@skworld.io`` (no ``capauth:`` scheme prefix) must
+        still resolve to the member stored as ``capauth:alice@skworld.io``.
+        """
+        member = group.get_member("alice@skworld.io")
+        assert member is not None
+        assert member.role == MemberRole.ADMIN
+
+    def test_get_member_cross_realm_same_handle_does_not_collide(
+        self, group: GroupChat
+    ) -> None:
+        """Different operators/realms sharing a bare handle must NOT collide.
+
+        Regression test for the cross-tenant bypass: a group has
+        ``lumina@chef.skworld`` as an admin member. A different operator's
+        unrelated agent, ``lumina@bob.skworld``, shares only the bare handle
+        ``lumina`` — it must not be treated as the same principal, or it
+        would inherit admin/tool-scope access via ``is_admin``/
+        ``can_invoke_tool``/``set_tool_scope``.
+        """
+        group.add_member(
+            identity_uri="capauth:lumina@chef.skworld",
+            participant_type=ParticipantType.AGENT,
+            role=MemberRole.ADMIN,
+        )
+
+        # The real principal, in its stored form, is found.
+        assert group.get_member("lumina@chef.skworld") is not None
+        assert group.is_admin("lumina@chef.skworld") is True
+
+        # A different-realm agent with the same bare handle is NOT the same
+        # principal and must not be found / must not inherit admin rights.
+        assert group.get_member("lumina@bob.skworld") is None
+        assert group.is_admin("lumina@bob.skworld") is False
+        assert group.can_invoke_tool("lumina@bob.skworld", "any.tool") is False
 
     def test_touch_increments(self, group: GroupChat) -> None:
         """touch() updates timestamp and message count."""
