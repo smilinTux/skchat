@@ -9,7 +9,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from skchat.history import ChatHistory
-from skchat.models import ChatMessage, ContentType, Thread
+from skchat.models import ChatMessage, ContentType, FileRef, Thread
 
 
 class FakeMemory:
@@ -434,6 +434,92 @@ class TestJsonlSaveLoad:
         _write_msg(hist_dir, "a", "b", "other", "2026-02-25T12:00:00+00:00")
         thread = hist.get_thread("t-thread")
         assert [m.content for m in thread] == ["first", "second"]
+
+    def test_get_thread_returns_newest_when_over_limit(self, jsonl_history) -> None:
+        """When a thread exceeds `limit`, get_thread must return the most
+        recent `limit` messages (chronological ascending), not the oldest.
+
+        Regression test for CRITICAL defect #1 (bughunt 03): the old
+        implementation scanned day-files oldest-first and stopped once it
+        collected `limit` matches, so it silently returned the *earliest*
+        messages ever posted to the thread instead of the latest ones.
+        """
+        hist, hist_dir = jsonl_history
+        # 12 messages, one per day, Jan 1 -> Jan 12 2026, same thread.
+        for i in range(12):
+            ts = f"2026-01-{i + 1:02d}T10:00:00+00:00"
+            _write_msg_thread = ChatMessage(
+                sender="a",
+                recipient="b",
+                content=f"msg-{i}",
+                thread_id="room1",
+                timestamp=datetime.fromisoformat(ts),
+            )
+            path = hist_dir / f"{_write_msg_thread.timestamp.strftime('%Y-%m-%d')}.jsonl"
+            with path.open("a", encoding="utf-8") as fh:
+                fh.write(_write_msg_thread.model_dump_json() + "\n")
+
+        thread = hist.get_thread("room1", limit=8)
+        # Must be the newest 8 (msg-4..msg-11), not the oldest 8 (msg-0..msg-7).
+        assert [m.content for m in thread] == [f"msg-{i}" for i in range(4, 12)]
+        # Still chronologically ascending for display.
+        assert [m.timestamp for m in thread] == sorted(m.timestamp for m in thread)
+
+
+class TestListMedia:
+    """list_media() — gallery view over JSONL attachments (additive, read-only)."""
+
+    @staticmethod
+    def _img_ref() -> FileRef:
+        return FileRef(
+            transfer_id="t-img",
+            filename="cat.png",
+            size=1234,
+            mime_type="image/png",
+            sha256="abc",
+            thumbnail_id="t-img",
+            direction="received",
+        )
+
+    def test_returns_only_media_messages(self, jsonl_history) -> None:
+        hist, _ = jsonl_history
+        # One media message (image attachment) + one plain text message.
+        media_msg = ChatMessage(
+            sender="alice", recipient="me", content="", attachments=[self._img_ref()]
+        )
+        hist.save(media_msg)
+        hist.save(ChatMessage(sender="alice", recipient="me", content="just text"))
+
+        out = hist.list_media(peer="alice")
+        assert len(out) == 1
+        entry = out[0]
+        assert entry["message_id"] == media_msg.id
+        assert entry["transfer_id"] == "t-img"
+        assert entry["filename"] == "cat.png"
+        assert entry["mime_type"] == "image/png"
+        assert entry["size"] == 1234
+        assert entry["thumbnail_id"] == "t-img"
+        assert entry["direction"] == "received"
+        assert entry["sender"] == "alice"
+        assert isinstance(entry["timestamp"], str)  # ISO-8601
+
+    def test_kinds_filter_excludes_video(self, jsonl_history) -> None:
+        hist, _ = jsonl_history
+        vid = FileRef(
+            transfer_id="t-vid",
+            filename="clip.mp4",
+            size=99,
+            mime_type="video/mp4",
+            sha256="def",
+            direction="sent",
+        )
+        hist.save(ChatMessage(sender="me", recipient="alice", content="", attachments=[vid]))
+        hist.save(
+            ChatMessage(sender="alice", recipient="me", content="", attachments=[self._img_ref()])
+        )
+
+        images_only = hist.list_media(peer="alice", kinds=("image",))
+        assert [e["mime_type"] for e in images_only] == ["image/png"]
 
 
 class TestStoreBackedRetrieval:

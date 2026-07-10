@@ -398,6 +398,60 @@ class ChatHistory:
             self.update_message(msg)
         return msg
 
+    def list_media(
+        self,
+        peer: str,
+        *,
+        kinds: tuple[str, ...] = ("image", "video"),
+        limit: int = 200,
+    ) -> list[dict]:
+        """List media attachments exchanged with *peer*, newest-first.
+
+        Read-only view over the JSONL history: loads messages involving *peer*
+        (as sender or recipient), flattens their :class:`FileRef` attachments,
+        and keeps those whose ``mime_type`` matches one of *kinds*.  Media is
+        identified purely by MIME prefix — there is no media message type.
+
+        Args:
+            peer: CapAuth identity URI (or short name) to filter by.
+            kinds: Media kinds to include.  Each maps to a MIME prefix:
+                ``"image"`` -> ``"image/"``, ``"video"`` -> ``"video/"``.
+                Any other kind is treated as ``"<kind>/"``.
+            limit: Maximum number of media entries to return.
+
+        Returns:
+            list[dict]: One dict per matching attachment, newest-first, with
+            keys ``message_id``, ``transfer_id``, ``filename``, ``mime_type``,
+            ``size``, ``thumbnail_id``, ``direction``, ``timestamp`` (ISO-8601
+            string) and ``sender``.
+        """
+        prefixes = tuple(f"{kind}/" for kind in kinds)
+        # Load a generous window of messages; one message can carry several
+        # attachments, so over-fetch then cap the flattened media list.
+        messages = self.load(peer=peer, limit=max(limit * 4, limit))
+
+        results: list[dict] = []
+        for msg in messages:
+            for ref in msg.attachments:
+                if not ref.mime_type.startswith(prefixes):
+                    continue
+                results.append(
+                    {
+                        "message_id": msg.id,
+                        "transfer_id": ref.transfer_id,
+                        "filename": ref.filename,
+                        "mime_type": ref.mime_type,
+                        "size": ref.size,
+                        "thumbnail_id": ref.thumbnail_id,
+                        "direction": ref.direction,
+                        "timestamp": msg.timestamp.isoformat(),
+                        "sender": msg.sender,
+                    }
+                )
+                if len(results) >= limit:
+                    return results
+        return results
+
     @classmethod
     def from_config(cls, store_path: Optional[str] = None) -> "ChatHistory":
         """Create a ChatHistory from config, backed by SKMemory SQLite.
@@ -650,20 +704,24 @@ class ChatHistory:
         ]
 
     def get_thread(self, thread_id: str, limit: int = 50) -> list[ChatMessage]:
-        """Return all messages in *thread_id* from JSONL history, sorted oldest-first.
+        """Return the most recent messages in *thread_id*, sorted oldest-first.
 
         Scans the on-disk JSONL files (no SKMemory required) and filters by
-        ``message.thread_id == thread_id``.  Results are sorted by timestamp
-        ascending so callers receive a natural conversation order.
+        ``message.thread_id == thread_id``.  Day-files (and lines within a
+        file) are walked newest-first so that, once a thread has more than
+        ``limit`` messages, the *most recent* ``limit`` are kept rather than
+        the earliest ones. Results are then sorted by timestamp ascending so
+        callers receive a natural conversation order.
 
         Args:
             thread_id: Thread identifier to filter on.
             limit: Maximum messages to return.
 
         Returns:
-            list[ChatMessage] sorted by timestamp ascending.
+            list[ChatMessage]: The most recent ``limit`` messages, sorted by
+            timestamp ascending.
         """
-        files = sorted(self._history_dir.glob("*.jsonl"))  # oldest date first
+        files = sorted(self._history_dir.glob("*.jsonl"), reverse=True)  # newest date first
         results: list[ChatMessage] = []
         for path in files:
             if len(results) >= limit:
@@ -672,7 +730,7 @@ class ChatHistory:
                 lines = path.read_text(encoding="utf-8").splitlines()
             except OSError:
                 continue
-            for raw in lines:
+            for raw in reversed(lines):
                 raw = raw.strip()
                 if not raw:
                     continue
