@@ -659,7 +659,13 @@ class ChatTransport:
                 try:
                     msg = ChatMessage.model_validate_json(payload_content)
                 except Exception as e:
-                    logger.warning("transport.py: %s", e)
+                    # Not a ChatMessage JSON (e.g. a TAK/CoT `<event ...>` XML
+                    # presence beacon riding the same inbox) — this is a fully
+                    # expected, handled fallback (wrapped below), not an error.
+                    # DEBUG here matches the identical fallback in
+                    # _poll_file_inbox (see its "Step 1" comment); logging this
+                    # at WARNING was chronic log-spam on every presence beacon.
+                    logger.debug("transport.py: %s", e)
                     # Payload is not a ChatMessage JSON — wrap plain text using
                     # the envelope sender so the message is not silently dropped.
                     if not envelope_sender:
