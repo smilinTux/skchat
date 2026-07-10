@@ -798,7 +798,9 @@ async def api_group_leave(group_id: str):
     group = G.load_group(group_id)
     if group is None:
         raise HTTPException(404, "group not found")
-    G.remove_member(group, OPERATOR_ID)
+    removed = G.remove_member(group, OPERATOR_ID)
+    if not removed:
+        raise HTTPException(404, "not a member")
     return JSONResponse({"ok": True, "left": group_id})
 
 

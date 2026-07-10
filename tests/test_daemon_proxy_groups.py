@@ -135,6 +135,18 @@ def test_leave_group(client):
     assert daemon_proxy.OPERATOR_ID not in uris
 
 
+def test_leave_group_not_a_member_reports_failure(client):
+    # Leaving twice: the second call finds the operator already removed, so
+    # GroupChat.remove_member() returns False and the route must not report
+    # {"ok": true} for a no-op.
+    gid = _create(client, members=["lumina"])["group_id"]
+    r = client.delete(f"/api/v1/groups/{gid}/members/self")
+    assert r.status_code == 200, r.text
+    r = client.delete(f"/api/v1/groups/{gid}/members/self")
+    assert r.status_code == 404
+    assert "not a member" in r.json()["detail"]
+
+
 # --------------------------------------------------------------------------- #
 # Group send fan-out + history
 # --------------------------------------------------------------------------- #
