@@ -183,9 +183,9 @@ class GroupResponder:
         self._http = http
         self._store = store
 
-    def _system_prompt(self) -> str:
+    def _system_prompt(self, peer_name: Optional[str] = None) -> str:
         if self._builder is not None:
-            return self._builder.build()
+            return self._builder.build(peer_name=peer_name or "chef")
         # live: build THIS agent's real soul+FEB prompt from its agent home
         # (~/.skcapstone/agents/<agent>), same as the working Telegram bridge.
         # Using the default ~/.skcapstone gave a degraded "unnamed-agent /
@@ -203,12 +203,17 @@ class GroupResponder:
             from pathlib import Path
 
             home = Path.home() / ".skcapstone" / "agents" / self.cfg.agent
-        return SystemPromptBuilder(home=home).build(peer_name="chef")  # pragma: no cover
+        # Address the soul prompt to the actual human sender, not always
+        # "chef" — a non-chef human in a group would otherwise get a soul
+        # prompt built against the wrong relationship/warmth context.
+        return SystemPromptBuilder(home=home).build(
+            peer_name=peer_name or "chef"
+        )  # pragma: no cover
 
     def respond(self, msg: ChatMessage) -> Optional[str]:
         if not should_respond(msg.content, msg.sender, self.cfg):
             return None
-        system = self._system_prompt()
+        system = self._system_prompt(peer_name=_sender_handle(msg.sender))
         mem = recall(msg.content[:200], store=self._store)
         user = (
             f"{mem}\n\nMessage from {msg.sender}:\n{msg.content}"
@@ -273,7 +278,7 @@ class GroupResponder:
         # never one merely overheard/broadcast.
         if _sender_handle(msg.recipient) != self.cfg.agent:
             return None
-        system = self._system_prompt()
+        system = self._system_prompt(peer_name=_sender_handle(msg.sender))
         mem = recall(msg.content[:200], store=self._store)
         user = (
             f"{mem}\n\nMessage from {msg.sender}:\n{msg.content}"

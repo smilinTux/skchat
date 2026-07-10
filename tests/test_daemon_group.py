@@ -17,7 +17,7 @@ from skchat.models import ChatMessage
 
 
 class _Builder:
-    def build(self):
+    def build(self, peer_name=None):
         return "You are Lumina."
 
 
