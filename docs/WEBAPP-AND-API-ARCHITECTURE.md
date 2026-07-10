@@ -66,7 +66,7 @@ OPERATOR_ID = "chef@skworld.io"                   # bare-form (no capauth: prefi
 | GET | `/api/v1/peers` | — | `[conversation-shape, ...]` — Lumina **always first**, then `_other_peers()` read from `~/.skcapstone/peers/*.json` |
 | GET | `/api/v1/conversations` | — | `[Lumina] + [other peers] + [groups]` (Lumina pinned first; groups carry `is_group:true`) |
 | GET | `/api/v1/conversations/{peer_id}` | — | One thread, oldest-first. `peer_id` = Lumina alias → her thread; a known group id → `_group_messages()`; anything else → `[]` |
-| GET | `/api/v1/inbox` | — | `{"messages": [...]}` — **only the operator↔Lumina thread** (`_lumina_messages(limit=500)`), despite the generic name. Group/peer messages are NOT in this payload — use `/conversations/{id}` per-thread. |
+| GET | `/api/v1/inbox` | — | `{"messages": [...]}` — **only the operator↔Lumina thread** (`_lumina_messages(limit=500)`), despite the generic name. Group/peer messages are NOT in this payload — use `/conversations/{id}` per-thread. The exclusion is now a **group-aware filter** (`_is_group_message()`, checking `metadata.group_id`, a `group:` sender/recipient prefix, or a `thread_id` that resolves to a persisted group), not a blanket "drop anything with a `thread_id`" rule: the old blanket rule also dropped genuine 1:1 DMs that happened to carry a client-supplied `thread_id` for threaded replies. |
 | POST | `/api/v1/send` | see §1.1 | persists + (for Lumina) brain reply, or fan-out for a group, or plain persist for another peer |
 | POST | `/api/v1/react` | `{conversation_id, message_id, emoji, op:"add"|"remove", sender?}` | updated message (full contract) |
 | POST | `/api/v1/edit` | `{message_id, body}` | updated message; 403 outside the 24h edit window |
@@ -200,10 +200,17 @@ daemon_proxy_groups.fan_out_send()           [daemon_proxy_groups.py:438]
   │          Best-effort per member; one failure doesn't abort the others.
   ▼
 Member's skchat daemon (e.g. skchat-daemon-opus)          [daemon.py]
-  │  Polls its transport, receives the message, ChatHistory.save()'s it.
-  │  _is_group_message(msg, group_cfg.groups) → true if recipient starts
-  │  "group:" or thread_id is set (and, if SKCHAT_GROUPS is non-empty,
-  │  the group key is in that allow-list).
+  │  Poll loop receives the message and enqueues it to the generation
+  │  worker (see §8) rather than processing it inline.
+  │  _process(): _is_group_message(msg, group_cfg.groups) → true if
+  │  recipient starts "group:" or thread_id is set (and, if
+  │  SKCHAT_GROUPS is non-empty, the group key is in that allow-list).
+  │  Persists a CANONICAL group-thread copy of the incoming message
+  │  (recipient rewritten to "group:<gid>") to local ChatHistory before
+  │  calling the responder: this is what makes a fanned-in peer-agent
+  │  message (received as recipient=<this agent's own identity>, per the
+  │  fan-out shape above) show up in THIS agent's own view of the group
+  │  thread even when should_respond() vetoes a reply (see §8).
   ▼
 GroupResponder.respond(msg)                   [group_responder.py:202]
   │  should_respond(): the agent only replies if a NON-agent human
@@ -493,3 +500,72 @@ refreshes. That's the only place the two surfaces touch.
    template and env file (`:8766`) exist, but as of the last check it was
    `disabled`/`inactive`. Don't assume opus has a live web surface without
    checking `systemctl --user status skchat-webui@opus.service`.
+
+---
+
+## 8. Async generation architecture (`daemon.py`)
+
+The poll loop and the generate→send→store chain used to run inline, on the
+same thread: one poll cycle would receive a message, hand it straight to
+`_process()`, and block on the ~10s LLM call before the loop could poll
+again. That stalled receiving (and presence, and the outbox flush) behind
+whatever the current reply was doing. It is now split into a producer and a
+single consumer:
+
+- **Producer (poll loop).** Each received message is logged synchronously
+  (so `daemon.log` shows the arrival immediately, before generation even
+  starts) and then handed off with `self._genqueue.put(msg)`: a plain
+  `queue.Queue` (`self._genqueue`), FIFO, unbounded.
+- **Consumer (`skchat-genworker` thread).** A single background thread
+  (`self._genworker`, started once in `start()`) runs `_gen_worker()`, which
+  loops `self._genqueue.get(timeout=1.0)` and calls `_process(msg)` (the
+  same dispatch closure that used to run inline: group reply, DM reply,
+  advocacy, plugins). One thread, not a pool, so replies stay **ordered**
+  and an agent never talks to itself concurrently. Each job is wrapped in
+  its own `try/except` so one bad message can't kill the worker, and
+  `task_done()` always runs in a `finally` so `Queue.join()` never hangs on
+  a dropped job.
+- **`self._send_lock` (a `threading.Lock`).** `transport.send_message()` and
+  `transport.send_and_store()` are now called from at least two threads
+  (the genworker, and the poll thread's own outbox flush), and skcomms send
+  is not audited for concurrent use, so every call site wraps the send in
+  `with self._send_lock:` to serialize them.
+- **`drain(timeout=None)`.** Blocks on `self._genqueue.join()` until every
+  queued message has been processed. Exists for tests (and clean shutdown)
+  that need a deterministic point to assert on a reply, now that generation
+  no longer happens synchronously inside the poll call. Note `Queue.join()`
+  has no native timeout in the stdlib, so `timeout` is currently
+  documentation only: a caller needing a hard bound has to wrap `drain()`
+  in its own watchdog.
+- **`stop()`.** Sets `self.running = False`, then (if the worker was
+  started and is alive) drains the queue and joins the worker thread with a
+  10s timeout. Safe to call more than once, and safe even if `start()`
+  failed before the worker was created.
+
+If a reply looks "stuck" or arrives late, check whether the genworker
+thread is alive and whether `self._genqueue` is backing up, rather than
+assuming the poll loop itself is hung. Polling and generation are now
+independent.
+
+---
+
+## 9. Known gaps
+
+- **Group-call agent auto-join is planned, not built.** The Group calls
+  (LiveKit, Phase 3) endpoints in §1 (`.../call/start`, `.../call/join`,
+  `.../call/participants`) let human members ring and join each other in a
+  group's call; there is no route or mechanism for pulling an AI agent into
+  an **already-running** group call on demand. Today an agent only joins a
+  single room it was started against (`lumina-creative/scripts/lumina-call.py
+  --room <room>`, audio via kokoro/piper, MuseTalk avatar off for latency).
+  The "pull in my agent" runtime action is tracked as its own epic
+  (`34bd409b`) in `docs/sovereign-conf-calls-plan.md`, under Phase 1: read
+  that doc before assuming this exists.
+- **LiveKit `use_external_ip` deferred.** The live SFU config (§5) runs with
+  `use_external_ip: false`, which is correct and sufficient for the current
+  tailnet-only deployment (no STUN/TURN needed, everything resolves via the
+  tailnet IP). Making calls reachable for public/NAT'd guests needs coturn
+  deployed (`d5b00d43`) and public-vs-tailnet SFU endpoint selection
+  (`df42e2a4`), both still open in `docs/sovereign-conf-calls-plan.md`
+  Phase 1. Until those land, don't flip `use_external_ip` or treat public
+  call reachability as shipped.
