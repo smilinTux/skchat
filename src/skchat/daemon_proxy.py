@@ -311,6 +311,31 @@ def _group_messages(group_id: str, limit: int = 500) -> list[dict]:
     return [_group_msg_to_app(m, group_id=group_id) for m in rows]
 
 
+def _is_group_message(m) -> bool:
+    """True only if *m* genuinely belongs to a GROUP thread, not a 1:1 DM.
+
+    A group's per-member fan-out copy is addressed to Lumina
+    (recipient=capauth:lumina) but belongs to the GROUP thread — those must
+    stay out of the 1:1 Lumina DM. A plain 1:1 DM can also carry a
+    client-supplied ``thread_id`` (POST /api/v1/send accepts one for
+    threaded replies within the direct chat) — that is NOT a group message
+    and must be kept, so ``thread_id`` alone is never sufficient evidence.
+    """
+    from skchat import daemon_proxy_groups as G
+
+    meta = getattr(m, "metadata", None) or {}
+    r, s = str(getattr(m, "recipient", "")), str(getattr(m, "sender", ""))
+    if meta.get("group_id"):
+        return True
+    if r.startswith("group:") or s.startswith("group:"):
+        return True
+    thread_id = getattr(m, "thread_id", None)
+    if thread_id and G.load_group(thread_id) is not None:
+        # thread_id happens to match a real, persisted group id.
+        return True
+    return False
+
+
 def _lumina_messages(limit: int = 200) -> list[dict]:
     """Load the operator↔Lumina thread, oldest-first, in app message shape."""
     hist = _get_history()
@@ -328,17 +353,10 @@ def _lumina_messages(limit: int = 200) -> list[dict]:
         s, r = getattr(m, "sender", ""), getattr(m, "recipient", "")
         if not (_is_lumina(s) or _is_lumina(r)):
             continue
-        # Exclude GROUP / thread messages. A group's per-member copy is addressed
-        # to Lumina (recipient=capauth:lumina) but belongs to the GROUP thread —
-        # without this filter it bleeds into the 1:1 Lumina DM, so group messages
-        # (and group replies) wrongly appear in the direct chat.
-        meta = getattr(m, "metadata", None) or {}
-        if (
-            getattr(m, "thread_id", None)
-            or meta.get("group_id")
-            or str(r).startswith("group:")
-            or str(s).startswith("group:")
-        ):
+        # Exclude GROUP messages only (see _is_group_message) — a genuine
+        # 1:1 DM that happens to carry a client-supplied thread_id must be
+        # kept, not dropped.
+        if _is_group_message(m):
             continue
         msgs.append(m)
     msgs.sort(key=lambda x: getattr(x, "timestamp", _now_iso()))
