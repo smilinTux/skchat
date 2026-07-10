@@ -24,19 +24,25 @@ open (3478 + relay range 49152-65535). Currently:
 |----------|--------|---------------------|
 | Tailnet (`100.x.x.x:3478`) | ✅ Always | All tailnet peers |
 | LAN (`192.168.0.158:3478`) | ✅ Always | LAN peers |
-| Public internet (UDP) | ❌ Closed | Off-tailnet guests use free TURN fallback |
+| Public internet (TLS 443) | ✅ via coturn TLS | Off-tailnet guests relay over 443/tcp |
+| Public internet (UDP 3478) | ❌ Closed | Guests fall through to the TLS listener |
 
-**Current setup:** SKCHAT_TURN_SECRET is set → the ICE ladder prefers sovereign
-coturn. Tailnet/LAN users relay through our coturn. Public guests behind
-symmetric NAT will fail to reach coturn via UDP and **fall back to the free
-public TURN** (Open Relay Project) because `SKCHAT_PUBLIC_TURN_ENABLED` defaults
-to true when the ICE relay fails.
+**Current setup:** SKCHAT_TURN_SECRET + SKCHAT_TURN_URLS are set → the ICE ladder
+emits ONLY the sovereign coturn off-tailnet. Tailnet/LAN users relay through our
+coturn directly. Public guests behind symmetric NAT reach the relay over TURN/TLS
+on 443/tcp (the TLS url form in `SKCHAT_TURN_URLS`), which restrictive networks
+almost never block. The free public Open Relay is NO LONGER a default: it is
+opt-in last-resort only, gated behind `SKCHAT_ALLOW_OPENRELAY` (default off) and
+alert-on-use (WARNING log + `openrelay_fallback_count()` metric).
 
-**To enable full sovereign TURN for public guests:**
-1. Open UDP 3478 + UDP 49152-65535 in the host firewall
-2. Add the host's public IP to `SKCHAT_TURN_URLS`
-3. Optionally set `SKCHAT_PUBLIC_TURN_ENABLED=false` to remove the free fallback
-4. If behind a NAT router: forward ports 3478/UDP and 49152-65535/UDP
+**To serve sovereign TURN over TLS for public guests:**
+1. Issue the tailscale cert + run the TLS-capable coturn (see
+   `deploy/coturn/README.md`): 443/tcp is the escape hatch for UDP-blocked nets.
+2. Ensure `SKCHAT_TURN_URLS` carries the TLS form first:
+   `turn:noroc2027.tail204f0c.ts.net:443?transport=tls,turn:...:3478?transport=udp`
+3. Optionally also open UDP 3478 + UDP 49152-65535 for the faster udp path.
+4. Only if you must: set `SKCHAT_ALLOW_OPENRELAY=true` to re-enable the free
+   public fallback (it is off by default and its use raises an alert).
 
 ### ICE ladder verification
 

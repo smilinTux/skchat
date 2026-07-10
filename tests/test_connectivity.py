@@ -3,7 +3,11 @@ import hashlib
 import hmac
 import time
 
-from skchat.connectivity import ice_config
+from skchat.connectivity import (
+    ice_config,
+    openrelay_fallback_count,
+    reset_openrelay_fallback_count,
+)
 
 
 def test_tier1_both_on_tailnet_has_no_relay(monkeypatch):
@@ -139,63 +143,107 @@ def _clear_public_env(monkeypatch):
         "SKCHAT_TURN_SECRET",
         "SKCHAT_TURN_URLS",
         "SKCHAT_STUN_URLS",
+        "SKCHAT_ALLOW_OPENRELAY",
         "SKCHAT_PUBLIC_TURN_ENABLED",
         "SKCHAT_PUBLIC_TURN_URLS",
         "SKCHAT_PUBLIC_TURN_USER",
         "SKCHAT_PUBLIC_TURN_CRED",
     ):
         monkeypatch.delenv(v, raising=False)
+    reset_openrelay_fallback_count()
 
 
-def test_public_defaults_include_google_stun_and_open_relay_turn(monkeypatch):
-    # With NO TURN/STUN env set, public conf calls still work: Google STUN +
-    # Open Relay free public TURN are emitted by default.
+def test_defaults_offer_google_stun_but_no_openrelay(monkeypatch):
+    # With NO TURN/STUN env set, cross-NAT peers get Google STUN only. The free
+    # public openrelay TURN is SUPPRESSED by default (SKCHAT_ALLOW_OPENRELAY off).
     _clear_public_env(monkeypatch)
     cfg = ice_config("a@x.y", "b@x.y", peer_hint={"on_tailnet": False})
     assert cfg["preferred_tier"] == 3
     flat = [u for s in cfg["ice_servers"] for u in s["urls"]]
-    # Google's free STUN.
+    # Google's free STUN is still offered.
     assert "stun:stun.l.google.com:19302" in flat
     assert sum(u.startswith("stun:stun") and "google" in u for u in flat) >= 3
-    # Open Relay free public TURN (multiple ports/transports) with its creds.
+    # No openrelay / free public TURN by default.
+    assert not any("openrelay.metered.ca" in u for u in flat)
+    assert not any("turn:" in u for u in flat)
+    assert all("username" not in s for s in cfg["ice_servers"])
+    assert openrelay_fallback_count() == 0
+
+
+def test_sovereign_only_when_configured(monkeypatch):
+    # When SKCHAT_TURN_SECRET + SKCHAT_TURN_URLS are set, the sovereign coturn is
+    # the ONLY relay emitted (openrelay must never appear alongside it), even if
+    # SKCHAT_ALLOW_OPENRELAY happens to be on.
+    _clear_public_env(monkeypatch)
+    monkeypatch.setenv("SKCHAT_TURN_SECRET", "s3cr3t")
+    monkeypatch.setenv(
+        "SKCHAT_TURN_URLS",
+        "turn:noroc2027.tail204f0c.ts.net:443?transport=tls,"
+        "turn:noroc2027.tail204f0c.ts.net:3478?transport=udp",
+    )
+    monkeypatch.setenv("SKCHAT_ALLOW_OPENRELAY", "true")  # must be ignored
+    cfg = ice_config("lumina@chef.skworld", "b@x.y", peer_hint={"on_tailnet": False})
+    flat = [u for s in cfg["ice_servers"] for u in s["urls"]]
+    # Sovereign TURN present, ephemeral-credentialed, both TLS + udp forms.
+    turn = next(s for s in cfg["ice_servers"] if any("turn:" in u for u in s["urls"]))
+    assert "turn:noroc2027.tail204f0c.ts.net:443?transport=tls" in turn["urls"]
+    assert "turn:noroc2027.tail204f0c.ts.net:3478?transport=udp" in turn["urls"]
+    assert ":" in turn["username"] and turn["username"].endswith("lumina@chef.skworld")
+    # No free public Open Relay TURN, sovereign suppresses it entirely.
+    assert not any("openrelay.metered.ca" in u for u in flat)
+    assert openrelay_fallback_count() == 0
+
+
+def test_openrelay_suppressed_by_default(monkeypatch):
+    # No sovereign coturn AND SKCHAT_ALLOW_OPENRELAY unset → no openrelay at all,
+    # and the alert-on-use counter stays at zero.
+    _clear_public_env(monkeypatch)
+    cfg = ice_config("a@x.y", "b@x.y", peer_hint={"on_tailnet": False})
+    flat = [u for s in cfg["ice_servers"] for u in s["urls"]]
+    assert not any("turn:" in u for u in flat)
+    assert openrelay_fallback_count() == 0
+
+
+def test_openrelay_only_with_explicit_flag_and_is_alertable(monkeypatch, caplog):
+    # SKCHAT_ALLOW_OPENRELAY=true (and no sovereign coturn) is the ONLY way the
+    # free public openrelay TURN is emitted. When it is, it logs a WARNING and
+    # bumps the alert-on-use counter.
+    import logging
+
+    _clear_public_env(monkeypatch)
+    monkeypatch.setenv("SKCHAT_ALLOW_OPENRELAY", "true")
+    with caplog.at_level(logging.WARNING, logger="skchat.connectivity"):
+        cfg = ice_config("a@x.y", "b@x.y", peer_hint={"on_tailnet": False})
     turn = next(s for s in cfg["ice_servers"] if any("turn:" in u for u in s["urls"]))
     assert "turn:openrelay.metered.ca:80" in turn["urls"]
     assert "turn:openrelay.metered.ca:443" in turn["urls"]
     assert "turn:openrelay.metered.ca:443?transport=tcp" in turn["urls"]
     assert turn["username"] == "openrelayproject"
     assert turn["credential"] == "openrelayproject"
+    # Alert-on-use: WARNING logged + counter incremented.
+    assert openrelay_fallback_count() == 1
+    assert any(
+        r.levelno == logging.WARNING and "openrelay" in r.getMessage().lower()
+        for r in caplog.records
+    )
 
 
-def test_sovereign_coturn_preferred_over_free_public_turn(monkeypatch):
-    # When SKCHAT_TURN_SECRET is set, the sovereign coturn wins — the free public
-    # Open Relay TURN must NOT appear (sovereign overrides free).
+def test_openrelay_flag_secondary_off_switch(monkeypatch):
+    # Even with the flag on, SKCHAT_PUBLIC_TURN_ENABLED=false suppresses openrelay.
     _clear_public_env(monkeypatch)
-    monkeypatch.setenv("SKCHAT_TURN_SECRET", "s3cr3t")
-    monkeypatch.setenv("SKCHAT_TURN_URLS", "turn:turn.sovereign.example:3478")
-    cfg = ice_config("lumina@chef.skworld", "b@x.y", peer_hint={"on_tailnet": False})
-    flat = [u for s in cfg["ice_servers"] for u in s["urls"]]
-    # Sovereign TURN present, ephemeral-credentialed.
-    turn = next(s for s in cfg["ice_servers"] if any("turn:" in u for u in s["urls"]))
-    assert "turn:turn.sovereign.example:3478" in turn["urls"]
-    assert ":" in turn["username"] and turn["username"].endswith("lumina@chef.skworld")
-    # No free public Open Relay TURN.
-    assert not any("openrelay.metered.ca" in u for u in flat)
-
-
-def test_public_turn_disabled_emits_no_free_turn(monkeypatch):
-    # SKCHAT_PUBLIC_TURN_ENABLED=false → STUN stays, but no free TURN at all.
-    _clear_public_env(monkeypatch)
+    monkeypatch.setenv("SKCHAT_ALLOW_OPENRELAY", "true")
     monkeypatch.setenv("SKCHAT_PUBLIC_TURN_ENABLED", "false")
     cfg = ice_config("a@x.y", "b@x.y", peer_hint={"on_tailnet": False})
     flat = [u for s in cfg["ice_servers"] for u in s["urls"]]
     assert any(u.startswith("stun:") for u in flat)  # STUN still offered
     assert not any("turn:" in u for u in flat)  # no TURN
-    assert all("username" not in s for s in cfg["ice_servers"])
+    assert openrelay_fallback_count() == 0
 
 
-def test_free_public_turn_is_env_overridable(monkeypatch):
-    # Operators can repoint the free TURN at any provider + creds.
+def test_openrelay_provider_is_env_overridable_with_flag(monkeypatch):
+    # With the flag on, operators can repoint the last-resort TURN at any provider.
     _clear_public_env(monkeypatch)
+    monkeypatch.setenv("SKCHAT_ALLOW_OPENRELAY", "true")
     monkeypatch.setenv("SKCHAT_PUBLIC_TURN_URLS", "turn:relay.other.example:3478")
     monkeypatch.setenv("SKCHAT_PUBLIC_TURN_USER", "myuser")
     monkeypatch.setenv("SKCHAT_PUBLIC_TURN_CRED", "mycred")
