@@ -1,0 +1,25 @@
+# skchat-piper-tts.service: Piper CPU TTS, OpenAI-style /v1/audio/speech :18797.
+#
+# Reconciled from live .158. This is the CURRENT/canonical Piper service. The
+# legacy piper-tts.service (:15090, uvicorn from ~/piper-server) is DEPRECATED
+# and intentionally NOT shipped or installed; see README.md.
+
+[Unit]
+Description=Piper TTS (CPU, fast), OpenAI /v1/audio/speech on :18797
+Documentation=https://github.com/smilinTux/skchat
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Environment=PIPER_PORT=18797
+Environment=PIPER_MODEL=%h/.local/share/piper-voices/en_US-lessac-medium.onnx
+Environment=PATH=%h/.skenv/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/.skenv/bin/python %h/clawd/skcapstone-repos/skchat/scripts/piper_tts_server.py
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=skchat-piper-tts
+
+[Install]
+WantedBy=default.target

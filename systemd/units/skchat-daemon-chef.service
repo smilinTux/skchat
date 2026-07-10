@@ -1,0 +1,36 @@
+# skchat-daemon-chef.service: SKChat receive daemon for the chef (human) agent.
+#
+# Human receive-only inbox, isolated store (~/.skchat-chef) and health port
+# (:9389). Reconciled counterpart of the live .158 unit. On .158 this unit is
+# installed but DISABLED/inactive; it is shipped here so a cold machine can
+# stand it up, but the installer does NOT enable it by default (see README.md).
+
+[Unit]
+Description=SKChat receive daemon (chef), human receive-only, isolated store ~/.skchat-chef
+Documentation=https://github.com/smilinTux/skchat
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=forking
+WorkingDirectory=%h
+PIDFile=%h/.skchat-chef/daemon.pid
+ExecStart=%h/.skenv/bin/skchat daemon start --interval 5 --log-file %h/.skchat-chef/daemon.log
+ExecStop=/bin/kill -TERM $MAINPID
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=skchat-daemon-chef
+Environment=PYTHONUNBUFFERED=1
+Environment=SKCHAT_HOME=%h/.skchat-chef
+Environment=SKCHAT_HEALTH_PORT=9389
+Environment=SKAGENT=chef
+Environment=SKCAPSTONE_AGENT=chef
+Environment=SKMEMORY_AGENT=chef
+Environment=SKCHAT_IDENTITY=capauth:chef@skworld.io
+Environment=PATH=%h/.skenv/bin:/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=-%h/.config/skchat/daemon-chef.env
+
+[Install]
+WantedBy=default.target

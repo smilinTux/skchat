@@ -1,0 +1,31 @@
+# jarvis-heartbeat.service: agent heartbeat, polls the skchat inbox and spawns
+# Claude Code sessions in tmux for the jarvis agent.
+#
+# Reconciled from live .158 (already %h-relative). Resource-capped so a runaway
+# heartbeat cannot thrash the box; spawned Claude sessions run in their own tmux
+# processes outside this cgroup.
+
+[Unit]
+Description=SKChat Agent Heartbeat, polls inbox, spawns Claude Code in tmux
+Documentation=https://github.com/smilinTux/skchat
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.skenv/bin/python %h/clawd/skcapstone-repos/skchat/scripts/jarvis-heartbeat.py
+Restart=on-failure
+RestartSec=30
+Environment=SKCAPSTONE_AGENT=jarvis
+Environment=SKCHAT_IDENTITY=capauth:jarvis@skworld.io
+Environment=HEARTBEAT_POLL_INTERVAL=10
+Environment=PATH=%h/.local/bin:%h/.skenv/bin:%h/.npm-global/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=%h
+WorkingDirectory=%h
+
+# Resource limits for the heartbeat process itself (claude sessions are separate)
+MemoryMax=512M
+TasksMax=30
+
+[Install]
+WantedBy=default.target

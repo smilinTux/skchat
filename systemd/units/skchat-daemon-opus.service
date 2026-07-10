@@ -1,0 +1,36 @@
+# skchat-daemon-opus.service: SKChat receive daemon for the opus agent.
+#
+# Isolated store (~/.skchat-opus) and health port (:9388) so opus's inbox and
+# daemon are fully separate from the lumina daemon. Reconciled counterpart of
+# the live .158 unit. Kept as a concrete unit (not skchat-daemon@opus) to match
+# the running unit name and avoid clobbering its identity; see README.md.
+
+[Unit]
+Description=SKChat receive daemon (opus), isolated store ~/.skchat-opus
+Documentation=https://github.com/smilinTux/skchat
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=forking
+WorkingDirectory=%h
+PIDFile=%h/.skchat-opus/daemon.pid
+ExecStart=%h/.skenv/bin/skchat daemon start --interval 5 --log-file %h/.skchat-opus/daemon.log
+ExecStop=/bin/kill -TERM $MAINPID
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=skchat-daemon-opus
+Environment=PYTHONUNBUFFERED=1
+Environment=SKCHAT_HOME=%h/.skchat-opus
+Environment=SKCHAT_HEALTH_PORT=9388
+Environment=SKAGENT=opus
+Environment=SKCAPSTONE_AGENT=opus
+Environment=SKMEMORY_AGENT=opus
+Environment=SKCHAT_IDENTITY=capauth:opus@skworld.io
+Environment=PATH=%h/.skenv/bin:/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=-%h/.config/skchat/daemon-opus.env
+
+[Install]
+WantedBy=default.target

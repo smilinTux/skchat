@@ -1,0 +1,22 @@
+# livekit.yaml.example: names-only template for %h/.config/livekit/livekit.yaml
+# (loaded by livekit-server.service). Fill in the real key/secret pairs and the
+# host's tailnet IP. NEVER commit the real file. Values shown for port_range are
+# examples; match them to your firewall/tailnet policy.
+
+port: 7880
+bind_addresses:
+  # Host tailnet IP (this host's `tailscale ip -4`). EDIT per host.
+  - 100.108.59.57
+rtc:
+  tcp_port: 7881
+  port_range_start: 50000
+  port_range_end: 50100
+  use_external_ip: false
+  # Tailnet-only --- no STUN/TURN needed for the tailnet path.
+keys:
+  # <api_key>: <api_secret>   one pair per agent identity. Generate secrets with
+  #   `livekit-server generate-keys` (or any long random string). DO NOT COMMIT.
+  skchat-opus: REPLACE_WITH_OPUS_API_SECRET
+  skchat-lumina: REPLACE_WITH_LUMINA_API_SECRET
+  skchat-chef: REPLACE_WITH_CHEF_API_SECRET
+log_level: info

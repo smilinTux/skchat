@@ -1,0 +1,47 @@
+# skchat-daemon.service: SKChat receive daemon for the DEFAULT agent (lumina).
+#
+# This is the reconciled counterpart of the live .158 skchat-daemon.service
+# (agent lumina, store ~/.skchat, health :9385). The opus and chef daemons run
+# from their own isolated units (skchat-daemon-opus.service, and the disabled
+# skchat-daemon-chef.service) with separate SKCHAT_HOME dirs. See README.md for
+# why we keep three concrete units instead of a single skchat-daemon@.service.
+#
+# Type=forking matches how `skchat daemon start` actually daemonizes: the CLI
+# process Popens a detached child (skchat._daemon_entry, start_new_session=True),
+# writes the child PID to ~/.skchat/daemon.pid, and exits. systemd then tracks
+# the child via PIDFile.
+#
+# NOTE: WatchdogSec is intentionally absent. The daemon code does not call
+# sd_notify (no WATCHDOG=1 pings anywhere in src/ or scripts/), so any
+# WatchdogSec value makes systemd kill a healthy daemon in a loop. Re-add
+# WatchdogSec only together with sd_notify pings in the poll loop (tracked as
+# P2.1 in docs/deploy-plan/skchat-bulletproof-deploy.md).
+
+[Unit]
+Description=SKChat receive daemon (lumina)
+Documentation=https://github.com/smilinTux/skchat
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=forking
+WorkingDirectory=%h
+PIDFile=%h/.skchat/daemon.pid
+ExecStart=%h/.skenv/bin/skchat daemon start --interval 5 --log-file %h/.skchat/daemon.log
+ExecStop=/bin/kill -TERM $MAINPID
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=skchat-daemon
+Environment=PYTHONUNBUFFERED=1
+Environment=SKAGENT=lumina
+Environment=SKCAPSTONE_AGENT=lumina
+Environment=SKMEMORY_AGENT=lumina
+Environment=SKCHAT_IDENTITY=capauth:lumina@skworld.io
+Environment=PATH=%h/.skenv/bin:/usr/local/bin:/usr/bin:/bin
+# Optional per-machine overrides (referenced by name only, never committed).
+EnvironmentFile=-%h/.config/skchat/daemon.env
+
+[Install]
+WantedBy=default.target

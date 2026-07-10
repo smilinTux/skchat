@@ -1,0 +1,25 @@
+# telegram-catchup.service: oneshot Telegram catch-up, imports all Telegram
+# groups into SKMemory. Driven by telegram-catchup.timer (daily 06:00).
+#
+# Reconciled from live .158 with absolute paths replaced by %h. NOTE: the
+# ExecStart script lives in the skcapstone repo (not skchat), and the agent
+# secrets come from the skcapstone agent config EnvironmentFile below. This unit
+# is part of the skchat live plane but has a cross-repo dependency; it is shipped
+# for completeness. The installer does NOT enable it by default.
+
+[Unit]
+Description=Telegram Catch-Up, import all Telegram groups into SKMemory
+Documentation=https://github.com/smilinTux/skchat
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/bash %h/clawd/skcapstone-repos/skcapstone/scripts/telegram-catchup-all.sh --since yesterday --limit 2000
+EnvironmentFile=%h/.skcapstone/agents/lumina/config/secrets.env
+Environment=PATH=%h/.skenv/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=%h
+Environment=SKCAPSTONE_AGENT=lumina
+TimeoutStartSec=600
+StandardOutput=journal
+StandardError=journal

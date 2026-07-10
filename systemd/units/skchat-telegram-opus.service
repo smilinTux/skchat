@@ -1,0 +1,41 @@
+# skchat-telegram-opus.service: Telegram bridge for the Opus agent.
+#
+# Live concrete unit reconciled from .158 (@seaBird_Opus_bot). The go-forward
+# portable template is units/skchat-telegram@.service; the live plane currently
+# runs these two concrete bridges (opus, lumina), so we ship them faithfully to
+# guarantee zero functional change on install. See README.md for the migration
+# note. The bot token lives in the EnvironmentFile below (never committed).
+#
+# The memory backend (skmem-pg pgvector) and rating buttons come from the
+# override.conf drop-in. The inline SKMEMORY_PG_DSN secret from the live
+# drop-in is externalized to %h/.config/skchat/memory-pg.env.
+
+[Unit]
+Description=SKChat Telegram Bridge (Opus agent, @seaBird_Opus_bot)
+Documentation=https://github.com/smilinTux/skchat
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+EnvironmentFile=%h/.config/skchat/telegram-opus.env
+Environment=PYTHONUNBUFFERED=1
+Environment=SKAGENT=opus
+Environment=SKCAPSTONE_AGENT=opus
+Environment=SKC_BRIDGE_AGENT=Opus
+Environment=SKC_BRIDGE_AGENT_HOME=%h/.skcapstone/agents/opus
+Environment=SKC_BRIDGE_LLM_URL=http://192.168.0.100:8082/v1/chat/completions
+Environment=SKC_BRIDGE_LLM_MODEL=qwen3.6-27b-abliterated
+Environment=SKC_BRIDGE_CTX=32768
+Environment=SKC_BRIDGE_SYS_BUDGET=9000
+Environment=SKC_BRIDGE_MAX_TOKENS=1024
+Environment=SKCHAT_REPO=%h/clawd/skcapstone-repos/skchat
+Environment=PATH=%h/.skenv/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/.skenv/bin/python %h/clawd/skcapstone-repos/skchat/scripts/telegram_bridge.py
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=skchat-telegram-opus
+
+[Install]
+WantedBy=default.target

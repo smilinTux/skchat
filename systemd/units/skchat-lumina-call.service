@@ -1,0 +1,60 @@
+# skchat-lumina-call.service: Lumina LiveKit conversational (voice) agent.
+#
+# Reconciled from live .158. Runs lumina-call.py from the lumina-creative repo,
+# joining a LiveKit room and talking with STT/LLM/TTS. Absolute /home/cbrd21
+# paths replaced with %h. The NVIDIA key stays in the EnvironmentFile below.
+#
+# Several settings here are overridden by drop-ins (see
+# dropins/skchat-lumina-call.service.d/): fixes.conf, musetalk.conf, tts.conf,
+# vad.conf, webui.conf. systemd applies later-loaded drop-ins last, so the
+# effective values are the drop-in ones (e.g. TTS -> localhost:15091,
+# WEBUI -> 127.0.0.1:8765, MuseTalk disabled).
+#
+# NOTE: After=/PartOf= reference skchat-webui.service (non-templated). On .158
+# the running webui is skchat-webui@lumina.service; this mismatch is inherited
+# verbatim from live and is harmless (the dependency simply no-ops). Left as-is
+# to preserve exact live behavior.
+
+[Unit]
+Description=Lumina LiveKit conversational agent
+Documentation=https://github.com/smilinTux/skchat
+After=network-online.target livekit-server.service skchat-webui.service
+Wants=network-online.target
+PartOf=skchat-webui.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h
+ExecStart=%h/.skenv/bin/python %h/clawd/skcapstone-repos/lumina-creative/scripts/lumina-call.py --greet ""
+Restart=on-failure
+RestartSec=8
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=lumina-call
+
+Environment=PYTHONUNBUFFERED=1
+Environment=PATH=%h/.skenv/bin:/usr/local/bin:/usr/bin:/bin
+Environment=SKAGENT=lumina
+Environment=SKCAPSTONE_AGENT=lumina
+Environment=SKMEMORY_AGENT=lumina
+Environment=SKCHAT_WEBUI_URL=https://noroc2027.tail204f0c.ts.net
+Environment=SKCHAT_TTS_URL=http://skworld-100:18796/audio/speech
+Environment=SKCHAT_TTS_VOICE=lumina
+Environment=SKCHAT_STT_URL=http://skworld-100:18794/v1/audio/transcriptions
+Environment=SKCHAT_LLM_URL=http://localhost:18783/v1/chat/completions
+Environment=SKCHAT_LLM_MODEL=claude-haiku-4-5
+Environment=LUMINA_LLM_KEEP_ALIVE=30m
+Environment=LUMINA_LLM_THINK=false
+Environment="LUMINA_OPERATOR_NAME=David Knestrick"
+Environment=LUMINA_OPERATOR_HANDLE=Chef
+Environment=LUMINA_OPERATOR_PREFIXES=chef,chefboyrdave,david,cbrd21
+Environment=LUMINA_AVATAR_PATH=%h/sovereign-facetime/assets/lumina.png
+Environment=LUMINA_COMFY_URL=http://192.168.0.100:8188
+Environment=LUMINA_NARRATE_URL=http://192.168.0.100:8081
+EnvironmentFile=%h/.config/lumina-creative/env
+Environment=SKCHAT_LIVEKIT_DEFAULT_ROOM=lumina-and-chef
+Environment=LUMINA_IDENTITY=lumina
+Environment=LUMINA_NAME=Lumina
+
+[Install]
+WantedBy=default.target
