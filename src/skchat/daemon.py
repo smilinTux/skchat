@@ -22,6 +22,7 @@ import time
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from queue import Empty, Queue
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -178,6 +179,14 @@ class ChatDaemon:
         # is bound to it so a completed inbound transfer posts a chat message.
         self._file_service: Optional[object] = None
         self._attachment_service: Optional[object] = None
+        # Async generation: the poll loop enqueues received messages; a single
+        # worker thread drains this FIFO and runs the blocking generate→send→
+        # store chain, so polling never stalls on the ~10s LLM call.
+        self._genqueue: "Queue" = Queue()
+        self._genworker: Optional[threading.Thread] = None
+        # Serialize transport.send_message across the worker + the poll thread's
+        # outbox flush (skcomms send is not audited for concurrent use).
+        self._send_lock = threading.Lock()
 
         if log_file:
             logging.basicConfig(
@@ -212,6 +221,31 @@ class ChatDaemon:
 
         if not self.quiet:
             print(f"[{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}] {message}")
+
+    def drain(self, timeout: Optional[float] = None) -> None:
+        """Block until the generation worker has processed all queued messages.
+
+        Used by tests and clean shutdown so replies aren't lost mid-flight.
+        Note: ``Queue.join()`` has no native timeout in the stdlib; *timeout*
+        is accepted for API symmetry with ``Thread.join`` but currently only
+        documents intent — callers needing a hard bound should wrap this in
+        their own watchdog.
+        """
+        self._genqueue.join()
+
+    def stop(self) -> None:
+        """Signal the poll loop to stop, then drain + join the generation worker.
+
+        Safe to call multiple times, and safe to call even if the worker was
+        never started (e.g. ``start()`` failed before reaching the poll loop).
+        """
+        self.running = False
+        if self._genworker is not None and self._genworker.is_alive():
+            try:
+                self._genqueue.join()
+            except Exception:
+                pass
+            self._genworker.join(timeout=10)
 
     def start(self) -> None:
         """Start the daemon polling loop.
@@ -408,7 +442,8 @@ class ChatDaemon:
                                 if local_deliver_to_agent(fanout_msg):
                                     continue
                                 try:
-                                    transport.send_message(fanout_msg)
+                                    with self._send_lock:
+                                        transport.send_message(fanout_msg)
                                 except Exception as fanout_exc:
                                     logger.warning(
                                         "group fan-out to %s failed: %s",
@@ -430,9 +465,12 @@ class ChatDaemon:
                     dm_reply = group_responder.respond_direct(msg)
                     if dm_reply:
                         from .models import ChatMessage
-                        transport.send_message(
-                            ChatMessage(sender=identity, recipient=msg.sender, content=dm_reply)
-                        )
+                        with self._send_lock:
+                            transport.send_message(
+                                ChatMessage(
+                                    sender=identity, recipient=msg.sender, content=dm_reply
+                                )
+                            )
                         self.advocacy_responses += 1
                         return  # handled; skip advocacy/plugins
                 except Exception as dm_exc:
@@ -441,7 +479,8 @@ class ChatDaemon:
                 try:
                     reply = engine.process_message(msg)
                     if reply:
-                        transport.send_and_store(msg.sender, reply)
+                        with self._send_lock:
+                            transport.send_and_store(msg.sender, reply)
                         self.advocacy_responses += 1
                 except Exception as exc:
                     logger.warning("daemon.py: %s", exc)
@@ -452,10 +491,49 @@ class ChatDaemon:
                         try:
                             plugin_reply = plugin.handle(msg)
                             if plugin_reply:
-                                transport.send_and_store(msg.sender, plugin_reply)
+                                with self._send_lock:
+                                    transport.send_and_store(msg.sender, plugin_reply)
                         except Exception as exc:
                             logger.warning("daemon.py: %s", exc)
                             self._log(f"Plugin '{plugin.name}' error: {exc}", "warning")
+
+        def _test_set_group_responder(r, agent="lumina") -> None:
+            """Test-only seam: inject a GroupResponder + config into the running
+            daemon, reassigning the closure's `nonlocal`s that `_process` reads.
+
+            `group_responder`/`group_cfg` are `start()`-locals normally populated
+            by the background `_init_subsystems_bg` thread; async tests need a
+            deterministic way to install a mock responder without waiting on
+            (or mocking) that whole subsystem-init path. Harmless in production
+            — nothing calls this outside tests.
+            """
+            nonlocal group_responder, group_cfg
+            from .group_responder import load_group_config
+
+            group_cfg = load_group_config(agent)
+            group_responder = r
+
+        self._test_set_group_responder = _test_set_group_responder
+
+        def _gen_worker() -> None:
+            """Drain the generation queue FIFO, one message at a time (ordered
+            replies, no intra-agent concurrency)."""
+            while self.running or not self._genqueue.empty():
+                try:
+                    msg = self._genqueue.get(timeout=1.0)
+                except Empty:
+                    continue
+                try:
+                    _process(msg)
+                except Exception as exc:  # one bad job never kills the worker
+                    logger.warning("genworker: processing failed: %s", exc)
+                finally:
+                    self._genqueue.task_done()
+
+        self._genworker = threading.Thread(
+            target=_gen_worker, daemon=True, name="skchat-genworker"
+        )
+        self._genworker.start()
 
         self._log(f"SKChat daemon starting (identity: {identity})")
         self._log(f"Polling every {self.interval}s, Ctrl+C to stop")
@@ -493,7 +571,15 @@ class ChatDaemon:
                         for msg in messages:
                             if self._route_file_message(msg):
                                 continue
-                            _process(msg)
+                            # Log the arrival synchronously (ops verification via
+                            # daemon.log) before handing off to the generation
+                            # worker — the worker may not drain this for ~10s.
+                            sender_short = msg.sender.split("@")[0].replace("capauth:", "")
+                            preview = msg.content[:60] + (
+                                "..." if len(msg.content) > 60 else ""
+                            )
+                            self._log(f"  [{sender_short}] {preview}")
+                            self._genqueue.put(msg)
                     else:
                         if self.poll_count % 12 == 0:
                             self._log(
@@ -604,6 +690,9 @@ class ChatDaemon:
         except KeyboardInterrupt:
             pass
         finally:
+            # Let the generation worker finish in-flight + queued replies, then
+            # join it, before announcing shutdown.
+            self.stop()
             # Send offline presence on shutdown
             if presence:
                 try:
