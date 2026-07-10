@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from skchat.advocacy import TRIGGER_PREFIXES, AdvocacyEngine, should_advocate
+from skchat.advocacy import TRIGGER_PREFIXES, AdvocacyEngine, _token_match, should_advocate
 from skchat.models import ChatMessage
 
 # ---------------------------------------------------------------------------
@@ -252,6 +252,57 @@ class TestShouldAdvocateBoundaries:
     def test_email_address_does_not_falsely_trigger(self):
         """An @-mention embedded in a word ("@claudette") must not trigger."""
         assert should_advocate("contact claudette@x.com") is False
+
+
+class TestTokenMatchLeftBoundary:
+    """Regression tests for defect #3 (wave-a/03-bughunt-responder.md):
+
+    _token_match() only checked the boundary AFTER the prefix, never BEFORE
+    the "@" — so an email address like "sam.opus@opus-mail.com" false-
+    triggered "@opus". Both sides must now be real token boundaries.
+    """
+
+    # -- emails must NOT match -------------------------------------------------
+
+    def test_email_local_part_suffix_does_not_match(self):
+        """"sam.opus@opus-mail.com" contains "@opus" but is preceded by a word
+        char ('s' of "opus") — must not match."""
+        assert _token_match("please cc sam.opus@opus-mail.com on the reply", "@opus") is False
+
+    def test_should_advocate_false_for_opus_email(self):
+        assert should_advocate("please cc sam.opus@opus-mail.com on the reply") is False
+
+    def test_lumina_domain_email_does_not_match(self):
+        """"danielle@lumina-imports.com" contains "@lumina" preceded by 'e' —
+        must not match."""
+        assert _token_match(
+            "reach danielle at danielle@lumina-imports.com about the invoice", "@lumina"
+        ) is False
+
+    def test_should_advocate_false_for_lumina_email(self):
+        assert should_advocate(
+            "reach danielle at danielle@lumina-imports.com about the invoice"
+        ) is False
+
+    # -- real mentions must still match -----------------------------------------
+
+    def test_mention_at_start_of_string_matches(self):
+        assert _token_match("@opus are you there", "@opus") is True
+
+    def test_mention_mid_sentence_after_space_matches(self):
+        assert _token_match("hey @opus can you help", "@opus") is True
+
+    def test_mention_after_punctuation_matches(self):
+        """A mention immediately after punctuation (e.g. a leading paren or
+        comma) is still a real mention — non-alnum before "@" is a boundary."""
+        assert _token_match("(cc: @opus) please respond", "@opus") is True
+        assert _token_match("chef,@lumina you around?", "@lumina") is True
+
+    def test_lumina_real_mention_still_matches(self):
+        assert should_advocate("hey @lumina, you around?") is True
+
+    def test_opus_real_mention_still_matches(self):
+        assert should_advocate("@opus what is sovereignty?") is True
 
 
 class TestInjectContext:
