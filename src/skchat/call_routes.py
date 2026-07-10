@@ -71,6 +71,36 @@ def _read_inbox() -> list:
     return read_inbox()
 
 
+# Private/loopback address prefixes trusted as "caller is on the tailnet/LAN".
+# Mirrors guest.py's _PRIVATE_PREFIXES / _client_is_private posture so the two
+# tailnet-detection call sites agree.
+_PRIVATE_PREFIXES = (
+    "127.",
+    "10.",
+    "192.168.",
+    "100.",  # Tailscale CGNAT range (100.64.0.0/10)
+    "::1",
+    "fd",  # ULA / Tailscale IPv6
+)
+
+
+def _client_on_tailnet(request: Request) -> bool:
+    """True if the *requesting caller's* own connection is loopback/private/tailnet.
+
+    This is the reachability that matters for /connectivity/ice: it's the
+    browser making this request that needs to know whether it can rely on
+    direct host candidates, not the peer it's calling. Deliberately per-request
+    (not a constant) so off-tailnet browsers (mobile data, home wifi w/o
+    Tailscale, a public/Funnel guest) get real STUN/TURN servers instead of an
+    empty ice_servers list.
+    """
+    client = getattr(request, "client", None)
+    host = getattr(client, "host", None) if client is not None else None
+    if not host:
+        return False  # no client info -> don't assume tailnet
+    return host.startswith(_PRIVATE_PREFIXES)
+
+
 def _resolve_peer(peer: str) -> str:
     """Resolve a peer arg (FQID or bare name) to a paired FQID, or 404."""
     peers = _list_peers()
@@ -158,6 +188,19 @@ def register_call_routes(app: FastAPI) -> None:
                 inv = parse_invite_body(env.body)
             except ValueError:
                 continue
+            # The body's from_fqid is the sender's own claim (set client-side in
+            # build_invite_body); it is NOT independently attested by skcomms.
+            # Cross-check it against the cryptographically verified envelope
+            # sender so a paired-but-different peer can't spoof "chef is calling"
+            # by forging the JSON payload while sending a validly-signed envelope.
+            env_from = getattr(env, "from_fqid", None)
+            if inv.get("from_fqid") != env_from:
+                logger.warning(
+                    "dropping CALL_INVITE with spoofed from_fqid: body=%r envelope=%r",
+                    inv.get("from_fqid"),
+                    env_from,
+                )
+                continue
             invites.append(inv)
         invites.sort(key=lambda i: i.get("ts", 0), reverse=True)
         return JSONResponse({"invites": invites})
@@ -172,10 +215,13 @@ def register_call_routes(app: FastAPI) -> None:
         return JSONResponse({"peers": peers})
 
     @app.get("/connectivity/ice")
-    async def connectivity_ice(peer: str) -> JSONResponse:
+    async def connectivity_ice(peer: str, request: Request) -> JSONResponse:
         peer_fqid = _resolve_peer(peer)
         local_fqid = _self_fqid()
-        # Tailnet-first deployment: default to on_tailnet (tier 1). Off-tailnet
-        # per-peer detection is not wired yet — add a hint param when it is.
-        cfg = ice_config(local_fqid, peer_fqid, peer_hint={"on_tailnet": True})
+        # Derive on_tailnet from the actual requesting connection (see
+        # _client_on_tailnet) instead of hardcoding it — an off-tailnet caller
+        # (mobile data, home wifi w/o Tailscale, a public/Funnel guest) must
+        # fall through to the STUN/TURN relay tier or its media never connects.
+        on_tailnet = _client_on_tailnet(request)
+        cfg = ice_config(local_fqid, peer_fqid, peer_hint={"on_tailnet": on_tailnet})
         return JSONResponse(cfg)

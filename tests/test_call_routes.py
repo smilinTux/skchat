@@ -106,6 +106,37 @@ def test_connectivity_ice_rejects_unpaired(client):
     assert r.status_code == 404
 
 
+def test_connectivity_ice_offtailnet_caller_gets_relay_servers(client, monkeypatch):
+    # Bug #2 regression: on_tailnet must be derived from the requesting
+    # connection, not hardcoded True. The default TestClient host
+    # ("testclient") is not a private/tailnet address, so a caller off the
+    # tailnet (mobile data, home wifi w/o Tailscale, a public/Funnel guest)
+    # must fall through to the STUN/TURN relay tier instead of an empty list.
+    monkeypatch.delenv("SKCHAT_TURN_SECRET", raising=False)
+    monkeypatch.setenv("SKCHAT_PUBLIC_TURN_ENABLED", "true")
+    r = client.get("/connectivity/ice", params={"peer": "lumina@chef.skworld"})
+    assert r.status_code == 200
+    data = r.json()
+    assert data["on_tailnet"] is False
+    assert data["preferred_tier"] == 3
+    assert data["ice_servers"], "expected non-empty iceServers (STUN/TURN) for a non-tailnet caller"
+
+
+def test_connectivity_ice_tailnet_caller_gets_tailnet_path(monkeypatch):
+    monkeypatch.setattr(cr, "_list_peers", lambda: {"lumina@chef.skworld": {"fingerprint": "FP"}})
+    monkeypatch.setattr(cr, "_self_fqid", lambda: "opus@chef.skworld")
+    app = FastAPI()
+    cr.register_call_routes(app)
+    # A caller connecting from a Tailscale CGNAT address (100.64.0.0/10).
+    tailnet_client = TestClient(app, client=("100.64.0.5", 12345))
+    r = tailnet_client.get("/connectivity/ice", params={"peer": "lumina@chef.skworld"})
+    assert r.status_code == 200
+    data = r.json()
+    assert data["on_tailnet"] is True
+    assert data["preferred_tier"] == 1
+    assert data["ice_servers"] == []
+
+
 def test_call_start_503_no_creds(client, monkeypatch):
     monkeypatch.setattr(cr, "_have_creds", lambda: False)
     r = client.post("/call/start", json={"peer": "lumina@chef.skworld"})
@@ -151,6 +182,48 @@ def test_incoming_skips_malformed_invite(client, monkeypatch):
     invites = r.json()["invites"]
     assert len(invites) == 1
     assert invites[0]["room"] == "call-good"
+
+
+def test_incoming_rejects_spoofed_from_fqid(client, monkeypatch):
+    # Bug #4 regression: a validly-signed envelope from a paired-but-different
+    # peer must not be able to make its JSON body claim a different from_fqid
+    # (e.g. "chef@skworld.io") than the envelope's cryptographically verified
+    # sender. The body's from_fqid is the sender's own unattested claim.
+    spoofed_body = build_invite_body(
+        from_fqid="chef@skworld.io",  # attacker-controlled claim inside the JSON
+        to_fqid="opus@chef.skworld",
+        room="call-spoofed",
+        livekit_url="wss://x:8443",
+    )
+    envelope = SimpleNamespace(
+        subject="CALL_INVITE",
+        from_fqid="stranger@x.y",  # the envelope's actual, verified sender
+        to_fqid="opus@chef.skworld",
+        body=spoofed_body,
+    )
+    monkeypatch.setattr(cr, "_read_inbox", lambda: [(envelope, SimpleNamespace(valid=True))])
+    r = client.get("/call/incoming")
+    assert r.status_code == 200
+    assert r.json()["invites"] == []
+
+
+def test_incoming_accepts_matching_from_fqid(client, monkeypatch):
+    envelope = SimpleNamespace(
+        subject="CALL_INVITE",
+        from_fqid="lumina@chef.skworld",
+        to_fqid="opus@chef.skworld",
+        body=build_invite_body(
+            from_fqid="lumina@chef.skworld",
+            to_fqid="opus@chef.skworld",
+            room="call-legit",
+            livekit_url="wss://x:8443",
+        ),
+    )
+    monkeypatch.setattr(cr, "_read_inbox", lambda: [(envelope, SimpleNamespace(valid=True))])
+    r = client.get("/call/incoming")
+    invites = r.json()["invites"]
+    assert len(invites) == 1
+    assert invites[0]["room"] == "call-legit"
 
 
 def test_incoming_empty_inbox(client, monkeypatch):
