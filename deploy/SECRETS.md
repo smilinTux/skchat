@@ -380,7 +380,7 @@ IP, public funnel URL, operator ids).
 
 **Problem.** The live drop-ins
 `skchat-telegram-{opus,lumina}.service.d/override.conf` inline
-`SKMEMORY_PG_DSN=postgresql://postgres:skmemory@localhost:5432/skmemory`, the
+`SKMEMORY_PG_DSN=postgresql://postgres:<shared-pw>@localhost:5432/skmemory`, the
 **shared postgres superuser**, also used by skmemory and skingest. That is both a
 secret-in-a-drop-in and a massively over-privileged credential for what the
 bridge does.
