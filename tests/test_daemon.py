@@ -241,6 +241,50 @@ def test_daemon_poll_error_handling(
     assert daemon._consecutive_failures >= 2
 
 
+@patch("skchat.daemon.time.sleep", return_value=None)
+@patch("skchat.daemon.SKComms")
+@patch("skchat.transport.ChatTransport")
+@patch("skchat.history.ChatHistory")
+@patch("skchat.identity_bridge.get_sovereign_identity")
+def test_daemon_poll_backoff_escalates_past_interval(
+    mock_identity,
+    mock_history_class,
+    mock_transport_class,
+    mock_skcomms_class,
+    mock_sleep,
+    mock_transport,
+):
+    """Regression for bughunt defect #1: consecutive transport-poll failures
+    must sleep the escalating _BACKOFF_DELAYS (5/10/20/40/60), not get capped
+    at `self.interval`. A prior `min(delay, self.interval)` made every sleep
+    after the first equal to `self.interval` (5s in production) since
+    interval <= every backoff tier past the first — the escalation was dead
+    code. Use a small interval (0.1s) so a bug reintroducing the cap is
+    caught regardless of interval size.
+    """
+    mock_skcomms_class.from_config.return_value = mock_skcomms_class
+    mock_transport.poll_inbox = MagicMock(side_effect=Exception("Transport error"))
+    mock_transport_class.from_config.return_value = mock_transport
+    mock_identity.return_value = "capauth:test@capauth.local"
+
+    daemon = ChatDaemon(interval=0.1, quiet=True)
+
+    sleeps: list[float] = []
+
+    def _recording_sleep(seconds):
+        sleeps.append(seconds)
+        if len(sleeps) >= 5:
+            daemon.running = False
+
+    mock_sleep.side_effect = _recording_sleep
+
+    daemon.start()
+
+    assert len(sleeps) >= 5
+    # Escalating, uncapped by self.interval (0.1s) — proves the fix.
+    assert sleeps[:5] == [5, 10, 20, 40, 60]
+
+
 @patch("skchat.daemon.SKComms")
 @patch("skchat.history.ChatHistory")
 @patch("skchat.transport.ChatTransport")

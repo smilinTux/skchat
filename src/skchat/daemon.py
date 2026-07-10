@@ -610,12 +610,15 @@ class ChatDaemon:
                     # NOT trigger its own reconnect here — two uncoordinated
                     # reconnect paths could race / double-reconnect under
                     # transport loss. Keep the watchdog as the single owner.
-                    # Cap the sleep at the configured poll interval so
-                    # low-interval daemons (e.g. tests with interval=0.1s)
-                    # can still cycle promptly. For the default interval=5s
-                    # the first backoff delay is also 5s, so behaviour is
-                    # unchanged in production.
-                    time.sleep(min(delay, self.interval))
+                    # Sleep the FULL computed (escalating) delay — do NOT cap
+                    # it at self.interval. A prior `min(delay, self.interval)`
+                    # cap made every failure after the first sleep only
+                    # `self.interval` (5s in production), since interval <=
+                    # every _BACKOFF_DELAYS tier past the first — the 5/10/20/
+                    # 40/60s escalation was dead code in production. Tests that
+                    # need fast cycling should mock time.sleep (as they already
+                    # do), not rely on a small `interval` capping this sleep.
+                    time.sleep(delay)
                     continue
 
                 # --- Reap expired ephemeral messages (every 6 cycles ~30s) ---
