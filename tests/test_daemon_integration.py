@@ -420,6 +420,12 @@ def test_poll_loop_does_not_reconnect_on_transport_loss(inbox_dir):
     mock_transport.poll_inbox.side_effect = ConnectionError("transport down")
 
     patchers = _start_patches(mock_skcomms, mock_transport, mock_history, mock_advocacy)
+    # Backoff now sleeps the full escalating delay (5/10/20/40/60s) instead of
+    # being capped at `interval` — mock time.sleep so 5+ consecutive failures
+    # still accumulate within this test's wall-clock budget.
+    sleep_patcher = patch("skchat.daemon.time.sleep", return_value=None)
+    patchers.append(sleep_patcher)
+    sleep_patcher.start()
     daemon = ChatDaemon(interval=0.01, quiet=True)
     exc_holder: list[BaseException] = []
 

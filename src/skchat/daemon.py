@@ -22,6 +22,7 @@ import time
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from queue import Empty, Queue
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -178,6 +179,14 @@ class ChatDaemon:
         # is bound to it so a completed inbound transfer posts a chat message.
         self._file_service: Optional[object] = None
         self._attachment_service: Optional[object] = None
+        # Async generation: the poll loop enqueues received messages; a single
+        # worker thread drains this FIFO and runs the blocking generate→send→
+        # store chain, so polling never stalls on the ~10s LLM call.
+        self._genqueue: "Queue" = Queue()
+        self._genworker: Optional[threading.Thread] = None
+        # Serialize transport.send_message across the worker + the poll thread's
+        # outbox flush (skcomms send is not audited for concurrent use).
+        self._send_lock = threading.Lock()
 
         if log_file:
             logging.basicConfig(
@@ -212,6 +221,31 @@ class ChatDaemon:
 
         if not self.quiet:
             print(f"[{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}] {message}")
+
+    def drain(self, timeout: Optional[float] = None) -> None:
+        """Block until the generation worker has processed all queued messages.
+
+        Used by tests and clean shutdown so replies aren't lost mid-flight.
+        Note: ``Queue.join()`` has no native timeout in the stdlib; *timeout*
+        is accepted for API symmetry with ``Thread.join`` but currently only
+        documents intent — callers needing a hard bound should wrap this in
+        their own watchdog.
+        """
+        self._genqueue.join()
+
+    def stop(self) -> None:
+        """Signal the poll loop to stop, then drain + join the generation worker.
+
+        Safe to call multiple times, and safe to call even if the worker was
+        never started (e.g. ``start()`` failed before reaching the poll loop).
+        """
+        self.running = False
+        if self._genworker is not None and self._genworker.is_alive():
+            try:
+                self._genqueue.join()
+            except Exception:
+                pass
+            self._genworker.join(timeout=10)
 
     def start(self) -> None:
         """Start the daemon polling loop.
@@ -363,6 +397,164 @@ class ChatDaemon:
 
         threading.Thread(target=_init_subsystems_bg, daemon=True, name="skchat-init").start()
 
+        def _process(msg) -> None:
+            """Dispatch one received message (group reply / DM reply / advocacy /
+            plugins). Runs the blocking generate→send→store chain. Captures the
+            start()-local subsystems; None-checked so it is safe before bg init
+            populates them."""
+            sender_short = msg.sender.split("@")[0].replace("capauth:", "")
+            preview = msg.content[:60] + ("..." if len(msg.content) > 60 else "")
+            try:
+                import subprocess
+
+                from .notifications import desktop_notifications_enabled
+
+                if desktop_notifications_enabled():
+                    subprocess.run(
+                        ["notify-send", "SKChat", f"[{sender_short}] {preview}"],
+                        capture_output=True,
+                    )
+            except Exception as exc:
+                logger.warning("notify-send failed: %s", exc)
+            if group_responder is not None and _is_group_message(msg, group_cfg.groups):
+                gid = (msg.thread_id or msg.recipient).replace("group:", "")
+                # Persist a canonical group-thread copy of the INCOMING message
+                # (recipient == "group:<gid>") so the shared thread — what the
+                # webui's GET /api/v1/conversations/<gid> reads, via
+                # daemon_proxy_groups.group_thread_messages's
+                # recipient=="group:<gid>" filter — shows it even when
+                # should_respond() vetoes a reply. Without this, a peer
+                # agent's fanned-in reply (loop-breaker skips other agents) or
+                # an unmentioned human turn is received but never surfaces in
+                # THIS agent's own view of the group thread: received
+                # messages normally land with recipient=<this agent's own
+                # identity URI> (the fan-out shape), which
+                # group_thread_messages filters OUT.
+                canonical_recipient = f"group:{gid}"
+                if msg.recipient != canonical_recipient:
+                    try:
+                        history.save(msg.model_copy(update={"recipient": canonical_recipient}))
+                    except Exception as exc:
+                        logger.warning(
+                            "group message persist failed for %s: %s", gid, exc
+                        )
+                try:
+                    reply = group_responder.respond(msg)
+                    if reply:
+                        _who = group_cfg.agent.capitalize()
+                        if not reply.lstrip().lower().startswith(
+                            (_who.lower(), f"**{_who.lower()}")
+                        ):
+                            reply = f"{_who}: {reply}"
+                        from .daemon_proxy_groups import load_group
+                        grp = load_group(gid)
+                        if grp is not None:
+                            grp.send(reply, sender=identity, transport=None, history=history)
+                            from .daemon_proxy_groups import local_deliver_to_agent
+                            from .models import ChatMessage
+                            for member in grp.members:
+                                if member.identity_uri == identity:
+                                    continue
+                                fanout_msg = ChatMessage(
+                                    sender=identity, recipient=member.identity_uri,
+                                    content=reply, thread_id=gid,
+                                )
+                                if local_deliver_to_agent(fanout_msg):
+                                    continue
+                                try:
+                                    with self._send_lock:
+                                        transport.send_message(fanout_msg)
+                                except Exception as fanout_exc:
+                                    logger.warning(
+                                        "group fan-out to %s failed: %s",
+                                        member.identity_uri, fanout_exc,
+                                    )
+                            self.advocacy_responses += 1
+                        else:
+                            logger.warning(
+                                "group responder: group %s not found for reply", gid
+                            )
+                except Exception as exc:
+                    logger.warning("group responder failed: %s", exc)
+                    self._log(f"Group responder error: {exc}", "warning")
+                return  # handled; don't also run DM advocacy/plugins
+            if group_responder is not None and not (
+                (msg.content or "").lstrip().startswith("<event ")
+            ):
+                try:
+                    dm_reply = group_responder.respond_direct(msg)
+                    if dm_reply:
+                        from .models import ChatMessage
+                        with self._send_lock:
+                            transport.send_message(
+                                ChatMessage(
+                                    sender=identity, recipient=msg.sender, content=dm_reply
+                                )
+                            )
+                        self.advocacy_responses += 1
+                        return  # handled; skip advocacy/plugins
+                except Exception as dm_exc:
+                    logger.warning("direct responder failed: %s", dm_exc)
+            if engine:
+                try:
+                    reply = engine.process_message(msg)
+                    if reply:
+                        with self._send_lock:
+                            transport.send_and_store(msg.sender, reply)
+                        self.advocacy_responses += 1
+                except Exception as exc:
+                    logger.warning("daemon.py: %s", exc)
+                    self._log(f"Advocacy error: {exc}", "warning")
+            if plugin_registry:
+                for plugin in plugin_registry.get_plugins():
+                    if plugin.should_handle(msg):
+                        try:
+                            plugin_reply = plugin.handle(msg)
+                            if plugin_reply:
+                                with self._send_lock:
+                                    transport.send_and_store(msg.sender, plugin_reply)
+                        except Exception as exc:
+                            logger.warning("daemon.py: %s", exc)
+                            self._log(f"Plugin '{plugin.name}' error: {exc}", "warning")
+
+        def _test_set_group_responder(r, agent="lumina") -> None:
+            """Test-only seam: inject a GroupResponder + config into the running
+            daemon, reassigning the closure's `nonlocal`s that `_process` reads.
+
+            `group_responder`/`group_cfg` are `start()`-locals normally populated
+            by the background `_init_subsystems_bg` thread; async tests need a
+            deterministic way to install a mock responder without waiting on
+            (or mocking) that whole subsystem-init path. Harmless in production
+            — nothing calls this outside tests.
+            """
+            nonlocal group_responder, group_cfg
+            from .group_responder import load_group_config
+
+            group_cfg = load_group_config(agent)
+            group_responder = r
+
+        self._test_set_group_responder = _test_set_group_responder
+
+        def _gen_worker() -> None:
+            """Drain the generation queue FIFO, one message at a time (ordered
+            replies, no intra-agent concurrency)."""
+            while self.running or not self._genqueue.empty():
+                try:
+                    msg = self._genqueue.get(timeout=1.0)
+                except Empty:
+                    continue
+                try:
+                    _process(msg)
+                except Exception as exc:  # one bad job never kills the worker
+                    logger.warning("genworker: processing failed: %s", exc)
+                finally:
+                    self._genqueue.task_done()
+
+        self._genworker = threading.Thread(
+            target=_gen_worker, daemon=True, name="skchat-genworker"
+        )
+        self._genworker.start()
+
         self._log(f"SKChat daemon starting (identity: {identity})")
         self._log(f"Polling every {self.interval}s, Ctrl+C to stop")
 
@@ -397,139 +589,17 @@ class ChatDaemon:
                         )
 
                         for msg in messages:
-                            # Route file-transfer envelopes to the receive-side
-                            # FileTransferService (a completed transfer fires the
-                            # bound on_complete, posting an inbound message). Skip
-                            # normal advocacy/plugin/notify handling for them.
                             if self._route_file_message(msg):
                                 continue
+                            # Log the arrival synchronously (ops verification via
+                            # daemon.log) before handing off to the generation
+                            # worker — the worker may not drain this for ~10s.
                             sender_short = msg.sender.split("@")[0].replace("capauth:", "")
-                            preview = msg.content[:60] + ("..." if len(msg.content) > 60 else "")
+                            preview = msg.content[:60] + (
+                                "..." if len(msg.content) > 60 else ""
+                            )
                             self._log(f"  [{sender_short}] {preview}")
-                            try:
-                                import subprocess
-
-                                from .notifications import desktop_notifications_enabled
-
-                                if desktop_notifications_enabled():
-                                    subprocess.run(
-                                        ["notify-send", "SKChat", f"[{sender_short}] {preview}"],
-                                        capture_output=True,
-                                    )
-                            except Exception as exc:
-                                logger.warning("notify-send failed: %s", exc)
-                            if group_responder is not None and _is_group_message(
-                                msg, group_cfg.groups
-                            ):
-                                try:
-                                    reply = group_responder.respond(msg)
-                                    if reply:
-                                        # Prefix with the agent's name so the group
-                                        # shows WHO replied (the app doesn't render
-                                        # the per-message sender label reliably).
-                                        _who = group_cfg.agent.capitalize()
-                                        if not reply.lstrip().lower().startswith(
-                                            (_who.lower(), f"**{_who.lower()}")
-                                        ):
-                                            reply = f"{_who}: {reply}"
-                                        from .daemon_proxy_groups import load_group
-
-                                        gid = (msg.thread_id or msg.recipient).replace(
-                                            "group:", ""
-                                        )
-                                        grp = load_group(gid)
-                                        if grp is not None:
-                                            # Persist to group history locally
-                                            # (transport=None → no network). The
-                                            # group multicast over raw skcomms
-                                            # mis-routes to '*'; instead fan the
-                                            # reply out per-member via the same
-                                            # 1:1 DM path that is known to deliver.
-                                            grp.send(
-                                                reply,
-                                                sender=identity,
-                                                transport=None,
-                                                history=history,
-                                            )
-                                            from .daemon_proxy_groups import (
-                                                local_deliver_to_agent,
-                                            )
-                                            from .models import ChatMessage
-
-                                            for member in grp.members:
-                                                if member.identity_uri == identity:
-                                                    continue
-                                                fanout_msg = ChatMessage(
-                                                    sender=identity,
-                                                    recipient=member.identity_uri,
-                                                    content=reply,
-                                                    thread_id=gid,
-                                                )
-                                                if local_deliver_to_agent(fanout_msg):
-                                                    continue
-                                                try:
-                                                    transport.send_message(fanout_msg)
-                                                except Exception as fanout_exc:
-                                                    logger.warning(
-                                                        "group fan-out to %s failed: %s",
-                                                        member.identity_uri,
-                                                        fanout_exc,
-                                                    )
-                                            self.advocacy_responses += 1
-                                        else:
-                                            logger.warning(
-                                                "group responder: group %s not found for reply",
-                                                gid,
-                                            )
-                                except Exception as exc:
-                                    logger.warning("group responder failed: %s", exc)
-                                    self._log(f"Group responder error: {exc}", "warning")
-                                continue  # handled; don't also run DM advocacy/plugins
-                            # Direct message to this agent (the app federation-
-                            # delivers DMs straight to the daemon, not the
-                            # daemon_proxy brain path). Reply via the clean,
-                            # loop-broken skgateway responder so DMs get answered
-                            # even with advocacy disabled. Skip presence beacons.
-                            if group_responder is not None and not (
-                                (msg.content or "").lstrip().startswith("<event ")
-                            ):
-                                try:
-                                    dm_reply = group_responder.respond_direct(msg)
-                                    if dm_reply:
-                                        from .models import ChatMessage
-
-                                        transport.send_message(
-                                            ChatMessage(
-                                                sender=identity,
-                                                recipient=msg.sender,
-                                                content=dm_reply,
-                                            )
-                                        )
-                                        self.advocacy_responses += 1
-                                        continue  # handled; skip advocacy/plugins
-                                except Exception as dm_exc:
-                                    logger.warning("direct responder failed: %s", dm_exc)
-                            if engine:
-                                try:
-                                    reply = engine.process_message(msg)
-                                    if reply:
-                                        transport.send_and_store(msg.sender, reply)
-                                        self.advocacy_responses += 1
-                                except Exception as exc:
-                                    logger.warning("daemon.py: %s", exc)
-                                    self._log(f"Advocacy error: {exc}", "warning")
-                            if plugin_registry:
-                                for plugin in plugin_registry.get_plugins():
-                                    if plugin.should_handle(msg):
-                                        try:
-                                            plugin_reply = plugin.handle(msg)
-                                            if plugin_reply:
-                                                transport.send_and_store(msg.sender, plugin_reply)
-                                        except Exception as exc:
-                                            logger.warning("daemon.py: %s", exc)
-                                            self._log(
-                                                f"Plugin '{plugin.name}' error: {exc}", "warning"
-                                            )
+                            self._genqueue.put(msg)
                     else:
                         if self.poll_count % 12 == 0:
                             self._log(
@@ -560,12 +630,15 @@ class ChatDaemon:
                     # NOT trigger its own reconnect here — two uncoordinated
                     # reconnect paths could race / double-reconnect under
                     # transport loss. Keep the watchdog as the single owner.
-                    # Cap the sleep at the configured poll interval so
-                    # low-interval daemons (e.g. tests with interval=0.1s)
-                    # can still cycle promptly. For the default interval=5s
-                    # the first backoff delay is also 5s, so behaviour is
-                    # unchanged in production.
-                    time.sleep(min(delay, self.interval))
+                    # Sleep the FULL computed (escalating) delay — do NOT cap
+                    # it at self.interval. A prior `min(delay, self.interval)`
+                    # cap made every failure after the first sleep only
+                    # `self.interval` (5s in production), since interval <=
+                    # every _BACKOFF_DELAYS tier past the first — the 5/10/20/
+                    # 40/60s escalation was dead code in production. Tests that
+                    # need fast cycling should mock time.sleep (as they already
+                    # do), not rely on a small `interval` capping this sleep.
+                    time.sleep(delay)
                     continue
 
                 # --- Reap expired ephemeral messages (every 6 cycles ~30s) ---
@@ -640,6 +713,9 @@ class ChatDaemon:
         except KeyboardInterrupt:
             pass
         finally:
+            # Let the generation worker finish in-flight + queued replies, then
+            # join it, before announcing shutdown.
+            self.stop()
             # Send offline presence on shutdown
             if presence:
                 try:
