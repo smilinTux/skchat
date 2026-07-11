@@ -46,6 +46,49 @@ _BACKOFF_ERROR_THRESHOLD: int = 5  # emit ERROR after this many consecutive fail
 # ~SKCHAT_LOG_MAX_BYTES * (SKCHAT_LOG_BACKUP_COUNT + 1).
 _DEFAULT_LOG_MAX_BYTES: int = 50_000_000  # 50 MB per file
 _DEFAULT_LOG_BACKUP_COUNT: int = 5  # keep this many rotated files
+# Floor for the rotation size. A RotatingFileHandler treats maxBytes<=0 as
+# "never rotate" (unbounded). Never let the env drop below this.
+_MIN_LOG_MAX_BYTES: int = 1_000_000  # 1 MB
+
+
+class _SkchatLogFilter(logging.Filter):
+    """Restrict the daemon's file handler to the skchat/skcomms logger trees.
+
+    Without this, ``SKCHAT_LOG_LEVEL=DEBUG`` turns the root logger to DEBUG and
+    the shared file handler starts capturing third-party library DEBUG chatter
+    (urllib3, asyncio, pgpy, pydantic, …) — a firehose that drowns daemon.log
+    in noise. This filter passes only records emitted by ``skchat``/``skcomms``
+    (and their sub-loggers), plus records logged directly on the root logger,
+    so raising the level surfaces *our* DEBUG without the library noise.
+    """
+
+    _ALLOWED_ROOTS = ("skchat", "skcomms")
+
+    def filter(self, record: logging.LogRecord) -> bool:  # noqa: A003
+        name = record.name
+        if name in ("root", "__main__"):
+            return True
+        for root_name in self._ALLOWED_ROOTS:
+            if name == root_name or name.startswith(root_name + "."):
+                return True
+        return False
+
+
+def _outbox_summary_level(failed: int) -> str:
+    """Pick the log level for the per-cycle Outbox summary line.
+
+    Demoting the whole line to DEBUG (to cut all-clear per-cycle noise) also
+    hid *chronic delivery failures* at INFO. Split the two: when any delivery
+    failed/retried, surface the summary at INFO so the error signal isn't lost;
+    otherwise keep it at DEBUG.
+
+    Args:
+        failed: Number of messages that failed/were retried this cycle.
+
+    Returns:
+        str: ``"info"`` when ``failed`` > 0, else ``"debug"``.
+    """
+    return "info" if failed > 0 else "debug"
 
 
 def _configure_root_logging(log_file) -> None:
@@ -81,6 +124,14 @@ def _configure_root_logging(log_file) -> None:
     except (TypeError, ValueError):
         backup_count = _DEFAULT_LOG_BACKUP_COUNT
 
+    # Clamp to sane floors. A RotatingFileHandler with maxBytes<=0 NEVER rolls
+    # over (it silently degrades to an unbounded FileHandler — exactly the
+    # runaway-log bug this handler exists to prevent), and backupCount<=0 keeps
+    # zero backups (it truncates on roll instead of retaining history). Reject
+    # both so a hostile/degenerate env can't re-introduce unbounded growth.
+    max_bytes = max(_MIN_LOG_MAX_BYTES, max_bytes)
+    backup_count = max(1, backup_count)
+
     root = logging.getLogger()
     root.setLevel(level)
 
@@ -111,6 +162,8 @@ def _configure_root_logging(log_file) -> None:
         return
     file_handler.setLevel(level)
     file_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+    # Keep third-party DEBUG noise out of daemon.log when the level is raised.
+    file_handler.addFilter(_SkchatLogFilter())
     root.addHandler(file_handler)
 
 
@@ -744,10 +797,12 @@ class ChatDaemon:
                     try:
                         delivered, failed = queue.process_pending(self._outbox_messenger)
                         if delivered > 0 or failed > 0:
-                            # Routine per-cycle outbox chatter → DEBUG (A1).
+                            # All-clear per-cycle chatter → DEBUG (A1); but if any
+                            # delivery failed, surface at INFO so chronic delivery
+                            # failures aren't hidden below the default level.
                             self._log(
                                 f"Outbox: {delivered} delivered, {failed} retried/failed",
-                                "debug",
+                                _outbox_summary_level(failed),
                             )
                         self.total_sent += delivered
                     except Exception as exc:

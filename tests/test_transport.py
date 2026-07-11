@@ -895,3 +895,57 @@ class TestFileInboxXmlBeaconSkip:
         assert len(messages) == 1
         assert messages[0].content == "just some plain text, not JSON"
         mock_history.store_message.assert_called_once()
+
+    @pytest.mark.parametrize(
+        "plain_text",
+        ["<3", "<div>hello</div>", "<-- note to self", "<not-an-event/>"],
+    )
+    def test_poll_file_inbox_wraps_plain_text_starting_with_angle_bracket(
+        self, tmp_path, plain_text
+    ):
+        """DATA-LOSS regression: only the narrow CoT beacon prefix ``<event ``
+        is skipped. A plain-text payload that merely *starts* with ``<`` (e.g.
+        ``<3``, ``<div>…``, ``<-- note``) is NOT a beacon and must still be
+        wrapped, stored, and returned — never silently dropped."""
+        ct, _, mock_history = _make_transport(tmp_path)
+        ct._get_own_fingerprint = lambda: "TESTFP"  # type: ignore[method-assign]
+
+        inbox = ct._file_inbox_root / "TESTFP"  # type: ignore[attr-defined]
+        inbox.mkdir(parents=True)
+
+        envelope = {
+            "envelope_id": "plainlt1",
+            "sender": "capauth:alice@skworld.io",
+            "payload": {"content": plain_text},
+        }
+        (inbox / "plainlt1.skc.json").write_text(json.dumps(envelope), encoding="utf-8")
+
+        messages = ct._poll_file_inbox()
+
+        # Not dropped: wrapped as a plain-text ChatMessage, stored, and returned.
+        assert len(messages) == 1
+        assert messages[0].content == plain_text
+        mock_history.store_message.assert_called_once()
+
+    def test_poll_file_inbox_still_skips_event_beacon_after_fix(self, tmp_path):
+        """The narrowed predicate still skips genuine ``<event …>`` beacons:
+        they are archived and never surfaced/stored."""
+        ct, _, mock_history = _make_transport(tmp_path)
+        ct._get_own_fingerprint = lambda: "TESTFP"  # type: ignore[method-assign]
+
+        inbox = ct._file_inbox_root / "TESTFP"  # type: ignore[attr-defined]
+        inbox.mkdir(parents=True)
+
+        envelope = {
+            "envelope_id": "cot00002",
+            "sender": "capauth:alice@skworld.io",
+            "payload": {"content": "<event version='2.0' type='a-f-G-U-C'></event>"},
+        }
+        env_file = inbox / "cot00002.skc.json"
+        env_file.write_text(json.dumps(envelope), encoding="utf-8")
+
+        messages = ct._poll_file_inbox()
+
+        assert messages == []
+        mock_history.store_message.assert_not_called()
+        assert not env_file.exists()  # archived, not reprocessed

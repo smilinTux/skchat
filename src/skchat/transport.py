@@ -970,15 +970,21 @@ class ChatTransport:
                 self._archive_file_inbox_entry(env_file, archive_dir)
                 continue
 
-            # A3 (F4-skchat): a leading-'<' payload is a TAK/CoT `<event …>` XML
-            # presence beacon riding the same inbox — not a chat message. The main
-            # receive path already skips these at DEBUG (its model_validate_json
-            # fallback + the `<event ` history-skip). Here, without an early skip,
-            # such a beacon gets *wrapped* as a plain-text ChatMessage (via the
+            # A3 (F4-skchat): a `<event …>` payload is a TAK/CoT XML presence
+            # beacon riding the same inbox — not a chat message. The main receive
+            # path already skips these at DEBUG (its model_validate_json fallback
+            # + the `<event ` history-skip). Here, without an early skip, such a
+            # beacon gets *wrapped* as a plain-text ChatMessage (via the
             # envelope-sender fallback below) and floods history + the webui inbox.
             # Skip it at DEBUG and archive so it is neither surfaced nor
             # reprocessed every cycle.
-            if payload_content.lstrip().startswith("<"):
+            #
+            # DATA-LOSS fix: match ONLY the narrow beacon prefix `"<event "`,
+            # not any leading `<`. A plain-text message that merely starts with
+            # `<` ("<3", "<div>…", "<-- note") is a real chat message and must
+            # fall through to the wrap+store+return path below, matching the
+            # history-skip on the main receive path (transport.py `"<event "`).
+            if payload_content.lstrip().startswith("<event "):
                 logger.debug(
                     "File inbox entry %s is an XML/CoT beacon (leading '<') — skipping",
                     env_file.name,

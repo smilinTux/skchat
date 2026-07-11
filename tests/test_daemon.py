@@ -934,6 +934,164 @@ class TestRootLoggingRotation:
             root.setLevel(saved_level)
 
 
+class TestRootLoggingRotationClamp:
+    """F2 (unbounded-growth regression): a hostile/degenerate rotation env
+    (SKCHAT_LOG_MAX_BYTES=0/-1/garbage, SKCHAT_LOG_BACKUP_COUNT=0) must NOT
+    silently re-create the unbounded log. The values are clamped to a sane
+    floor so the RotatingFileHandler always actually rotates."""
+
+    @staticmethod
+    def _reset_root_handlers():
+        import logging
+
+        root = logging.getLogger()
+        saved_handlers = root.handlers[:]
+        saved_level = root.level
+        root.handlers = []
+        return root, saved_handlers, saved_level
+
+    @pytest.mark.parametrize("max_bytes_env", ["0", "-1", "not-a-number", ""])
+    @pytest.mark.parametrize("backup_env", ["0", "-1", "garbage"])
+    def test_degenerate_env_still_rotates_and_caps(
+        self, tmp_path, monkeypatch, max_bytes_env, backup_env
+    ):
+        import logging
+        import logging.handlers
+
+        monkeypatch.setenv("SKCHAT_LOG_MAX_BYTES", max_bytes_env)
+        monkeypatch.setenv("SKCHAT_LOG_BACKUP_COUNT", backup_env)
+        root, saved_handlers, saved_level = self._reset_root_handlers()
+        try:
+            ChatDaemon(interval=5, log_file=tmp_path / "daemon.log", quiet=True)
+            rotating = [
+                h
+                for h in root.handlers
+                if isinstance(h, logging.handlers.RotatingFileHandler)
+            ]
+            assert rotating, "expected a RotatingFileHandler even for degenerate env"
+            handler = rotating[0]
+            # A maxBytes of 0 disables rotation entirely (unbounded). Must be
+            # clamped to a real, non-zero floor.
+            assert handler.maxBytes >= 1_000_000
+            # A backupCount of 0 means RotatingFileHandler truncates instead of
+            # keeping backups — at least one backup must survive.
+            assert handler.backupCount >= 1
+        finally:
+            for h in root.handlers:
+                try:
+                    h.close()
+                except Exception:
+                    pass
+            root.handlers = saved_handlers
+            root.setLevel(saved_level)
+
+
+class TestRootLoggingThirdPartyFilter:
+    """F3 (DEBUG firehose): at SKCHAT_LOG_LEVEL=DEBUG the rotating file handler
+    must not pull in third-party library DEBUG noise (urllib3, asyncio, pgpy,
+    …). A filter restricts the file handler to the skchat/skcomms logger trees
+    (plus root records emitted directly)."""
+
+    @staticmethod
+    def _reset_root_handlers():
+        import logging
+
+        root = logging.getLogger()
+        saved_handlers = root.handlers[:]
+        saved_level = root.level
+        root.handlers = []
+        return root, saved_handlers, saved_level
+
+    def _make_record(self, name, level):
+        import logging
+
+        return logging.LogRecord(
+            name=name,
+            level=level,
+            pathname=__file__,
+            lineno=1,
+            msg="x",
+            args=(),
+            exc_info=None,
+        )
+
+    def test_debug_filters_third_party_but_passes_skchat(self, tmp_path, monkeypatch):
+        import logging
+        import logging.handlers
+
+        monkeypatch.setenv("SKCHAT_LOG_LEVEL", "DEBUG")
+        root, saved_handlers, saved_level = self._reset_root_handlers()
+        try:
+            ChatDaemon(interval=5, log_file=tmp_path / "daemon.log", quiet=True)
+            rotating = [
+                h
+                for h in root.handlers
+                if isinstance(h, logging.handlers.RotatingFileHandler)
+            ]
+            assert rotating
+            handler = rotating[0]
+
+            # Third-party DEBUG noise is filtered OUT.
+            noise = self._make_record("urllib3.connectionpool", logging.DEBUG)
+            assert handler.filter(noise) is False or handler.filter(noise) == 0
+
+            # skchat's own DEBUG records pass THROUGH.
+            ours = self._make_record("skchat.daemon", logging.DEBUG)
+            assert handler.filter(ours)
+
+            # skcomms transport records also pass.
+            transport = self._make_record("skcomms.router", logging.DEBUG)
+            assert handler.filter(transport)
+
+            # Root records emitted directly still pass.
+            root_rec = self._make_record("root", logging.INFO)
+            assert handler.filter(root_rec)
+        finally:
+            for h in root.handlers:
+                try:
+                    h.close()
+                except Exception:
+                    pass
+            root.handlers = saved_handlers
+            root.setLevel(saved_level)
+
+
+class TestOutboxSummaryLogLevel:
+    """F4 (lost error signal): the per-cycle Outbox summary must surface at INFO
+    when deliveries failed (chronic failures were hidden at DEBUG), and stay at
+    DEBUG on the all-clear path so it isn't per-cycle noise."""
+
+    def test_level_is_info_when_failures(self):
+        from skchat.daemon import _outbox_summary_level
+
+        assert _outbox_summary_level(failed=1) == "info"
+        assert _outbox_summary_level(failed=42) == "info"
+
+    def test_level_is_debug_when_no_failures(self):
+        from skchat.daemon import _outbox_summary_level
+
+        assert _outbox_summary_level(failed=0) == "debug"
+
+    def test_daemon_log_emits_summary_at_info_on_failure(self, tmp_path, caplog):
+        import logging
+
+        from skchat.daemon import _outbox_summary_level
+
+        daemon = ChatDaemon(interval=5, quiet=True)
+        delivered, failed = 2, 3
+        with caplog.at_level(logging.INFO, logger="skchat.daemon"):
+            daemon._log(
+                f"Outbox: {delivered} delivered, {failed} retried/failed",
+                _outbox_summary_level(failed=failed),
+            )
+        matching = [
+            r
+            for r in caplog.records
+            if "Outbox:" in r.getMessage() and r.levelno == logging.INFO
+        ]
+        assert matching, "expected the Outbox summary at INFO when failed>0"
+
+
 class TestWebRTCSignalingHealthDedup:
     """A2 (F3-skchat): _write_daemon_stats must WARN on WebRTC signaling-health
     *transitions* only, not once per ~30s cycle."""
