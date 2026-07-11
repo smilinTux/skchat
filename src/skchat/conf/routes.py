@@ -808,14 +808,32 @@ def register_conf_routes(
         return _resp(base / "index.html")
 
     @app.get("/conf/{room}", response_class=HTMLResponse)
-    async def conf_page(room: str) -> HTMLResponse:
-        """Redirect to livekit.html with the room pre-filled. Each visitor
-        gets a unique identity so multiple devices can join simultaneously."""
+    async def conf_page(room: str, request: Request) -> HTMLResponse:
+        """Hand a shared conference link to the NATIVE Flutter app by default.
+
+        A ``/conf/{room}`` link now lands in the app's native conf experience
+        (``/app/#/conf?room=...``), where the app mints a role-scoped token with
+        the signed-in identity and joins the room (with its panels). The legacy
+        web client (``livekit.html``) stays reachable as a fallback via
+        ``?web=1`` so nothing is lost if the app is unavailable. The room name is
+        HTML-escaped / URL-encoded before it lands in the markup + redirect URL.
+        """
+        import html as _html
+        from urllib.parse import quote
+
+        from skchat.app_link import conf_app_link, wants_web_fallback
+
+        if wants_web_fallback(request):
+            target = f"/livekit/{quote(room)}?room={quote(room)}"
+        else:
+            target = conf_app_link(room)
+        safe_room = _html.escape(room)
+        safe_target = _html.escape(target)
         return HTMLResponse(f"""<!doctype html>
 <html><head>
 <meta charset="utf-8"/>
-<meta http-equiv="refresh" content="0;url=/livekit/{room}?room={room}" />
-<title>Conference: {room}</title>
+<meta http-equiv="refresh" content="0;url={safe_target}" />
+<title>Conference: {safe_room}</title>
 </head><body>
-<p>Joining conference room <strong>{room}</strong>…</p>
+<p>Joining conference room <strong>{safe_room}</strong>...</p>
 </body></html>""")

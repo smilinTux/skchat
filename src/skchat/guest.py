@@ -9,8 +9,10 @@ Flow
 4. Guest POSTs ``/guest/join`` with ``{room, invite_token, display_name}``.
    ``InviteVerifier.join()`` validates the invite → returns a ``GuestToken``
    dataclass + a ready-to-use LiveKit participant JWT.
-5. Browser is redirected to ``/livekit/<room>?room=…&identity=…&token=…``;
-   livekit.html auto-connects using the pre-minted token.
+5. Browser is handed off to the NATIVE Flutter app deep link
+   ``/app/#/conf?room=…&token=…&url=…&identity=…`` (hash-routed), which connects
+   straight to media with the pre-minted token. The legacy web client
+   (``/livekit/<room>?…``) stays reachable as a fallback via ``?web=1``.
 
 Security properties
 -------------------
@@ -714,17 +716,31 @@ async function join(e) {{
       return;
     }}
     const data = await r.json();
-    const params = new URLSearchParams({{
-      room: data.room,
-      identity: data.identity,
-      token: data.lk_token,
-    }});
-    window.location.href = '/livekit/' + encodeURIComponent(data.room) + '?' + params.toString();
+    // Hand off to the NATIVE Flutter app by default (served at /app/, hash-
+    // routed, so /conf is reached at /app/#/conf with the pre-minted token).
+    // The legacy web client stays reachable as a fallback via ?web=1.
+    const room = data.room;
+    let target;
+    if (new URLSearchParams(location.search).get('web') === '1') {{
+      const params = new URLSearchParams({{
+        room: room, identity: data.identity || '', token: data.lk_token || '',
+      }});
+      target = '/livekit/' + encodeURIComponent(room) + '?' + params.toString();
+    }} else {{
+      const params = new URLSearchParams();
+      params.set('room', room);
+      if (data.lk_token) params.set('token', data.lk_token);
+      if (data.lk_url) params.set('url', data.lk_url);
+      if (data.identity) params.set('identity', data.identity);
+      if (data.display) params.set('display', data.display);
+      target = '/app/#/conf?' + params.toString();
+    }}
+    window.location.href = target;
   }} catch (err) {{
     btn.disabled = false;
     btn.textContent = 'Join call';
     document.getElementById('f').insertAdjacentHTML(
-      'afterbegin', '<p class="err">Network error — please retry.</p>');
+      'afterbegin', '<p class="err">Network error, please retry.</p>');
   }}
 }}
 </script>

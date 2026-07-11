@@ -301,3 +301,33 @@ def test_federated_token_rejects_bad_assertion(client):
         "sig": "bad",
     })
     assert r.status_code in (400, 403)  # federation module missing or assertion rejected
+
+
+# ── Native app hand-off (coord 59184ca7) ──────────────────────────────────────
+def test_conf_page_hands_off_to_native_app_by_default(client):
+    """A shared /conf/{room} link lands in the native Flutter app deep link
+    (/app/#/conf?room=...), not the legacy web livekit.html, by default."""
+    r = client.get("/conf/conf-standup0001")
+    assert r.status_code == 200
+    body = r.text
+    assert "/app/#/conf?room=conf-standup0001" in body
+    # Legacy web client is NOT the default target.
+    assert "url=/livekit/" not in body
+    # Still a recognizable conference landing page.
+    assert "conference" in body.lower()
+
+
+def test_conf_page_web_fallback_keeps_livekit_html(client):
+    """?web=1 preserves the legacy web client so nothing is lost."""
+    r = client.get("/conf/conf-standup0002?web=1")
+    assert r.status_code == 200
+    body = r.text
+    assert "/livekit/conf-standup0002?room=conf-standup0002" in body
+    assert "/app/#/conf" not in body
+
+
+def test_conf_page_escapes_room_name(client):
+    """A hostile room name must not break out of the markup or redirect URL."""
+    r = client.get("/conf/%3Cimg%20src=x%3E")
+    assert r.status_code == 200
+    assert "<img src=x>" not in r.text
