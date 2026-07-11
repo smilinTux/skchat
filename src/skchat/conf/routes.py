@@ -329,20 +329,41 @@ def register_conf_routes(
 
     @app.post("/conf/{room}/invite-agent")
     async def invite_agent(room: str, request: Request) -> JSONResponse:
-        """Pull the Lumina AI agent into ``room`` (host-gated, like /end).
+        """Pull the Lumina AI agent into ``room``.
 
         Launches ``lumina-call.py --room <room> --greet "<greeting>"`` as a
         transient, supervised, resource-scoped systemd ``--scope`` unit
         (``lumina-conf-<sanitized-room>``). The room name is sanitized into the
         unit name (alnum/dash only) to prevent argument injection. Degrades
         gracefully (503 + clear error) if ``systemd-run`` is unavailable.
+
+        Two room kinds are served through the SAME contract so the app can pull
+        Lumina into whatever call it is already in:
+
+        * A REGISTERED conference (``reg.get(room)`` live): host-gated, exactly
+          as before (only the conf host may invite).
+        * A PLAIN call room (a 1:1 / group ``sk-room-...`` the app connected to
+          via ``/call/*`` or ``/livekit/token``) that is NOT in the conf
+          registry: there is no conf host to gate on, so this path is restricted
+          to tailnet callers (the same trust model ``call_routes`` uses for
+          ``/call/start`` and ``/connectivity/ice``). Off-tailnet callers still
+          get the original clean 404 so nothing new is exposed over the Funnel.
         """
-        conf = reg.get(room)
-        if conf is None or conf.status.value == "ended":
-            raise HTTPException(404, "conf not found or ended")
         body = await request.json()
-        _require_host(conf, (body.get("requester") or "").strip())
-        greeting = (body.get("greet") or "Lumina here — joining the conference.").strip()
+        conf = reg.get(room)
+        if conf is not None and conf.status.value != "ended":
+            # Registered conf: host-gated (unchanged contract).
+            _require_host(conf, (body.get("requester") or "").strip())
+            target_room = conf.room
+            default_greet = "Lumina here, joining the conference."
+        else:
+            # Not a registered conf: allow pulling Lumina into an ad-hoc CALL
+            # room, but only for a genuine tailnet caller (see docstring).
+            if not _is_tailnet(request):
+                raise HTTPException(404, "conf not found or ended")
+            target_room = room
+            default_greet = "Lumina here, joining the call."
+        greeting = (body.get("greet") or default_greet).strip()
         # C-defense: cap greeting length (it is an arg, sanitized, but keep it sane).
         if len(greeting) > 500:
             raise HTTPException(400, "greeting too long (max 500 chars)")
@@ -351,7 +372,7 @@ def register_conf_routes(
         if shutil.which("systemd-run") is None:
             raise HTTPException(503, "systemd-run unavailable; cannot launch conf agent")
 
-        unit = _agent_unit(conf.room)
+        unit = _agent_unit(target_room)
         cmd = [
             "systemd-run",
             "--user",
@@ -365,7 +386,7 @@ def register_conf_routes(
             _agent_python(),
             _lumina_call_script(),
             "--room",
-            conf.room,
+            target_room,
             "--greet",
             greeting,
         ]
@@ -373,16 +394,16 @@ def register_conf_routes(
             proc = agent_run(cmd)
         except FileNotFoundError as exc:
             raise HTTPException(503, "systemd-run unavailable; cannot launch conf agent") from exc
-        except Exception as exc:  # noqa: BLE001 - any spawn failure → graceful error
-            logger.warning("conf: invite-agent spawn failed for %s: %s", conf.room, exc)
+        except Exception as exc:  # noqa: BLE001 - any spawn failure -> graceful error
+            logger.warning("conf: invite-agent spawn failed for %s: %s", target_room, exc)
             raise HTTPException(500, f"failed to launch conf agent: {exc}") from exc
 
         rc = getattr(proc, "returncode", 0)
         if rc not in (0, None):
             stderr = (getattr(proc, "stderr", "") or "").strip()
-            logger.warning("conf: systemd-run rc=%s for %s: %s", rc, conf.room, stderr)
+            logger.warning("conf: systemd-run rc=%s for %s: %s", rc, target_room, stderr)
             raise HTTPException(502, f"systemd-run failed (rc={rc}): {stderr}")
-        return JSONResponse({"ok": True, "unit": unit, "room": conf.room})
+        return JSONResponse({"ok": True, "unit": unit, "room": target_room})
 
     @app.post("/conf/{room}/invite-agent-federated")
     async def invite_agent_federated(room: str, request: Request) -> JSONResponse:
