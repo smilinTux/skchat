@@ -66,6 +66,12 @@ def test_join_chooser_offers_both_options(monkeypatch):
     assert "tok-abc" in body
     assert _ROOM in body
 
+    # Both branches hand off to the NATIVE Flutter app by default (coord
+    # 59184ca7): the chooser JS routes the minted join to /app/#/conf, with the
+    # legacy web client preserved as a ?web=1 fallback.
+    assert "/app/#/conf" in body
+    assert "web" in body  # the ?web=1 fallback branch is present
+
 
 def test_join_chooser_escapes_room_name(monkeypatch):
     """The room name is HTML-escaped into the chooser (no stored-XSS via the

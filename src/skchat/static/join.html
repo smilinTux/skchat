@@ -106,6 +106,28 @@
     }
   }
 
+  // Hand the minted join off to the NATIVE Flutter app by default. The app is
+  // served at /app/ and hash-routed, so its /conf route is reached at
+  // /app/#/conf?room=...&token=...&url=...&identity=... (it connects straight
+  // to media with the pre-minted token). The legacy web client stays reachable
+  // as a fallback when the landing link carries ?web=1.
+  function confTarget(d) {
+    const room = d.room || ROOM;
+    if (new URLSearchParams(location.search).get('web') === '1') {
+      const p = new URLSearchParams({
+        room: room, identity: d.identity || '', token: d.lk_token || '',
+      });
+      return '/livekit/' + encodeURIComponent(room) + '?' + p.toString();
+    }
+    const p = new URLSearchParams();
+    p.set('room', room);
+    if (d.lk_token) p.set('token', d.lk_token);
+    if (d.lk_url) p.set('url', d.lk_url);
+    if (d.identity) p.set('identity', d.identity);
+    if (d.display) p.set('display', d.display);
+    return '/app/#/conf?' + p.toString();
+  }
+
   // GUEST: unchanged contract — POST /guest/join {room, invite_token, display_name}
   async function joinGuest(e) {
     e.preventDefault();
@@ -130,15 +152,12 @@
         return;
       }
       const data = await r.json();
-      const params = new URLSearchParams({
-        room: data.room, identity: data.identity, token: data.lk_token,
-      });
-      window.location.href =
-        '/livekit/' + encodeURIComponent(data.room) + '?' + params.toString();
+      // Land in the native app (or the web client under ?web=1).
+      window.location.href = confTarget(data);
     } catch (err) {
       btn.disabled = false;
       btn.textContent = 'Join call';
-      showError('Network error — please retry.');
+      showError('Network error, please retry.');
     }
   }
 
@@ -174,16 +193,18 @@
         return;
       }
       const data = await r.json();
-      // Sovereign branch lands in the conf client with the proven-FQID token.
-      const params = new URLSearchParams({
-        room: data.space_id, identity: data.identity, token: data.token,
+      // Sovereign branch lands in the native conf experience with the
+      // proven-FQID token (or the web client under ?web=1).
+      window.location.href = confTarget({
+        room: data.space_id,
+        identity: data.identity,
+        lk_token: data.token,
+        lk_url: data.conf_ws_url,
       });
-      window.location.href =
-        '/conf/' + encodeURIComponent(data.space_id) + '?' + params.toString();
     } catch (err) {
       btn.disabled = false;
       btn.textContent = 'Join as Chef';
-      showError('Network error — please retry.');
+      showError('Network error, please retry.');
     }
   }
 </script>
