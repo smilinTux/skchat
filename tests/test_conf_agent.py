@@ -129,6 +129,48 @@ def test_invite_agent_default_greeting(tmp_path, monkeypatch):
     assert cmd[cmd.index("--greet") + 1].strip() != ""
 
 
+def test_invite_agent_passes_skagent_env(tmp_path, monkeypatch):
+    """A supplied ``agent`` slug is passed through as SKAGENT to the spawn.
+
+    The call script selects its persona from SKAGENT, so honoring the app's
+    ``agent`` field here is what makes it more than always-Lumina.
+    """
+    runner = RecordingRunner()
+    client = _make(tmp_path, monkeypatch, runner)
+    room = _create(client)
+    r = client.post(
+        f"/conf/{room}/invite-agent",
+        json={"requester": _HOST, "agent": "jarvis"},
+    )
+    assert r.status_code == 200
+    cmd = runner.calls[0]
+    assert "-E" in cmd
+    assert "SKAGENT=jarvis" in cmd
+
+
+def test_invite_agent_defaults_skagent_lumina(tmp_path, monkeypatch):
+    """No ``agent`` field defaults SKAGENT to lumina (backward compatible)."""
+    runner = RecordingRunner()
+    client = _make(tmp_path, monkeypatch, runner)
+    room = _create(client)
+    r = client.post(f"/conf/{room}/invite-agent", json={"requester": _HOST})
+    assert r.status_code == 200
+    assert "SKAGENT=lumina" in runner.calls[0]
+
+
+def test_invite_agent_rejects_bad_agent_slug(tmp_path, monkeypatch):
+    """A path-traversal / metacharacter agent slug is rejected (400), no spawn."""
+    runner = RecordingRunner()
+    client = _make(tmp_path, monkeypatch, runner)
+    room = _create(client)
+    r = client.post(
+        f"/conf/{room}/invite-agent",
+        json={"requester": _HOST, "agent": "../../etc"},
+    )
+    assert r.status_code == 400
+    assert runner.calls == []
+
+
 def test_invite_agent_host_gated(tmp_path, monkeypatch):
     runner = RecordingRunner()
     client = _make(tmp_path, monkeypatch, runner)
@@ -143,6 +185,52 @@ def test_invite_agent_unknown_room_404(tmp_path, monkeypatch):
     runner = RecordingRunner()
     client = _make(tmp_path, monkeypatch, runner)
     r = client.post("/conf/conf-nope000000000/invite-agent", json={"requester": _HOST})
+    assert r.status_code == 404
+    assert runner.calls == []
+
+
+def test_invite_agent_adhoc_call_room_tailnet_spawns(tmp_path, monkeypatch):
+    """A plain (unregistered) call room spawns the agent for a tailnet caller.
+
+    The app pulls Lumina into a 1:1 / group ``sk-room-...`` it is already in.
+    That room is never in the conf registry, so the invite must still spawn the
+    agent into THAT room when the caller is on the tailnet (simulated via an
+    X-Forwarded-For header in a private range).
+    """
+    runner = RecordingRunner()
+    client = _make(tmp_path, monkeypatch, runner)
+    room = "sk-room-chef-lumina"
+    r = client.post(
+        f"/conf/{room}/invite-agent",
+        json={"agent": "lumina", "requester": "chef@skworld.io"},
+        headers={"X-Forwarded-For": "100.64.0.1"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["room"] == room
+    assert body["unit"] == f"lumina-conf-{room}"
+    assert len(runner.calls) == 1
+    cmd = runner.calls[0]
+    # The agent is spawned into the plain call room verbatim.
+    assert cmd[cmd.index("--room") + 1] == room
+    # A non-empty default greeting is passed even when none is provided.
+    assert cmd[cmd.index("--greet") + 1].strip() != ""
+
+
+def test_invite_agent_adhoc_call_room_off_tailnet_404(tmp_path, monkeypatch):
+    """An off-tailnet caller gets the original clean 404 for a plain room.
+
+    Nothing new is exposed over the Funnel: only tailnet callers may pull the
+    agent into an unregistered room.
+    """
+    runner = RecordingRunner()
+    client = _make(tmp_path, monkeypatch, runner)
+    r = client.post(
+        "/conf/sk-room-chef-lumina/invite-agent",
+        json={"agent": "lumina", "requester": "chef@skworld.io"},
+        headers={"X-Forwarded-For": "203.0.113.7"},
+    )
     assert r.status_code == 404
     assert runner.calls == []
 
