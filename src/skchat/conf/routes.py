@@ -329,13 +329,18 @@ def register_conf_routes(
 
     @app.post("/conf/{room}/invite-agent")
     async def invite_agent(room: str, request: Request) -> JSONResponse:
-        """Pull the Lumina AI agent into ``room``.
+        """Pull an AI agent (default Lumina) into ``room``.
 
         Launches ``lumina-call.py --room <room> --greet "<greeting>"`` as a
         transient, supervised, resource-scoped systemd ``--scope`` unit
         (``lumina-conf-<sanitized-room>``). The room name is sanitized into the
         unit name (alnum/dash only) to prevent argument injection. Degrades
         gracefully (503 + clear error) if ``systemd-run`` is unavailable.
+
+        The optional ``agent`` field (a safe lowercase slug) selects which
+        persona joins: it is passed through as ``SKAGENT`` and the call script
+        loads that agent's soul. Invalid slugs are rejected (400); the default
+        is ``lumina``.
 
         Two room kinds are served through the SAME contract so the app can pull
         Lumina into whatever call it is already in:
@@ -368,6 +373,17 @@ def register_conf_routes(
         if len(greeting) > 500:
             raise HTTPException(400, "greeting too long (max 500 chars)")
 
+        # Which agent persona to spawn. The call script picks its persona from the
+        # SKAGENT env var (falling back to the room identity), so passing it here
+        # makes the app's ``agent`` field meaningful instead of always-Lumina.
+        # This value becomes an env value AND a soul-dir path segment
+        # (``~/.skcapstone/agents/<agent>/soul``), so restrict it to a safe slug:
+        # lowercase alnum + dash only (no dots/slashes -> no path traversal, no
+        # shell metacharacters). Defaults to lumina for backward compatibility.
+        agent = (body.get("agent") or "lumina").strip().lower()
+        if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,31}", agent):
+            raise HTTPException(400, "invalid agent name")
+
         # Fail clearly (not 5xx-crash) if the spawning mechanism is unavailable.
         if shutil.which("systemd-run") is None:
             raise HTTPException(503, "systemd-run unavailable; cannot launch conf agent")
@@ -380,6 +396,7 @@ def register_conf_routes(
             f"--unit={unit}",
             "--property=MemoryMax=2G",
             "--property=CPUQuota=200%",
+            "-E", f"SKAGENT={agent}",
             "-E", f"SKCHAT_WEBUI_URL=http://127.0.0.1:{os.getenv('SKCHAT_PORT', '8765')}",
             "-E", f"SKCHAT_LIVEKIT_API_KEY={os.getenv('SKCHAT_LIVEKIT_API_KEY', '')}",
             "-E", f"SKCHAT_LIVEKIT_API_SECRET={os.getenv('SKCHAT_LIVEKIT_API_SECRET', '')}",

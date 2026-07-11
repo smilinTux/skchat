@@ -129,6 +129,48 @@ def test_invite_agent_default_greeting(tmp_path, monkeypatch):
     assert cmd[cmd.index("--greet") + 1].strip() != ""
 
 
+def test_invite_agent_passes_skagent_env(tmp_path, monkeypatch):
+    """A supplied ``agent`` slug is passed through as SKAGENT to the spawn.
+
+    The call script selects its persona from SKAGENT, so honoring the app's
+    ``agent`` field here is what makes it more than always-Lumina.
+    """
+    runner = RecordingRunner()
+    client = _make(tmp_path, monkeypatch, runner)
+    room = _create(client)
+    r = client.post(
+        f"/conf/{room}/invite-agent",
+        json={"requester": _HOST, "agent": "jarvis"},
+    )
+    assert r.status_code == 200
+    cmd = runner.calls[0]
+    assert "-E" in cmd
+    assert "SKAGENT=jarvis" in cmd
+
+
+def test_invite_agent_defaults_skagent_lumina(tmp_path, monkeypatch):
+    """No ``agent`` field defaults SKAGENT to lumina (backward compatible)."""
+    runner = RecordingRunner()
+    client = _make(tmp_path, monkeypatch, runner)
+    room = _create(client)
+    r = client.post(f"/conf/{room}/invite-agent", json={"requester": _HOST})
+    assert r.status_code == 200
+    assert "SKAGENT=lumina" in runner.calls[0]
+
+
+def test_invite_agent_rejects_bad_agent_slug(tmp_path, monkeypatch):
+    """A path-traversal / metacharacter agent slug is rejected (400), no spawn."""
+    runner = RecordingRunner()
+    client = _make(tmp_path, monkeypatch, runner)
+    room = _create(client)
+    r = client.post(
+        f"/conf/{room}/invite-agent",
+        json={"requester": _HOST, "agent": "../../etc"},
+    )
+    assert r.status_code == 400
+    assert runner.calls == []
+
+
 def test_invite_agent_host_gated(tmp_path, monkeypatch):
     runner = RecordingRunner()
     client = _make(tmp_path, monkeypatch, runner)
