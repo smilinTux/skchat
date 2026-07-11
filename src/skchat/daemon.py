@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import logging.handlers
 import os
 import signal
 import sys
@@ -37,6 +38,133 @@ except ImportError:  # pragma: no cover
 # Index 0 = 1st failure delay; last entry is the cap applied for all further failures.
 _BACKOFF_DELAYS: tuple = (5, 10, 20, 40, 60)
 _BACKOFF_ERROR_THRESHOLD: int = 5  # emit ERROR after this many consecutive failures
+
+# Logging rotation defaults (env-tunable). The daemon previously used a plain,
+# unbounded FileHandler via logging.basicConfig on the root logger, so daemon.log
+# grew without limit (observed at 3.8 GB/day on .41 — see the log remediation
+# design doc). A RotatingFileHandler caps total on-disk size at
+# ~SKCHAT_LOG_MAX_BYTES * (SKCHAT_LOG_BACKUP_COUNT + 1).
+_DEFAULT_LOG_MAX_BYTES: int = 50_000_000  # 50 MB per file
+_DEFAULT_LOG_BACKUP_COUNT: int = 5  # keep this many rotated files
+# Floor for the rotation size. A RotatingFileHandler treats maxBytes<=0 as
+# "never rotate" (unbounded). Never let the env drop below this.
+_MIN_LOG_MAX_BYTES: int = 1_000_000  # 1 MB
+
+
+class _SkchatLogFilter(logging.Filter):
+    """Restrict the daemon's file handler to the skchat/skcomms logger trees.
+
+    Without this, ``SKCHAT_LOG_LEVEL=DEBUG`` turns the root logger to DEBUG and
+    the shared file handler starts capturing third-party library DEBUG chatter
+    (urllib3, asyncio, pgpy, pydantic, …) — a firehose that drowns daemon.log
+    in noise. This filter passes only records emitted by ``skchat``/``skcomms``
+    (and their sub-loggers), plus records logged directly on the root logger,
+    so raising the level surfaces *our* DEBUG without the library noise.
+    """
+
+    _ALLOWED_ROOTS = ("skchat", "skcomms")
+
+    def filter(self, record: logging.LogRecord) -> bool:  # noqa: A003
+        name = record.name
+        if name in ("root", "__main__"):
+            return True
+        for root_name in self._ALLOWED_ROOTS:
+            if name == root_name or name.startswith(root_name + "."):
+                return True
+        return False
+
+
+def _outbox_summary_level(failed: int) -> str:
+    """Pick the log level for the per-cycle Outbox summary line.
+
+    Demoting the whole line to DEBUG (to cut all-clear per-cycle noise) also
+    hid *chronic delivery failures* at INFO. Split the two: when any delivery
+    failed/retried, surface the summary at INFO so the error signal isn't lost;
+    otherwise keep it at DEBUG.
+
+    Args:
+        failed: Number of messages that failed/were retried this cycle.
+
+    Returns:
+        str: ``"info"`` when ``failed`` > 0, else ``"debug"``.
+    """
+    return "info" if failed > 0 else "debug"
+
+
+def _configure_root_logging(log_file) -> None:
+    """Install a size-capped ``RotatingFileHandler`` on the root logger.
+
+    Replaces the old ``logging.basicConfig(filename=…)`` (an unbounded
+    ``FileHandler``) so ``daemon.log`` can no longer grow without limit. All
+    ``skcomms.*`` transport logs share this root handler, so this bounds the
+    whole file. Idempotent per resolved log path — constructing the daemon more
+    than once (as tests do) will not stack duplicate handlers.
+
+    Env knobs:
+        SKCHAT_LOG_LEVEL: root log level name (default ``INFO``).
+        SKCHAT_LOG_MAX_BYTES: rotation size threshold in bytes (default 50 MB).
+        SKCHAT_LOG_BACKUP_COUNT: number of rotated backups to keep (default 5).
+
+    Args:
+        log_file: Path (or str) to the daemon log file.
+    """
+    level_name = os.environ.get("SKCHAT_LOG_LEVEL", "INFO").upper()
+    level = getattr(logging, level_name, logging.INFO)
+    if not isinstance(level, int):
+        level = logging.INFO
+
+    try:
+        max_bytes = int(os.environ.get("SKCHAT_LOG_MAX_BYTES", str(_DEFAULT_LOG_MAX_BYTES)))
+    except (TypeError, ValueError):
+        max_bytes = _DEFAULT_LOG_MAX_BYTES
+    try:
+        backup_count = int(
+            os.environ.get("SKCHAT_LOG_BACKUP_COUNT", str(_DEFAULT_LOG_BACKUP_COUNT))
+        )
+    except (TypeError, ValueError):
+        backup_count = _DEFAULT_LOG_BACKUP_COUNT
+
+    # Clamp to sane floors. A RotatingFileHandler with maxBytes<=0 NEVER rolls
+    # over (it silently degrades to an unbounded FileHandler — exactly the
+    # runaway-log bug this handler exists to prevent), and backupCount<=0 keeps
+    # zero backups (it truncates on roll instead of retaining history). Reject
+    # both so a hostile/degenerate env can't re-introduce unbounded growth.
+    max_bytes = max(_MIN_LOG_MAX_BYTES, max_bytes)
+    backup_count = max(1, backup_count)
+
+    root = logging.getLogger()
+    root.setLevel(level)
+
+    target = str(Path(log_file).expanduser())
+    target_abs = os.path.abspath(target)
+    for handler in root.handlers:
+        if isinstance(handler, logging.handlers.RotatingFileHandler) and (
+            getattr(handler, "baseFilename", None) == target_abs
+        ):
+            # Already installed for this path — just re-sync the level.
+            handler.setLevel(level)
+            return
+
+    try:
+        file_handler = logging.handlers.RotatingFileHandler(
+            target,
+            maxBytes=max_bytes,
+            backupCount=backup_count,
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        # Non-fatal: a bad/unwritable log path must not stop the daemon from
+        # starting (the old basicConfig was a silent no-op when the root logger
+        # already had handlers). Degrade to whatever handlers exist / stderr.
+        logging.getLogger(__name__).warning(
+            "Could not open log file %s (%s); continuing without file logging", target, exc
+        )
+        return
+    file_handler.setLevel(level)
+    file_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+    # Keep third-party DEBUG noise out of daemon.log when the level is raised.
+    file_handler.addFilter(_SkchatLogFilter())
+    root.addHandler(file_handler)
 
 
 # Environment variable holding the WebRTC/coturn HMAC shared secret.
@@ -166,6 +294,11 @@ class ChatDaemon:
         self.last_poll_time: Optional[datetime] = None
         self.poll_count = 0
         self._webrtc_active = False
+        # A2 (F3-skchat): remember the last observed WebRTC signaling-health so
+        # _write_daemon_stats only WARNs on a *transition* into a non-ok state,
+        # instead of once per ~30s stats cycle (chronic log-spam when the
+        # signaling broker is simply absent).
+        self._last_signaling_health: Optional[str] = None
         self._transport_ok: bool = False
         self._consecutive_failures: int = 0
         self.total_sent: int = 0
@@ -189,11 +322,7 @@ class ChatDaemon:
         self._send_lock = threading.Lock()
 
         if log_file:
-            logging.basicConfig(
-                filename=str(log_file),
-                level=logging.INFO,
-                format="%(asctime)s [%(levelname)s] %(message)s",
-            )
+            _configure_root_logging(log_file)
 
         signal.signal(signal.SIGINT, self._handle_signal)
         signal.signal(signal.SIGTERM, self._handle_signal)
@@ -584,26 +713,32 @@ class ChatDaemon:
 
                     if messages:
                         self.total_received += len(messages)
+                        # Routine per-cycle receive chatter → DEBUG (A1). Was INFO
+                        # and, via the root FileHandler, a top contributor to the
+                        # runaway daemon.log. Startup lines stay at INFO.
                         self._log(
-                            f"Received {len(messages)} message(s) (total: {self.total_received})"
+                            f"Received {len(messages)} message(s) (total: {self.total_received})",
+                            "debug",
                         )
 
                         for msg in messages:
                             if self._route_file_message(msg):
                                 continue
-                            # Log the arrival synchronously (ops verification via
-                            # daemon.log) before handing off to the generation
-                            # worker — the worker may not drain this for ~10s.
+                            # Log the arrival (ops verification via daemon.log) before
+                            # handing off to the generation worker — the worker may
+                            # not drain this for ~10s. DEBUG so a busy inbox does not
+                            # flood the log (A1).
                             sender_short = msg.sender.split("@")[0].replace("capauth:", "")
                             preview = msg.content[:60] + (
                                 "..." if len(msg.content) > 60 else ""
                             )
-                            self._log(f"  [{sender_short}] {preview}")
+                            self._log(f"  [{sender_short}] {preview}", "debug")
                             self._genqueue.put(msg)
                     else:
                         if self.poll_count % 12 == 0:
                             self._log(
-                                f"No new messages (polls: {self.poll_count}, uptime: {self._uptime()})"
+                                f"No new messages (polls: {self.poll_count}, uptime: {self._uptime()})",
+                                "debug",
                             )
 
                 except Exception as exc:
@@ -648,8 +783,10 @@ class ChatDaemon:
                     try:
                         result = reaper.sweep(create_tombstones=True)
                         if result.expired > 0:
+                            # Routine per-cycle reaper chatter → DEBUG (A1).
                             self._log(
-                                f"Reaper: {result.expired} expired, {result.active_ephemeral} still active"
+                                f"Reaper: {result.expired} expired, {result.active_ephemeral} still active",
+                                "debug",
                             )
                     except Exception as exc:
                         logger.warning("daemon.py: %s", exc)
@@ -660,7 +797,13 @@ class ChatDaemon:
                     try:
                         delivered, failed = queue.process_pending(self._outbox_messenger)
                         if delivered > 0 or failed > 0:
-                            self._log(f"Outbox: {delivered} delivered, {failed} retried/failed")
+                            # All-clear per-cycle chatter → DEBUG (A1); but if any
+                            # delivery failed, surface at INFO so chronic delivery
+                            # failures aren't hidden below the default level.
+                            self._log(
+                                f"Outbox: {delivered} delivered, {failed} retried/failed",
+                                _outbox_summary_level(failed),
+                            )
                         self.total_sent += delivered
                     except Exception as exc:
                         logger.warning("daemon.py: %s", exc)
@@ -1264,8 +1407,15 @@ class ChatDaemon:
             webrtc_active=self._webrtc_active,
             signaling_connected=webrtc_signaling_ok,
         )
-        if self._webrtc_active and signaling_health != "ok":
+        # Only warn on a transition into a non-ok state (A2). Steady degraded/down
+        # cycles stay silent; a fresh degrade after a recovery warns again.
+        if (
+            self._webrtc_active
+            and signaling_health != "ok"
+            and signaling_health != self._last_signaling_health
+        ):
             logger.warning("WebRTC signaling %s — relayed calls may fall back", signaling_health)
+        self._last_signaling_health = signaling_health
 
         stats = {
             "uptime_seconds": uptime_seconds,
