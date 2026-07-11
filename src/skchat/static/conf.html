@@ -929,6 +929,12 @@ async function connect(cfg) {
     setupWatchVideoListeners();
     refreshRoster();
     setInterval(refreshRoster, 5000);
+
+    // Chat reliability: catch up any chat posted before we joined, then keep
+    // converging on the server chat lane so a message dropped on the P2P data
+    // channel is backfilled (dedup makes this idempotent).
+    catchUpLane('chat', ev => onChatReceived(ev, null));
+    startChatPoll();
   } catch (e) {
     log('connect failed:', e.name, e.message);
     showError(`Connect failed: ${e.message}`);
@@ -942,6 +948,8 @@ function cleanup() {
     if (t) { t.remove(); tiles.delete(sid); }
   }
   if (screenSharing) stopScreenShare(false);
+  stopChatPoll();
+  seenChatIds.clear();
   $('#leave').disabled = true;
   $('#controls').classList.add('hidden');
   setMicUI(false); setCamUI(false);
@@ -953,7 +961,34 @@ function cleanup() {
 function publishLane(lanePayload) {
   if (!room || !room.localParticipant) return Promise.resolve();
   const bytes = new TextEncoder().encode(JSON.stringify(lanePayload));
-  return room.localParticipant.publishData(bytes, { reliable: true });
+  const r = room.localParticipant.publishData(bytes, { reliable: true });
+  mirrorLaneToServer(lanePayload);   // fire-and-forget: persistence + server-poll backstop (do NOT await)
+  return r;
+}
+
+// Mirror lane envelopes to the server for persistence + convergence. The server
+// is NOT in the media path; clients mirror their data-channel envelopes here so
+// a message dropped on the P2P channel can be backfilled from the server lane.
+async function mirrorLaneToServer(lanePayload) {
+  if (!confRoom) return;
+  try {
+    await fetch(`/spaces/${encodeURIComponent(confRoom)}/lanes/event`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(lanePayload),
+    });
+  } catch (e) { log('lane mirror failed:', e.message); }
+}
+
+// Fetch persisted lane state (join catch-up + ongoing poll). Dedup keeps apply() idempotent.
+async function catchUpLane(lane, apply) {
+  if (!confRoom) return;
+  try {
+    const r = await fetch(`/spaces/${encodeURIComponent(confRoom)}/lanes/${lane}/state`);
+    if (!r.ok) return;
+    const { events } = await r.json();
+    for (const ev of events) { try { apply(ev); } catch (_) {} }
+  } catch (e) { log('lane catch-up failed:', e.message); }
 }
 
 function routeDataMessage(raw, participant) {
@@ -971,6 +1006,35 @@ function routeDataMessage(raw, participant) {
 
 let chatOpen = false;
 let chatUnread = 0;
+
+// Chat reliability: do NOT depend solely on the P2P data channel. Every chat is
+// mirrored to the server (mirrorLaneToServer) and the server lane is the
+// convergence source of truth: a periodic poll backfills any message dropped on
+// the LiveKit data channel (flaky mobile NAT/TURN, or sent before the peer's
+// data channel was ready). Dedup by a stable per-message id so live-data + local
+// echo + server poll never double-render.
+const seenChatIds = new Set();
+let chatPollTimer = null;
+
+function newMsgId() {
+  try { return crypto.randomUUID(); }
+  catch (_) { return 'm-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10); }
+}
+
+function chatDedupKey(msg) {
+  if (msg && msg.id) return 'id:' + msg.id;
+  return 'k:' + (msg && msg.from || '') + '|' + (msg && msg.ts || '') + '|' + (msg && msg.text || '');
+}
+
+function startChatPoll() {
+  stopChatPoll();
+  chatPollTimer = setInterval(() => {
+    catchUpLane('chat', ev => onChatReceived(ev, null)).catch(() => {});
+  }, 3000);
+}
+function stopChatPoll() {
+  if (chatPollTimer) { clearInterval(chatPollTimer); chatPollTimer = null; }
+}
 
 function setChatOpen(open) {
   chatOpen = open;
@@ -992,12 +1056,19 @@ function setChatOpen(open) {
 function onChatReceived(msg, participant) {
   const container = $('#chat-messages');
   if (!container) return;
+  // Dedup: a message can arrive via the live data channel AND the server poll
+  // (or catch-up-on-join). Render each exactly once.
+  const key = chatDedupKey(msg);
+  if (seenChatIds.has(key)) return;
+  seenChatIds.add(key);
+  const from = msg.from || (participant ? participant.identity : 'unknown');
+  const mine = from === (room?.localParticipant?.identity || '');
   const div = document.createElement('div');
   div.style.cssText = 'padding:4px 0;border-bottom:1px solid #1f2330;font-size:13px';
-  div.innerHTML = `<strong>${escapeHtml(msg.from||'unknown')}:</strong> ${escapeHtml(msg.text||'')}`;
+  div.innerHTML = `<strong>${escapeHtml(from)}:</strong> ${escapeHtml(msg.text||'')}`;
   container.appendChild(div);
   container.scrollTop = container.scrollHeight;
-  if (!chatOpen) {
+  if (!chatOpen && !mine) {
     chatUnread++;
     const badge = $('#chat-unread-badge');
     if (badge) { badge.style.display = ''; badge.textContent = chatUnread; }
@@ -1009,8 +1080,12 @@ async function sendChatMessage() {
   const text = input?.value?.trim();
   if (!text || !room) return;
   input.value = '';
-  await publishLane({ lane: 'chat', from: room.localParticipant.identity || 'me', text });
-  onChatReceived({ from: room.localParticipant.identity || 'me', text }, null);
+  const from = room.localParticipant.identity || 'me';
+  const msg = { lane: 'chat', id: newMsgId(), from, text, ts: Date.now() };
+  await publishLane(msg);
+  // Local echo. onChatReceived marks the id seen, so the server poll (which
+  // echoes our own message back) will not render it a second time.
+  onChatReceived(msg, null);
 }
 
 // ── D3: Whiteboard ─────────────────────────────────────────────────

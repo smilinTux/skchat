@@ -923,6 +923,40 @@ function routeDataMessage(raw, participant) {
 // ── D2: Chat panel ────────────────────────────────────────────────────────────
 let chatOpen = false, chatUnread = 0;
 
+// Chat reliability (do NOT depend solely on the P2P data channel).
+// Every chat message is mirrored to the server (mirrorLaneToServer) and the
+// server lane is the convergence source of truth: a periodic poll backfills any
+// message dropped on the LiveKit data channel (flaky mobile NAT/TURN, or sent
+// before the peer's data channel was ready). Dedup by a stable per-message id so
+// live-data + local echo + server poll never double-render.
+const seenChatIds = new Set();
+let chatPollTimer = null;
+
+function newMsgId() {
+  try { return crypto.randomUUID(); }
+  catch (_) { return 'm-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10); }
+}
+
+// Stable dedup key. Prefer the message's own id; fall back to a composite for
+// id-less messages (legacy senders / server-posted, e.g. recording write-ups).
+function chatDedupKey(msg) {
+  if (msg && msg.id) return 'id:' + msg.id;
+  return 'k:' + (msg && msg.from || '') + '|' + (msg && msg.ts || '') + '|' + (msg && msg.text || '');
+}
+
+// Poll the server chat lane so every participant converges on the server as the
+// source of truth even if the P2P data channel drops a message. Dedup keeps it
+// idempotent, so re-replaying the full lane each tick is safe.
+function startChatPoll() {
+  stopChatPoll();
+  chatPollTimer = setInterval(() => {
+    catchUpLane('chat', ev => onChatReceived(ev, null)).catch(() => {});
+  }, 3000);
+}
+function stopChatPoll() {
+  if (chatPollTimer) { clearInterval(chatPollTimer); chatPollTimer = null; }
+}
+
 function escapeHtml(s) {
   return String(s)
     .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
@@ -961,12 +995,17 @@ function appendChatMessage(from, text, ts, mine) {
 }
 
 function onChatReceived(msg, participant) {
+  // Dedup: a message can arrive via the live data channel AND the server poll
+  // (or catch-up-on-join). Render each exactly once.
+  const key = chatDedupKey(msg);
+  if (seenChatIds.has(key)) return;
+  seenChatIds.add(key);
   const from = msg.from || (participant ? participant.identity : 'unknown');
   const text = msg.text || '';
   const ts   = msg.ts   || Date.now();
   const mine = from === (room?.localParticipant?.identity || '');
   appendChatMessage(from, text, ts, mine);
-  if (!chatOpen) {
+  if (!chatOpen && !mine) {
     chatUnread++;
     const badge = $('#chat-unread-badge');
     badge.textContent = chatUnread; badge.classList.add('show');
@@ -981,8 +1020,12 @@ async function sendChatMessage() {
   if (!text || !room) return;
   const from = room.localParticipant.identity || 'me';
   const ts   = Date.now();
-  const msg  = { lane: 'chat', from, text, ts };
+  const id   = newMsgId();
+  const msg  = { lane: 'chat', id, from, text, ts };
   try {
+    // Pre-seed the dedup key so our own message (echoed back by the server poll)
+    // is not rendered a second time.
+    seenChatIds.add(chatDedupKey(msg));
     await publishLane(msg);
     appendChatMessage(from, text, ts, true);
     input.value = '';
@@ -2211,6 +2254,9 @@ async function connect() {
     // routeDataMessage: chat → onChatReceived, whiteboard → onWhiteboardReceived.
     catchUpLane('chat', ev => onChatReceived(ev, null));
     catchUpLane('whiteboard', ev => onWhiteboardReceived(ev));
+    // Keep converging on the server chat lane so a message dropped on the P2P
+    // data channel is backfilled (dedup makes this idempotent).
+    startChatPoll();
 
     await toggleMic(true);
     await toggleCam(true);
@@ -2238,6 +2284,8 @@ function cleanup() {
   setStatus('', 'disconnected');
 
   // D2: reset chat
+  stopChatPoll();
+  seenChatIds.clear();
   $('#chat-panel').style.display = 'none';
   $('#chat-panel').classList.add('collapsed');
   chatOpen = false; chatUnread = 0;
