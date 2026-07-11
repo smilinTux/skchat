@@ -658,11 +658,12 @@
     <button id="chat-toggle-btn"   class="toggle off" title="Toggle in-call chat panel">💬 Chat</button>
     <button id="wb-toggle-btn"     class="toggle off" title="Toggle whiteboard panel">📋 Board</button>
     <!-- D4: Screen share + Watch-together toggles -->
-    <button id="screen-share-btn"  class="toggle off" title="Share your screen">🖥️ Screen</button>
+    <button id="screen-share-btn"  class="toggle off" title="Share your screen (audio included when the browser allows it; for a Kodi/desktop window on Linux, also pick a PulseAudio 'Monitor of ...' source as your mic)">🖥️ Screen</button>
     <button id="watch-toggle-btn"  class="toggle off" title="Watch-together panel">📺 Watch</button>
     <button id="doc-toggle-btn"    class="toggle off" title="Collaborative document panel (Yjs CRDT)">📝 Doc</button>
     <button id="term-toggle-btn"   class="toggle off" title="skreach terminal lane (operator-only · exec gated)">⌨️ Term</button>
     <span id="screen-unsupported-msg" class="show" style="display:none">Screen share not supported in this browser</span>
+    <span id="screen-audio-hint" style="font-size:11px;color:var(--muted,#8a8f98);padding:4px 0">🔊 Sharing a browser tab streams its audio automatically. For a desktop app (e.g. Kodi) on Linux, also select a PulseAudio "Monitor of ..." source as your mic to stream system audio.</span>
     <a id="recordings-link" class="pill" href="/recordings.html" target="_blank" style="text-decoration:none">📁 Library</a>
   </div>
 
@@ -1124,7 +1125,8 @@ function onWhiteboardReceived(msg) {
 // start screen sharing, and select that tab. The watch-together (lane:"watch")
 // below is the sovereign path for synced playback without screen-sharing a window.
 
-let screenTrack = null;          // LocalTrack for the screen share
+let screenTrack = null;          // MediaStreamTrack for the screen video
+let screenAudioTrack = null;     // MediaStreamTrack for the screen audio (tab/system), may be null
 let screenSharing = false;
 
 function setScreenShareUI(active) {
@@ -1153,21 +1155,62 @@ async function startScreenShare() {
 
   try {
     log('screen share: requesting display media…');
+    // Ask for audio too. Chromium reliably captures a shared browser TAB's audio;
+    // full desktop/system audio on Linux is unreliable, so we degrade gracefully to
+    // video-only when no audio track comes back (see the Linux monitor-source hint
+    // in the toolbar). Sharing a Kodi window on Linux usually yields NO tab audio;
+    // the robust path there is to select a PulseAudio "Monitor of <sink>" as your mic.
     const stream = await navigator.mediaDevices.getDisplayMedia({
       video: { frameRate: { ideal: 15, max: 30 }, cursor: 'always' },
-      audio: false,   // system audio capture is browser/OS dependent; omit for compat
+      audio: {
+        // Preserve music/media fidelity: disable the voice-oriented DSP.
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl: false,
+      },
     });
     const videoTrack = stream.getVideoTracks()[0];
     if (!videoTrack) { log('screen share: no video track obtained'); return; }
+    const audioTrack = stream.getAudioTracks()[0] || null;
 
-    // Publish to LiveKit as a ScreenShare source
+    // Publish the screen video to LiveKit as a ScreenShare source
     await room.localParticipant.publishTrack(videoTrack, {
       source: Track.Source.ScreenShare,
       name: 'screenshare',
       simulcast: false,
     });
-
     screenTrack = videoTrack;
+
+    // If the browser handed us an audio track (tab audio, or system audio where
+    // supported), publish it too so viewers hear the shared content. Published as a
+    // ScreenShareAudio source; the receiver's attachTrack() already plays remote
+    // audio tracks. Video-only still works when no audio track is present.
+    if (audioTrack) {
+      try {
+        audioTrack.enabled = true;   // never publish muted
+        await room.localParticipant.publishTrack(audioTrack, {
+          source: Track.Source.ScreenShareAudio,
+          name: 'screenshare-audio',
+        });
+        screenAudioTrack = audioTrack;
+        log('screen share: audio published');
+        // If audio ends independently (e.g. tab closed), unpublish just the audio.
+        audioTrack.addEventListener('ended', () => {
+          log('screen share: audio ended');
+          if (screenAudioTrack) {
+            try { room.localParticipant.unpublishTrack(screenAudioTrack); } catch (e) {}
+            screenAudioTrack = null;
+          }
+        });
+      } catch (e) {
+        log('screen share: audio publish failed (video-only):', e.message);
+        try { audioTrack.stop(); } catch (_) {}
+        screenAudioTrack = null;
+      }
+    } else {
+      log('screen share: no audio track (video-only); on Linux desktop pick a monitor source as mic');
+    }
+
     setScreenShareUI(true);
     log('screen share: published');
 
@@ -1188,15 +1231,23 @@ async function startScreenShare() {
 }
 
 async function stopScreenShare(alreadyStopped = false) {
-  if (!screenTrack) return;
+  if (!screenTrack && !screenAudioTrack) return;
   try {
-    if (!alreadyStopped) screenTrack.stop();
-    // Unpublish from LiveKit
-    const pub = room?.localParticipant?.getTrackPublications?.()
-      ? [...room.localParticipant.trackPublications.values()]
-            .find(p => p.track === screenTrack || p.source === Track.Source.ScreenShare)
-      : null;
-    if (pub) await room.localParticipant.unpublishTrack(screenTrack);
+    // Unpublish + stop the screen audio track first (if any)
+    if (screenAudioTrack) {
+      if (!alreadyStopped) { try { screenAudioTrack.stop(); } catch (_) {} }
+      try { await room?.localParticipant?.unpublishTrack(screenAudioTrack); } catch (_) {}
+      screenAudioTrack = null;
+    }
+    if (screenTrack) {
+      if (!alreadyStopped) screenTrack.stop();
+      // Unpublish from LiveKit
+      const pub = room?.localParticipant?.getTrackPublications?.()
+        ? [...room.localParticipant.trackPublications.values()]
+              .find(p => p.track === screenTrack || p.source === Track.Source.ScreenShare)
+        : null;
+      if (pub) await room.localParticipant.unpublishTrack(screenTrack);
+    }
   } catch (e) { log('stopScreenShare error:', e.message); }
   screenTrack = null;
   setScreenShareUI(false);
