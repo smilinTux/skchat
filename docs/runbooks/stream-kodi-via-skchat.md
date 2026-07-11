@@ -139,6 +139,35 @@ both `screen_share` (video) and `screen_share_audio` (audio) and a second client
 subscribed to both, alongside the microphone track. See
 `scripts/qa_two_browser.py` for the data-channel sibling test.
 
+## Watch party in a Space (the easy path for a few people)
+
+A Space is the nicer surface for this: the shared screen becomes the big main
+stage automatically and everyone else is a listener around it, with chat and
+reactions. Use this for a UFC night or any "a few friends watch one screen"
+event. It rides the same LiveKit screen-share (video + audio) as above.
+
+1. Create a Space in the SKChat app (Spaces tab, new Space). You are the host.
+2. Add people / share the link. Invite from the app, or copy the guest link and
+   send it to your viewers. They open it and land in the Space as listeners.
+3. Go live. As host, tap "Go live" in the control bar (a speaker you promoted can
+   too). That runs the same screen-share as a call: pick your Kodi window / the
+   whole screen (or a browser tab if the fight is in a tab).
+4. Listeners auto-see the stage. The moment you go live, the shared screen jumps
+   to the big 16:9 stage at the top of the Space for every listener, labelled
+   "Streaming: <you>", with the speaker rings, chat, and reactions below it. No
+   one has to open a panel or click anything.
+5. Linux desktop audio (Kodi window / whole screen). Same rule as the call path:
+   `getDisplayMedia` will not hand you Kodi's system sound on Linux, so route it
+   in as your mic via a PulseAudio / PipeWire "Monitor of ..." source (see the
+   Kodi steps above). If the fight is in a browser tab, tick "Share tab audio"
+   instead and you can skip the monitor source. Tap "Stop" to end the stream; the
+   stage disappears and the Space falls back to the normal audio room.
+
+This was verified headless with two Chrome clients (CDP): a listener subscribed
+to the host's `screen_share` (video) plus `screen_share_audio` and `microphone`
+tracks, which is exactly what the stage renders, so the listener sees and hears
+the shared screen.
+
 ## Troubleshooting
 
 - No "Monitor of ..." in the picker: the source may be suspended. Play something in
