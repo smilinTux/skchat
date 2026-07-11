@@ -829,3 +829,69 @@ class TestConcurrentWriteAndPollRace:
         # Inbox is empty afterward (all archived) — a second poll yields nothing.
         assert ct._poll_file_inbox() == []
         assert list(inbox.glob("*.skc.json")) == []
+
+
+class TestFileInboxXmlBeaconSkip:
+    """A3 (F4-skchat): a leading-'<' XML/CoT <event> payload in the file inbox
+    is a DEBUG skip, matching the main receive path (transport.py already logs
+    that fallback at DEBUG). It must NOT be wrapped into a ChatMessage, stored
+    in history, or surfaced to the daemon."""
+
+    def test_poll_file_inbox_skips_xml_event_beacon(self, tmp_path, caplog):
+        import logging
+
+        ct, _, mock_history = _make_transport(tmp_path)
+        ct._get_own_fingerprint = lambda: "TESTFP"  # type: ignore[method-assign]
+
+        inbox = ct._file_inbox_root / "TESTFP"  # type: ignore[attr-defined]
+        inbox.mkdir(parents=True)
+
+        # A TAK/CoT presence beacon riding the same inbox — has a resolvable
+        # envelope sender, so today it would be wrapped as a plain-text
+        # ChatMessage and flood history. It must be skipped instead.
+        envelope = {
+            "envelope_id": "cot00001",
+            "sender": "capauth:alice@skworld.io",
+            "payload": {
+                "content": "<event version='2.0' uid='ANDROID-x' type='a-f-G-U-C'></event>"
+            },
+        }
+        env_file = inbox / "cot00001.skc.json"
+        env_file.write_text(json.dumps(envelope), encoding="utf-8")
+
+        with caplog.at_level(logging.DEBUG, logger="skchat.transport"):
+            messages = ct._poll_file_inbox()
+
+        # Not surfaced as a chat message, never stored.
+        assert messages == []
+        mock_history.store_message.assert_not_called()
+        # Skipped, not left to be reprocessed every cycle.
+        assert not env_file.exists()
+        # Logged at DEBUG, never WARNING (the whole point of A3).
+        assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
+        assert any(
+            r.levelno == logging.DEBUG and "cot00001" in r.getMessage()
+            for r in caplog.records
+        )
+
+    def test_poll_file_inbox_still_wraps_plain_text(self, tmp_path):
+        """A non-XML unparseable payload with an envelope sender is still wrapped
+        as a plain-text ChatMessage (the XML skip must not regress this)."""
+        ct, _, mock_history = _make_transport(tmp_path)
+        ct._get_own_fingerprint = lambda: "TESTFP"  # type: ignore[method-assign]
+
+        inbox = ct._file_inbox_root / "TESTFP"  # type: ignore[attr-defined]
+        inbox.mkdir(parents=True)
+
+        envelope = {
+            "envelope_id": "plain001",
+            "sender": "capauth:alice@skworld.io",
+            "payload": {"content": "just some plain text, not JSON"},
+        }
+        (inbox / "plain001.skc.json").write_text(json.dumps(envelope), encoding="utf-8")
+
+        messages = ct._poll_file_inbox()
+
+        assert len(messages) == 1
+        assert messages[0].content == "just some plain text, not JSON"
+        mock_history.store_message.assert_called_once()

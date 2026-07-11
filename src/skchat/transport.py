@@ -763,7 +763,9 @@ class ChatTransport:
         messages.extend(file_messages)
 
         if messages:
-            logger.info("Received %d chat message(s)", len(messages))
+            # Routine per-cycle receive chatter → DEBUG (A1). Was INFO and, via
+            # the root FileHandler, a steady contributor to the runaway daemon.log.
+            logger.debug("Received %d chat message(s)", len(messages))
 
         return messages
 
@@ -936,7 +938,13 @@ class ChatTransport:
                 payload_content = self._extract_payload(envelope)
                 envelope_sender_file = getattr(envelope, "sender", "") or ""
             except Exception as e:
-                logger.warning("transport.py: %s", e)
+                # A full MessageEnvelope parse miss is an EXPECTED fallback here —
+                # file-inbox entries are frequently raw JSON (handled just below)
+                # or CoT/XML beacons, not full wire envelopes. DEBUG, not WARNING,
+                # matching the same expected-fallback demotion on the main receive
+                # path (see the model_validate_json fallback above). Was chronic
+                # log-spam on every raw-JSON / beacon entry.
+                logger.debug("transport.py: %s", e)
                 pass
 
             # Fall back: parse raw JSON and unwrap payload.content or use as-is
@@ -959,6 +967,22 @@ class ChatTransport:
 
             if payload_content is None:
                 logger.debug("No payload in file inbox entry %s — archiving", env_file.name)
+                self._archive_file_inbox_entry(env_file, archive_dir)
+                continue
+
+            # A3 (F4-skchat): a leading-'<' payload is a TAK/CoT `<event …>` XML
+            # presence beacon riding the same inbox — not a chat message. The main
+            # receive path already skips these at DEBUG (its model_validate_json
+            # fallback + the `<event ` history-skip). Here, without an early skip,
+            # such a beacon gets *wrapped* as a plain-text ChatMessage (via the
+            # envelope-sender fallback below) and floods history + the webui inbox.
+            # Skip it at DEBUG and archive so it is neither surfaced nor
+            # reprocessed every cycle.
+            if payload_content.lstrip().startswith("<"):
+                logger.debug(
+                    "File inbox entry %s is an XML/CoT beacon (leading '<') — skipping",
+                    env_file.name,
+                )
                 self._archive_file_inbox_entry(env_file, archive_dir)
                 continue
 
@@ -1063,7 +1087,8 @@ class ChatTransport:
             self._archive_file_inbox_entry(env_file, archive_dir)
 
         if messages:
-            logger.info("File inbox: received %d message(s)", len(messages))
+            # Routine per-cycle receive chatter → DEBUG (A1), matching poll_inbox.
+            logger.debug("File inbox: received %d message(s)", len(messages))
 
         return messages
 

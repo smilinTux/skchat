@@ -823,3 +823,167 @@ class TestInitHelpersNonFatal:
         daemon = ChatDaemon(interval=5, quiet=True)
         with patch("skchat.memory_bridge.MemoryBridge", side_effect=RuntimeError("boom")):
             assert daemon._init_memory_bridge(MagicMock()) is None
+
+
+class TestRootLoggingRotation:
+    """A1 (F1): daemon.log must be size-capped via RotatingFileHandler, not an
+    unbounded FileHandler. Level + rotation knobs are env-tunable."""
+
+    @staticmethod
+    def _reset_root_handlers():
+        import logging
+
+        root = logging.getLogger()
+        saved_handlers = root.handlers[:]
+        saved_level = root.level
+        root.handlers = []
+        return root, saved_handlers, saved_level
+
+    def test_log_file_installs_rotating_handler_with_defaults(self, tmp_path, monkeypatch):
+        import logging
+        import logging.handlers
+
+        monkeypatch.delenv("SKCHAT_LOG_LEVEL", raising=False)
+        monkeypatch.delenv("SKCHAT_LOG_MAX_BYTES", raising=False)
+        monkeypatch.delenv("SKCHAT_LOG_BACKUP_COUNT", raising=False)
+
+        root, saved_handlers, saved_level = self._reset_root_handlers()
+        try:
+            log_file = tmp_path / "daemon.log"
+            ChatDaemon(interval=5, log_file=log_file, quiet=True)
+
+            rotating = [
+                h
+                for h in root.handlers
+                if isinstance(h, logging.handlers.RotatingFileHandler)
+            ]
+            assert rotating, "expected a RotatingFileHandler on the root logger"
+            handler = rotating[0]
+            # Defaults from the plan: 50 MB cap, 5 backups.
+            assert handler.maxBytes == 50_000_000
+            assert handler.backupCount == 5
+            # Default level INFO.
+            assert root.level == logging.INFO
+        finally:
+            for h in root.handlers:
+                try:
+                    h.close()
+                except Exception:
+                    pass
+            root.handlers = saved_handlers
+            root.setLevel(saved_level)
+
+    def test_log_level_env_override(self, tmp_path, monkeypatch):
+        import logging
+
+        monkeypatch.setenv("SKCHAT_LOG_LEVEL", "DEBUG")
+        root, saved_handlers, saved_level = self._reset_root_handlers()
+        try:
+            ChatDaemon(interval=5, log_file=tmp_path / "daemon.log", quiet=True)
+            assert root.level == logging.DEBUG
+        finally:
+            for h in root.handlers:
+                try:
+                    h.close()
+                except Exception:
+                    pass
+            root.handlers = saved_handlers
+            root.setLevel(saved_level)
+
+    def test_rotation_size_and_backup_env_override(self, tmp_path, monkeypatch):
+        import logging
+        import logging.handlers
+
+        monkeypatch.setenv("SKCHAT_LOG_MAX_BYTES", "1234567")
+        monkeypatch.setenv("SKCHAT_LOG_BACKUP_COUNT", "9")
+        root, saved_handlers, saved_level = self._reset_root_handlers()
+        try:
+            ChatDaemon(interval=5, log_file=tmp_path / "daemon.log", quiet=True)
+            rotating = [
+                h
+                for h in root.handlers
+                if isinstance(h, logging.handlers.RotatingFileHandler)
+            ]
+            assert rotating
+            assert rotating[0].maxBytes == 1234567
+            assert rotating[0].backupCount == 9
+        finally:
+            for h in root.handlers:
+                try:
+                    h.close()
+                except Exception:
+                    pass
+            root.handlers = saved_handlers
+            root.setLevel(saved_level)
+
+    def test_no_log_file_installs_no_rotating_handler(self, monkeypatch):
+        import logging
+        import logging.handlers
+
+        root, saved_handlers, saved_level = self._reset_root_handlers()
+        try:
+            ChatDaemon(interval=5, quiet=True)  # no log_file
+            rotating = [
+                h
+                for h in root.handlers
+                if isinstance(h, logging.handlers.RotatingFileHandler)
+            ]
+            assert rotating == []
+        finally:
+            root.handlers = saved_handlers
+            root.setLevel(saved_level)
+
+
+class TestWebRTCSignalingHealthDedup:
+    """A2 (F3-skchat): _write_daemon_stats must WARN on WebRTC signaling-health
+    *transitions* only, not once per ~30s cycle."""
+
+    @staticmethod
+    def _daemon_with_stats(tmp_path, monkeypatch):
+        from datetime import datetime, timezone
+
+        stats_file = tmp_path / "daemon-stats.json"
+        monkeypatch.setattr("skchat.daemon._DAEMON_STATS_FILE", stats_file)
+        daemon = ChatDaemon(interval=5, quiet=True)
+        daemon._webrtc_active = True
+        daemon.start_time = datetime.now(timezone.utc)
+        return daemon
+
+    @staticmethod
+    def _skcomms_with_webrtc(connected: bool):
+        webrtc_t = MagicMock()
+        webrtc_t.name = "webrtc"
+        webrtc_t._signaling_connected = connected
+        skcomms = MagicMock()
+        skcomms.router.transports = [webrtc_t]
+        return skcomms, webrtc_t
+
+    def test_degraded_warns_once_across_repeated_cycles(self, tmp_path, monkeypatch, caplog):
+        import logging
+
+        daemon = self._daemon_with_stats(tmp_path, monkeypatch)
+        skcomms, _ = self._skcomms_with_webrtc(connected=False)  # degraded
+
+        with caplog.at_level(logging.WARNING, logger="skchat.daemon"):
+            for _ in range(4):
+                daemon._write_daemon_stats(watchdog=None, presence=None, skcomms=skcomms)
+
+        warns = [r for r in caplog.records if "WebRTC signaling" in r.getMessage()]
+        assert len(warns) == 1, "degraded state should warn only on the first transition"
+
+    def test_recovery_then_redegrade_warns_again(self, tmp_path, monkeypatch, caplog):
+        import logging
+
+        daemon = self._daemon_with_stats(tmp_path, monkeypatch)
+        skcomms, webrtc_t = self._skcomms_with_webrtc(connected=False)  # degraded
+
+        with caplog.at_level(logging.WARNING, logger="skchat.daemon"):
+            daemon._write_daemon_stats(watchdog=None, presence=None, skcomms=skcomms)  # warn 1
+            daemon._write_daemon_stats(watchdog=None, presence=None, skcomms=skcomms)  # no warn
+            webrtc_t._signaling_connected = True  # recover → ok
+            daemon._write_daemon_stats(watchdog=None, presence=None, skcomms=skcomms)  # no warn
+            webrtc_t._signaling_connected = False  # degrade again → new transition
+            daemon._write_daemon_stats(watchdog=None, presence=None, skcomms=skcomms)  # warn 2
+
+        warns = [r for r in caplog.records if "WebRTC signaling" in r.getMessage()]
+        assert len(warns) == 2, "a fresh degrade after recovery is a new transition"
