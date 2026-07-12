@@ -648,6 +648,34 @@ def register_livekit_routes(app: FastAPI) -> None:
         room = _safe_room(body.get("room") or DEFAULT_ROOM)
         if not room:
             raise HTTPException(status_code=400, detail="room required")
+
+        # Room-scoped single-egress guard: if an HLS egress is already active for
+        # this room, reuse it instead of starting a second. Each RoomComposite
+        # egress is CPU heavy on .41 (headless Chrome + GStreamer), so two people
+        # both tapping "Cast to TV" for the same room must NOT double-start. This
+        # makes the endpoint idempotent per room: the second caller gets the same
+        # egress_id + hls_url the first caller started. Best-effort only: any list
+        # failure (SFU hiccup, livekit-api missing) falls through to a fresh start
+        # so casting is never blocked by the guard.
+        try:
+            for eg in await _egress_list_active():
+                if eg.get("room") == room:
+                    return JSONResponse(
+                        {
+                            "ok": True,
+                            "egress_id": eg["egress_id"],
+                            "status": eg["status"],
+                            "room": room,
+                            "hls_url": _hls_url(room),
+                            "playlist": f"/hls/{room}/index.m3u8",
+                            "reused": True,
+                        }
+                    )
+        except HTTPException:
+            raise
+        except Exception:
+            logger.debug("hls pre-start list failed; starting fresh", exc_info=True)
+
         try:
             segment_duration = int(
                 body.get("segment_duration")
@@ -678,6 +706,7 @@ def register_livekit_routes(app: FastAPI) -> None:
                 "room": room,
                 "hls_url": _hls_url(room),
                 "playlist": f"/hls/{room}/index.m3u8",
+                "reused": False,
             }
         )
 
