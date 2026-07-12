@@ -526,8 +526,12 @@ class InviteVerifier:
             if not _mark_used(jti, expires_at=exp):
                 raise GuestJoinError(f"single-use invite {jti!r} already used")
 
-        # Build identity: server-assigned, guest cannot influence it.
-        identity = f"guest:{jti[:8]}"
+        # Build identity: server-assigned, guest cannot influence it. A UNIQUE
+        # per-join suffix is appended so that several people joining through the
+        # SAME reusable invite each get a distinct LiveKit identity. Without it
+        # they all shared guest:<jti> and LiveKit (one participant per identity)
+        # deduped them, so each joiner saw only themselves ("1 in call").
+        identity = f"guest:{jti[:8]}-{secrets.token_hex(3)}"
 
         # Display name: body > token hint > fallback. Reserved names (operator /
         # agent handles) are suffixed so a guest cannot impersonate them.
