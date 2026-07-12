@@ -56,6 +56,15 @@
   <script type="module" src="sk_pqc_noble.js"></script>
 
   <!--
+    TV-cast helper (Cast-to-TV). Owns the <video> that plays a room's HLS
+    stream and wires the three cast paths: Safari AirPlay (native), Chromecast
+    (Google Cast SDK / CAF), and hls.js for Chrome. The Google Cast SDK and
+    hls.js are loaded lazily from a CDN by this helper on first cast/mount, so
+    they cost nothing until a user taps "Cast to TV". Exposes window.skCast.
+  -->
+  <script src="sk_cast.js"></script>
+
+  <!--
     You can customize the "flutter_bootstrap.js" script.
     This is useful to provide a custom configuration to the Flutter loader
     or to give the user feedback during the initialization process.
