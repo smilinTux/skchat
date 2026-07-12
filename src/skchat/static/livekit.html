@@ -648,7 +648,7 @@
     <select id="cam-select"  title="Camera"></select>
     <span id="device-msg" class="pill" style="display:none;background:#2c2110;border-color:#6b4c1c;color:#f5d9a0"></span>
     <span class="pill" id="room-pill"></span>
-    <span class="pill" id="peers-pill">0 peers</span>
+    <span class="pill" id="peers-pill">0 in call</span>
   </div>
 
   <div id="speak-row" class="controls hidden">
@@ -2083,8 +2083,8 @@ function removeTile(sid) {
     const t = tiles.get(key);
     if (t) { t.remove(); tiles.delete(key); }
   }
-  const n = room ? room.remoteParticipants.size : 0;
-  $('#peers-pill').textContent = `${n} peer${n === 1 ? '' : 's'}`;
+  // Single source of truth for the in-call count (self + remotes).
+  refreshPeers();
 }
 
 function attachTrack(track, participant) {
@@ -2265,9 +2265,34 @@ async function connect() {
     room
       .on(RoomEvent.ParticipantConnected,    p              => { log('+', p.identity); makeTile(p); refreshPeers(); })
       .on(RoomEvent.ParticipantDisconnected, p              => { log('-', p.identity); removeTile(p.sid); refreshPeers(); })
-      .on(RoomEvent.TrackSubscribed,         (track,_pub,p) => { log('subscribed', track.kind, track.source || '', 'from', p.identity); attachTrack(track, p); })
-      .on(RoomEvent.TrackUnsubscribed,       (track,_pub,p) => detachTrack(track, p))
-      .on(RoomEvent.LocalTrackPublished,     (pub,p)        => { log('published', pub.kind, pub.source || ''); attachTrack(pub.track, p); })
+      .on(RoomEvent.TrackSubscribed,         (track,_pub,p) => { log('subscribed', track.kind, track.source || '', 'from', p.identity); attachTrack(track, p); refreshPeers(); })
+      .on(RoomEvent.TrackUnsubscribed,       (track,_pub,p) => { detachTrack(track, p); refreshPeers(); })
+      // A LATE screen-share (host starts sharing after you already joined) must
+      // appear on the stage without a rejoin. TrackSubscribed → attachTrack draws
+      // the screen tile, but with adaptiveStream/dynacast a new publication is not
+      // always auto-subscribed, so force the subscription here the moment the
+      // remote publishes. Video-only viewers already in the room then get the
+      // screen tile immediately. refreshPeers keeps the in-call count honest.
+      .on(RoomEvent.TrackPublished,          (pub,p)        => {
+        log('remote published', pub.kind, pub.source || '', 'from', p.identity);
+        if (pub.source === Track.Source.ScreenShare && typeof pub.setSubscribed === 'function') {
+          try { pub.setSubscribed(true); } catch (e) { log('setSubscribed failed:', e.message); }
+        }
+        refreshPeers();
+      })
+      .on(RoomEvent.TrackUnpublished,        (pub,p)        => {
+        log('remote unpublished', pub.kind, pub.source || '', 'from', p.identity);
+        // Screen-share stopped: drop its dedicated tile even if no Unsubscribed
+        // event lands first, so the stage clears for everyone.
+        if (pub.source === Track.Source.ScreenShare) {
+          const key = `${p.sid}:screen`;
+          const t = tiles.get(key);
+          if (t) { t.remove(); tiles.delete(key); }
+        }
+        refreshPeers();
+      })
+      .on(RoomEvent.LocalTrackPublished,     (pub,p)        => { log('published', pub.kind, pub.source || ''); attachTrack(pub.track, p); refreshPeers(); })
+      .on(RoomEvent.LocalTrackUnpublished,   (pub,p)        => { log('unpublished', pub.kind, pub.source || ''); if (pub.track) detachTrack(pub.track, p); refreshPeers(); })
       .on(RoomEvent.TrackMuted,   (pub,p) => { const m = document.querySelector(`.mic-state[data-sid="${p.sid}"]`); if (m && pub.kind === 'audio') m.textContent = '🔇'; })
       .on(RoomEvent.TrackUnmuted, (pub,p) => { const m = document.querySelector(`.mic-state[data-sid="${p.sid}"]`); if (m && pub.kind === 'audio') m.textContent = '🎤'; })
       .on(RoomEvent.ParticipantMetadataChanged, (_prev,p)   => { updateAgentState(p); })
@@ -2424,8 +2449,14 @@ async function leave() {
 }
 
 function refreshPeers() {
-  const n = room ? room.remoteParticipants.size : 0;
-  $('#peers-pill').textContent = `${n} peer${n === 1 ? '' : 's'}`;
+  // Count EVERYONE currently in the room, self included, so the label is
+  // unambiguous. The old "N peers" excluded the local participant, so a solo
+  // host read "0 peers" while clearly being in the call, and each device only
+  // ever saw the others it happened to know about. remoteParticipants excludes
+  // the local participant, hence the +1 once we have joined.
+  const remotes = room ? room.remoteParticipants.size : 0;
+  const total   = remotes + (room && room.localParticipant ? 1 : 0);
+  $('#peers-pill').textContent = `${total} in call`;
 }
 
 // ── Mic/Cam controls ──────────────────────────────────────────────────────────
