@@ -11,6 +11,9 @@
 <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
 <script src="https://unpkg.com/@excalidraw/excalidraw@0.17.6/dist/excalidraw.production.min.js" crossorigin></script>
+<!-- TV-cast glue (window.skCast): Chromecast (Cast SDK) + AirPlay + hls.js. Shared
+     with the Flutter app so the browser/SDK glue has a single source of truth. -->
+<script src="/app/sk_cast.js"></script>
 <!-- D5: Yjs CRDT (collaborative document lane).
      The unpkg /dist/yjs.cjs build is CommonJS and throws "require is not
      defined" in the browser. Load the ESM build and expose it as window.Y so
@@ -660,6 +663,7 @@
     <!-- D4: Screen share + Watch-together toggles -->
     <button id="screen-share-btn"  class="toggle off" title="Share your screen (audio included when the browser allows it; for a Kodi/desktop window on Linux, also pick a PulseAudio 'Monitor of ...' source as your mic)">🖥️ Screen</button>
     <button id="watch-toggle-btn"  class="toggle off" title="Watch-together panel">📺 Watch</button>
+    <button id="cast-toggle-btn"   class="toggle off" title="Cast this call / screen-share to a TV (Chromecast · AirPlay · smart-TV browser) while you keep talking and chatting on this device">📡 Cast TV</button>
     <button id="doc-toggle-btn"    class="toggle off" title="Collaborative document panel (Yjs CRDT)">📝 Doc</button>
     <button id="term-toggle-btn"   class="toggle off" title="skreach terminal lane (operator-only · exec gated)">⌨️ Term</button>
     <span id="screen-unsupported-msg" class="show" style="display:none">Screen share not supported in this browser</span>
@@ -728,6 +732,44 @@
     </div>
     <div id="watch-status-bar">
       <span id="watch-log"></span>
+    </div>
+  </div>
+
+  <!-- Cast-to-TV panel ─────────────────────────────────────────────────────────
+       Starts an HLS egress of THIS room (POST /livekit/hls/start) and projects
+       the resulting playlist to a Chromecast / AirPlay target / smart-TV browser
+       via the shared window.skCast helper. You keep WebRTC audio + chat on this
+       device; the TV plays the (few-seconds-behind) HLS mirror. Best paired with
+       screen-share so a shared video reaches the TV.
+  ─────────────────────────────────────────────────────────────────────────── -->
+  <div id="cast-panel" class="sk-panel collapsed" style="display:none">
+    <div id="cast-panel-header" class="sk-panel-header">
+      📡 Cast to TV
+      <span id="cast-status-pill" class="pill" style="font-size:10px;margin-left:4px">idle</span>
+      <span class="toggle-icon" id="cast-chevron">▼</span>
+    </div>
+    <div style="padding:10px;display:flex;flex-direction:column;gap:8px">
+      <div style="font-size:12px;color:var(--muted,#8a8f98)">
+        Mirrors this room to a TV over HLS. Start screen-sharing first (🖥️ Screen) so the shared video reaches the TV, then hit Start Cast. The TV runs a few seconds behind- keep talking and chatting right here.
+      </div>
+      <div id="cast-preview-wrap" style="position:relative;width:100%;max-width:480px;aspect-ratio:16/9;background:#000;border-radius:8px;overflow:hidden;display:none">
+        <div id="cast-preview" style="position:absolute;inset:0"></div>
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center">
+        <button id="cast-start-btn"      class="primary">📡 Start Cast</button>
+        <button id="cast-chromecast-btn" style="display:none">📺 Chromecast</button>
+        <button id="cast-airplay-btn"    style="display:none">🍎 AirPlay</button>
+        <button id="cast-stop-btn"       class="danger" style="display:none">⏹ Stop Cast</button>
+      </div>
+      <div id="cast-url-row" style="display:none;flex-wrap:wrap;gap:6px;align-items:center">
+        <input id="cast-url" readonly style="flex:1;min-width:220px;font-family:var(--font-mono);font-size:12px" />
+        <button id="cast-copy-btn">📋 Copy</button>
+        <button id="cast-open-btn">↗ Open</button>
+      </div>
+      <div style="font-size:11px;color:var(--muted,#8a8f98)">
+        No cast device? Copy the URL into any smart-TV browser or VLC, or your TV's "play from URL".
+      </div>
+      <div id="cast-log" style="font-family:var(--font-mono);font-size:11px;color:#6b7280"></div>
     </div>
   </div>
 
@@ -1259,6 +1301,124 @@ async function toggleScreenShare() {
     await stopScreenShare();
   } else {
     await startScreenShare();
+  }
+}
+
+// ── Cast to TV (HLS egress → Chromecast / AirPlay / smart-TV browser) ─────────
+// Start an HLS egress of THIS room, then hand the playlist to window.skCast
+// (shared with the Flutter app) for the three cast paths. WebRTC audio + chat
+// stay on this device; the TV plays the few-seconds-behind HLS mirror. Pair with
+// screen-share so a shared video (Kodi, a browser tab, etc.) reaches the TV.
+let castEgressId = null;   // active egress id (for Stop)
+let castHlsUrl = null;     // public playlist URL
+const CAST_MOUNT_ID = 'cast-preview';
+
+function castLog(msg) {
+  const el = $('#cast-log');
+  if (el) el.textContent = msg;
+  log('cast:', msg);
+}
+
+function setCastPill(text) {
+  const p = $('#cast-status-pill');
+  if (p) p.textContent = text;
+}
+
+let castOpen = false;
+function setCastOpen(open) {
+  castOpen = open;
+  const panel = $('#cast-panel');
+  const btn = $('#cast-toggle-btn');
+  if (open) {
+    panel.classList.remove('collapsed');
+    $('#cast-chevron').textContent = '▲';
+    btn.classList.remove('off'); btn.classList.add('on');
+  } else {
+    panel.classList.add('collapsed');
+    $('#cast-chevron').textContent = '▼';
+    btn.classList.remove('on'); btn.classList.add('off');
+  }
+}
+
+async function startCast() {
+  if (!room) { showError('Connect to a room first.'); return; }
+  const roomName = room?.name || $('#room').value;
+  if (!roomName) { showError('No room to cast.'); return; }
+  const startBtn = $('#cast-start-btn');
+  startBtn.disabled = true;
+  setCastPill('starting…');
+  castLog('starting HLS egress (first segment can take ~10s)…');
+  try {
+    const r = await fetch('/livekit/hls/start', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ room: roomName }),
+    });
+    if (!r.ok) throw new Error(`hls start failed (${r.status}): ${await r.text()}`);
+    const data = await r.json();
+    castEgressId = data.egress_id || null;
+    castHlsUrl = data.hls_url;
+    castLog(data.reused ? 'reusing the egress already running for this room' : 'egress started');
+    // Guaranteed fallback: expose the playlist URL for copy / open / VLC / TV browser.
+    $('#cast-url').value = castHlsUrl;
+    $('#cast-url-row').style.display = 'flex';
+    $('#cast-preview-wrap').style.display = 'block';
+    startBtn.style.display = 'none';
+    $('#cast-stop-btn').style.display = 'inline-block';
+    setCastPill('casting');
+    if (window.skCast) {
+      // Inline preview player; this <video> is also what AirPlay routes from.
+      window.skCast.mount(CAST_MOUNT_ID, castHlsUrl);
+      const showChromecast = () => {
+        if (window.skCast.castAvailable()) $('#cast-chromecast-btn').style.display = 'inline-block';
+      };
+      showChromecast();
+      setTimeout(showChromecast, 1500);   // Cast SDK may finish init just after mount
+      setTimeout(() => {                   // AirPlay: Safari-only native picker
+        if (window.skCast.airplayAvailable(CAST_MOUNT_ID)) $('#cast-airplay-btn').style.display = 'inline-block';
+      }, 800);
+    } else {
+      castLog('cast helper not loaded; use Copy / Open to play the URL on your TV');
+    }
+  } catch (e) {
+    castLog('failed: ' + e.message);
+    setCastPill('failed');
+    showError('Cast failed: ' + e.message);
+    startBtn.style.display = 'inline-block';
+  } finally {
+    startBtn.disabled = false;
+  }
+}
+
+async function stopCast() {
+  const stopBtn = $('#cast-stop-btn');
+  stopBtn.disabled = true;
+  try {
+    if (window.skCast) {
+      try { window.skCast.endCast(); } catch (_) {}
+      try { window.skCast.unmount(CAST_MOUNT_ID); } catch (_) {}
+    }
+    if (castEgressId) {
+      const r = await fetch('/livekit/hls/stop', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ egress_id: castEgressId }),
+      });
+      castLog(r.ok ? 'egress stopped' : `stop returned ${r.status} (egress may auto-retire)`);
+    }
+  } catch (e) {
+    castLog('stop error: ' + e.message);
+  } finally {
+    castEgressId = null;
+    castHlsUrl = null;
+    $('#cast-url-row').style.display = 'none';
+    $('#cast-preview-wrap').style.display = 'none';
+    $('#cast-chromecast-btn').style.display = 'none';
+    $('#cast-airplay-btn').style.display = 'none';
+    $('#cast-stop-btn').style.display = 'none';
+    $('#cast-start-btn').style.display = 'inline-block';
+    stopBtn.disabled = false;
+    setCastPill('idle');
   }
 }
 
@@ -2445,6 +2605,9 @@ async function speakAsLumina() {
 }
 
 async function leave() {
+  // Tear down any active TV cast first so we don't leave a headless-Chrome HLS
+  // egress running on the egress box after the host leaves the room.
+  if (castEgressId) { try { await stopCast(); } catch (_) {} }
   if (room) { await room.disconnect(); room = null; }
 }
 
@@ -2542,6 +2705,31 @@ $('#watch-toggle-btn').addEventListener('click', () => {
 });
 $('#watch-panel-header').addEventListener('click', () => setWatchOpen(!watchOpen));
 $('#watch-load-btn').addEventListener('click', watchLoadAndShare);
+
+// Cast-to-TV
+$('#cast-toggle-btn').addEventListener('click', () => {
+  setCastOpen(!castOpen);
+  if (castOpen && room) $('#cast-panel').style.display = 'flex';   // hidden until first connect
+});
+$('#cast-panel-header').addEventListener('click', () => setCastOpen(!castOpen));
+$('#cast-start-btn').addEventListener('click', startCast);
+$('#cast-stop-btn').addEventListener('click', stopCast);
+$('#cast-chromecast-btn').addEventListener('click', () => {
+  if (window.skCast) window.skCast.requestCast(CAST_MOUNT_ID);
+});
+$('#cast-airplay-btn').addEventListener('click', () => {
+  if (window.skCast) window.skCast.showAirplay(CAST_MOUNT_ID);
+});
+$('#cast-copy-btn').addEventListener('click', async () => {
+  const url = $('#cast-url').value;
+  if (!url) return;
+  try { await navigator.clipboard.writeText(url); castLog('URL copied'); }
+  catch (_) { $('#cast-url').select(); document.execCommand('copy'); castLog('URL copied'); }
+});
+$('#cast-open-btn').addEventListener('click', () => {
+  const url = $('#cast-url').value;
+  if (url) window.open(url, '_blank', 'noopener');
+});
 $('#watch-play-btn').addEventListener('click',  watchPlay);
 $('#watch-pause-btn').addEventListener('click', watchPause);
 $('#watch-sync-btn').addEventListener('click',  watchSync);
