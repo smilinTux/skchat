@@ -1,11 +1,58 @@
-# Runbook: HLS TV-cast (Sprint 1)
+# Runbook: HLS TV-cast (Sprints 1 + 2)
 
 Turn a live call/Space screen-share into a plain **HLS stream with a reachable URL**
-so it can play in any browser, VLC, a smart-TV browser, or be cast as a URL.
+so it can play in any browser, VLC, a smart-TV browser, or be cast to a TV.
 
-This is **Sprint 1: the HLS URL only**. Sprint 2 (separate) adds the in-app
-Chromecast / AirPlay buttons. Until then, the returned `hls_url` is the whole
-deliverable: paste it into a browser / VLC / a TV browser, or cast the URL.
+- **Sprint 1 (below): the HLS URL + egress control plane.** POST `/livekit/hls/start`
+  turns a room into an HLS stream and hands back `{egress_id, hls_url}`; POST
+  `/livekit/hls/stop` ends it; GET `/livekit/hls/status` lists active egresses.
+- **Sprint 2 (see "In-app Cast to TV" below): the in-app cast experience.** A
+  "Cast to TV" button on the call / conf / Space control bar auto-starts the egress,
+  plays the stream in-app, and offers Chromecast, AirPlay, and open-on-TV. The phone
+  keeps its live WebRTC mic + chat while the TV plays the separate HLS stream.
+
+## In-app Cast to TV (Sprint 2)
+
+The SKChat Flutter web client (served at `/app/`) drives all of this from one button;
+no URL copy-paste needed for the common case.
+
+**What the user does:**
+
+1. In any live call, conference, or Space, tap **Cast to TV** in the control bar.
+2. A sheet opens, auto-starts the HLS egress for THIS room (POST `/livekit/hls/start`),
+   and shows a small live preview.
+3. Pick a target:
+   - **Chromecast**: opens the Google Cast device picker; on select, the hls_url loads
+     on the Cast receiver (the default media receiver plays HLS). Chrome / Edge / Android.
+   - **AirPlay**: shown only on Safari / iOS (the `<video>` carries the native AirPlay
+     route). Taps open the system AirPlay picker.
+   - **Open on TV**: copies the hls_url and tries to open it, the guaranteed fallback.
+     Paste it into a smart-TV browser or VLC. Also works as Chrome's built-in
+     "Cast this tab" if the buttons do not find a device.
+4. **Keep casting, back to call** dismisses the sheet but leaves the TV playing.
+   **Stop casting** ends the egress (POST `/livekit/hls/stop`).
+5. Leaving the room (call / conf / Space) auto-stops any active cast.
+
+**Honest UX:** the TV runs a few seconds behind the live call (HLS buffers segments).
+The phone's WebRTC audio + chat stay live and low-latency; only the TV video is delayed.
+
+**How it is built (Flutter web + JS interop):**
+
+- App UI: `skchat-app/lib/features/calls/cast_sheet.dart` (the sheet + control-bar
+  button + `activeCastSessionProvider` + `stopActiveCast`), `cast_service.dart`
+  (start/stop HTTP), `cast_stage_web.dart` / `cast_stage_stub.dart` (the
+  `HtmlElementView` platform view, conditional-imported).
+- JS glue: `skchat-app/web/sk_cast.js` (vendored, loaded from `web/index.html`). It owns
+  the `<video>`, lazy-loads **hls.js** from a CDN for non-Safari, uses Safari's native
+  HLS + AirPlay, and drives the **Google Cast SDK (CAF)** device picker + `loadMedia`.
+  The Cast SDK + hls.js are only fetched on first cast, so they cost nothing until used.
+- The LiveKit connection is never torn down for a cast: the cast video is a SEPARATE HLS
+  playback to the TV. The app keeps mic + chat.
+
+Physical-device casting (a real Chromecast / AirPlay TV) must be tested on the operator's
+own devices on the same network; the build has been verified to compile and deploy.
+
+The rest of this runbook is the Sprint 1 control plane the button sits on top of.
 
 ## Architecture
 
@@ -185,18 +232,24 @@ curl -s -o /dev/null -w 'hls index: %{http_code}\n' \
 docker logs sk-livekit-egress 2>&1 | grep -i redis
 ```
 
-## Sprint 2 (not in this sprint)
+## Sprint 2 (shipped)
 
-Sprint 2 adds the **in-app Chromecast / AirPlay buttons** in the SKChat client, so a
-tap casts the stream to a TV. It still needs:
+Sprint 2 added the **in-app Cast to TV button** in the SKChat client, so a tap casts the
+stream to a TV. See "In-app Cast to TV (Sprint 2)" at the top of this runbook for the
+user steps and the code map. Delivered:
 
-- Flutter app UI: a Cast button on the call/Space screen that calls
-  `/livekit/hls/start`, gets the `hls_url`, and hands it to a Cast / AirPlay sender
-  (Cast SDK receiver app + AirPlay `AVPlayer` URL).
-- Receiver plumbing: a Cast receiver app id (default media receiver plays HLS URLs
-  directly), and iOS AirPlay routing.
-- Lifecycle: auto-start the egress when a viewer casts, auto-stop when the last viewer
-  disconnects (so we do not leave a headless-Chrome egress running on .41).
+- **Flutter app UI**: a Cast button on the call / conf / Space control bar that calls
+  `/livekit/hls/start`, gets the `hls_url`, plays it in-app, and offers Chromecast,
+  AirPlay, and open-on-TV (`cast_sheet.dart`, `cast_service.dart`, `cast_stage_web.dart`).
+- **Receiver plumbing**: the Google Cast SDK (CAF) with the default media receiver
+  (`CC1AD845`, plays HLS URLs directly), Safari native AirPlay, and hls.js for Chrome,
+  all in the vendored `web/sk_cast.js`.
+- **Lifecycle**: the egress auto-starts on the first cast (room-scoped single egress,
+  reused if already running) and is stopped on "Stop casting" or when the user leaves the
+  room. Sprint-1 retention + the room-empties backstop still bound disk on .41.
 
-For now (Sprint 1) the `hls_url` is the deliverable: it plays in any browser, VLC, a
-smart-TV browser, or can be cast as a URL.
+**Deploy note:** the Cast button is client-side; deploying it is just rebuilding the
+Flutter web app (`flutter build web --release --base-href /app/` on .41) and copying
+`build/web/` into `src/skchat/static/app/`. The webui serves those static files from
+disk, so **no `skchat-webui@lumina` restart is needed** for an app-only build. The
+Sprint-1 backend routes (`livekit_routes.py`) were unchanged by Sprint 2.
