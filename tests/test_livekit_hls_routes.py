@@ -36,24 +36,36 @@ class _FakeInfo:
 
 
 class _FakeEgress:
+    """Stateful fake: started egresses show up in ``list_egress`` until stopped.
+
+    This mirrors the real SFU closely enough to exercise the room-scoped
+    single-egress guard (which lists active egresses before starting a second
+    one for the same room). ``list_egress(active=True)`` returns only the
+    egresses that have been started and not yet stopped.
+    """
+
     def __init__(self) -> None:
         self.started = []
         self.stopped = []
         self.listed = 0
+        self._active: dict[str, _FakeInfo] = {}
 
     async def start_room_composite_egress(self, req):
         self.started.append(req)
         # status 1 == EGRESS_ACTIVE
-        return _FakeInfo("EG_fake123", 1, req.room_name)
+        info = _FakeInfo("EG_fake123", 1, req.room_name)
+        self._active[info.egress_id] = info
+        return info
 
     async def stop_egress(self, req):
         self.stopped.append(req.egress_id)
+        self._active.pop(req.egress_id, None)
         # status 2 == EGRESS_ENDING
         return _FakeInfo(req.egress_id, 2)
 
     async def list_egress(self, req):  # noqa: ARG002
         self.listed += 1
-        return type("_Resp", (), {"items": [_FakeInfo("EG_fake123", 1, "lumina-and-chef")]})()
+        return type("_Resp", (), {"items": list(self._active.values())})()
 
 
 class _FakeLK:
@@ -96,6 +108,8 @@ def test_hls_start_returns_egress_id_and_url(wired):
         "https://noroc2027.tail204f0c.ts.net/hls/lumina-and-chef/index.m3u8"
     )
     assert body["playlist"] == "/hls/lumina-and-chef/index.m3u8"
+    # A fresh start (no active egress for the room yet) is not a reuse.
+    assert body["reused"] is False
     # The real SegmentedFileOutput (HLS) request was built and handed to the SFU.
     assert len(fake.egress.started) == 1
     req = fake.egress.started[0]
@@ -141,13 +155,42 @@ def test_hls_stop_stops_egress(wired):
 
 def test_hls_status_lists_active(wired):
     client, fake = wired
+    # Nothing active until an egress is started.
+    assert client.get("/livekit/hls/status").json()["egresses"] == []
+    client.post("/livekit/hls/start", json={"room": "lumina-and-chef"})
     r = client.get("/livekit/hls/status")
     assert r.status_code == 200, r.text
     egresses = r.json()["egresses"]
     assert egresses == [
         {"egress_id": "EG_fake123", "room": "lumina-and-chef", "status": "EGRESS_ACTIVE"}
     ]
-    assert fake.egress.listed == 1
+
+
+def test_hls_start_reuses_active_room_egress(wired):
+    """Two callers casting the same room reuse ONE egress (no double-start)."""
+    client, fake = wired
+    first = client.post("/livekit/hls/start", json={"room": "lumina-and-chef"})
+    assert first.status_code == 200, first.text
+    assert first.json()["reused"] is False
+    # Second caller for the same room: reused, and NO new egress was started.
+    second = client.post("/livekit/hls/start", json={"room": "lumina-and-chef"})
+    assert second.status_code == 200, second.text
+    body = second.json()
+    assert body["reused"] is True
+    assert body["egress_id"] == "EG_fake123"
+    assert body["hls_url"].endswith("/hls/lumina-and-chef/index.m3u8")
+    assert len(fake.egress.started) == 1  # still just the one
+
+
+def test_hls_start_after_stop_starts_fresh(wired):
+    """Once an egress is stopped, casting the room again starts a new one."""
+    client, fake = wired
+    client.post("/livekit/hls/start", json={"room": "lumina-and-chef"})
+    client.post("/livekit/hls/stop", json={"egress_id": "EG_fake123"})
+    again = client.post("/livekit/hls/start", json={"room": "lumina-and-chef"})
+    assert again.status_code == 200, again.text
+    assert again.json()["reused"] is False
+    assert len(fake.egress.started) == 2
 
 
 def test_hls_control_gate_rejects_public(monkeypatch):
