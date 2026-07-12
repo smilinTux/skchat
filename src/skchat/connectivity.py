@@ -177,13 +177,16 @@ def ice_config(local_fqid: str, peer_fqid: str, peer_hint: dict | None = None) -
                 "credential": credential,
             }
         )
-    elif _env_flag("SKCHAT_ALLOW_OPENRELAY", False) and _env_flag(
+    if _env_flag("SKCHAT_ALLOW_OPENRELAY", False) and _env_flag(
         "SKCHAT_PUBLIC_TURN_ENABLED", True
     ):
-        # LAST RESORT: free public TURN (Open Relay Project). Suppressed by
-        # default; only reached when SKCHAT_ALLOW_OPENRELAY is explicitly on AND
-        # no sovereign coturn is configured. Alert-on-use: log a WARNING and bump
-        # the openrelay fallback counter every time we lean on a third-party relay.
+        # FALLBACK: free public TURN (Open Relay Project). Suppressed by default;
+        # only reached when SKCHAT_ALLOW_OPENRELAY is explicitly on. When a
+        # sovereign coturn is ALSO configured this is appended AFTER it as an
+        # extra relay tier, so a client whose network blocks the sovereign relay
+        # port (e.g. a mobile carrier blocking the funnel TCP port) still gets a
+        # widely-reachable standard-port relay. Alert-on-use: log a WARNING and
+        # bump the openrelay fallback counter every time we offer a third-party relay.
         public_urls = _split_urls(
             os.getenv("SKCHAT_PUBLIC_TURN_URLS", _DEFAULT_PUBLIC_TURN_URLS)
         )
