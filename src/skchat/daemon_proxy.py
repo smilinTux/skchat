@@ -18,9 +18,11 @@ the genuine ``lumina-unhinged`` soul + FEB on qwen3.6, not a generic assistant.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -1017,6 +1019,14 @@ async def api_conversation_history(peer_id: str):
     return JSONResponse([])
 
 
+# Idempotency state for api_send (see the coalescing block below). Per-message
+# locks serialize identical concurrent sends; the recent-reply cache lets a retry
+# within the window return the same reply instead of triggering a fresh brain call.
+_SEND_LOCKS: dict[str, asyncio.Lock] = {}
+_SEND_RECENT: dict[str, tuple[float, dict]] = {}
+_SEND_DEDUP_WINDOW = 90.0  # seconds a generated reply is reused for retries
+
+
 @router.post("/v1/send")
 async def api_send(request: Request):
     """Persist the operator's message and, for Lumina, invoke her real brain.
@@ -1119,52 +1129,82 @@ async def api_send(request: Request):
             }
         )
 
-    # 1. Persist the operator's message to Lumina (with reply/thread linkage).
-    user_msg = _persist(
-        hist, OPERATOR_ID, LUMINA_URI, content, reply_to_id, thread_id,
-        content_type=content_type, rich=rich,
-    )
+    # ── Idempotency: coalesce app retries of the SAME message ──────────────────
+    # The Flutter app resends POST /api/send when brain.reply() is slow enough to
+    # time out the HTTP request. Each resend used to store a NEW user turn and
+    # generate a FRESH reply from stale 40-message context -> Chef got 2-3
+    # off-topic replies + a leaked pqdm1 blob per message. Serialize identical
+    # sends on a per-message lock and cache the reply for a short window, so a
+    # retry (concurrent OR just after) returns the SAME reply, one brain call.
+    _dk = f"{thread_id or ''}\x1f{content}"
+    _lock = _SEND_LOCKS.setdefault(_dk, asyncio.Lock())
+    async with _lock:
+        _cached = _SEND_RECENT.get(_dk)
+        if _cached is not None and (time.monotonic() - _cached[0]) < _SEND_DEDUP_WINDOW:
+            logger.info("api_send: coalesced duplicate send (returning cached reply)")
+            return JSONResponse({**_cached[1], "deduped": True})
 
-    # 2. Build the prior-turn history for context (oldest-first role/content).
-    prior = _lumina_messages(limit=40)
-    convo: list[dict] = []
-    for pm in prior:
-        if pm["id"] == user_msg.id:
-            continue  # don't double-feed the message we just stored
-        convo.append(
-            {"role": "assistant" if pm["is_agent"] else "user", "content": pm["content"]}
+        # 1. Persist the operator's message to Lumina (with reply/thread linkage).
+        user_msg = _persist(
+            hist, OPERATOR_ID, LUMINA_URI, content, reply_to_id, thread_id,
+            content_type=content_type, rich=rich,
         )
 
-    # 3. Invoke her brain. Never 500: persist a graceful fallback on failure.
-    brain = _get_brain()
-    if brain is None:
-        reply_text = "…(I'm here, but my language backend is offline right now — try again in a moment.)"
-    else:
-        try:
-            reply_text = brain.reply(content, history=convo, sender="chef") or ""
-        except Exception:
-            logger.exception("Lumina brain reply failed")
-            reply_text = "…(thinking failed — my backend hiccuped. Say that again?)"
-        if not reply_text.strip():
-            reply_text = "…(thinking failed — I came back empty. Try once more?)"
+        # 2. Build the prior-turn history for context (oldest-first role/content).
+        prior = _lumina_messages(limit=40)
+        convo: list[dict] = []
+        for pm in prior:
+            if pm["id"] == user_msg.id:
+                continue  # don't double-feed the message we just stored
+            convo.append(
+                {"role": "assistant" if pm["is_agent"] else "user", "content": pm["content"]}
+            )
 
-    # 4. Persist + return her reply — linked back to the user turn (and thread).
-    #    PQC Q5: if the conversation negotiated hybrid AND the operator published
-    #    a prekey, seal the reply so the app opens it hybrid-pq. Otherwise the
-    #    plaintext reply is stored unchanged (classical path).
-    reply_wire = reply_text
-    if convo_is_hybrid:
-        sealed = _seal_hybrid_outbound(reply_text, recipient_short="chef")
-        if sealed is not None:
-            reply_wire = sealed
-    reply_msg = _persist(
-        hist,
-        LUMINA_URI,
-        OPERATOR_ID,
-        reply_wire,
-        reply_to_id=user_msg.id,
-        thread_id=thread_id,
-    )
+        # 3. Invoke her brain. Never 500: persist a graceful fallback on failure.
+        brain = _get_brain()
+        if brain is None:
+            reply_text = "…(I'm here, but my language backend is offline right now — try again in a moment.)"
+        else:
+            try:
+                reply_text = brain.reply(content, history=convo, sender="chef") or ""
+            except Exception:
+                logger.exception("Lumina brain reply failed")
+                reply_text = "…(thinking failed — my backend hiccuped. Say that again?)"
+            if not reply_text.strip():
+                reply_text = "…(thinking failed — I came back empty. Try once more?)"
+
+        # 4. Persist her reply — linked back to the user turn (and thread).
+        #    PQC Q5: if the conversation negotiated hybrid AND the operator published
+        #    a prekey, seal the reply so the app opens it hybrid-pq. Otherwise the
+        #    plaintext reply is stored unchanged (classical path).
+        reply_wire = reply_text
+        if convo_is_hybrid:
+            sealed = _seal_hybrid_outbound(reply_text, recipient_short="chef")
+            if sealed is not None:
+                reply_wire = sealed
+        reply_msg = _persist(
+            hist,
+            LUMINA_URI,
+            OPERATOR_ID,
+            reply_wire,
+            reply_to_id=user_msg.id,
+            thread_id=thread_id,
+        )
+
+        _result = {
+            "ok": True,
+            "id": user_msg.id,
+            "recipient": LUMINA_ID,
+            "ts": user_msg.timestamp.isoformat(),
+            # Full shared contract (+ legacy fields) so the app round-trips it.
+            "reply": _msg_to_app(reply_msg, self_id=OPERATOR_ID),
+        }
+        # Cache so a retry within the window returns THIS reply; prune stale keys.
+        _now = time.monotonic()
+        _SEND_RECENT[_dk] = (_now, _result)
+        for _k in [k for k, (t, _) in list(_SEND_RECENT.items()) if _now - t > _SEND_DEDUP_WINDOW]:
+            _SEND_RECENT.pop(_k, None)
+            _SEND_LOCKS.pop(_k, None)
 
     # Web clients (the legacy webui) refresh on a ws "new" ping if available.
     try:
@@ -1174,16 +1214,7 @@ async def api_send(request: Request):
     except Exception:
         logger.debug("ws broadcast unavailable", exc_info=True)
 
-    return JSONResponse(
-        {
-            "ok": True,
-            "id": user_msg.id,
-            "recipient": LUMINA_ID,
-            "ts": user_msg.timestamp.isoformat(),
-            # Full shared contract (+ legacy fields) so the app round-trips it.
-            "reply": _msg_to_app(reply_msg, self_id=OPERATOR_ID),
-        }
-    )
+    return JSONResponse(_result)
 
 
 @router.post("/v1/react")
