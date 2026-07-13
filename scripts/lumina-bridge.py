@@ -94,6 +94,51 @@ def _save_processed(ids: set[str]) -> None:
 BRIDGE_HISTORY: set[str] = _load_processed()  # persistent across restarts
 _last_response: dict[str, float] = {}  # sender → last reply timestamp
 
+
+def _seed_backlog_as_processed() -> None:
+    """On startup, adopt every currently-pending message as already-processed
+    WITHOUT replying, so the bridge only ever answers messages that arrive AFTER
+    it started.
+
+    Without this, a bridge that was down or wedged for a while wakes up, reloads
+    a stale processed-set, and then re-answers the whole accumulated backlog of
+    old questions (one SQLite message per poll cycle) -- exactly Chef's
+    "responds 3 times, the first two to earlier questions" symptom, seen when the
+    responder was moved / restarted. Set LUMINA_BRIDGE_ANSWER_BACKLOG=1 to answer
+    the pending backlog instead of skipping it.
+
+    Read-only: it collects dedup keys from every poll source and marks them; the
+    files themselves are left in place (they are simply deduped on later polls).
+    """
+    if os.environ.get("LUMINA_BRIDGE_ANSWER_BACKLOG", "0").strip().lower() in (
+        "1", "true", "yes", "on",
+    ):
+        logger.info("LUMINA_BRIDGE_ANSWER_BACKLOG set — pending backlog WILL be answered")
+        return
+    try:
+        pending: list[dict] = []
+        for _poll in (poll_inbox_file_for_lumina, poll_outbox_for_lumina, check_inbox_for_lumina):
+            try:
+                pending += _poll()
+            except Exception as exc:  # one bad source must not abort the seed
+                logger.debug("backlog seed: %s failed: %s", getattr(_poll, "__name__", "?"), exc)
+        seeded = 0
+        for m in pending:
+            k = _msg_key(m)
+            if k and k not in BRIDGE_HISTORY:
+                BRIDGE_HISTORY.add(k)
+                seeded += 1
+            BRIDGE_HISTORY.add(f"content:{m.get('sender', '')}:{m.get('content', '')}")
+        if seeded:
+            _save_processed(BRIDGE_HISTORY)
+        logger.info(
+            "Seeded %d backlog message(s) as processed (not replying); "
+            "only messages received from now on will be answered",
+            seeded,
+        )
+    except Exception as exc:
+        logger.warning("backlog seed failed (continuing, may answer backlog): %s", exc)
+
 # ─── Agent-loop prevention guard ──────────────────────────────────────────────
 #
 # The bridge used to LLM-auto-reply to EVERY sender, including other AI agents.
@@ -1038,6 +1083,10 @@ def run_bridge() -> None:
         logger.info("LLMBridge ready")
     except Exception as exc:
         logger.warning("LLMBridge pre-warm failed (will retry on first message): %s", exc)
+
+    # Skip whatever is already queued so a restart / node-move never floods the
+    # user with answers to old questions. Only new arrivals get a reply.
+    _seed_backlog_as_processed()
 
     while True:
         try:
