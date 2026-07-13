@@ -39,6 +39,12 @@ AVAILABLE_MODELS: list[dict] = [
         "local": False,
     },
     {
+        "id": "ornith-tiny",
+        "label": "Ornith Tiny 9B NVFP4+MTP (local)",
+        "provider": "local",
+        "local": True,
+    },
+    {
         "id": "qwen3.6-27b-abliterated",
         "label": "Qwen 3.6 27B (local)",
         "provider": "local",
