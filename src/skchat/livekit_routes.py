@@ -81,6 +81,56 @@ def _have_creds() -> bool:
     return bool(LIVEKIT_API_KEY and LIVEKIT_API_SECRET)
 
 
+def _request_room_token(request: object, body: dict | None) -> str:
+    """Extract a LiveKit token from the request (body ``token`` or Bearer header)."""
+    if isinstance(body, dict):
+        tok = (body.get("token") or "").strip()
+        if tok:
+            return tok
+    headers = getattr(request, "headers", {}) or {}
+    auth = (headers.get("authorization") or "").strip()
+    if auth.lower().startswith("bearer "):
+        return auth[7:].strip()
+    return ""
+
+
+def _token_room(token: str) -> str | None:
+    """Return the ``video.room`` claim of a validly-signed LiveKit token, else None.
+
+    Verifies the signature + expiry with our own API secret, so a forged or
+    stale token yields None.
+    """
+    if not token or not _have_creds():
+        return None
+    try:
+        from livekit import api  # soft dep
+
+        claims = api.TokenVerifier(LIVEKIT_API_KEY, LIVEKIT_API_SECRET).verify(token)
+        video = getattr(claims, "video", None)
+        return getattr(video, "room", None) if video is not None else None
+    except Exception:
+        logger.debug("hls: room-token verify failed", exc_info=True)
+        return None
+
+
+def _hls_authorized(request: object, room: str, body: dict | None) -> bool:
+    """Authorize an HLS control action for ``room``.
+
+    Allowed if EITHER the caller is operator/loopback/tailnet (control plane),
+    OR the caller presents a valid LiveKit token whose ``video.room`` matches
+    ``room`` (i.e. a participant already in the room). The second path lets a
+    Space host / call participant start casting from their phone over the public
+    Funnel, where they are neither loopback/tailnet nor an operator, while
+    staying DoS-safe: you can only start the egress for a room you can join.
+    """
+    try:
+        _gate_token_mint(request)
+        return True
+    except HTTPException:
+        pass
+    return bool(room) and _token_room(_request_room_token(request, body)) == room
+
+
 def _gate_token_mint(request: object) -> None:
     """Gate POST /livekit/token to loopback/tailnet OR an operator token.
 
@@ -634,7 +684,6 @@ def register_livekit_routes(app: FastAPI) -> None:
         starting an egress is a control action, not something a public/Funnel
         caller should trigger.
         """
-        _gate_token_mint(request)
         if not _have_creds():
             raise HTTPException(
                 status_code=503,
@@ -648,6 +697,15 @@ def register_livekit_routes(app: FastAPI) -> None:
         room = _safe_room(body.get("room") or DEFAULT_ROOM)
         if not room:
             raise HTTPException(status_code=400, detail="room required")
+        # Authorize AFTER we know the room: operator/tailnet OR a valid LiveKit
+        # token for THIS room. The token path lets a Space host / call participant
+        # start casting from their phone over the Funnel (they hold a room token
+        # but are not loopback/tailnet/operator).
+        if not _hls_authorized(request, room, body):
+            raise HTTPException(
+                status_code=403,
+                detail="not authorized to start HLS for this room",
+            )
 
         # Room-scoped single-egress guard: if an HLS egress is already active for
         # this room, reuse it instead of starting a second. Each RoomComposite
@@ -712,8 +770,13 @@ def register_livekit_routes(app: FastAPI) -> None:
 
     @app.post("/livekit/hls/stop")
     async def livekit_hls_stop(request: Request) -> JSONResponse:
-        """Stop an HLS egress by ``{egress_id}``. Same gate as start."""
-        _gate_token_mint(request)
+        """Stop an HLS egress by ``{egress_id}``.
+
+        Authorized like /start: operator/tailnet OR a valid LiveKit token for
+        the egress's room (client sends ``{egress_id, room, token}``). On the
+        token path we additionally confirm the egress actually belongs to that
+        room so a room token cannot stop another room's egress.
+        """
         if not _have_creds():
             raise HTTPException(status_code=503, detail="livekit not configured")
         body = (
@@ -724,6 +787,27 @@ def register_livekit_routes(app: FastAPI) -> None:
         egress_id = (body.get("egress_id") or "").strip()
         if not egress_id:
             raise HTTPException(status_code=400, detail="egress_id required")
+        room = _safe_room(body.get("room") or "")
+        authorized = False
+        try:
+            _gate_token_mint(request)
+            authorized = True
+        except HTTPException:
+            authorized = False
+        if not authorized and room and _token_room(_request_room_token(request, body)) == room:
+            # Valid token for `room`; confirm the egress belongs to it (best-effort:
+            # a list failure does not block a legitimate stop).
+            try:
+                authorized = any(
+                    eg.get("egress_id") == egress_id and eg.get("room") == room
+                    for eg in await _egress_list_active()
+                )
+            except Exception:
+                authorized = True
+        if not authorized:
+            raise HTTPException(
+                status_code=403, detail="not authorized to stop this egress"
+            )
         try:
             result = await _egress_stop(egress_id)
         except ImportError:
