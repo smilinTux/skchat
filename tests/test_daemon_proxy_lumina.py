@@ -431,3 +431,47 @@ def test_async_double_send_dedupes_no_second_task(client, monkeypatch):
     assert r1.status_code == 202
     assert r2.json().get("deduped") is True          # 2nd is the cached 202
     assert calls["n"] == 1                            # only ONE reply task spawned
+
+
+# --------------------------------------------------------------------------- #
+# SEAM 2/4 — flag-gated shadow write to the single-writer message log
+# --------------------------------------------------------------------------- #
+def test_message_log_shadow_write_when_flag_on(client, tmp_path, monkeypatch):
+    """SKCHAT_MESSAGE_LOG=1: a send ALSO appends to the single-writer log.
+
+    The user turn (and Lumina's reply) land in her per-conversation log, so
+    ``latest_seq`` advances past zero. The primary history save is untouched.
+    """
+    monkeypatch.setenv("SKCHAT_HOME", str(tmp_path / "mlhome"))
+    monkeypatch.setenv("SKCHAT_MESSAGE_LOG", "1")
+    monkeypatch.setattr(daemon_proxy, "_MSGLOG", None)  # fresh singleton on tmp path
+
+    r = client.post("/api/v1/send", json={"recipient": "lumina", "message": "log me"})
+    assert r.status_code == 200
+
+    log = daemon_proxy._get_message_log()
+    # Sync path persists BOTH the operator turn and Lumina's reply -> seq >= 2.
+    assert log.latest_seq(daemon_proxy.LUMINA_ID) >= 2
+    rows = log.read(daemon_proxy.LUMINA_ID)
+    assert rows[0]["content"] == "log me"
+    assert rows[0]["seq"] == 1 and rows[0]["message_id"]
+
+    # The normal chat surface is unchanged (shadow write is parallel, not primary).
+    hist = client.get("/api/v1/conversations/" + daemon_proxy.LUMINA_ID).json()
+    assert [m["content"] for m in hist] == ["log me", "Lumina hears you: log me"]
+
+
+def test_message_log_untouched_when_flag_off(client, tmp_path, monkeypatch):
+    """Flag OFF (default): the log is never constructed and no DB is written —
+    zero behavior change, existing api_send contract intact."""
+    monkeypatch.setenv("SKCHAT_HOME", str(tmp_path / "mlhome_off"))
+    monkeypatch.delenv("SKCHAT_MESSAGE_LOG", raising=False)
+    monkeypatch.setattr(daemon_proxy, "_MSGLOG", None)
+
+    r = client.post("/api/v1/send", json={"recipient": "lumina", "message": "no log"})
+    assert r.status_code == 200
+    assert r.json()["reply"]["content"] == "Lumina hears you: no log"
+
+    # Nothing touched the log: singleton stays None, no DB file created.
+    assert daemon_proxy._MSGLOG is None
+    assert not (tmp_path / "mlhome_off" / "message_log.db").exists()
