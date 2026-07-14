@@ -138,6 +138,36 @@ class ChatCrypto:
             logger.warning("crypto.py: %s", exc)
             raise CryptoError(f"Failed to load private key: {exc}") from exc
 
+    @classmethod
+    def without_signing_key(cls) -> "ChatCrypto":
+        """Build a ratchet/verify-only :class:`ChatCrypto` with NO PGP signing key.
+
+        Confidentiality on the 1:1 DM ratchet is AEAD-based, unsigned, and
+        deniable (see :meth:`encrypt_message_ratchet`), so it does **not** need
+        the agent's PGP signing key. When that key is missing, this lets the
+        ratchet stay fully functional with a hybrid key while classical PGP
+        signing/encryption degrades — surfaced as
+        :attr:`skchat.transport.ChatTransport.signing_degraded`.
+
+        The ratchet methods and the static verifier still work; :meth:`sign_message`
+        and :meth:`encrypt_message` raise (there is no key to sign with).
+        """
+        self = cls.__new__(cls)
+        self._private_key = None
+        self._passphrase = ""
+        self._fingerprint = ""
+        return self
+
+    @property
+    def can_sign(self) -> bool:
+        """Whether a PGP signing key is loaded (classical sign/encrypt available).
+
+        ``False`` for a ratchet-only engine (see :meth:`without_signing_key`):
+        the DM ratchet still provides confidentiality, but classical PGP
+        signatures are unavailable.
+        """
+        return self._private_key is not None
+
     @property
     def fingerprint(self) -> str:
         """The fingerprint of the loaded private key.
@@ -169,6 +199,9 @@ class ChatCrypto:
         """
         if message.encrypted:
             return message
+
+        if self._private_key is None:
+            raise EncryptionError("no PGP signing key available (signing degraded)")
 
         try:
             recipient_key, _ = pgpy.PGPKey.from_blob(recipient_public_armor)
@@ -596,6 +629,8 @@ class ChatCrypto:
         Raises:
             SigningError: If signing fails.
         """
+        if self._private_key is None:
+            raise SigningError("no PGP signing key available (signing degraded)")
         try:
             pgp_message = pgpy.PGPMessage.new(message.content.encode("utf-8"), cleartext=False)
 
@@ -813,13 +848,27 @@ def load_agent_crypto(identity: Optional[str] = None) -> Optional["ChatCrypto"]:
             f"~/.skcapstone/agents/{agent}/capauth/identity/private.asc"
         )
         if not os.path.isfile(key_path):
-            logger.debug("load_agent_crypto: no key for agent %r at %s", agent, key_path)
-            return None
+            # P0.2: a missing PGP *signing* key must NOT disable ratchet
+            # confidentiality. Return a ratchet-only engine so the DM ratchet
+            # keeps working with a hybrid key; the transport reports this as
+            # ``signing_degraded`` rather than silently dropping to classical.
+            logger.info(
+                "load_agent_crypto: no PGP signing key for %r at %s — classical "
+                "signing degraded, DM ratchet confidentiality preserved",
+                agent,
+                key_path,
+            )
+            return ChatCrypto.without_signing_key()
         with open(key_path) as fh:
             armor = fh.read()
         crypto = ChatCrypto(armor, "")
         logger.info("load_agent_crypto: live crypto wired for %r (fp %s)", agent, crypto.fingerprint)
         return crypto
     except Exception as exc:  # noqa: BLE001 — best-effort, never break transport init
-        logger.warning("load_agent_crypto failed (classical fallback): %s", exc)
-        return None
+        # Even on an unexpected load failure, keep confidentiality: hand back a
+        # ratchet-only engine (signing degraded) instead of disabling the ratchet.
+        logger.warning("load_agent_crypto failed (signing degraded, ratchet preserved): %s", exc)
+        try:
+            return ChatCrypto.without_signing_key()
+        except Exception:  # noqa: BLE001 — never break transport init
+            return None

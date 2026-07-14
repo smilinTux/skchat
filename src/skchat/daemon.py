@@ -300,6 +300,9 @@ class ChatDaemon:
         # signaling broker is simply absent).
         self._last_signaling_health: Optional[str] = None
         self._transport_ok: bool = False
+        # Live ChatTransport ref, populated once init succeeds, so the health
+        # server can surface transport-level state (e.g. signing_degraded).
+        self._transport: Optional[object] = None
         self._consecutive_failures: int = 0
         self.total_sent: int = 0
         self.start_time: Optional[datetime] = None
@@ -432,6 +435,15 @@ class ChatDaemon:
             logger.warning("daemon.py: %s", exc)
             self._log(f"Failed to initialize transport: {exc}", "error")
             raise
+
+        # Expose the transport to the health server (signing_degraded, etc.).
+        self._transport = transport
+        if getattr(transport, "signing_degraded", False):
+            self._log(
+                "PGP signing key unavailable — classical signing DEGRADED; "
+                "DM ratchet confidentiality preserved",
+                "warning",
+            )
 
         # Mark running early so the poll loop can start immediately, before slow
         # subsystem init (SQLite, imports) completes.  All subsystem references
@@ -1243,24 +1255,36 @@ class ChatDaemon:
                     )
                     return
 
-                if self.path != "/health":
-                    self.send_response(404)
-                    self.end_headers()
-                    return
-
-                last_poll_at = (
-                    daemon_ref.last_poll_time.isoformat() if daemon_ref.last_poll_time else None
-                )
-
-                body = json.dumps(
-                    {
+                def _status_body() -> dict:
+                    last_poll_at = (
+                        daemon_ref.last_poll_time.isoformat()
+                        if daemon_ref.last_poll_time
+                        else None
+                    )
+                    return {
                         "status": "ok" if daemon_ref.running else "stopping",
                         "uptime_s": uptime_s,
                         "messages_received": daemon_ref.total_received,
                         "last_poll_at": last_poll_at,
                         "transport_ok": daemon_ref._transport_ok,
+                        # P0.2: classical PGP signing degraded while ratchet
+                        # confidentiality is preserved (or False when signing
+                        # is healthy / no transport yet).
+                        "signing_degraded": bool(
+                            getattr(daemon_ref._transport, "signing_degraded", False)
+                        ),
                     }
-                ).encode()
+
+                if self.path.split("?", 1)[0] == "/api/v1/status":
+                    self._respond_json(200, _status_body())
+                    return
+
+                if self.path != "/health":
+                    self.send_response(404)
+                    self.end_headers()
+                    return
+
+                body = json.dumps(_status_body()).encode()
 
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")

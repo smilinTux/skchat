@@ -24,6 +24,18 @@ from .models import ChatMessage, ContentType, DeliveryStatus
 
 logger = logging.getLogger("skchat.transport")
 
+
+class ConfidentialityError(Exception):
+    """A confidential (ratchet) send could not be sealed — refuse to send.
+
+    Raised by :meth:`ChatTransport.send_message` when a peer has a **live
+    ratchet session** (``mgr.can_ratchet`` is true) but the seal fails to
+    produce a ratchet frame — either by raising, or by returning the body
+    unsealed. Failing closed here prevents the classical fallback from silently
+    handing a **plaintext** envelope to skcomms and downgrading an already
+    established confidential channel (HNDL exposure). See P0.1b.
+    """
+
 # Local file outbox that lumina-bridge's poll_outbox_for_lumina() scans.
 _LOCAL_OUTBOX = Path("~/.skcomms/outbox").expanduser()
 
@@ -183,6 +195,10 @@ class ChatTransport:
         self._skcomms = skcomms
         self._history = history
         self._crypto = crypto
+        # P0.2: classical PGP signing may be unavailable while ratchet
+        # confidentiality still works (a ratchet-only ChatCrypto — no signing
+        # key). Surfaced by /health + /api/v1/status; NEVER gates the ratchet.
+        self.signing_degraded: bool = self._is_signing_degraded(crypto)
         self._identity = identity
         self._presence_cache = presence_cache  # PresenceCache for typing indicators
         self._fallback_transport = fallback_transport
@@ -200,6 +216,21 @@ class ChatTransport:
         # (SKCOMMS_CONSENT_MODE set); cached None-or-instance so a disabled build
         # never re-pays construction. See skchat.token_wallet.
         self._token_wallet_cached: object = "unset"
+
+    @staticmethod
+    def _is_signing_degraded(crypto: Optional[object]) -> bool:
+        """Whether classical PGP signing is unavailable while confidentiality stands.
+
+        ``True`` only when a crypto engine IS wired but cannot sign (a ratchet-only
+        :class:`~skchat.crypto.ChatCrypto` — see ``ChatCrypto.without_signing_key``):
+        the DM ratchet still provides confidentiality, but classical PGP signatures
+        are degraded. A fully classical deployment with no crypto at all reports
+        ``False`` — nothing is "degraded"; that is the classical baseline. A legacy
+        crypto object predating ``can_sign`` is assumed to sign (no false alarm).
+        """
+        if crypto is None:
+            return False
+        return not bool(getattr(crypto, "can_sign", True))
 
     def _consent_wallet(self):
         """Lazily build the gate-4 :class:`TokenWallet`, or ``None`` when OFF.
@@ -268,8 +299,9 @@ class ChatTransport:
         # Wire the agent's ChatCrypto into the live path if the caller didn't
         # supply one — without this the daemon/CLI/webui built ChatTransport with
         # crypto=None, leaving the DM ratchet inert (RFC-0001 P1) even with
-        # SKCHAT_DM_RATCHET=1. Best-effort: load_agent_crypto returns None on any
-        # failure, preserving the exact prior (classical/skcomms-signed) behaviour.
+        # SKCHAT_DM_RATCHET=1. Best-effort: load_agent_crypto returns a signing
+        # key when present, or a ratchet-only ChatCrypto (signing degraded, ratchet
+        # confidentiality preserved — P0.2) when the PGP key is missing.
         if kwargs.get("crypto") is None:
             from .crypto import load_agent_crypto
 
@@ -428,18 +460,49 @@ class ChatTransport:
         # so federated DMs silently went out plaintext. Ratchet bodies are AEAD-
         # authenticated and intentionally UNSIGNED (deniable).
         if self._crypto:
-            try:
-                mgr = self._dm_ratchet_manager()
-                if mgr is not None:
-                    if not mgr.can_ratchet(message.recipient):
-                        # First-contact: pull a remote peer's pqdr1 prekey, once.
+            mgr = self._dm_ratchet_manager()
+            if mgr is not None:
+                # Probe ratchet capability tolerantly: a probe error, or a peer
+                # that never resolves a hybrid prekey, means "no live ratchet
+                # session" → the classical/no-ratchet path below stays
+                # byte-for-byte unchanged. First-contact may pull a remote pqdr1
+                # prekey once.
+                ratchet_capable = False
+                try:
+                    ratchet_capable = mgr.can_ratchet(message.recipient)
+                    if not ratchet_capable:
                         self._maybe_fetch_remote_prekey(message.recipient)
-                    if mgr.can_ratchet(message.recipient):
+                        ratchet_capable = mgr.can_ratchet(message.recipient)
+                except Exception as exc:
+                    logger.debug(
+                        "ratchet capability probe failed for %s (classical path): %s",
+                        message.recipient,
+                        exc,
+                    )
+                    ratchet_capable = False
+
+                if ratchet_capable:
+                    # P0.1b FAIL-CLOSED: the peer has a LIVE ratchet session, so a
+                    # classical plaintext envelope would silently downgrade an
+                    # established confidential channel (HNDL exposure). If the seal
+                    # cannot produce a ratchet frame — by raising, or by returning
+                    # the body unsealed — REFUSE the send with ConfidentialityError.
+                    # NO plaintext envelope is ever handed to skcomms.
+                    try:
                         sealed = mgr.seal(outbound)
-                        if self._crypto.is_ratchet_message(sealed):
-                            outbound = sealed  # ratchet-sealed — deniable, no signature
-            except Exception as exc:
-                logger.warning("DM ratchet seal failed (classical fallback): %s", exc)
+                    except ConfidentialityError:
+                        raise
+                    except Exception as exc:
+                        raise ConfidentialityError(
+                            f"refusing to send to {message.recipient}: ratchet seal "
+                            f"failed for a live-ratchet peer ({exc})"
+                        ) from exc
+                    if not self._crypto.is_ratchet_message(sealed):
+                        raise ConfidentialityError(
+                            f"refusing to send to {message.recipient}: ratchet seal "
+                            "produced no confidential frame for a live-ratchet peer"
+                        )
+                    outbound = sealed  # ratchet-sealed — deniable, no signature
 
         # Classical PGP path: only when a recipient public key is available AND the
         # body was not already ratchet-sealed above (unchanged legacy behaviour).
