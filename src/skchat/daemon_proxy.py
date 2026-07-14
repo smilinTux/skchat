@@ -1318,11 +1318,17 @@ async def api_send(request: Request):
         if group is not None:
             if not G.can_post(group, OPERATOR_ID):
                 raise HTTPException(403, "this group is read-only (admins only)")
-            msg = G.fan_out_send(
-                group, hist, OPERATOR_ID, content,
-                reply_to_id=reply_to_id, thread_id=group.id,
-                content_type=content_type, rich=rich,
-            )
+            try:
+                msg = G.fan_out_send(
+                    group, hist, OPERATOR_ID, content,
+                    reply_to_id=reply_to_id, thread_id=group.id,
+                    content_type=content_type, rich=rich,
+                )
+            except G.GroupSealNotReadyError as exc:
+                # encryption_required group can't seal to every member: refuse
+                # LOUDLY (409) instead of a partial/cleartext send. The client can
+                # surface "encryption not ready" rather than a silent downgrade.
+                raise HTTPException(409, f"group encryption not ready: {exc}")
             try:
                 from skchat import webui as _webui
 

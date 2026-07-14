@@ -108,6 +108,71 @@ def _member_has_group_key(group, member) -> bool:
     return bool(getattr(member, "public_key_armor", ""))
 
 
+class GroupSealNotReadyError(RuntimeError):
+    """Raised when an encryption-REQUIRED group cannot seal (fail closed, loud).
+
+    Never silently downgrade an encryption-required group to cleartext — refuse
+    the send and surface why, so a bug/misconfig can't quietly ship plaintext a
+    caller believed was encrypted."""
+
+
+def _group_has_key(group) -> bool:
+    """Whether the group holds a usable sealing key (epoch secret / group key)."""
+    if getattr(group, "is_hybrid", False):
+        return bool(getattr(group, "epoch_secret_hex", ""))
+    return bool(getattr(group, "group_key", ""))
+
+
+def _group_unkeyed_members(group) -> list[str]:
+    """URIs of members that hold NO group key (would be dropped by a sealed send)."""
+    return [m.identity_uri for m in getattr(group, "members", [])
+            if not _member_has_group_key(group, m)]
+
+
+def group_requires_encryption(group) -> bool:
+    """A group can be marked ``metadata['encryption_required'] = True`` — then it
+    NEVER falls back to cleartext (fail-closed-loud) when sealing can't happen."""
+    return bool(getattr(group, "metadata", {}).get("encryption_required"))
+
+
+def group_encryption_status(group) -> dict:
+    """Observable per-group encryption posture — the answer to "is this group
+    actually encrypted right now?". No silent state: when sealing is on the wire
+    copies are ALWAYS ciphertext (never a quiet cleartext send mistaken for
+    encrypted); the only variability is member COVERAGE, surfaced explicitly.
+
+    state:
+      ``off``      — SKCHAT_SEAL_GROUPS disabled; cleartext delivery, expected.
+      ``sealed``   — enabled AND every member keyed; all copies sealed, full coverage.
+      ``partial``  — enabled but SOME members unkeyed; keyed members sealed, unkeyed
+                     SKIPPED (receive nothing) — flagged, never sent cleartext.
+      ``blocked``  — enabled + encryption_required + a member unkeyed; sends REFUSED
+                     (fail-closed-loud) rather than exclude anyone.
+    """
+    enabled = _seal_groups_enabled()
+    unkeyed = _group_unkeyed_members(group)
+    all_keyed = not unkeyed
+    required = group_requires_encryption(group)
+    if not enabled:
+        state = "off"
+    elif required and not all_keyed:
+        state = "blocked"
+    elif all_keyed:
+        state = "sealed"
+    else:
+        state = "partial"
+    return {
+        "enabled": enabled,
+        "required": required,
+        "state": state,
+        "sealing": enabled and state != "blocked",   # wire copies are ciphertext
+        "all_members_keyed": all_keyed,
+        "suite": getattr(group, "kem_suite", ""),
+        "hybrid": bool(getattr(group, "is_hybrid", False)),
+        "unkeyed_members": unkeyed,
+    }
+
+
 def _seal_group_content(group, content: str) -> str:
     """Seal *content* under the group's existing crypto → an opaque wire token.
 
@@ -294,6 +359,10 @@ def group_to_conversation(group, *, online_uris: Optional[set[str]] = None) -> d
         "avatar_url": "",
         "description": group.description,
         "acl": _acl(group),
+        # Observable encryption posture: the app can render a lock/warning and the
+        # operator can always tell sealed vs cleartext vs degraded (flag on, not
+        # sealing) — no silent state.
+        "encryption": group_encryption_status(group),
     }
 
 
@@ -577,7 +646,27 @@ def fan_out_send(group, hist, sender_uri: str, content: str,
     # flag-gated + fail-closed. The canonical group-thread copy below stays
     # CLEARTEXT: it is the operator's own local record (recipient=group:<id>,
     # never delivered on the wire) so ``group_thread_messages`` still reads back.
-    seal = _seal_groups_enabled()
+    # Encryption posture — OBSERVABLE, confidentiality-preserving, no silent state.
+    # When SEAL_GROUPS is on we seal for keyed members and SKIP keyless ones (never
+    # cleartext to a member who can't decrypt). A partially-keyed group is NOT
+    # silently "sort of encrypted": the skips are logged loud + surfaced as
+    # state=partial + sealed_skipped so a bug/misconfig is always visible.
+    enabled = _seal_groups_enabled()
+    unkeyed = _group_unkeyed_members(group)
+    all_keyed = not unkeyed
+    if enabled and group_requires_encryption(group) and not all_keyed:
+        # fail-closed-LOUD: an encryption-REQUIRED group refuses to send while any
+        # member would be excluded — never a partial/silent delivery.
+        raise GroupSealNotReadyError(
+            f"group {group.id} ({group.name!r}) requires encryption but has unkeyed "
+            f"member(s) that would be excluded: {unkeyed}")
+    seal = enabled   # per-member skip below keeps keyless members off the cleartext path
+    if enabled and unkeyed:
+        logger.warning(
+            "fan_out_send: group %s (%r) SEALED but %d member(s) UNKEYED and SKIPPED "
+            "(receive nothing): %s. Encryption PARTIAL — not all members covered.",
+            group.id, group.name, len(unkeyed), unkeyed)
+    enc_state = ("sealed" if all_keyed else "partial") if enabled else "off"
     sealed_content = _seal_group_content(group, content) if seal else None
     skipped: list[str] = []
 
@@ -588,7 +677,8 @@ def fan_out_send(group, hist, sender_uri: str, content: str,
         thread_id=group.id,
         reply_to_id=reply_to_id or None,
         metadata={"group_id": group.id, "group_name": group.name,
-                  "key_version": group.key_version, "sealed": bool(seal)},
+                  "key_version": group.key_version, "sealed": bool(seal),
+                  "encryption_state": enc_state},
     )
     hist.save(group_msg)
 
@@ -619,7 +709,8 @@ def fan_out_send(group, hist, sender_uri: str, content: str,
             thread_id=group.id,
             reply_to_id=reply_to_id or None,
             metadata={"group_id": group.id, "group_name": group.name,
-                      "key_version": group.key_version, "sealed": bool(seal)},
+                      "key_version": group.key_version, "sealed": bool(seal),
+                  "encryption_state": enc_state},
         )
         try:
             hist.save(member_msg)

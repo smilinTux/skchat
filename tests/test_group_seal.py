@@ -164,3 +164,82 @@ def test_unseal_incoming_failclosed_when_group_unavailable(groups_dir):
     msg = ChatMessage(sender="a", recipient="b", content=sealed, thread_id="ghost-gid")
     out = G.unseal_incoming_group_message(msg)    # must not raise
     assert G.is_sealed_group_content(out.content)
+
+
+# ── Observable seal-when-ready gate: seal only fully-ready groups; a not-ready
+# group NEVER silently downgrades — it's cleartext-but-flagged (degraded) or, if
+# encryption is required, refuses to send. Encryption state is always visible. ──
+
+def _ready_hybrid_group():
+    """A hybrid group that IS seal-ready: epoch secret set + every member keyed."""
+    group = GroupChat(name="Secure", kem_suite="x25519-mlkem768")
+    group.ensure_epoch()
+    group.add_member(identity_uri="capauth:alice@skworld.io", role=MemberRole.ADMIN,
+                     hybrid_kem_public_hex="aa" * 32)
+    group.add_member(identity_uri="capauth:bob@skworld.io", hybrid_kem_public_hex="bb" * 32)
+    return group
+
+
+def test_seal_when_ready_group_is_sealed(isolated, monkeypatch):
+    monkeypatch.setenv("SKCHAT_SEAL_GROUPS", "1")
+    group = _ready_hybrid_group()
+    st = G.group_encryption_status(group)
+    assert st["state"] == "sealed" and st["all_members_keyed"] and st["sealing"]
+    gmsg = G.fan_out_send(group, isolated, "capauth:alice@skworld.io", "top secret")
+    bob = _member_copy(isolated, "capauth:bob@skworld.io")
+    assert bob is not None and G.is_sealed_group_content(bob.content)     # sealed on the wire
+    assert gmsg.metadata["encryption_state"] == "sealed" and gmsg.metadata["sealed"] is True
+
+
+def test_partial_when_some_unkeyed_seals_keyed_skips_keyless_loudly(isolated, monkeypatch, caplog):
+    """Flag on + a member unkeyed: keyed members are SEALED (confidentiality kept),
+    the unkeyed member is SKIPPED (never cleartext), and it's LOUD — state=partial,
+    warning logged, keyed message flagged sealed=True + encryption_state=partial."""
+    import logging
+    monkeypatch.setenv("SKCHAT_SEAL_GROUPS", "1")
+    group = _ready_hybrid_group()
+    group.add_member(identity_uri="capauth:carol@skworld.io", hybrid_kem_public_hex="")  # UNKEYED
+    st = G.group_encryption_status(group)
+    assert st["state"] == "partial" and not st["all_members_keyed"]
+    assert "capauth:carol@skworld.io" in st["unkeyed_members"]
+    with caplog.at_level(logging.WARNING):
+        gmsg = G.fan_out_send(group, isolated, "capauth:alice@skworld.io", "secret body")
+    bob = _member_copy(isolated, "capauth:bob@skworld.io")
+    carol = _member_copy(isolated, "capauth:carol@skworld.io")
+    assert bob is not None and G.is_sealed_group_content(bob.content)      # keyed: SEALED
+    assert carol is None                                                   # keyless: SKIPPED, no cleartext
+    assert gmsg.metadata["encryption_state"] == "partial" and gmsg.metadata["sealed"] is True
+    assert gmsg.metadata.get("sealed_skipped") == ["capauth:carol@skworld.io"]
+    assert any("PARTIAL" in r.message for r in caplog.records)             # loud, not silent
+
+
+def test_encryption_required_group_refuses_when_not_ready(isolated, monkeypatch):
+    """encryption_required NEVER downgrades: raise instead of sending cleartext."""
+    monkeypatch.setenv("SKCHAT_SEAL_GROUPS", "1")
+    group = _ready_hybrid_group()
+    group.add_member(identity_uri="capauth:carol@skworld.io", hybrid_kem_public_hex="")  # unkeyed
+    group.metadata["encryption_required"] = True
+    assert G.group_encryption_status(group)["state"] == "blocked"
+    with pytest.raises(G.GroupSealNotReadyError):
+        G.fan_out_send(group, isolated, "capauth:alice@skworld.io", "must not leak")
+    assert _member_copy(isolated, "capauth:bob@skworld.io") is None       # nothing delivered
+
+
+def test_required_group_seals_normally_when_ready(isolated, monkeypatch):
+    monkeypatch.setenv("SKCHAT_SEAL_GROUPS", "1")
+    group = _ready_hybrid_group()
+    group.metadata["encryption_required"] = True
+    assert G.group_encryption_status(group)["state"] == "sealed"
+    gmsg = G.fan_out_send(group, isolated, "capauth:alice@skworld.io", "sealed ok")
+    assert gmsg.metadata["sealed"] is True
+
+
+def test_flag_off_status_is_off(monkeypatch):
+    monkeypatch.delenv("SKCHAT_SEAL_GROUPS", raising=False)
+    assert G.group_encryption_status(_ready_hybrid_group())["state"] == "off"
+
+
+def test_conversation_exposes_encryption_status(monkeypatch):
+    monkeypatch.setenv("SKCHAT_SEAL_GROUPS", "1")
+    conv = G.group_to_conversation(_ready_hybrid_group())
+    assert "encryption" in conv and conv["encryption"]["state"] == "sealed"
