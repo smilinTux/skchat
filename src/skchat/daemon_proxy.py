@@ -1091,6 +1091,73 @@ def _is_context_noise(content: str) -> bool:
     return False
 
 
+# --------------------------------------------------------------------------- #
+# P0.6 — versioned-contract + dual-serve negotiation scaffolding
+#
+# Clients announce the contract revisions / features they understand via a
+# single request header (``X-SKChat-Client-Caps``). The send handler parses it
+# up front and can gate behavior on it, so a FUTURE contract change (and the
+# P0.5 auth enforcement) applies ONLY to capable clients — deployed clients that
+# send NO header keep the current behavior verbatim, because every gate defaults
+# to "off" when the capability is absent. This is deliberately minimal: a
+# parser, a gate helper, and one dual-serve branch point — not a full protocol.
+# --------------------------------------------------------------------------- #
+CLIENT_CAPS_HEADER = "X-SKChat-Client-Caps"
+
+
+def _parse_client_caps(raw: str | None) -> dict[str, str | bool]:
+    """Parse the client-capability header into a ``{token: value}`` map.
+
+    Format: a comma-separated list of capability tokens, each either a bare flag
+    (``typed-envelope``) or ``key=value`` (``v=2``). Keys are lower-cased and
+    whitespace-tolerant. A missing/blank header yields an EMPTY map, so the
+    caller falls through to the legacy default path (no capabilities assumed).
+    """
+    caps: dict[str, str | bool] = {}
+    if not raw:
+        return caps
+    for part in raw.split(","):
+        tok = part.strip()
+        if not tok:
+            continue
+        key, sep, val = tok.partition("=")
+        key = key.strip().lower()
+        if not key:
+            continue
+        caps[key] = val.strip() if sep else True
+    return caps
+
+
+def _client_caps(request: Request) -> dict[str, str | bool]:
+    """Read + parse the client-capability header off *request* (empty if none)."""
+    return _parse_client_caps(request.headers.get(CLIENT_CAPS_HEADER))
+
+
+def _client_supports(caps: dict[str, str | bool], capability: str) -> bool:
+    """Dual-serve gate: ``True`` iff the client announced *capability*.
+
+    An absent header / unknown capability returns ``False``, so a deployed
+    client that sends nothing keeps the current (legacy) behavior. This is the
+    single branch point a future contract change or the P0.5 auth enforcement
+    hangs off — ``if _client_supports(caps, "auth"): <enforce>``.
+    """
+    return bool(caps.get(capability.strip().lower(), False))
+
+
+def _apply_contract(result: dict, caps: dict[str, str | bool]) -> dict:
+    """Dual-serve seam: layer capability-gated contract additions onto *result*.
+
+    A client that announced NO caps gets *result* verbatim — the legacy send
+    contract, unchanged. A capable client gets the negotiated caps echoed back
+    under ``client_caps`` (the first, harmless dual-serve addition; future
+    contract changes hang off the same ``caps``-gated branch). Never mutates the
+    legacy response shape for clients that opted into nothing.
+    """
+    if not caps:
+        return result
+    return {**result, "client_caps": caps}
+
+
 @router.post("/v1/send")
 async def api_send(request: Request):
     """Persist the operator's message and, for Lumina, invoke her real brain.
@@ -1100,6 +1167,11 @@ async def api_send(request: Request):
     shared ``LuminaBrain`` (soul + qwen3.6), store + return it. On any backend
     error, a graceful "…(thinking failed)" reply is persisted rather than 500.
     """
+    # P0.6: negotiate the client's contract capabilities up front so the handler
+    # (and future dual-serve branches / P0.5 auth) can gate on them. A client
+    # that sends no header yields an empty cap map -> legacy behavior unchanged.
+    caps = _client_caps(request)
+
     try:
         body = await request.json()
     except Exception:
@@ -1236,14 +1308,17 @@ async def api_send(request: Request):
             except Exception:
                 logger.debug("ws broadcast unavailable", exc_info=True)
             return JSONResponse(
-                {
-                    "ok": True,
-                    "id": msg.id,
-                    "recipient": group.id,
-                    "group_id": group.id,
-                    "ts": msg.timestamp.isoformat(),
-                    "message": _group_msg_to_app(msg, group_id=group.id),
-                }
+                _apply_contract(
+                    {
+                        "ok": True,
+                        "id": msg.id,
+                        "recipient": group.id,
+                        "group_id": group.id,
+                        "ts": msg.timestamp.isoformat(),
+                        "message": _group_msg_to_app(msg, group_id=group.id),
+                    },
+                    caps,
+                )
             )
 
     if not _is_lumina(recipient):
@@ -1253,13 +1328,16 @@ async def api_send(request: Request):
             content_type=content_type, rich=rich,
         )
         return JSONResponse(
-            {
-                "ok": True,
-                "id": msg.id,
-                "recipient": recipient,
-                "ts": msg.timestamp.isoformat(),
-                "message": _msg_to_app(msg, self_id=OPERATOR_ID),
-            }
+            _apply_contract(
+                {
+                    "ok": True,
+                    "id": msg.id,
+                    "recipient": recipient,
+                    "ts": msg.timestamp.isoformat(),
+                    "message": _msg_to_app(msg, self_id=OPERATOR_ID),
+                },
+                caps,
+            )
         )
 
     # ── Idempotency: coalesce app retries of the SAME message ──────────────────
@@ -1275,7 +1353,7 @@ async def api_send(request: Request):
         _cached = _SEND_RECENT.get(_dk)
         if _cached is not None and (time.monotonic() - _cached[0]) < _SEND_DEDUP_WINDOW:
             logger.info("api_send: coalesced duplicate send (returning cached reply)")
-            return JSONResponse({**_cached[1], "deduped": True})
+            return JSONResponse(_apply_contract({**_cached[1], "deduped": True}, caps))
 
         # 1. Persist the operator's message to Lumina (with reply/thread linkage).
         user_msg = _persist(
@@ -1377,7 +1455,9 @@ async def api_send(request: Request):
     except Exception:
         logger.debug("ws broadcast unavailable", exc_info=True)
 
-    return JSONResponse(_result)
+    # Dual-serve: capable clients get the negotiated caps echoed; the cached
+    # ``_result`` stays the legacy shape so a legacy retry gets legacy output.
+    return JSONResponse(_apply_contract(_result, caps))
 
 
 @router.post("/v1/react")
