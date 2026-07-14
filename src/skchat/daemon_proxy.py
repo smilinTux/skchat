@@ -165,7 +165,87 @@ def _persist(
         fields["rich"] = rich
     msg = ChatMessage(**fields)
     hist.save(msg)
+    # SEAM 2/4: flag-gated SHADOW write to the single-writer authoritative log.
+    # Best-effort + off by default — never affects the primary JSONL/SQLite save.
+    _shadow_log(msg)
     return msg
+
+
+# --------------------------------------------------------------------------- #
+# SEAM 2/4 — single-writer message log (flag-gated shadow write)
+#
+# When SKCHAT_MESSAGE_LOG is truthy, every persisted message is ALSO appended to
+# the single-writer ``MessageLog`` (a per-conversation monotonic seq + immutable
+# message_id). This is a PARALLEL authoritative projection: the JSONL/SQLite
+# history above stays the source of truth. The write is best-effort — any failure
+# is swallowed so it can NEVER break a send. Flag OFF (default) => nothing runs.
+# --------------------------------------------------------------------------- #
+_MSGLOG = None
+
+
+def _message_log_enabled() -> bool:
+    """Whether the single-writer shadow log is on (``SKCHAT_MESSAGE_LOG``).
+
+    Default OFF: unset / ``0`` / ``false`` / ``no`` / ``off`` all mean "off"
+    (same truthiness convention as ``SKCHAT_ASYNC_REPLY`` below).
+    """
+    return os.getenv("SKCHAT_MESSAGE_LOG", "").strip().lower() not in (
+        "",
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+
+
+def _get_message_log():
+    """Return the shared ``MessageLog`` (SQLite/WAL), created on first use."""
+    global _MSGLOG
+    if _MSGLOG is None:
+        from skchat.message_log import MessageLog
+
+        _MSGLOG = MessageLog()
+    return _MSGLOG
+
+
+def _shadow_conversation_id(msg) -> str:
+    """Stable conversation id for *msg* (matches the app's ``conversation_id``).
+
+    Any message where Lumina is a party belongs to her 1:1 thread (``LUMINA_ID``);
+    otherwise the conversation is keyed by the peer that isn't the operator.
+    """
+    s = getattr(msg, "sender", "") or ""
+    r = getattr(msg, "recipient", "") or ""
+    if _is_lumina(s) or _is_lumina(r):
+        return LUMINA_ID
+    if s in (OPERATOR_ID, "chef", "chef@skworld.io"):
+        return r or "unknown"
+    return s or "unknown"
+
+
+def _shadow_log(msg) -> None:
+    """Best-effort SHADOW append of *msg* to the single-writer ``MessageLog``.
+
+    Flag-gated by ``SKCHAT_MESSAGE_LOG`` (default OFF). NEVER raises — a
+    shadow-log failure must not break the send. The immutable ChatMessage ``id``
+    doubles as the ``client_dedup_key`` so re-logging the same message is
+    idempotent (no second seq).
+    """
+    if not _message_log_enabled():
+        return
+    try:
+        mid = getattr(msg, "id", None)
+        _get_message_log().append(
+            _shadow_conversation_id(msg),
+            message_id=mid,
+            client_dedup_key=mid,
+            sender=getattr(msg, "sender", "") or "",
+            recipient=getattr(msg, "recipient", "") or "",
+            content=getattr(msg, "content", "") or "",
+            kind=str(getattr(msg, "content_type", "text") or "text"),
+        )
+    except Exception:
+        logger.debug("shadow message-log write failed (send unaffected)", exc_info=True)
 
 
 def _is_lumina(peer: str) -> bool:
