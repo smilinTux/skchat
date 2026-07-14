@@ -1027,6 +1027,23 @@ _SEND_RECENT: dict[str, tuple[float, dict]] = {}
 _SEND_DEDUP_WINDOW = 90.0  # seconds a generated reply is reused for retries
 
 
+def _is_context_noise(content: str) -> bool:
+    """True for messages that must NOT be fed to Lumina's brain as context.
+
+    Sealed pqdm1 ciphertext reads to her as opaque base64 (she then keeps
+    replying about "PGP payloads / voice not deployed"), and __TYPING__/
+    __RECEIPT__ control pings are not turns. Empty bodies carry nothing.
+    """
+    c = (content or "").strip()
+    if not c:
+        return True
+    if c.startswith("pqdm1:"):
+        return True
+    if c.startswith("__") and "__" in c[2:]:  # __TYPING__:… / __RECEIPT__:… etc.
+        return True
+    return False
+
+
 @router.post("/v1/send")
 async def api_send(request: Request):
     """Persist the operator's message and, for Lumina, invoke her real brain.
@@ -1186,8 +1203,17 @@ async def api_send(request: Request):
         for pm in prior:
             if pm["id"] == user_msg.id:
                 continue  # don't double-feed the message we just stored
+            _pc = str(pm.get("content", "") or "")
+            # Drop non-conversational NOISE from the brain context: sealed pqdm1
+            # ciphertext (which Lumina otherwise "reads" as opaque base64 and
+            # keeps replying about — the source of the off-topic "PGP payloads /
+            # voice not deployed" answers) and any leftover __TYPING__/__RECEIPT__
+            # control pings. Feeding her a clean transcript makes her answer the
+            # actual message.
+            if _is_context_noise(_pc):
+                continue
             convo.append(
-                {"role": "assistant" if pm["is_agent"] else "user", "content": pm["content"]}
+                {"role": "assistant" if pm["is_agent"] else "user", "content": _pc}
             )
 
         # 3. Invoke her brain. Never 500: persist a graceful fallback on failure.
