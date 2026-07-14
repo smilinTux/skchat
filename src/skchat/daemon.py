@@ -543,6 +543,18 @@ class ChatDaemon:
             plugins). Runs the blocking generate→send→store chain. Captures the
             start()-local subsystems; None-checked so it is safe before bg init
             populates them."""
+            # SEAM 9 control-plane: a typed group-key delivery
+            # (``metadata['group_key_package']``) is NOT a chat turn — apply the
+            # wrapped epoch secret and consume it BEFORE any group/DM/advocacy
+            # handling, so it never lands on a thread or triggers a response.
+            # Fail-closed-readable: apply logs + returns on its own; this never
+            # raises into the poll loop. No-op for a normal message.
+            try:
+                from .daemon_proxy_groups import consume_group_key_message
+                if consume_group_key_message(msg, agent=getattr(group_cfg, "agent", None)):
+                    return  # control-plane key delivery; not a chat turn
+            except Exception as exc:
+                logger.warning("group key consume failed: %s", exc)
             sender_short = msg.sender.split("@")[0].replace("capauth:", "")
             preview = msg.content[:60] + ("..." if len(msg.content) > 60 else "")
             try:

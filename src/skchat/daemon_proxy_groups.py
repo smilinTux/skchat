@@ -263,6 +263,84 @@ def apply_group_key_package(package: dict, *, self_uri: str,
         return False
 
 
+def build_group_epoch_package(group) -> dict:
+    """Build the ``group_epoch_advance`` package a sender delivers to members.
+
+    Wraps the group's current epoch secret to each member's hybrid-KEM public key
+    (reusing the proven :meth:`GroupKeyDistributor.distribute_key`) and packs the
+    result with the epoch metadata a receiver needs to APPLY it
+    (:func:`apply_group_key_package`). Same shape the sender's own
+    ``rotate_key``/``_advance_epoch`` broadcast uses.
+    """
+    from .group import GroupKeyDistributor
+
+    return {
+        "type": "group_epoch_advance",
+        "group_id": group.id,
+        "epoch": group.epoch,
+        "key_version": group.key_version,
+        "kem_suite": group.kem_suite,
+        "distributions": GroupKeyDistributor.distribute_key(group),
+    }
+
+
+def distribute_group_epoch(group, sender_uri, deliver) -> list:
+    """Deliver the epoch package to each KEYED member (except the sender) as a
+    TYPED control message (``metadata['group_key_package']`` — never a
+    ``__PREFIX__`` in content, honouring SEAM 5). ``deliver(chat_msg) -> bool``
+    performs the actual delivery; returns the list of member URIs delivered to.
+
+    Fail-closed-readable: a member whose delivery raises is logged and skipped,
+    never crashing the send path. Keyless members (no group key at all) are
+    skipped — mirrors the sealed-send fail-closed skip.
+    """
+    from .models import ChatMessage
+
+    pkg = build_group_epoch_package(group)
+    out: list = []
+    for member in group.members:
+        # Route by keyed-ness (the SAME gate the sealed fan-out uses): a KEYED
+        # member — one that can hold the group key — is the intended recipient of
+        # the epoch package. We deliver the whole package (each member picks its
+        # own wrapped payload on apply; a member with no payload harmlessly
+        # no-ops), so routing never depends on the wrap succeeding here.
+        if member.identity_uri == sender_uri or not _member_has_group_key(group, member):
+            continue
+        msg = ChatMessage(
+            sender=sender_uri, recipient=member.identity_uri, content="",
+            thread_id=group.id,
+            metadata={"group_key_package": pkg, "group_id": group.id,
+                      "kind": "group_key"},
+        )
+        try:
+            if deliver(msg):
+                out.append(member.identity_uri)
+        except Exception as exc:
+            logger.warning("distribute_group_epoch: deliver to %s failed: %s",
+                           member.identity_uri, exc)
+    return out
+
+
+def consume_group_key_message(msg, agent: Optional[str] = None) -> bool:
+    """Receiver-side control-plane consume of a typed group-key message.
+
+    If *msg* carries a ``metadata['group_key_package']``, APPLY it
+    (:func:`apply_group_key_package`, keyed to this daemon's identity) and return
+    True — the message is control-plane (an epoch-key delivery), NOT a chat turn,
+    so the poll loop should consume it and never persist it to a thread or hand it
+    to the responder. Returns False for a normal message (routes onward as usual).
+
+    Consumed regardless of the apply OUTCOME: a key message is never a chat turn
+    even if the unwrap fails (fail-closed-readable — apply logs + returns False on
+    its own, never raising here).
+    """
+    pkg = (getattr(msg, "metadata", None) or {}).get("group_key_package")
+    if not isinstance(pkg, dict):
+        return False
+    apply_group_key_package(pkg, self_uri=getattr(msg, "recipient", "") or "", agent=agent)
+    return True
+
+
 def unseal_incoming_group_message(msg):
     """Decrypt a received group message's sealed body IN PLACE (receive-side of
     SEAM 9). The fan-out delivers a ``skgseal1:`` ciphertext to each member; the
@@ -723,6 +801,45 @@ def fan_out_send(group, hist, sender_uri: str, content: str,
     enc_state = ("sealed" if all_keyed else "partial") if enabled else "off"
     sealed_content = _seal_group_content(group, content) if seal else None
     skipped: list[str] = []
+
+    # SEAM 9 delivery: before fanning out sealed copies, make sure every keyed
+    # member has the CURRENT epoch secret to unseal them. Distribute the typed
+    # ``group_epoch_advance`` package ONCE per epoch (tracked in group metadata) so
+    # it is not re-sent on every message. Hybrid-only (classical wraps a static key
+    # already delivered on membership); fail-closed-readable — a delivery failure
+    # never blocks the message (``save_group`` at the end persists the marker).
+    if seal and getattr(group, "is_hybrid", False) and \
+            group.metadata.get("epoch_distributed") != group.epoch:
+        _t = _delivery_transport(sender_uri)
+
+        def _deliver_key(m):
+            # Report the ACTUAL delivery outcome (never a blanket ``or True``):
+            # prefer a direct same-box inbox write, else the network transport, and
+            # return whether either genuinely delivered. An honest bool keeps
+            # ``distribute_group_epoch``'s delivered-count truthful (fail-closed-
+            # readable) — a dropped key copy is NOT silently counted as delivered.
+            if local_deliver_to_agent(m):
+                return True
+            if _t is None:
+                return False
+            try:
+                report = _t.send_message(m)
+            except Exception as exc:
+                logger.warning("fan_out_send: epoch key delivery to %s failed: %s",
+                               m.recipient, exc)
+                return False
+            # ``send_message`` returns a delivery report dict; honour its verdict,
+            # defaulting to delivered when the shape is unexpected (no raise = sent).
+            return bool(report.get("delivered", True)) if isinstance(report, dict) else True
+
+        try:
+            distributed = distribute_group_epoch(group, sender_uri, _deliver_key)
+            group.metadata["epoch_distributed"] = group.epoch
+            logger.info("fan_out_send: distributed epoch %d key for group %s to %d member(s)",
+                        group.epoch, group.id, len(distributed))
+        except Exception as exc:  # never let key distribution block the send
+            logger.warning("fan_out_send: epoch key distribution failed for %s: %s",
+                           group.id, exc)
 
     group_msg = _typed(
         sender=sender_uri,
