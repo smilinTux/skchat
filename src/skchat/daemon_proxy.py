@@ -1273,8 +1273,18 @@ async def api_send(request: Request):
         reply_wire = reply_text
         if convo_is_hybrid:
             sealed = _seal_hybrid_outbound(reply_text, recipient_short="chef")
-            if sealed is not None:
-                reply_wire = sealed
+            if sealed is None:
+                # P0.1 (fail closed): the conversation negotiated hybrid-PQ but
+                # the reply cannot be sealed (no prekey / KEM backend gone).
+                # Refuse rather than fall back to plaintext — never persist or
+                # return Lumina's cleartext reply onto a hybrid channel.
+                logger.error(
+                    "api_send: hybrid reply not sealable — refusing plaintext leak"
+                )
+                return JSONResponse(
+                    {"ok": False, "error": "reply_not_sealable"}, status_code=503
+                )
+            reply_wire = sealed
         reply_msg = _persist(
             hist,
             LUMINA_URI,

@@ -43,6 +43,11 @@ def client(tmp_path, monkeypatch):
     brain = _StubBrain()
     monkeypatch.setattr(daemon_proxy, "_BRAIN", brain)
 
+    # Isolate the send-dedup caches (module globals) so a reply cached in one
+    # test can't leak into another that decodes to the same content.
+    monkeypatch.setattr(daemon_proxy, "_SEND_RECENT", {})
+    monkeypatch.setattr(daemon_proxy, "_SEND_LOCKS", {})
+
     # Don't enrich with the operator's real ~/.skcapstone/peers in tests.
     monkeypatch.setattr(daemon_proxy, "_other_peers", lambda: [])
 
@@ -177,6 +182,66 @@ def test_group_faninto_is_excluded_but_threaded_dm_is_kept(client, monkeypatch):
     assert "group fan-out copy" not in inbox_contents
     assert "a threaded 1:1 reply" in inbox_contents
     assert "my threaded 1:1 answer" in inbox_contents
+
+
+def test_hybrid_reply_not_sealable_fails_closed(client, monkeypatch):
+    """P0.1: a hybrid conversation whose reply cannot be sealed must fail
+    closed — HTTP 503 ``reply_not_sealable``, with NO plaintext reply persisted
+    or returned. Refusing beats leaking Lumina's cleartext onto the wire /
+    into history when the operator negotiated hybrid-PQ.
+    """
+    # Force the inbound `pqdm1:` token to "open" (marks the convo hybrid) but
+    # make the outbound seal fail (no prekey / backend gone).
+    monkeypatch.setattr(
+        daemon_proxy, "_open_hybrid_inbound",
+        lambda token, sender_short="chef": "decoded secret",
+    )
+    monkeypatch.setattr(
+        daemon_proxy, "_seal_hybrid_outbound",
+        lambda text, recipient_short="chef": None,
+    )
+
+    r = client.post("/api/v1/send", json={"recipient": "lumina", "message": "pqdm1:abc"})
+    assert r.status_code == 503
+    body = r.json()
+    assert body["ok"] is False
+    assert body["error"] == "reply_not_sealable"
+    # No reply payload leaked back to the caller.
+    assert "reply" not in body
+
+    # The plaintext reply must NOT be persisted (no leak into history): the
+    # only stored turn is the inbound operator message — nothing from Lumina.
+    hist = client.get("/api/v1/conversations/" + daemon_proxy.LUMINA_ID).json()
+    assert not any(m["is_agent"] for m in hist)
+    assert "Lumina hears you: decoded secret" not in [m["content"] for m in hist]
+
+
+def test_hybrid_reply_sealed_returns_200(client, monkeypatch):
+    """Companion to the fail-closed path: when the reply CAN be sealed, the
+    hybrid conversation still returns 200 with the sealed wire token."""
+    monkeypatch.setattr(
+        daemon_proxy, "_open_hybrid_inbound",
+        lambda token, sender_short="chef": "decoded secret",
+    )
+    monkeypatch.setattr(
+        daemon_proxy, "_seal_hybrid_outbound",
+        lambda text, recipient_short="chef": "pqdm1:SEALED",
+    )
+
+    r = client.post("/api/v1/send", json={"recipient": "lumina", "message": "pqdm1:abc"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["reply"]["content"] == "pqdm1:SEALED"
+
+
+def test_classical_path_still_returns_200_plaintext(client):
+    """The non-hybrid path is unchanged: 200 with the plaintext reply."""
+    r = client.post("/api/v1/send", json={"recipient": "lumina", "message": "hi there"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["reply"]["content"] == "Lumina hears you: hi there"
 
 
 def test_brain_failure_persists_graceful_reply_not_500(client, monkeypatch):
