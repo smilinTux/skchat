@@ -1186,6 +1186,114 @@ def _apply_contract(result: dict, caps: dict[str, str | bool]) -> dict:
     return {**result, "client_caps": caps}
 
 
+def _async_reply_enabled() -> bool:
+    """Whether the 1:1 Lumina reply is generated in a background task
+    (``SKCHAT_ASYNC_REPLY``).
+
+    Default OFF: unset / ``0`` / ``false`` / ``no`` / ``off`` all mean "keep the
+    synchronous reply-in-the-response behavior" (same truthiness convention as
+    ``SKCHAT_SEAL_GROUPS`` in ``daemon_proxy_groups.py``).
+    """
+    return os.getenv("SKCHAT_ASYNC_REPLY", "").strip().lower() not in (
+        "",
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+
+
+async def _ws_broadcast_safe(payload: dict) -> None:
+    """Emit a ``/ws/chat`` broadcast, swallowing any failure.
+
+    The web clients (legacy webui + the Flutter app) refresh on a ``new`` ping.
+    In the async-reply background task a WS failure must NEVER kill the task, so
+    the broadcast is best-effort here and at the synchronous call sites alike.
+    """
+    try:
+        from skchat import webui as _webui
+
+        await _webui._ws_broadcast(payload)
+    except Exception:
+        logger.debug("ws broadcast unavailable", exc_info=True)
+
+
+async def _generate_lumina_reply(
+    hist,
+    user_msg,
+    content: str,
+    convo: list[dict],
+    convo_is_hybrid: bool,
+    caps: dict[str, str | bool],
+) -> dict:
+    """Generate + persist Lumina's reply for one 1:1 turn and push a WS ``new``.
+
+    Shared by BOTH paths: the synchronous path awaits it and returns its result
+    (unchanged), the async-202 path runs it in a background task (the app
+    refetches on the WS ``new`` signal). Runs the brain in a thread under
+    ``_BRAIN_LOCK``, applies the fail-closed hybrid seal (returning the
+    503-shaped ``{"ok": False, "error": "reply_not_sealable"}`` dict when the
+    reply cannot be sealed — never persisting or emitting a plaintext leak),
+    persists the reply linked back to ``user_msg``, emits
+    ``_ws_broadcast({"type": "new"})`` and returns the app-shaped reply payload
+    (the SAME dict ``api_send`` returns today).
+    """
+    # 3. Invoke her brain. Never 500: persist a graceful fallback on failure.
+    brain = _get_brain()
+    if brain is None:
+        reply_text = "…(I'm here, but my language backend is offline right now — try again in a moment.)"
+    else:
+        try:
+            # Run the (up to ~180s) blocking LLM call in a thread so the async
+            # event loop stays responsive; serialize brain calls with the lock.
+            async with _BRAIN_LOCK:
+                reply_text = await asyncio.to_thread(
+                    brain.reply, content, history=convo, sender="chef") or ""
+        except Exception:
+            logger.exception("Lumina brain reply failed")
+            reply_text = "…(thinking failed — my backend hiccuped. Say that again?)"
+        if not reply_text.strip():
+            reply_text = "…(thinking failed — I came back empty. Try once more?)"
+
+    # 4. Persist her reply — linked back to the user turn (and thread).
+    #    PQC Q5: if the conversation negotiated hybrid AND the operator published
+    #    a prekey, seal the reply so the app opens it hybrid-pq. Otherwise the
+    #    plaintext reply is stored unchanged (classical path).
+    reply_wire = reply_text
+    if convo_is_hybrid:
+        sealed = _seal_hybrid_outbound(reply_text, recipient_short="chef")
+        if sealed is None:
+            # P0.1 (fail closed): the conversation negotiated hybrid-PQ but
+            # the reply cannot be sealed (no prekey / KEM backend gone).
+            # Refuse rather than fall back to plaintext — never persist or
+            # return Lumina's cleartext reply onto a hybrid channel.
+            logger.error(
+                "api_send: hybrid reply not sealable — refusing plaintext leak"
+            )
+            return {"ok": False, "error": "reply_not_sealable"}
+        reply_wire = sealed
+    reply_msg = _persist(
+        hist,
+        LUMINA_URI,
+        OPERATOR_ID,
+        reply_wire,
+        reply_to_id=user_msg.id,
+        thread_id=user_msg.thread_id,
+    )
+
+    result = {
+        "ok": True,
+        "id": user_msg.id,
+        "recipient": LUMINA_ID,
+        "ts": user_msg.timestamp.isoformat(),
+        # Full shared contract (+ legacy fields) so the app round-trips it.
+        "reply": _msg_to_app(reply_msg, self_id=OPERATOR_ID),
+    }
+    # Web clients (the legacy webui) refresh on a ws "new" ping if available.
+    await _ws_broadcast_safe({"type": "new"})
+    return result
+
+
 @router.post("/v1/send")
 async def api_send(request: Request):
     """Persist the operator's message and, for Lumina, invoke her real brain.
@@ -1425,73 +1533,51 @@ async def api_send(request: Request):
                 {"role": "assistant" if pm["is_agent"] else "user", "content": _pc}
             )
 
-        # 3. Invoke her brain. Never 500: persist a graceful fallback on failure.
-        brain = _get_brain()
-        if brain is None:
-            reply_text = "…(I'm here, but my language backend is offline right now — try again in a moment.)"
-        else:
-            try:
-                # Run the (up to ~180s) blocking LLM call in a thread so the async
-                # event loop stays responsive; serialize brain calls with the lock.
-                async with _BRAIN_LOCK:
-                    reply_text = await asyncio.to_thread(
-                        brain.reply, content, history=convo, sender="chef") or ""
-            except Exception:
-                logger.exception("Lumina brain reply failed")
-                reply_text = "…(thinking failed — my backend hiccuped. Say that again?)"
-            if not reply_text.strip():
-                reply_text = "…(thinking failed — I came back empty. Try once more?)"
+        # 3./4. Generate + persist Lumina's reply (brain → fail-closed hybrid
+        #        seal → persist → ws "new"). Extracted so BOTH the synchronous
+        #        path and the async-202 background task share one code path.
+        if _async_reply_enabled():
+            # Flag ON: return 202 immediately and generate the reply in a
+            # background task. The app already refetches on the ws "new" signal,
+            # so no plaintext/reply rides this response. The task is crash-safe:
+            # a brain failure persists a graceful fallback inside
+            # _generate_lumina_reply, and this wrapper never raises out.
+            async def _bg():
+                try:
+                    await _generate_lumina_reply(
+                        hist, user_msg, content, convo, convo_is_hybrid, caps
+                    )
+                except Exception:
+                    logger.exception("async reply task failed")
 
-        # 4. Persist her reply — linked back to the user turn (and thread).
-        #    PQC Q5: if the conversation negotiated hybrid AND the operator published
-        #    a prekey, seal the reply so the app opens it hybrid-pq. Otherwise the
-        #    plaintext reply is stored unchanged (classical path).
-        reply_wire = reply_text
-        if convo_is_hybrid:
-            sealed = _seal_hybrid_outbound(reply_text, recipient_short="chef")
-            if sealed is None:
-                # P0.1 (fail closed): the conversation negotiated hybrid-PQ but
-                # the reply cannot be sealed (no prekey / KEM backend gone).
-                # Refuse rather than fall back to plaintext — never persist or
-                # return Lumina's cleartext reply onto a hybrid channel.
-                logger.error(
-                    "api_send: hybrid reply not sealable — refusing plaintext leak"
-                )
-                return JSONResponse(
-                    {"ok": False, "error": "reply_not_sealable"}, status_code=503
-                )
-            reply_wire = sealed
-        reply_msg = _persist(
-            hist,
-            LUMINA_URI,
-            OPERATOR_ID,
-            reply_wire,
-            reply_to_id=user_msg.id,
-            thread_id=thread_id,
+            asyncio.create_task(_bg())
+            return JSONResponse(
+                _apply_contract(
+                    {
+                        "ok": True,
+                        "status": "generating",
+                        "id": user_msg.id,
+                        "recipient": recipient,
+                        "ts": user_msg.timestamp.isoformat(),
+                    },
+                    caps,
+                ),
+                status_code=202,
+            )
+
+        _result = await _generate_lumina_reply(
+            hist, user_msg, content, convo, convo_is_hybrid, caps
         )
+        if not _result.get("ok"):
+            # Fail closed (P0.1): hybrid reply not sealable — 503, nothing leaked.
+            return JSONResponse(_result, status_code=503)
 
-        _result = {
-            "ok": True,
-            "id": user_msg.id,
-            "recipient": LUMINA_ID,
-            "ts": user_msg.timestamp.isoformat(),
-            # Full shared contract (+ legacy fields) so the app round-trips it.
-            "reply": _msg_to_app(reply_msg, self_id=OPERATOR_ID),
-        }
         # Cache so a retry within the window returns THIS reply; prune stale keys.
         _now = time.monotonic()
         _SEND_RECENT[_dk] = (_now, _result)
         for _k in [k for k, (t, _) in list(_SEND_RECENT.items()) if _now - t > _SEND_DEDUP_WINDOW]:
             _SEND_RECENT.pop(_k, None)
             _SEND_LOCKS.pop(_k, None)
-
-    # Web clients (the legacy webui) refresh on a ws "new" ping if available.
-    try:
-        from skchat import webui as _webui
-
-        await _webui._ws_broadcast({"type": "new"})
-    except Exception:
-        logger.debug("ws broadcast unavailable", exc_info=True)
 
     # Dual-serve: capable clients get the negotiated caps echoed; the cached
     # ``_result`` stays the legacy shape so a legacy retry gets legacy output.
