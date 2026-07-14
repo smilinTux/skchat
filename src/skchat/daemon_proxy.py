@@ -1551,19 +1551,23 @@ async def api_send(request: Request):
                     logger.exception("async reply task failed")
 
             asyncio.create_task(_bg())
-            return JSONResponse(
-                _apply_contract(
-                    {
-                        "ok": True,
-                        "status": "generating",
-                        "id": user_msg.id,
-                        "recipient": recipient,
-                        "ts": user_msg.timestamp.isoformat(),
-                    },
-                    caps,
-                ),
-                status_code=202,
-            )
+            _async_payload = {
+                "ok": True,
+                "status": "generating",
+                "id": user_msg.id,
+                "recipient": recipient,
+                "ts": user_msg.timestamp.isoformat(),
+            }
+            # Cache the 202 so a retry / double-send within the window is DEDUPED
+            # (returns this same 202) instead of spawning a SECOND background task,
+            # which would duplicate the reply. Prune stale keys.
+            _now = time.monotonic()
+            _SEND_RECENT[_dk] = (_now, _async_payload)
+            for _k in [k for k, (t, _) in list(_SEND_RECENT.items())
+                       if _now - t > _SEND_DEDUP_WINDOW]:
+                _SEND_RECENT.pop(_k, None)
+                _SEND_LOCKS.pop(_k, None)
+            return JSONResponse(_apply_contract(_async_payload, caps), status_code=202)
 
         _result = await _generate_lumina_reply(
             hist, user_msg, content, convo, convo_is_hybrid, caps

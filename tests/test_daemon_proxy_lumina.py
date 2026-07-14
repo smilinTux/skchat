@@ -412,3 +412,22 @@ def test_edit_control_frame_short_circuits_brain(client):
     # No stray control-frame message appears in the thread.
     hist = client.get("/api/v1/conversations/" + daemon_proxy.LUMINA_ID).json()
     assert all("__EDIT__" not in m["content"] for m in hist)
+
+
+def test_async_double_send_dedupes_no_second_task(client, monkeypatch):
+    """Flag ON: an identical retry/double-send within the window is DEDUPED (same
+    202) and does NOT spawn a second background reply task (would duplicate)."""
+    monkeypatch.setenv("SKCHAT_ASYNC_REPLY", "1")
+    import skchat.daemon_proxy as dp
+    calls = {"n": 0}
+    real_create = dp.asyncio.create_task
+    def _counting(coro, *a, **k):
+        calls["n"] += 1
+        return real_create(coro, *a, **k)
+    monkeypatch.setattr(dp.asyncio, "create_task", _counting)
+    body = {"recipient": "lumina", "message": "double send test"}
+    r1 = client.post("/api/v1/send", json=body)
+    r2 = client.post("/api/v1/send", json=body)
+    assert r1.status_code == 202
+    assert r2.json().get("deduped") is True          # 2nd is the cached 202
+    assert calls["n"] == 1                            # only ONE reply task spawned
