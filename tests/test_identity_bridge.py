@@ -166,13 +166,17 @@ def test_resolve_peer_name_already_uri():
     assert uri == "capauth:alice@capauth.local"
 
 
-def test_resolve_peer_name_from_email(temp_peers_dir):
-    """Test resolving peer name when only email is available (jarvis uses email fallback)."""
+def test_resolve_peer_name_email_only_no_longer_synthesizes(temp_peers_dir):
+    """SEAM 7 regression: jarvis has no authenticated capauth identity (only
+    email/fingerprint), so it must no longer resolve to a synthesized URI."""
     with patch("skchat.identity_bridge.SKCAPSTONE_PEERS_DIR", temp_peers_dir):
         with patch("skchat.identity_bridge.SKCOMMS_PEERS_DIR", Path("/nonexistent")):
-            # Jarvis has no capauth: URI so falls back to email/fingerprint
-            uri = resolve_peer_name("jarvis")
-            assert uri.startswith("capauth:jarvis@") or uri.startswith("capauth:FFEEAABB")
+            with patch(
+                "capauth.agent_identity.resolve_agent_identity",
+                side_effect=ImportError("mocked absence"),
+            ):
+                with pytest.raises(PeerResolutionError):
+                    resolve_peer_name("jarvis")
 
 
 def test_resolve_peer_name_from_json(temp_peers_dir):
@@ -201,6 +205,77 @@ def test_resolve_peer_name_contact_uris_priority(temp_peers_dir):
             ):
                 uri = resolve_peer_name("lumina")
                 assert uri == "capauth:lumina@capauth.local"
+
+
+# --- SEAM 7: no unauthenticated capauth URI synthesis -----------------------
+
+
+def _no_capauth_delegate():
+    """Context helper: disable the capauth resolver so file lookup is exercised."""
+    return patch(
+        "capauth.agent_identity.resolve_agent_identity",
+        side_effect=ImportError("mocked absence"),
+    )
+
+
+def test_resolve_peer_name_no_synthesis_from_email_only(tmp_path):
+    """SEAM 7: a peer file with only email/fingerprint/name (no capauth
+    identity) must NOT be resolved to a synthesized capauth URI.
+
+    Previously this minted ``capauth:<local_part>@skworld.io`` from the email
+    local-part (or ``capauth:<fp>`` from the fingerprint), fabricating an
+    unauthenticated identity. It must now raise instead.
+    """
+    peers_dir = tmp_path / "peers"
+    peers_dir.mkdir()
+    unauth = {
+        "name": "Jarvis",
+        "email": "jarvis@skcapstone.local",
+        "fingerprint": "FFEEAABB00112233445566778899AABBCCDDEEFF",
+        "trust_level": "sovereign",
+    }
+    with open(peers_dir / "jarvis.json", "w") as f:
+        json.dump(unauth, f)
+
+    with patch("skchat.identity_bridge.SKCAPSTONE_PEERS_DIR", peers_dir):
+        with patch("skchat.identity_bridge.SKCOMMS_PEERS_DIR", Path("/nonexistent")):
+            with _no_capauth_delegate():
+                with pytest.raises(PeerResolutionError):
+                    resolve_peer_name("jarvis")
+
+
+def test_resolve_peer_name_no_synthesis_from_name_only(tmp_path):
+    """SEAM 7: a peer file carrying only a friendly ``name`` must not mint
+    ``capauth:<name>@skworld.io``."""
+    peers_dir = tmp_path / "peers"
+    peers_dir.mkdir()
+    with open(peers_dir / "mallory.json", "w") as f:
+        json.dump({"name": "Mallory", "trust_level": "unverified"}, f)
+
+    with patch("skchat.identity_bridge.SKCAPSTONE_PEERS_DIR", peers_dir):
+        with patch("skchat.identity_bridge.SKCOMMS_PEERS_DIR", Path("/nonexistent")):
+            with _no_capauth_delegate():
+                with pytest.raises(PeerResolutionError):
+                    resolve_peer_name("mallory")
+
+
+def test_resolve_peer_name_known_peer_with_identity_field_resolves(tmp_path):
+    """SEAM 7: a peer carrying an explicit authenticated ``identity`` capauth
+    URI still resolves — the tightening only removes *synthesis*."""
+    peers_dir = tmp_path / "peers"
+    peers_dir.mkdir()
+    known = {
+        "name": "Opus",
+        "identity": "capauth:opus@skworld.io",
+        "email": "opus@skcapstone.local",
+    }
+    with open(peers_dir / "opus.json", "w") as f:
+        json.dump(known, f)
+
+    with patch("skchat.identity_bridge.SKCAPSTONE_PEERS_DIR", peers_dir):
+        with patch("skchat.identity_bridge.SKCOMMS_PEERS_DIR", Path("/nonexistent")):
+            with _no_capauth_delegate():
+                assert resolve_peer_name("opus") == "capauth:opus@skworld.io"
 
 
 def test_resolve_peer_name_not_found():
@@ -239,7 +314,37 @@ def test_peer_resolution_with_corrupt_json(tmp_path):
 
 
 def test_resolve_peer_name_yaml_format(tmp_path):
-    """Test resolving peer from YAML format."""
+    """Resolving an authenticated peer from YAML format still works."""
+    pytest.importorskip("yaml")
+
+    peers_dir = tmp_path / "peers"
+    peers_dir.mkdir()
+
+    yaml_content = """
+name: Bob
+identity: capauth:bob@skworld.io
+email: bob@example.com
+fingerprint: AABBCCDD11223344
+trust_level: verified
+"""
+
+    yaml_file = peers_dir / "bob.yml"
+    with open(yaml_file, "w") as f:
+        f.write(yaml_content)
+
+    with patch("skchat.identity_bridge.SKCAPSTONE_PEERS_DIR", peers_dir):
+        with patch("skchat.identity_bridge.SKCOMMS_PEERS_DIR", Path("/nonexistent")):
+            with patch(
+                "capauth.agent_identity.resolve_agent_identity",
+                side_effect=ImportError("mocked absence"),
+            ):
+                uri = resolve_peer_name("bob")
+                assert uri == "capauth:bob@skworld.io"
+
+
+def test_resolve_peer_name_yaml_unauthenticated_raises(tmp_path):
+    """SEAM 7: a YAML peer with only email/fingerprint (no capauth identity)
+    must not synthesize a URI."""
     pytest.importorskip("yaml")
 
     peers_dir = tmp_path / "peers"
@@ -262,8 +367,8 @@ trust_level: verified
                 "capauth.agent_identity.resolve_agent_identity",
                 side_effect=ImportError("mocked absence"),
             ):
-                uri = resolve_peer_name("bob")
-                assert uri == "capauth:bob@skworld.io"
+                with pytest.raises(PeerResolutionError):
+                    resolve_peer_name("bob")
 
 
 def test_get_peer_transport_address(temp_peers_dir):

@@ -99,6 +99,13 @@ def resolve_peer_name(name: str) -> str:
     Looks up the peer in the peer registry at ~/.skcapstone/peers/ or
     ~/.skcomms/peers/. Supports both JSON and YAML peer files.
 
+    SEAM 7 (arch review): resolution succeeds only for peers that carry an
+    *authenticated* capauth identity — an explicit ``identity`` /
+    ``contact_uris`` / ``handle`` capauth URI, or a canonical-resolver hit.
+    A peer file with only a bare name, email, or fingerprint is treated as
+    unresolved (``PeerResolutionError``): synthesizing a capauth URI from
+    such a bare string would fabricate an unauthenticated identity.
+
     Args:
         name: Friendly name of the peer (e.g., "lumina", "jarvis"),
               or an already-resolved URI (returned as-is).
@@ -107,14 +114,14 @@ def resolve_peer_name(name: str) -> str:
         str: Resolved capauth URI (e.g., "capauth:lumina@skworld.io")
 
     Raises:
-        PeerResolutionError: If peer name cannot be resolved.
+        PeerResolutionError: If the peer has no authenticated capauth identity.
 
     Examples:
-        >>> resolve_peer_name("lumina")
+        >>> resolve_peer_name("lumina")  # known agent, canonical resolver
         'capauth:lumina@skworld.io'
 
-        >>> resolve_peer_name("jarvis")
-        'capauth:jarvis@skworld.io'
+        >>> resolve_peer_name("capauth:alice@skworld.io")  # already a URI
+        'capauth:alice@skworld.io'
     """
     if name.startswith("capauth:"):
         return name
@@ -177,25 +184,27 @@ def resolve_peer_name(name: str) -> str:
                 if handle and handle.startswith("capauth:"):
                     return handle
 
-                email = peer_data.get("email")
-                fingerprint = peer_data.get("fingerprint")
-                peer_name = peer_data.get("name", name)
-
-                if email and "@" in email:
-                    local_part = email.split("@")[0]
-                    return f"capauth:{local_part}@{SK_DEFAULT_DOMAIN}"
-                elif fingerprint:
-                    short_fp = fingerprint[:16]
-                    return f"capauth:{short_fp}"
-                elif peer_name:
-                    return f"capauth:{peer_name.lower()}@{SK_DEFAULT_DOMAIN}"
+                # SEAM 7 (arch review "What Not To Touch"): do NOT synthesize a
+                # capauth URI from a bare email local-part, fingerprint prefix,
+                # or friendly name. A peer file lacking an authenticated capauth
+                # identity (`identity` / `contact_uris` / `handle`) is unresolved
+                # — minting `capauth:<name>@skworld.io` here would fabricate an
+                # unauthenticated identity. Fall through to the raise below.
+                logger.debug(
+                    "peer '%s' file %s carries no authenticated capauth identity; "
+                    "refusing to synthesize one",
+                    name,
+                    peer_file,
+                )
 
             except (json.JSONDecodeError, OSError, KeyError):
                 continue
 
     raise PeerResolutionError(
-        f"Cannot resolve peer '{name}'. No peer file found in "
-        f"{SKCAPSTONE_PEERS_DIR} or {SKCOMMS_PEERS_DIR}"
+        f"Cannot resolve peer '{name}': no authenticated capauth identity found. "
+        f"Checked {SKCAPSTONE_PEERS_DIR} and {SKCOMMS_PEERS_DIR}. Peers must carry "
+        f"an explicit `identity`, `contact_uris`, or `handle` capauth URI; a bare "
+        f"name/email/fingerprint is not sufficient."
     )
 
 
