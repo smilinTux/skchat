@@ -20,8 +20,10 @@ from skchat.history import ChatHistory
 @pytest.fixture
 def isolated(tmp_path, monkeypatch):
     """History + group store in a tmp dir; no real network/agent-inbox delivery."""
+    # SKCHAT_HOME -> tmp so ChatHistory(store=None) builds its default SQLite store
+    # under tmp (not the operator's LIVE ~/.skchat/memory) — flagged in review.
+    monkeypatch.setenv("SKCHAT_HOME", str(tmp_path))
     hist = ChatHistory(store=None, history_dir=tmp_path / "history")
-    monkeypatch.delenv("SKCHAT_HOME", raising=False)
     monkeypatch.setattr(G, "_GROUPS_DIR", tmp_path / "groups")
     # Keep fan-out purely local to `hist`: no skcomms transport, no agent inbox.
     monkeypatch.setattr(G, "_delivery_transport", lambda identity: None)
@@ -92,3 +94,73 @@ def test_flag_on_group_thread_copy_stays_readable(isolated, monkeypatch):
 
     assert msg.recipient == f"group:{group.id}"
     assert msg.content == "hi"
+
+
+# ── SEAM 9 receive-side: unseal a sealed group body before it hits the canonical
+# thread + the responder (wires the decrypt path PR #20 left unbuilt) ──────────
+
+@pytest.fixture
+def groups_dir(tmp_path, monkeypatch):
+    """Group store in tmp; no ChatHistory / live ~/.skchat touched."""
+    monkeypatch.delenv("SKCHAT_HOME", raising=False)
+    monkeypatch.setattr(G, "_GROUPS_DIR", tmp_path / "groups")
+    return tmp_path / "groups"
+
+
+def _hybrid_group():
+    group = GroupChat(name="Ops", kem_suite="x25519-mlkem768")
+    group.add_member(identity_uri="capauth:alice@skworld.io", role=MemberRole.ADMIN,
+                     public_key_armor="PGP-KEY")
+    group.ensure_epoch()
+    return group
+
+
+def test_hybrid_seal_unseal_roundtrip():
+    """Hybrid epoch-ratchet body seals and unseals back to the original (the
+    coverage gap the review flagged: classical was tested, hybrid was not)."""
+    group = _hybrid_group()
+    assert group.is_hybrid
+    sealed = G._seal_group_content(group, "hybrid secret body")
+    assert G.is_sealed_group_content(sealed) and sealed != "hybrid secret body"
+    assert G.unseal_group_content(group, sealed) == "hybrid secret body"
+
+
+def test_classical_seal_unseal_roundtrip():
+    group = _classical_group()
+    sealed = G._seal_group_content(group, "classical body")
+    assert G.is_sealed_group_content(sealed)
+    assert G.unseal_group_content(group, sealed) == "classical body"
+
+
+def test_unseal_incoming_group_message_decrypts_sealed(groups_dir):
+    """A sealed incoming member copy is decrypted in place so the canonical thread
+    and the responder both see cleartext (hybrid)."""
+    from skchat.models import ChatMessage
+    group = _hybrid_group()
+    G.save_group(group)
+    sealed = G._seal_group_content(group, "for the group")
+    incoming = ChatMessage(sender="capauth:alice@skworld.io",
+                           recipient="capauth:bob@skworld.io",   # member-copy shape
+                           content=sealed, thread_id=group.id)
+    out = G.unseal_incoming_group_message(incoming)
+    assert out.content == "for the group"
+    assert not G.is_sealed_group_content(out.content)
+
+
+def test_unseal_incoming_passthrough_when_cleartext(groups_dir):
+    """Cleartext (flag-off) bodies are a no-op — same object back, unchanged."""
+    from skchat.models import ChatMessage
+    msg = ChatMessage(sender="a", recipient="b", content="plain text", thread_id="gid")
+    out = G.unseal_incoming_group_message(msg)
+    assert out is msg and out.content == "plain text"
+
+
+def test_unseal_incoming_failclosed_when_group_unavailable(groups_dir):
+    """If the group/key can't be loaded, the body stays sealed and NOTHING crashes
+    (unreadable-but-safe beats a poll-loop exception)."""
+    from skchat.models import ChatMessage
+    stray = _hybrid_group()                       # sealed, but never save_group()'d
+    sealed = G._seal_group_content(stray, "unreachable")
+    msg = ChatMessage(sender="a", recipient="b", content=sealed, thread_id="ghost-gid")
+    out = G.unseal_incoming_group_message(msg)    # must not raise
+    assert G.is_sealed_group_content(out.content)

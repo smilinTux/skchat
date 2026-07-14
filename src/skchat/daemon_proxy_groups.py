@@ -144,6 +144,37 @@ def unseal_group_content(group, content: str) -> str:
     return group.decrypt_message(envelope)
 
 
+def unseal_incoming_group_message(msg):
+    """Decrypt a received group message's sealed body IN PLACE (receive-side of
+    SEAM 9). The fan-out delivers a ``skgseal1:`` ciphertext to each member; the
+    receiving daemon must open it with the group's crypto BEFORE it persists the
+    message to the canonical ``group:<id>`` thread and hands it to the responder,
+    else both the thread view and any reply see ciphertext.
+
+    Returns a copy of *msg* with cleartext ``content`` when the body was sealed and
+    could be opened; otherwise returns *msg* UNCHANGED. Fail-closed-readable: any
+    failure (group not loaded, no epoch/group key, wrong epoch) leaves the sealed
+    body in place (unreadable, flagged) rather than crashing the poll loop. No-op
+    when the body isn't a sealed token, so a mixed cleartext/sealed inbox is safe.
+    """
+    content = getattr(msg, "content", "") or ""
+    if not is_sealed_group_content(content):
+        return msg
+    gid = (getattr(msg, "thread_id", "") or getattr(msg, "recipient", "") or "")
+    gid = gid.replace("group:", "")
+    group = load_group(gid) if gid else None
+    if group is None:
+        logger.warning("unseal_incoming_group_message: no group %r to unseal", gid)
+        return msg
+    try:
+        opened = unseal_group_content(group, content)
+    except Exception as exc:
+        logger.warning("unseal_incoming_group_message: unseal failed for %s: %s",
+                       gid, exc)
+        return msg
+    return msg.model_copy(update={"content": opened})
+
+
 # --------------------------------------------------------------------------- #
 # Persistence (shared store)
 # --------------------------------------------------------------------------- #
