@@ -32,6 +32,11 @@ dependencies = [
     "pyyaml>=6.0",
     "Pillow>=10.0",
     "filetype>=1.2",
+    # HTTP daemon surface (daemon_proxy, call/conf routes, webui) — imported at
+    # module load by 16 modules; was undeclared, so CI's clean install failed to
+    # collect ~36 test modules with ModuleNotFoundError: fastapi.
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
 ]
 
 [project.optional-dependencies]
