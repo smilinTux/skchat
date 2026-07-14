@@ -41,6 +41,20 @@ CLASSICAL_SUITE = "x25519-pgp-wrap-v1"
 #: DM ratchet wire-format capability this build advertises (RFC-0001 P1).
 RATCHET_CAP = "pqdr1"
 
+#: Env flag (P0.5 / SEAM 7): when truthy, the **app-path** prekey intake
+#: (``store_app_prekey_bundle`` behind ``POST /api/v1/prekey``) fails closed —
+#: only a bundle carrying a signature that verifies under the claimed identity's
+#: key is stored. Default OFF so the live app (which publishes UNSIGNED bundles
+#: today) is not locked out; behaviour is UNCHANGED when unset.
+REQUIRE_SIGNED_PREKEYS_ENV = "SKCHAT_REQUIRE_SIGNED_PREKEYS"
+
+_TRUTHY = {"1", "true", "yes", "on"}
+
+
+def require_signed_prekeys() -> bool:
+    """Whether unsigned/invalid app-path prekey bundles must be rejected."""
+    return os.environ.get(REQUIRE_SIGNED_PREKEYS_ENV, "").strip().lower() in _TRUTHY
+
 
 def _pqc_dir() -> Path:
     home = Path(os.environ.get("SKCHAT_HOME", Path.home() / ".skchat"))
@@ -85,6 +99,58 @@ def store_peer_bundle(peer: str, bundle: dict) -> None:
         "ratchet": bundle.get("ratchet"),
     }
     path.write_text(json.dumps(safe, indent=2))
+
+
+def store_app_prekey_bundle(
+    peer: str, bundle: dict, *, signer_public_armor: Optional[str] = None
+) -> bool:
+    """Intake a prekey bundle published over the **app path** (``POST /api/v1/prekey``).
+
+    Fail-closed signature verification is GATED behind
+    ``SKCHAT_REQUIRE_SIGNED_PREKEYS`` (P0.5 / SEAM 7):
+
+    * flag unset (default) — behaviour is UNCHANGED: the bundle is stored as-is
+      via :func:`store_peer_bundle` (the app publishes unsigned bundles today, so
+      the live app is not locked out).
+    * flag set — the bundle is stored ONLY if it carries a ``signature`` that
+      verifies against ``signer_public_armor`` via
+      :func:`skchat.prekey_sig.verify_prekey_bundle`. A null/missing signature, a
+      missing signer key, or a failed verification (prekey substitution / wrong
+      identity) rejects the bundle and stores nothing — closing the handshake
+      MITM gap.
+
+    Args:
+        peer: The publishing peer (short name or URI); keys the stored bundle.
+        bundle: The published prekey bundle dict.
+        signer_public_armor: ASCII-armored PGP public key of the claimed identity.
+            Required (and used) only when the flag is set.
+
+    Returns:
+        ``True`` if the bundle was stored, ``False`` if it was rejected.
+    """
+    if require_signed_prekeys() and not _prekey_signature_ok(bundle, signer_public_armor):
+        logger.warning(
+            "PQC: rejecting unsigned/invalid app prekey for %s (%s is set — fail-closed)",
+            _short(peer),
+            REQUIRE_SIGNED_PREKEYS_ENV,
+        )
+        return False
+    store_peer_bundle(peer, bundle)
+    return True
+
+
+def _prekey_signature_ok(bundle: dict, signer_public_armor: Optional[str]) -> bool:
+    """True iff *bundle* carries a signature that verifies under the signer key.
+
+    A null/missing signature or a missing signer key is False (fail-closed) —
+    the ``prekey_sig`` import (and thus PGP verification) only happens once both
+    are present, reusing :func:`skchat.prekey_sig.verify_prekey_bundle`.
+    """
+    if not bundle.get("signature") or not signer_public_armor:
+        return False
+    from . import prekey_sig
+
+    return prekey_sig.verify_prekey_bundle(bundle, signer_public_armor)
 
 
 def load_peer_bundle(peer: str) -> Optional[dict]:
