@@ -26,8 +26,10 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
+
+from .dataplane_auth import require_dataplane_auth
 
 logger = logging.getLogger("skchat.daemon_proxy")
 
@@ -540,7 +542,10 @@ def _seal_hybrid_outbound(plaintext: str, *, recipient_short: str) -> str | None
 
 
 @router.post("/v1/prekey")
-async def api_publish_prekey(request: Request):
+async def api_publish_prekey(
+    request: Request,
+    _auth: None = Depends(require_dataplane_auth),
+):
     """Publish a peer's (the app's) hybrid-KEM prekey bundle.
 
     Body = a ``PrekeyBundle`` dict: ``{suite, hybrid_public_hex, signature?,
@@ -658,7 +663,7 @@ def _group_conversations() -> list[dict]:
 
 
 @router.get("/v1/inbox")
-async def api_inbox():
+async def api_inbox(_auth: None = Depends(require_dataplane_auth)):
     """Every message (the app groups by ``peer_id``). Lumina thread included."""
     try:
         return JSONResponse({"messages": _lumina_messages(limit=500)})
