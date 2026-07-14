@@ -13,6 +13,8 @@ The qwen3.6 HTTP backend is never touched — a stub ``LuminaBrain`` is injected
 
 from __future__ import annotations
 
+import time as _time
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -282,6 +284,110 @@ def test_react_control_frame_short_circuits_brain(client):
     # No stray control-frame message appears in the thread.
     hist = client.get("/api/v1/conversations/" + daemon_proxy.LUMINA_ID).json()
     assert all("__REACT__" not in m["content"] for m in hist)
+
+
+def _wait_for_reply(client, expected_len=2, timeout=5.0):
+    """Poll the Lumina thread until the async background task has landed."""
+    deadline = _time.monotonic() + timeout
+    stored: list = []
+    while _time.monotonic() < deadline:
+        stored = client.get("/api/v1/conversations/" + daemon_proxy.LUMINA_ID).json()
+        if len(stored) >= expected_len:
+            break
+        _time.sleep(0.02)
+    return stored
+
+
+async def test_generate_lumina_reply_returns_reply_dict(client, monkeypatch):
+    """Task 1: the extracted coroutine returns the SAME app-shaped reply dict
+    ``api_send`` returns today (pure-refactor contract), persists the reply and
+    fires a ``new`` broadcast."""
+    seen: list = []
+
+    async def _fake_ws(payload):
+        seen.append(payload)
+
+    monkeypatch.setattr(daemon_proxy, "_ws_broadcast_safe", _fake_ws)
+
+    hist = client._hist
+    user_msg = daemon_proxy._persist(
+        hist, daemon_proxy.OPERATOR_ID, daemon_proxy.LUMINA_URI, "ping",
+    )
+    result = await daemon_proxy._generate_lumina_reply(
+        hist, user_msg, "ping", [], False, {},
+    )
+    assert result["ok"] is True
+    assert result["recipient"] == daemon_proxy.LUMINA_ID
+    assert result["id"] == user_msg.id
+    assert result["reply"]["content"] == "Lumina hears you: ping"
+    assert result["reply"]["reply_to_id"] == user_msg.id
+    assert seen == [{"type": "new"}]
+    stored = client.get("/api/v1/conversations/" + daemon_proxy.LUMINA_ID).json()
+    assert [m["content"] for m in stored] == ["ping", "Lumina hears you: ping"]
+
+
+def test_async_flag_off_is_synchronous(client, monkeypatch):
+    """Flag OFF: /api/v1/send stays synchronous — the reply rides the 200 body
+    (byte-for-byte today's behavior)."""
+    monkeypatch.delenv("SKCHAT_ASYNC_REPLY", raising=False)
+    r = client.post("/api/v1/send", json={"recipient": "lumina", "message": "hi"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["reply"]["content"] == "Lumina hears you: hi"
+
+
+def test_async_flag_on_returns_202_then_delivers(client, monkeypatch):
+    """Flag ON: /api/v1/send returns 202 immediately, then the background task
+    generates + persists the reply and fires a ``new`` broadcast."""
+    monkeypatch.setenv("SKCHAT_ASYNC_REPLY", "1")
+    seen: list = []
+
+    async def _fake_ws(payload):
+        seen.append(payload)
+
+    monkeypatch.setattr(daemon_proxy, "_ws_broadcast_safe", _fake_ws)
+
+    r = client.post("/api/v1/send", json={"recipient": "lumina", "message": "hi"})
+    assert r.status_code == 202
+    body = r.json()
+    assert body["ok"] is True
+    assert body["status"] == "generating"
+    assert body["id"]
+    assert "reply" not in body
+
+    stored = _wait_for_reply(client)
+    assert [m["content"] for m in stored] == ["hi", "Lumina hears you: hi"]
+    assert stored[1]["is_agent"] is True
+    assert {"type": "new"} in seen
+
+
+def test_async_flag_on_brain_failure_persists_fallback(client, monkeypatch):
+    """Task 3: with the flag on and a brain that raises, the background task
+    persists a graceful fallback reply (not nothing), still fires ``new`` and
+    never raises out of the task."""
+    monkeypatch.setenv("SKCHAT_ASYNC_REPLY", "1")
+
+    class _BoomBrain:
+        def reply(self, *a, **k):
+            raise RuntimeError("backend down")
+
+    monkeypatch.setattr(daemon_proxy, "_BRAIN", _BoomBrain())
+    seen: list = []
+
+    async def _fake_ws(payload):
+        seen.append(payload)
+
+    monkeypatch.setattr(daemon_proxy, "_ws_broadcast_safe", _fake_ws)
+
+    r = client.post("/api/v1/send", json={"recipient": "lumina", "message": "you there?"})
+    assert r.status_code == 202
+
+    stored = _wait_for_reply(client)
+    assert len(stored) == 2
+    assert stored[0]["content"] == "you there?"
+    assert "thinking failed" in stored[1]["content"].lower()
+    assert {"type": "new"} in seen
 
 
 def test_edit_control_frame_short_circuits_brain(client):
