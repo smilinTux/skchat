@@ -26,7 +26,11 @@ try:
     import skmemory  # noqa: F401
 
     _SKMEMORY_AVAILABLE = True
-except ImportError:
+except Exception:
+    # Not just ImportError: importing skmemory can raise ValueError("No agent
+    # configured...") on a clean runner (no ~/.skcapstone/agents), which otherwise
+    # fails COLLECTION (pytest imports every module before deselecting by marker),
+    # reddening CI even under `-m "not integration"`.
     _SKMEMORY_AVAILABLE = False
 
 pytestmark = pytest.mark.integration
