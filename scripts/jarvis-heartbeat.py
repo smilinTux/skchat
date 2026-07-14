@@ -61,27 +61,11 @@ AGENTS = {
         },
         "mention": "@jarvis",
     },
-    "opus": {
-        "identity": "capauth:opus@skworld.io",
-        "variants": {
-            "capauth:opus@skworld.io",
-            "opus",
-            "capauth:opus@capauth.local",
-            "opus@skworld.io",
-        },
-        "mention": "@opus",
-    },
-    "lumina": {
-        "identity": "capauth:lumina@skworld.io",
-        "variants": {
-            "capauth:lumina@skworld.io",
-            "lumina",
-            "capauth:lumina@capauth.local",
-            "lumina@skworld.io",
-            "capauth:cbd2dot11@capauth.local",
-        },
-        "mention": "@lumina",
-    },
+    # opus + lumina REMOVED 2026-07-14 (arch review P0.4 / SEAM 3): a single
+    # (agent, channel) must have ONE responder. Lumina DMs are owned by the app
+    # path (daemon_proxy.api_send); Opus is not a spawned-claude responder here.
+    # Leaving them in made jarvis-heartbeat a third responder that answered the
+    # same message. Scope this poller to jarvis only.
 }
 
 CHEF_IDENTITY = "chef@skworld.io"
