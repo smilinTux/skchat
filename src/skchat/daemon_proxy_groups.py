@@ -61,6 +61,90 @@ def _now_iso() -> str:
 
 
 # --------------------------------------------------------------------------- #
+# SEAM 9 — seal group messages on the fan-out wire (flag-gated, fail-closed)
+# --------------------------------------------------------------------------- #
+# Group messages historically fanned out as CLEARTEXT while 1:1 DMs were sealed
+# (transport.py ``send_message`` -> ``DmRatchetManager.seal``). This wires the
+# group's OWN crypto (``GroupChat.encrypt_message`` — classical static-key or the
+# hybrid epoch-ratchet, per the group's ``kem_suite``) into ``fan_out_send`` so a
+# fanned-out copy carries ciphertext, not plaintext. Gated behind
+# ``SKCHAT_SEAL_GROUPS`` (default OFF, so current delivery is byte-for-byte
+# unchanged) and FAIL-CLOSED: a member that holds no group key is skipped, never
+# fanned out cleartext.
+
+#: Wire marker prefix for a sealed group-message body stored in
+#: ``ChatMessage.content`` (mirrors the ``pqdm:``/``pqdr1:`` DM markers in
+#: ``crypto.py``). ``skgseal1:`` + base64(json envelope).
+GROUP_SEAL_SCHEME = "skgseal1:"
+
+
+def _seal_groups_enabled() -> bool:
+    """Whether group fan-out should seal messages (``SKCHAT_SEAL_GROUPS``).
+
+    Default OFF: unset / ``0`` / ``false`` / ``no`` / ``off`` all mean "leave
+    delivery unchanged" (same truthiness convention as ``SKCHAT_DM_RATCHET`` in
+    ``transport.py``).
+    """
+    return os.getenv("SKCHAT_SEAL_GROUPS", "").strip().lower() not in (
+        "",
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+
+
+def _member_has_group_key(group, member) -> bool:
+    """Whether *member* can obtain the group key (so a sealed body is readable).
+
+    Mirrors EXACTLY the condition under which
+    :meth:`GroupKeyDistributor.distribute_key` yields a payload (not ``None``): a
+    hybrid member needs a hybrid-KEM public key, a classical member needs a PGP
+    public key. A member failing this holds NO group key — under
+    ``SKCHAT_SEAL_GROUPS`` it is SKIPPED (fail closed), never fanned out cleartext.
+    """
+    if getattr(group, "is_hybrid", False):
+        return bool(getattr(member, "hybrid_kem_public_hex", ""))
+    return bool(getattr(member, "public_key_armor", ""))
+
+
+def _seal_group_content(group, content: str) -> str:
+    """Seal *content* under the group's existing crypto → an opaque wire token.
+
+    Reuses :meth:`GroupChat.encrypt_message` (no rebuilt crypto): a single
+    ciphertext under the sender/group key (classical) or the current epoch key
+    (hybrid), packed as ``skgseal1:`` + base64(json envelope) so every keyed
+    member decrypts the same body. Called ONCE per group message.
+    """
+    import base64
+    import json
+
+    envelope = group.encrypt_message(content)
+    blob = base64.b64encode(json.dumps(envelope).encode("utf-8")).decode("ascii")
+    return GROUP_SEAL_SCHEME + blob
+
+
+def is_sealed_group_content(content: Any) -> bool:
+    """True if *content* is a ``skgseal1:`` sealed group body."""
+    return isinstance(content, str) and content.startswith(GROUP_SEAL_SCHEME)
+
+
+def unseal_group_content(group, content: str) -> str:
+    """Open a ``skgseal1:`` sealed group body via :meth:`GroupChat.decrypt_message`.
+
+    Returns *content* unchanged if it is not a sealed token (so a mixed history of
+    cleartext + sealed rows reads back uniformly).
+    """
+    import base64
+    import json
+
+    if not is_sealed_group_content(content):
+        return content
+    envelope = json.loads(base64.b64decode(content[len(GROUP_SEAL_SCHEME):]))
+    return group.decrypt_message(envelope)
+
+
+# --------------------------------------------------------------------------- #
 # Persistence (shared store)
 # --------------------------------------------------------------------------- #
 def _groups_dir() -> Path:
@@ -457,6 +541,15 @@ def fan_out_send(group, hist, sender_uri: str, content: str,
             kw["rich"] = rich
         return ChatMessage(**kw)
 
+    # SEAM 9: seal the body ONCE under the group's own crypto before fan-out (a
+    # single ciphertext shared by every keyed member — sender/group-key model),
+    # flag-gated + fail-closed. The canonical group-thread copy below stays
+    # CLEARTEXT: it is the operator's own local record (recipient=group:<id>,
+    # never delivered on the wire) so ``group_thread_messages`` still reads back.
+    seal = _seal_groups_enabled()
+    sealed_content = _seal_group_content(group, content) if seal else None
+    skipped: list[str] = []
+
     group_msg = _typed(
         sender=sender_uri,
         recipient=f"group:{group.id}",
@@ -464,7 +557,7 @@ def fan_out_send(group, hist, sender_uri: str, content: str,
         thread_id=group.id,
         reply_to_id=reply_to_id or None,
         metadata={"group_id": group.id, "group_name": group.name,
-                  "key_version": group.key_version},
+                  "key_version": group.key_version, "sealed": bool(seal)},
     )
     hist.save(group_msg)
 
@@ -478,14 +571,24 @@ def fan_out_send(group, hist, sender_uri: str, content: str,
     for member in group.members:
         if member.identity_uri == sender_uri:
             continue
+        # Fail closed: never fan out a plaintext body to a member that holds no
+        # group key — skip it entirely (and flag) rather than downgrade to clear.
+        if seal and not _member_has_group_key(group, member):
+            logger.warning(
+                "fan_out_send: skipping %s — no group key "
+                "(SKCHAT_SEAL_GROUPS, fail closed)",
+                member.identity_uri,
+            )
+            skipped.append(member.identity_uri)
+            continue
         member_msg = _typed(
             sender=sender_uri,
             recipient=member.identity_uri,
-            content=content,
+            content=sealed_content if seal else content,
             thread_id=group.id,
             reply_to_id=reply_to_id or None,
             metadata={"group_id": group.id, "group_name": group.name,
-                      "key_version": group.key_version},
+                      "key_version": group.key_version, "sealed": bool(seal)},
         )
         try:
             hist.save(member_msg)
@@ -500,6 +603,12 @@ def fan_out_send(group, hist, sender_uri: str, content: str,
             except Exception as exc:
                 logger.warning("fan_out_send: delivery to %s failed: %s",
                                member.identity_uri, exc)
+
+    if skipped:
+        # Surface the fail-closed skips on the returned group-thread message so
+        # callers/UI can flag "N member(s) not reachable sealed" without changing
+        # the return type.
+        group_msg.metadata["sealed_skipped"] = skipped
 
     group.touch()
     group.metadata["last_message"] = content
