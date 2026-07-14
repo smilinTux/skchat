@@ -427,6 +427,90 @@ def list_groups() -> list:
 
 
 # --------------------------------------------------------------------------- #
+# Group key refresh — key EXISTING groups from the prekey store
+# --------------------------------------------------------------------------- #
+# A group created before its members published hybrid prekeys has members with NO
+# group key (``_member_has_group_key`` is False): a sealed fan-out SKIPS them
+# (partial coverage). This completes distribution after the fact — look up each
+# unkeyed member's now-available hybrid prekey, stamp it on the membership row,
+# seed the epoch if the group became keyable, and persist. Reuses the existing
+# crypto (``pq_prekeys.collect_member_hybrid_keys`` + ``GroupChat.ensure_epoch``);
+# no new crypto. Idempotent: a re-run keys nothing new (already-keyed members are
+# skipped, members with no prekey stay unkeyed).
+def refresh_group_member_keys(group) -> dict:
+    """Key any unkeyed members of *group* from the published prekey store.
+
+    For each member lacking a group key (``_member_has_group_key`` is False), look
+    up their hybrid prekey via :func:`pq_prekeys.collect_member_hybrid_keys` and set
+    ``member.hybrid_kem_public_hex``. If any member became keyed AND the group is
+    hybrid, seed the epoch secret (:meth:`GroupChat.ensure_epoch`). If anything
+    changed, :func:`save_group`. Idempotent.
+
+    Returns ``{'group_id', 'keyed', 'still_unkeyed', 'changed'}`` where ``keyed`` is
+    the URIs newly keyed by this pass and ``still_unkeyed`` the URIs with no prekey.
+    """
+    from . import pq_prekeys as PQ
+
+    unkeyed = [m for m in getattr(group, "members", [])
+               if not _member_has_group_key(group, m)]
+    keyed: list[str] = []
+    still_unkeyed: list[str] = []
+    changed = False
+    hybrid_keys = PQ.collect_member_hybrid_keys([m.identity_uri for m in unkeyed]) \
+        if unkeyed else {}
+    for member in unkeyed:
+        pub_hex = hybrid_keys.get(member.identity_uri, "")
+        if pub_hex:
+            member.hybrid_kem_public_hex = pub_hex
+            changed = True
+        # Re-evaluate against the SAME gate the sealed fan-out uses: only a member
+        # the prekey actually made keyable counts as keyed; otherwise it is still
+        # unkeyed (e.g. a classical group where the hybrid key doesn't help).
+        if _member_has_group_key(group, member):
+            keyed.append(member.identity_uri)
+        else:
+            still_unkeyed.append(member.identity_uri)
+    if keyed and getattr(group, "is_hybrid", False):
+        group.ensure_epoch()
+        changed = True
+    if changed:
+        save_group(group)
+    return {
+        "group_id": group.id,
+        "keyed": keyed,
+        "still_unkeyed": still_unkeyed,
+        "changed": changed,
+    }
+
+
+def refresh_all_group_keys() -> dict:
+    """Sweep every persisted group and key what the prekey store now allows.
+
+    Runs :func:`refresh_group_member_keys` over :func:`list_groups`. Returns a
+    summary ``{'groups', 'groups_changed', 'member_slots_keyed',
+    'groups_still_partial'}`` — total groups seen, how many were mutated, how many
+    member slots got keyed, and how many groups still have an unkeyed member.
+    """
+    groups = list_groups()
+    groups_changed = 0
+    member_slots_keyed = 0
+    groups_still_partial = 0
+    for group in groups:
+        res = refresh_group_member_keys(group)
+        if res["changed"]:
+            groups_changed += 1
+        member_slots_keyed += len(res["keyed"])
+        if res["still_unkeyed"]:
+            groups_still_partial += 1
+    return {
+        "groups": len(groups),
+        "groups_changed": groups_changed,
+        "member_slots_keyed": member_slots_keyed,
+        "groups_still_partial": groups_still_partial,
+    }
+
+
+# --------------------------------------------------------------------------- #
 # ACL helpers (lightweight v1)
 # --------------------------------------------------------------------------- #
 def _acl(group) -> dict[str, Any]:
