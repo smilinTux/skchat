@@ -459,6 +459,22 @@ def _short_name(uri: str) -> str:
     return s.split("@")[0]
 
 
+def _resolve_signer_pubkey(peer: str) -> str | None:
+    """Best-effort ASCII-armored PGP public key for the claimed publisher.
+
+    Used only when ``SKCHAT_REQUIRE_SIGNED_PREKEYS`` is set: the signed prekey
+    bundle is verified against the identity's own key from the skcapstone peer
+    store. Returns ``None`` if the peer has no published key — the intake then
+    fails closed (nothing stored)."""
+    try:
+        from skchat.crypto import _load_peer_public_key
+
+        return _load_peer_public_key(peer)
+    except Exception:
+        logger.debug("no signer pubkey for prekey publisher %s", peer, exc_info=True)
+        return None
+
+
 def _open_hybrid_inbound(token: str, *, sender_short: str) -> str | None:
     """Open a `pqdm1:` token addressed to Lumina. Returns plaintext or None."""
     try:
@@ -523,7 +539,12 @@ async def api_publish_prekey(request: Request):
     if not isinstance(body, dict):
         raise HTTPException(400, "prekey bundle must be an object")
     owner = _short_name((body.get("owner") or OPERATOR_ID))
-    PQ.store_peer_bundle(owner, body)
+    # P0.5 / SEAM 7: fail closed on unsigned/invalid bundles when the operator
+    # opts in via SKCHAT_REQUIRE_SIGNED_PREKEYS. Resolve the claimed identity's
+    # PGP public key best-effort (only needed when the flag is on).
+    signer = _resolve_signer_pubkey(owner) if PQ.require_signed_prekeys() else None
+    if not PQ.store_app_prekey_bundle(owner, body, signer_public_armor=signer):
+        raise HTTPException(400, "prekey bundle rejected: unsigned or invalid signature")
     return JSONResponse(
         {"ok": True, "stored": owner, "hybrid": PQ.peer_is_hybrid(owner)}
     )
