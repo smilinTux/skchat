@@ -18,6 +18,7 @@ from typing import Optional
 
 from fastapi import (
     Body,
+    Depends,
     FastAPI,
     File,
     Form,
@@ -35,6 +36,7 @@ from fastapi.responses import (
 )
 
 from . import __version__
+from .dataplane_auth import require_dataplane_auth
 
 logger = logging.getLogger(__name__)
 
@@ -1062,7 +1064,10 @@ async def send(recipient: str = Form(...), content: str = Form(...)) -> HTMLResp
 
 
 @app.post("/api/send")
-async def api_send(payload: dict = Body(...)) -> JSONResponse:
+async def api_send(
+    payload: dict = Body(...),
+    _auth: None = Depends(require_dataplane_auth),
+) -> JSONResponse:
     """JSON send path for native clients (Flutter app).
 
     The legacy HTML ``POST /send`` (form body -> server-rendered HTML) is left
