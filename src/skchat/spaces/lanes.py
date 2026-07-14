@@ -21,6 +21,11 @@ KNOWN_LANES = SNAPSHOT_LANES | LOG_LANES
 class LaneStore:
     def __init__(self, *, db_path: Path | str) -> None:
         self._db = str(db_path)
+        # create the parent dir before connecting: sqlite3.connect() raises
+        # OperationalError on a missing directory, and this runs at import time via
+        # register_spaces_routes(), so a clean environment (CI, a fresh checkout)
+        # couldn't even import webui. Portability landmine, now defused.
+        Path(self._db).parent.mkdir(parents=True, exist_ok=True)
         with self._conn() as c:
             c.execute(
                 """CREATE TABLE IF NOT EXISTS lane_events (
