@@ -242,8 +242,19 @@ class ChatMessage(BaseModel):
 
     @model_validator(mode="after")
     def _require_content_or_attachments(self) -> "ChatMessage":
-        """A message must carry text content OR at least one attachment."""
-        if not (self.content or "").strip() and not self.attachments:
+        """A message must carry text content OR at least one attachment.
+
+        Exception: a TYPED control-plane message (e.g. a group key delivery, routed
+        by ``metadata['group_key_package']`` — never by a body prefix) legitimately
+        carries no chat body. Requiring content there would raise on build and make
+        the control message undeliverable, so a metadata-typed control message is
+        allowed to be body-less.
+        """
+        if (
+            not (self.content or "").strip()
+            and not self.attachments
+            and not (self.metadata or {}).get("group_key_package")
+        ):
             raise ValueError("Message must have content or at least one attachment")
         return self
 
