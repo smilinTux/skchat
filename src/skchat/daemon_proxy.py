@@ -1080,6 +1080,12 @@ async def api_conversation_history(peer_id: str):
 _SEND_LOCKS: dict[str, asyncio.Lock] = {}
 _SEND_RECENT: dict[str, tuple[float, dict]] = {}
 _SEND_DEDUP_WINDOW = 90.0  # seconds a generated reply is reused for retries
+# The blocking LLM reply runs in a worker THREAD (never on the event loop, which
+# would freeze health/WS/other sends and drive the app to time out + retry +
+# duplicate). This lock serializes brain calls (the shared LuminaBrain is not
+# guaranteed reentrant) — matching today's sequential behavior — while the loop
+# stays free.
+_BRAIN_LOCK = asyncio.Lock()
 
 
 def _context_epoch():
@@ -1425,7 +1431,11 @@ async def api_send(request: Request):
             reply_text = "…(I'm here, but my language backend is offline right now — try again in a moment.)"
         else:
             try:
-                reply_text = brain.reply(content, history=convo, sender="chef") or ""
+                # Run the (up to ~180s) blocking LLM call in a thread so the async
+                # event loop stays responsive; serialize brain calls with the lock.
+                async with _BRAIN_LOCK:
+                    reply_text = await asyncio.to_thread(
+                        brain.reply, content, history=convo, sender="chef") or ""
             except Exception:
                 logger.exception("Lumina brain reply failed")
                 reply_text = "…(thinking failed — my backend hiccuped. Say that again?)"
