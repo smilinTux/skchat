@@ -243,3 +243,60 @@ def test_conversation_exposes_encryption_status(monkeypatch):
     monkeypatch.setenv("SKCHAT_SEAL_GROUPS", "1")
     conv = G.group_to_conversation(_ready_hybrid_group())
     assert "encryption" in conv and conv["encryption"]["state"] == "sealed"
+
+
+# ── receiver-side key distribution end-to-end (the missing half of SEAM 9) ─────
+
+def test_group_key_distribution_end_to_end_hybrid(tmp_path, monkeypatch):
+    """Full chain: sender keys a member + distributes the wrapped epoch secret;
+    the receiver APPLIES the package and can then UNSEAL what the sender sealed.
+    Proves the receive-half that was missing (sender distributed to no one who
+    could apply it)."""
+    from skchat import pq_prekeys as PQ
+    if not PQ.available():
+        pytest.skip("PQ KEM backend unavailable")
+    monkeypatch.setenv("SKCHAT_HOME", str(tmp_path))
+    monkeypatch.setenv("SKAGENT", "receiver")
+    from skchat.group import GroupChat, MemberRole, GroupKeyDistributor
+
+    recv_uri = "capauth:receiver@skworld.io"
+    pub, _priv = PQ.ensure_agent_keypair("receiver")           # receiver's real keypair
+
+    # SENDER: hybrid group; receiver is a keyed member; seed the epoch secret.
+    sender = GroupChat(name="Secure", kem_suite="x25519-mlkem768")
+    sender.add_member(identity_uri="capauth:sender@skworld.io", role=MemberRole.ADMIN)
+    sender.add_member(identity_uri=recv_uri, hybrid_kem_public_hex=pub.hex())
+    sender.ensure_epoch()
+    assert sender.epoch_secret_hex
+
+    dists = GroupKeyDistributor.distribute_key(sender)          # wrap to each member
+    assert dists.get(recv_uri)
+    package = {"type": "group_epoch_advance", "group_id": sender.id,
+               "epoch": sender.epoch, "key_version": sender.key_version,
+               "kem_suite": sender.kem_suite, "distributions": dists}
+
+    # RECEIVER: a local group copy, same id, NO epoch secret yet.
+    recv = GroupChat(name="Secure", kem_suite="x25519-mlkem768")
+    recv.id = sender.id
+    recv.add_member(identity_uri=recv_uri, role=MemberRole.ADMIN)
+    assert not recv.epoch_secret_hex
+    G.save_group(recv)
+
+    # APPLY the package -> receiver gets the SAME epoch secret.
+    assert G.apply_group_key_package(package, self_uri=recv_uri, agent="receiver") is True
+    recv2 = G.load_group(sender.id)
+    assert recv2.epoch_secret_hex == sender.epoch_secret_hex
+    assert recv2.epoch == sender.epoch
+
+    # END TO END: sender seals, receiver unseals.
+    sealed = G._seal_group_content(sender, "cross-daemon secret")
+    assert G.unseal_group_content(recv2, sealed) == "cross-daemon secret"
+
+
+def test_apply_group_key_package_ignores_not_for_us(tmp_path, monkeypatch):
+    """A package with no distribution for us (or wrong type) is a safe no-op."""
+    monkeypatch.setenv("SKCHAT_HOME", str(tmp_path))
+    assert G.apply_group_key_package({"type": "group_key_rotation"}, self_uri="x") is False
+    assert G.apply_group_key_package(
+        {"type": "group_epoch_advance", "group_id": "g", "distributions": {}},
+        self_uri="capauth:me@skworld.io") is False

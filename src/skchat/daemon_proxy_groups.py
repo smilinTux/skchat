@@ -209,6 +209,60 @@ def unseal_group_content(group, content: str) -> str:
     return group.decrypt_message(envelope)
 
 
+def apply_group_key_package(package: dict, *, self_uri: str,
+                            agent: Optional[str] = None) -> bool:
+    """Receiver side of group key distribution (the missing half of SEAM 9).
+
+    The sender's ``rotate_key``/``_advance_epoch`` wraps the epoch secret to each
+    member's hybrid-KEM public key and broadcasts a ``group_epoch_advance``
+    package. Until now nothing on the receiver applied it, so a member's local
+    group copy never got the epoch secret and could not unseal. This unwraps the
+    payload addressed to *self_uri* with this agent's hybrid private key and stores
+    the epoch secret on the local group copy, so this daemon can decrypt messages
+    at that epoch.
+
+    Returns True iff applied. Fail-closed-readable: any failure (not for us, no
+    keypair, unwrap fails, no local group) logs + returns False, never raises into
+    the poll loop. Idempotent (re-applying the same epoch is a harmless no-op).
+    Hybrid only — classical ``group_key_rotation`` uses a different (PGP) unwrap.
+    """
+    try:
+        if package.get("type") != "group_epoch_advance":
+            return False
+        gid = package.get("group_id")
+        wrapped = (package.get("distributions") or {}).get(self_uri)
+        if not gid or not wrapped:
+            return False   # not addressed to us / no key for us in this package
+        group = load_group(gid)
+        if group is None:
+            logger.warning("apply_group_key_package: no local group %s to key", gid)
+            return False
+        from . import pq_prekeys as PQ
+
+        kp = PQ.ensure_agent_keypair(agent)
+        if not kp:
+            logger.warning("apply_group_key_package: no hybrid keypair to unwrap %s", gid)
+            return False
+        _pub, priv = kp
+        from .group import GroupKeyDistributor
+
+        secret_hex = GroupKeyDistributor.unwrap_epoch_secret_for_member(wrapped, priv.hex())
+        if not secret_hex:
+            logger.warning("apply_group_key_package: unwrap failed for group %s", gid)
+            return False
+        group.epoch_secret_hex = secret_hex
+        group.epoch = int(package.get("epoch", group.epoch))
+        group.key_version = int(package.get("key_version", group.key_version))
+        group.group_key = secret_hex          # compat shim, matches the sender
+        group.message_index = 0
+        save_group(group)
+        logger.info("apply_group_key_package: group %s keyed at epoch %d", gid, group.epoch)
+        return True
+    except Exception as exc:
+        logger.warning("apply_group_key_package failed: %s", exc)
+        return False
+
+
 def unseal_incoming_group_message(msg):
     """Decrypt a received group message's sealed body IN PLACE (receive-side of
     SEAM 9). The fan-out delivers a ``skgseal1:`` ciphertext to each member; the
