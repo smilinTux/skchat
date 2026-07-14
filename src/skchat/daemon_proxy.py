@@ -97,6 +97,18 @@ def _get_brain():
         from bridge_consciousness import LuminaBrain  # type: ignore
 
         _BRAIN = LuminaBrain(home=_AGENT_HOME, agent=LUMINA_NAME)
+        # Per-message skmemory recall (_mem.inject) surfaces her stored memories
+        # into every DM reply. Those are currently polluted with the old
+        # voice-call / pqdm1 mess, so recall keeps dragging "PGP payloads / voice
+        # not deployed" into unrelated replies. Disable recall on the DM brain
+        # (this instance only; the Telegram bridge runs its own). Re-enable with
+        # SKCHAT_DM_MEMORY=1 once her memory is cleaned.
+        if os.getenv("SKCHAT_DM_MEMORY", "0").strip().lower() not in ("1", "true", "yes", "on"):
+            try:
+                _BRAIN._mem = None
+                logger.info("DM brain: skmemory recall disabled (SKCHAT_DM_MEMORY=0)")
+            except Exception:
+                logger.debug("could not disable DM brain memory", exc_info=True)
     except Exception:
         logger.exception("LuminaBrain unavailable — Lumina will use a fallback reply")
         _BRAIN = None
@@ -1027,6 +1039,20 @@ _SEND_RECENT: dict[str, tuple[float, dict]] = {}
 _SEND_DEDUP_WINDOW = 90.0  # seconds a generated reply is reused for retries
 
 
+def _context_epoch():
+    """Optional datetime cutoff: messages OLDER than this are not fed to the
+    brain. Lets us reset a polluted conversation (voice/pqdm1 mess) without
+    deleting history — write an ISO timestamp to ~/.skchat/lumina-context-epoch.
+    Returns None when no cutoff is set.
+    """
+    try:
+        raw = (Path.home() / ".skchat" / "lumina-context-epoch").read_text().strip()
+        dt = datetime.fromisoformat(raw)
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    except Exception:
+        return None
+
+
 def _is_context_noise(content: str) -> bool:
     """True for messages that must NOT be fed to Lumina's brain as context.
 
@@ -1199,10 +1225,21 @@ async def api_send(request: Request):
 
         # 2. Build the prior-turn history for context (oldest-first role/content).
         prior = _lumina_messages(limit=40)
+        _epoch = _context_epoch()
         convo: list[dict] = []
         for pm in prior:
             if pm["id"] == user_msg.id:
                 continue  # don't double-feed the message we just stored
+            # Context reset: skip anything older than the epoch cutoff.
+            if _epoch is not None:
+                try:
+                    _pts = datetime.fromisoformat(str(pm.get("ts") or pm.get("timestamp") or ""))
+                    if _pts.tzinfo is None:
+                        _pts = _pts.replace(tzinfo=timezone.utc)
+                    if _pts < _epoch:
+                        continue
+                except Exception:
+                    pass
             _pc = str(pm.get("content", "") or "")
             # Drop non-conversational NOISE from the brain context: sealed pqdm1
             # ciphertext (which Lumina otherwise "reads" as opaque base64 and
