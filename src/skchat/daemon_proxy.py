@@ -1075,6 +1075,36 @@ async def api_send(request: Request):
     if not content:
         raise HTTPException(400, "empty message")
 
+    # ── Control-plane messages are NOT conversational turns ────────────────────
+    # The app sends typing indicators and read receipts through this same POST
+    # body (content "__TYPING__:{…}" / "__RECEIPT__:{…}"). They must NEVER be
+    # persisted as chat or fed to Lumina's brain — doing so made her generate a
+    # spurious "receipt received / I'm receiving your typing…" reply for EACH
+    # one, which is the real source of Chef's "2-3 unrelated replies per DM"
+    # (each control ping has different content, so plain dedup can't catch them).
+    # Handle them out-of-band and return without a brain reply.
+    if content.startswith("__TYPING__"):
+        try:
+            from skchat import webui as _webui
+
+            await _webui._ws_broadcast({"type": "typing"})
+        except Exception:
+            logger.debug("typing broadcast unavailable", exc_info=True)
+        return JSONResponse({"ok": True, "control": "typing"})
+    if content.startswith("__RECEIPT__"):
+        try:
+            import json as _json
+
+            payload = _json.loads(content.split(":", 1)[1]) if ":" in content else {}
+            target = payload.get("target_id") or payload.get("message_id")
+            if target:
+                _get_history().record_receipt(
+                    target, str(payload.get("kind", "read")), OPERATOR_ID
+                )
+        except Exception:
+            logger.debug("receipt handling failed", exc_info=True)
+        return JSONResponse({"ok": True, "control": "receipt"})
+
     hist = _get_history()
 
     # Group send: fan out to members + persist on the group thread.
