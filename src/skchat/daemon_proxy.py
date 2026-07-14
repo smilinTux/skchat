@@ -80,6 +80,23 @@ def _get_history():
     return _HISTORY
 
 
+_PRESENCE = None
+
+
+def _get_presence():
+    """Return the shared ``PresenceCache`` (JSON-backed), created on first use.
+
+    The cache reloads from disk on every read, so the daemon (which records
+    presence) and this webui process stay in sync across processes.
+    """
+    global _PRESENCE
+    if _PRESENCE is None:
+        from skchat.presence import PresenceCache
+
+        _PRESENCE = PresenceCache()
+    return _PRESENCE
+
+
 def _get_brain():
     """Return the shared ``LuminaBrain`` (soul + qwen3.6), created on first use.
 
@@ -1566,8 +1583,45 @@ async def api_thread(thread_id: str):
 
 
 @router.post("/v1/presence")
-async def api_presence():
-    return JSONResponse({"ok": True})
+async def api_presence(request: Request):
+    """Read presence state from the ``PresenceCache`` (SEAM 5 / P3).
+
+    Body ``{peer?}``:
+      * with ``peer`` → that peer's real state:
+        ``{ok, peer, state:"online"|"away"|"offline", online:bool, last_seen}``.
+        An unknown/never-seen peer degrades to ``offline`` (``last_seen: null``),
+        never an error.
+      * without ``peer`` → every cached entry:
+        ``{ok, peers:[{uri, state, last_seen}]}``.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    peer = (body.get("peer") or "").strip()
+
+    cache = _get_presence()
+
+    if peer:
+        entry = cache.get_entry(peer) or {}
+        state = cache.get_status(peer)
+        return JSONResponse(
+            {
+                "ok": True,
+                "peer": peer,
+                "state": state,
+                "online": state == "online",
+                "last_seen": entry.get("timestamp"),
+            }
+        )
+
+    peers = [
+        {"uri": uri, "state": entry.get("state", "offline"), "last_seen": entry.get("timestamp")}
+        for uri, entry in sorted(cache.get_all().items())
+    ]
+    return JSONResponse({"ok": True, "peers": peers})
 
 
 @router.get("/")
