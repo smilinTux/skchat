@@ -72,7 +72,7 @@ OPERATOR_ID = "chef@skworld.io"                   # bare-form (no capauth: prefi
 | POST | `/api/v1/edit` | `{message_id, body}` | updated message; 403 outside the 24h edit window |
 | POST | `/api/v1/receipt` | `{message_id, kind:"delivered"|"read", sender?}` | updated message |
 | GET | `/api/v1/thread/{thread_id}` | — | `{thread_id, messages:[...]}` |
-| POST | `/api/v1/presence` | — | `{"ok": true}` (stub — see §7 presence-event noise) |
+| POST | `/api/v1/presence` | `{peer?}` | real read from `PresenceCache`: with `peer` → `{ok, peer, state:"online"\|"away"\|"offline", online, last_seen}` (unknown peer → `offline`, `last_seen:null`, never an error); without `peer` → `{ok, peers:[{uri, state, last_seen}]}` |
 
 ### Groups
 
