@@ -559,6 +559,14 @@ class ChatDaemon:
                 logger.warning("notify-send failed: %s", exc)
             if group_responder is not None and _is_group_message(msg, group_cfg.groups):
                 gid = (msg.thread_id or msg.recipient).replace("group:", "")
+                # SEAM 9 receive-side: if the fan-out delivered a sealed
+                # (``skgseal1:``) body, decrypt it with the group's crypto BEFORE
+                # persisting the canonical thread copy and before the responder
+                # reads it — else the thread + any reply carry ciphertext.
+                # Fail-closed-readable: unseal failure leaves the body sealed, no
+                # crash. No-op when SKCHAT_SEAL_GROUPS is off (bodies are cleartext).
+                from .daemon_proxy_groups import unseal_incoming_group_message
+                msg = unseal_incoming_group_message(msg)
                 # Persist a canonical group-thread copy of the INCOMING message
                 # (recipient == "group:<gid>") so the shared thread — what the
                 # webui's GET /api/v1/conversations/<gid> reads, via
