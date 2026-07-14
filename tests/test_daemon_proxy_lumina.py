@@ -257,3 +257,52 @@ def test_brain_failure_persists_graceful_reply_not_500(client, monkeypatch):
     # Both turns are still persisted.
     hist = client.get("/api/v1/conversations/" + daemon_proxy.LUMINA_ID).json()
     assert len(hist) == 2 and hist[0]["content"] == "you there?"
+
+
+def test_react_control_frame_short_circuits_brain(client):
+    """P0.3b: a ``__REACT__`` control frame applies the reaction best-effort,
+    never invokes the brain, and returns ``control: 'reaction'``."""
+    import json as _json
+
+    # A real message to react to (this first send does hit the brain).
+    sent = client.post("/api/v1/send", json={"recipient": "lumina", "message": "hi"}).json()
+    target_id = sent["id"]
+    client._brain.calls.clear()
+
+    frame = "__REACT__:" + _json.dumps({"target_id": target_id, "emoji": "👍", "op": "add"})
+    r = client.post("/api/v1/send", json={"recipient": "lumina", "message": frame})
+    assert r.status_code == 200
+    assert r.json() == {"ok": True, "control": "reaction"}
+    # Brain NOT invoked, no reply.
+    assert client._brain.calls == []
+    assert "reply" not in r.json()
+    # The reaction was applied best-effort (not persisted as a chat turn).
+    msg = client._hist.find_by_id(target_id)
+    assert "👍" in (msg.reactions_map() or {})
+    # No stray control-frame message appears in the thread.
+    hist = client.get("/api/v1/conversations/" + daemon_proxy.LUMINA_ID).json()
+    assert all("__REACT__" not in m["content"] for m in hist)
+
+
+def test_edit_control_frame_short_circuits_brain(client):
+    """P0.3b: an ``__EDIT__`` control frame edits the target best-effort,
+    never invokes the brain, and returns ``control: 'edit'``."""
+    import json as _json
+
+    sent = client.post("/api/v1/send", json={"recipient": "lumina", "message": "typo"}).json()
+    target_id = sent["id"]
+    client._brain.calls.clear()
+
+    frame = "__EDIT__:" + _json.dumps({"target_id": target_id, "body": "fixed"})
+    r = client.post("/api/v1/send", json={"recipient": "lumina", "message": frame})
+    assert r.status_code == 200
+    assert r.json() == {"ok": True, "control": "edit"}
+    # Brain NOT invoked, no reply.
+    assert client._brain.calls == []
+    assert "reply" not in r.json()
+    # The edit was applied best-effort.
+    msg = client._hist.find_by_id(target_id)
+    assert msg.content == "fixed"
+    # No stray control-frame message appears in the thread.
+    hist = client.get("/api/v1/conversations/" + daemon_proxy.LUMINA_ID).json()
+    assert all("__EDIT__" not in m["content"] for m in hist)

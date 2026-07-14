@@ -1147,6 +1147,45 @@ async def api_send(request: Request):
         except Exception:
             logger.debug("receipt handling failed", exc_info=True)
         return JSONResponse({"ok": True, "control": "receipt"})
+    # ── STOPGAP (P0.3b, throwaway): route reaction/edit control frames away ────
+    # The app also tunnels reactions + edits through this POST body as
+    # ``__REACT__:{…}`` / ``__EDIT__:{…}`` frames. Same failure mode as typing/
+    # receipts: fed to the brain they produce spurious "you reacted 👍 to…" turns.
+    # Apply them best-effort here and short-circuit — NEVER call the brain. This
+    # is a deliberate stopgap; the durable fix is the typed-envelope routing in
+    # docs/superpowers/plans/2026-07-14-p0-stop-active-harm.md, after which the
+    # canonical /v1/react + /v1/edit routes carry this and these frames go away.
+    if content.startswith("__REACT__"):
+        try:
+            import json as _json
+
+            payload = _json.loads(content.split(":", 1)[1]) if ":" in content else {}
+            target = payload.get("target_id") or payload.get("message_id")
+            emoji = (payload.get("emoji") or "").strip()
+            op = (payload.get("op") or "add").strip().lower()
+            if target and emoji:
+                h = _get_history()
+                if op == "remove":
+                    h.clear_reaction(target, emoji, OPERATOR_ID)
+                else:
+                    h.set_reaction(target, emoji, OPERATOR_ID)
+        except Exception:
+            logger.debug("reaction control frame failed", exc_info=True)
+        return JSONResponse({"ok": True, "control": "reaction"})
+    if content.startswith("__EDIT__"):
+        try:
+            import json as _json
+
+            payload = _json.loads(content.split(":", 1)[1]) if ":" in content else {}
+            target = payload.get("target_id") or payload.get("message_id")
+            new_body = payload.get("body")
+            if new_body is None:
+                new_body = payload.get("content")
+            if target and (new_body or "").strip():
+                _get_history().edit_message(target, new_body)
+        except Exception:
+            logger.debug("edit control frame failed", exc_info=True)
+        return JSONResponse({"ok": True, "control": "edit"})
 
     hist = _get_history()
 
