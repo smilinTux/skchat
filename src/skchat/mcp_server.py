@@ -3313,7 +3313,23 @@ async def _handle_get_group_history(args: dict) -> list[TextContent]:
 
     limit: int = args.get("limit", 20)
     history = _get_history()
-    messages = history.get_thread_messages(group_id, limit=limit)
+    # Read cutover: serve from the authoritative log when on, so the MCP/agent
+    # view matches the app group view (previously MCP read store B, app read A,
+    # and the two diverged). Adapt log ChatMessages to the dict shape below.
+    events = history.read_events(f"group:{group_id}", limit=limit)
+    if events is not None:
+        messages = [
+            {
+                "sender": m.sender,
+                "content": m.content,
+                "timestamp": (
+                    m.timestamp.isoformat() if getattr(m, "timestamp", None) else ""
+                ),
+            }
+            for m in events
+        ]
+    else:
+        messages = history.get_thread_messages(group_id, limit=limit)
 
     return _json(
         [
