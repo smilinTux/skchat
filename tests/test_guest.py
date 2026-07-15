@@ -156,12 +156,15 @@ class TestInviteVerifier:
         assert gt.room == _ROOM
 
     def test_identity_is_server_assigned(self):
-        """Guest cannot choose their LiveKit identity — always guest:<jti[:8]>."""
+        """Guest cannot choose their LiveKit identity — server-assigned + jti-bound.
+
+        The identity is ``guest:<jti[:8]>-<server-random>`` (the suffix keeps
+        multiple guests on one invite as distinct LiveKit participants). The guest
+        supplies no input that controls it — that is the invariant under test."""
         clk = _FixedClock()
         info = self._create_token(clk)
         gt = _make_verifier(clk).verify(info["invite_token"], expected_room=_ROOM)
-        assert gt.identity.startswith("guest:")
-        assert gt.identity == f"guest:{info['jti'][:8]}"
+        assert gt.identity.startswith(f"guest:{info['jti'][:8]}-")
 
     def test_display_name_from_body(self):
         clk = _FixedClock()
