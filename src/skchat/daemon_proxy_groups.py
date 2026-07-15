@@ -1045,6 +1045,12 @@ def group_thread_messages(hist, group_id: str, limit: int = 500) -> list:
     rows (``recipient == "group:<id>"``) so each message appears once (not once
     per fanned-out member copy).
     """
+    # Read cutover: when the authoritative log is on, serve the ONE ordered,
+    # already-deduped group history from it (full payloads, no fan-out copies).
+    events = hist.read_events(f"group:{group_id}", limit=limit)
+    if events is not None:
+        return events[:limit]
+    # Legacy path (flag off): recipient-filter dedup over the JSONL fan-out.
     rows = hist.get_thread(group_id, limit=limit * 4)
     marker = f"group:{group_id}"
     seen: set[str] = set()

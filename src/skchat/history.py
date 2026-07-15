@@ -91,6 +91,30 @@ class ChatHistory:
         except Exception:  # noqa: BLE001 — a log failure must never break a send
             logger.debug("record_event failed", exc_info=True)
 
+    def read_events(self, conversation_id: str, limit: int = 500):
+        """Return a conversation's messages from the authoritative ``MessageLog``
+        (full payloads, already deduped + seq-ordered) when ``SKCHAT_MESSAGE_LOG``
+        is on, else ``None`` so the caller falls back to the legacy store. This is
+        the ONE read-cutover seam every reader routes through, so all surfaces
+        serve identical history. Best-effort: ``None`` on any error.
+        """
+        if os.getenv("SKCHAT_MESSAGE_LOG", "").strip().lower() in (
+            "", "0", "false", "no", "off",
+        ):
+            return None
+        try:
+            if self._log is None:
+                from skchat.message_log import MessageLog
+
+                self._log = MessageLog()
+            from skchat.message_log import log_row_to_message
+
+            rows = self._log.read(conversation_id, limit=limit)
+            return [log_row_to_message(r) for r in rows]
+        except Exception:  # noqa: BLE001
+            logger.debug("read_events failed", exc_info=True)
+            return None
+
     @staticmethod
     def _make_default_store() -> object:
         """Create a default SQLite-backed MemoryStore at ~/.skchat/memory/.
