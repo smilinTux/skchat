@@ -181,6 +181,21 @@ async def operator_revoke_invite(group_id: str, token: str, request: Request):
     return JSONResponse({"ok": True, "revoked_jti": jti, "group_id": group_id})
 
 
+def _operator_signed_prekey():
+    """The operator's current signed hybrid prekey (hybrid_public_hex), or None.
+
+    Fail-closed (§5): on any error the guest receives no prekey and must abort the
+    PQ handshake rather than silently fall back to a classical join.
+    """
+    try:
+        from skchat import pq_prekeys as _pq
+
+        return (_pq.agent_bundle().get("hybrid_public_hex") or "").strip() or None
+    except Exception as exc:  # noqa: BLE001
+        logger.info("guest preview: operator signed prekey unavailable: %s", exc)
+        return None
+
+
 @router.get("/guest/invite/{token}")
 async def guest_invite_preview(token: str):
     """Public-of-tailnet preview of an invite (group name) for the landing page.
@@ -218,6 +233,11 @@ async def guest_invite_preview(token: str):
                 "bc": info.get("bc"),
                 "mode": info.get("mode"),
                 "operator_sig": info.get("operator_sig"),
+                # Phase 2: the operator's current signed hybrid prekey, so the guest
+                # can verify_commitment(full_pubkey, signed_prekey, bc) and encapsulate
+                # its PQXDH to it. Read live (no JWT bloat). A prekey rotation since
+                # mint makes bc mismatch, so the guest aborts (fail-closed, correct).
+                "signed_prekey": _operator_signed_prekey(),
             }
         )
     return JSONResponse(resp)
