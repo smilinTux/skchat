@@ -199,14 +199,28 @@ async def guest_invite_preview(token: str):
     group = G.load_group(info["group_id"])
     if group is None:
         return JSONResponse({"valid": False})
-    return JSONResponse(
-        {
-            "valid": True,
-            "group_id": group.id,
-            "group_name": group.name,
-            "expires_at": info["exp"],
-        }
-    )
+    resp = {
+        "valid": True,
+        "group_id": group.id,
+        "group_name": group.name,
+        "expires_at": info["exp"],
+    }
+    # Phase 1: surface the operator-signed material so the joiner can verify the
+    # operator signature (under the FULL inline pubkey) and the bundle commitment
+    # BEFORE the handshake — fail-closed, no directory lookup (C1/C2/H3).
+    if GG.pq_invites_enabled():
+        resp.update(
+            {
+                "jti": info["jti"],
+                "idm": info.get("idm"),
+                "full_pubkey": info.get("operator_pubkey"),
+                "ik_fp": info.get("ik_fp"),
+                "bc": info.get("bc"),
+                "mode": info.get("mode"),
+                "operator_sig": info.get("operator_sig"),
+            }
+        )
+    return JSONResponse(resp)
 
 
 # --------------------------------------------------------------------------- #
@@ -216,10 +230,11 @@ async def guest_invite_preview(token: str):
 async def guest_join(request: Request):
     """Validate an invite, add the guest as an untrusted member, return tokens.
 
-    Body: ``{invite_token, display_name, guest_pubkey}``. Returns a guest session
-    token scoped to ONLY the invite's group + a LiveKit guest call token + the
-    group bootstrap (id/name + initial history). The invite's single-use claim is
-    burned here.
+    Body: ``{invite_token, display_name, guest_pubkey}`` (Phase 1 additionally
+    requires ``guest_sig`` binding the guest key to ``{jti, guest_pubkey, bc}``).
+    Returns a guest session token scoped to ONLY the invite's group + a LiveKit
+    guest call token + the group bootstrap (id/name + initial history). The
+    invite's single-use claim is burned here.
     """
     _require_flag_guest()
     try:
@@ -229,10 +244,33 @@ async def guest_join(request: Request):
     invite_token = (body.get("invite_token") or "").strip()
     display_name = (body.get("display_name") or "").strip()
     guest_pubkey = (body.get("guest_pubkey") or "").strip()
+    guest_sig = (body.get("guest_sig") or "").strip()
     if not invite_token:
         raise HTTPException(400, "invite_token is required")
     if not display_name:
         raise HTTPException(400, "display_name is required")
+
+    # Phase 1: peek the operator claims BEFORE burning so a bad/absent guest
+    # binding is rejected without consuming a single-use invite.
+    if GG.pq_invites_enabled():
+        from skchat import pq_invites as PQI
+
+        try:
+            peek = GG.verify_group_invite(invite_token, burn_single_use=False)
+        except GG.InviteInvalid as exc:
+            logger.info("guest-group join rejected (peek): %s", exc)
+            raise HTTPException(401, "invalid or expired invite") from exc
+        bc = peek.get("bc")
+        # Bind the guest browser key to THIS invite; a stolen link replayed by a
+        # third party who lacks the guest key → 401 (generic, no oracle).
+        if not (
+            guest_pubkey
+            and guest_sig
+            and bc
+            and PQI.verify_guest_binding(guest_sig, guest_pubkey, peek["jti"], bc)
+        ):
+            logger.info("guest-group join rejected: guest key binding failed")
+            raise HTTPException(401, "invalid or expired invite")
 
     try:
         info = GG.verify_group_invite(invite_token, burn_single_use=True)

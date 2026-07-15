@@ -56,6 +56,17 @@ def guest_links_enabled() -> bool:
     return os.getenv(_FLAG_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def pq_invites_enabled() -> bool:
+    """True iff the Phase-1 signed-PQ-invite layer is on (thin re-export).
+
+    Delegates to :func:`skchat.pq_invites.pq_invites_enabled` so route/handler
+    code can gate on ``GG.pq_invites_enabled()`` alongside ``guest_links_enabled()``.
+    """
+    from skchat.pq_invites import pq_invites_enabled as _enabled
+
+    return _enabled()
+
+
 # ── Token config (shared secret + TTLs) ─────────────────────────────────────
 _GUEST_SECRET_ENV = "SKCHAT_GUEST_TOKEN_SECRET"
 _INVITE_TTL_ENV = "SKCHAT_GROUP_INVITE_TTL"
@@ -151,6 +162,7 @@ def create_group_invite(
     ttl: Optional[int] = None,
     issuer: str = "operator",
     single_use: bool = False,
+    mode: str = "group",
     now_fn=None,
 ) -> dict:
     """Mint a signed, room-scoped invite token for ``group_id``.
@@ -159,6 +171,15 @@ def create_group_invite(
     ``join_url`` is **relative** (``/app/#/g/<token>``, the Flutter guest
     route) so it works behind any origin (tailnet/funnel) the operator
     shares from.
+
+    When ``SKCHAT_PQ_INVITES_ENABLED`` is on (Phase 1), the token additionally
+    carries the operator-signed identity claims (``idm``, ``bc``, ``mode`` + the
+    operator's full inline pubkey and detached signature) and the ``join_url``
+    gains the fragment-only 32-byte link secret ``&k=`` — see
+    :mod:`skchat.pq_invites`. Assembly is fail-closed: if the operator identity /
+    signing key / signed prekey cannot be resolved it raises (never emits an
+    unsigned or classical-only invite). When the flag is off this function is
+    byte-for-byte unchanged.
     """
     import jwt as _jwt
 
@@ -179,19 +200,43 @@ def create_group_invite(
     }
     if single_use:
         payload["once"] = True
+
+    # Phase-1 PQ additions (flag-gated, fail-closed) — operator-signed identity
+    # claims in the token + fragment-only link secret in the URL.
+    fragment_secret = None
+    pq_material = None
+    from skchat import pq_invites as _pqi
+
+    if _pqi.pq_invites_enabled():
+        pq_material = _pqi.resolve_operator_material(mode)  # raises → fail-closed
+        payload["idm"] = pq_material["idm"]
+        payload["bc"] = pq_material["bc"]
+        payload["mode"] = pq_material["mode"]
+        payload["ik_fp"] = pq_material["ik_fp"]
+        payload["op_sig"] = pq_material["operator_sig"]
+        payload["op_pub"] = pq_material["operator_pubkey"]
+        fragment_secret = _pqi.new_fragment_secret()
+
     token = _jwt.encode(payload, _secret(), algorithm="HS256")
-    return {
+    result = {
         "token": token,
         # Point at the Flutter app's guest route (hash-routed under /app/), NOT
         # /join/<token> — that collided with the old conf `/join/<room>?invite=`
         # page ("invite parameter is missing"). fullLink() prefixes the origin.
-        "join_url": f"/app/#/g/{token}",
+        # Every secret (token + k) stays after '#' (H7).
+        "join_url": _pqi.build_join_url(token, fragment_secret),
         "jti": jti,
         "group_id": gid,
         "expires_at": exp,
         "ttl": eff_ttl,
         "single_use": single_use,
     }
+    if pq_material is not None:
+        result["mode"] = pq_material["mode"]
+        result["bc"] = pq_material["bc"]
+        result["idm"] = pq_material["idm"]
+        result["fragment_secret"] = fragment_secret
+    return result
 
 
 # ── 1:1 DM invites (degenerate 2-seat guest group) ──────────────────────────
@@ -231,7 +276,9 @@ def create_dm_invite(
     grp.metadata["mode"] = "dm"
     G.save_group(grp)
 
-    invite = create_group_invite(grp.id, ttl=ttl, single_use=single_use, now_fn=now_fn)
+    invite = create_group_invite(
+        grp.id, ttl=ttl, single_use=single_use, mode="dm", now_fn=now_fn
+    )
     invite["mode"] = "dm"
     return invite
 
@@ -282,7 +329,21 @@ def verify_group_invite(token: str, *, burn_single_use: bool = True) -> dict:
             raise InviteInvalid(f"single-use invite {jti!r} already used")
         if burn_single_use and not _mark_used(jti, expires_at=exp):
             raise InviteInvalid(f"single-use invite {jti!r} already used")
-    return {"jti": jti, "group_id": gid, "exp": exp, "single_use": single_use}
+    result = {"jti": jti, "group_id": gid, "exp": exp, "single_use": single_use}
+    # Surface the Phase-1 operator-signed claims when present (flag-gated mint).
+    # Backward compatible: classic invites carry none of these keys.
+    for src, dst in (
+        ("idm", "idm"),
+        ("bc", "bc"),
+        ("mode", "mode"),
+        ("ik_fp", "ik_fp"),
+        ("op_sig", "operator_sig"),
+        ("op_pub", "operator_pubkey"),
+    ):
+        val = payload.get(src)
+        if val is not None:
+            result[dst] = val
+    return result
 
 
 def jti_of(token: str) -> str:
