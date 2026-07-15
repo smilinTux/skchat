@@ -13,6 +13,7 @@ later phase promotes this log. Storage is stdlib ``sqlite3`` in WAL mode.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import sqlite3
@@ -32,6 +33,48 @@ def _skchat_home() -> Path:
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def conversation_id_for(message) -> str:
+    """Canonical conversation id for a ``ChatMessage`` (direction-independent).
+
+    Group message -> ``group:<gid>`` (the canonical group copy already carries
+    ``recipient="group:<gid>"``; a member copy that names its group thread maps
+    there too). 1:1 DM -> ``dm:<a>|<b>`` with the two participant URIs sorted, so
+    both directions of a DM collapse to ONE conversation. This is the single
+    definition every writer/reader must share.
+    """
+    recipient = (getattr(message, "recipient", "") or "").strip()
+    if recipient.startswith("group:"):
+        return recipient
+    thread = (getattr(message, "thread_id", "") or "").strip()
+    if thread.startswith("group:"):
+        return thread
+    sender = (getattr(message, "sender", "") or "").strip()
+    a, b = sorted([sender, recipient])
+    return f"dm:{a}|{b}"
+
+
+def dedup_key_for(message) -> str:
+    """Idempotency key that collapses the fan-out copies of ONE logical message.
+
+    The ``1+N`` fan-out copies share sender+conversation+content+second but carry
+    different ``id``s, so a key over those fields (not the id) lets a re-record or
+    a backfill of any copy resolve to the same log row. Sub-second identical
+    resends are treated as the same event (an accepted idempotency edge).
+    """
+    sender = (getattr(message, "sender", "") or "").strip()
+    conv = conversation_id_for(message)
+    content = getattr(message, "content", "") or ""
+    ts = getattr(message, "timestamp", None)
+    ts_s = ""
+    if ts is not None:
+        try:
+            ts_s = ts.replace(microsecond=0).isoformat()
+        except Exception:
+            ts_s = str(ts)
+    raw = f"{sender}|{conv}|{content}|{ts_s}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 class MessageLog:
@@ -197,6 +240,25 @@ class MessageLog:
                 conn.execute("ROLLBACK")
                 raise
             return {**self._row_to_dict(row), "deduped": False}
+
+    def record(self, message) -> dict:
+        """Append a ``ChatMessage`` to the log, deriving the canonical
+        ``conversation_id`` + idempotency key. Idempotent by the message's own
+        ``id`` and by ``dedup_key_for`` (so re-recording any fan-out copy or a
+        backfill re-run resolves to the same row). Returns the append dict
+        (``deduped=True`` when it already existed).
+        """
+        mt = getattr(message, "message_type", None)
+        kind = str(getattr(mt, "value", mt) or "text")
+        return self.append(
+            conversation_id_for(message),
+            message_id=(getattr(message, "id", None) or None),
+            client_dedup_key=dedup_key_for(message),
+            sender=(getattr(message, "sender", "") or ""),
+            recipient=(getattr(message, "recipient", "") or ""),
+            content=(getattr(message, "content", "") or ""),
+            kind=kind,
+        )
 
     # ------------------------------------------------------------------
     # Read

@@ -98,3 +98,55 @@ def test_concurrent_appends_get_unique_contiguous_seqs(tmp_path):
 
     assert sorted(results) == list(range(1, n + 1))  # no gaps, no dupes
     assert log.latest_seq("c1") == n
+
+
+# ── Task 1: canonical conversation ids + idempotent record() ─────────────────
+
+from datetime import datetime, timezone  # noqa: E402
+
+from skchat.message_log import conversation_id_for, dedup_key_for  # noqa: E402
+from skchat.models import ChatMessage  # noqa: E402
+
+
+def test_conversation_id_group_and_dm():
+    g = ChatMessage(sender="lumina", recipient="group:abc", content="hi")
+    assert conversation_id_for(g) == "group:abc"
+    # a member copy that names its group thread still maps to the group
+    m = ChatMessage(sender="lumina", recipient="chef", content="hi", thread_id="group:abc")
+    assert conversation_id_for(m) == "group:abc"
+
+
+def test_dm_conversation_id_is_direction_independent():
+    a2b = ChatMessage(sender="alice", recipient="bob", content="hi")
+    b2a = ChatMessage(sender="bob", recipient="alice", content="hi")
+    assert conversation_id_for(a2b) == conversation_id_for(b2a) == "dm:alice|bob"
+
+
+def test_record_is_idempotent_by_id_and_dedup(tmp_path):
+    log = MessageLog(str(tmp_path / "m.db"))
+    ts = datetime(2026, 7, 15, 12, 0, 0, tzinfo=timezone.utc)
+    msg = ChatMessage(sender="alice", recipient="bob", content="hello", timestamp=ts)
+    first = log.record(msg)
+    second = log.record(msg)  # same object -> same id -> dedup
+    assert first["deduped"] is False and second["deduped"] is True
+    assert first["seq"] == second["seq"]
+    # exactly one row in the conversation
+    assert len(log.read(conversation_id_for(msg))) == 1
+
+
+def test_record_collapses_fanout_copies_by_dedup_key(tmp_path):
+    # the 1+N fan-out copies share sender+conversation+content+second but have
+    # DIFFERENT ids; dedup_key_for collapses them to one row on re-record.
+    log = MessageLog(str(tmp_path / "m.db"))
+    ts = datetime(2026, 7, 15, 12, 0, 0, tzinfo=timezone.utc)
+    canonical = ChatMessage(sender="lumina", recipient="group:g1", content="team", timestamp=ts)
+    # a "member copy" of the same logical message: different id, member recipient,
+    # but the group thread -> same conversation + same dedup key.
+    member_copy = ChatMessage(
+        sender="lumina", recipient="chef", content="team", timestamp=ts, thread_id="group:g1"
+    )
+    assert canonical.id != member_copy.id
+    assert dedup_key_for(canonical) == dedup_key_for(member_copy)
+    log.record(canonical)
+    log.record(member_copy)
+    assert len(log.read("group:g1")) == 1
