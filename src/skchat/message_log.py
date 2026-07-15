@@ -47,6 +47,14 @@ def conversation_id_for(message) -> str:
     recipient = (getattr(message, "recipient", "") or "").strip()
     if recipient.startswith("group:"):
         return recipient
+    # A group message ALWAYS carries metadata.group_id (on the canonical copy AND
+    # every per-member copy), so this maps any copy to the one group conversation
+    # even when the copy is addressed to a member. This is what makes record_event
+    # safe to call on any copy: they all resolve here and dedup to one row.
+    meta = getattr(message, "metadata", None)
+    gid = (meta.get("group_id") if isinstance(meta, dict) else None) or ""
+    if gid:
+        return gid if str(gid).startswith("group:") else f"group:{gid}"
     thread = (getattr(message, "thread_id", "") or "").strip()
     if thread.startswith("group:"):
         return thread

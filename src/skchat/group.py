@@ -980,6 +980,7 @@ class GroupChat(BaseModel):
         if history is not None:
             try:
                 history.save(msg)
+                history.record_event(msg)  # authoritative log (flag-gated)
             except Exception as exc:
                 logger.warning("Failed to save group message to history: %s", exc)
 

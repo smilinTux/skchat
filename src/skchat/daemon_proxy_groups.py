@@ -936,6 +936,9 @@ def fan_out_send(group, hist, sender_uri: str, content: str,
                   "encryption_state": enc_state},
     )
     hist.save(group_msg)
+    # Authoritative log: record the ONE canonical group event (recipient
+    # "group:<gid>"), never the per-member copies below. Flag-gated, idempotent.
+    hist.record_event(group_msg)
 
     # Network transport so each member's DAEMON actually receives the message
     # (hist.save is local-display only). Without this the message shows in the

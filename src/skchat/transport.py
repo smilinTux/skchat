@@ -452,6 +452,9 @@ class ChatTransport:
             dict: Delivery report with 'delivered' bool and details.
         """
         outbound = message.model_copy()
+        # Authoritative log: record the outbound message once (flag-gated,
+        # idempotent). Delivery status/outcome is separate; this is history.
+        self._history.record_event(message)
 
         # RFC-0001 P1: the Level-3 DM ratchet engages whenever it is enabled and the
         # peer advertises a hybrid prekey — INDEPENDENT of a classical public armor.
@@ -803,6 +806,7 @@ class ChatTransport:
                 if not (msg.content or "").lstrip().startswith("<event "):
                     try:
                         self._history.save(msg)
+                        self._history.record_event(msg)  # authoritative log
                     except Exception as save_exc:  # noqa: BLE001
                         logger.debug("history.save on receive failed: %s", save_exc)
                 messages.append(msg)
@@ -1148,6 +1152,7 @@ class ChatTransport:
             if not (msg.content or "").lstrip().startswith("<event "):
                 try:
                     self._history.save(msg)
+                    self._history.record_event(msg)  # authoritative log
                 except Exception as save_exc:  # noqa: BLE001
                     logger.debug("history.save on receive failed: %s", save_exc)
             messages.append(msg)

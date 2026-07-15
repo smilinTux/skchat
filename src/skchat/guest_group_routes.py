@@ -551,6 +551,8 @@ async def guest_send(request: Request):
         },
     )
     hist.save(group_msg)
+    # Authoritative log: the ONE canonical group event, not the member copies.
+    hist.record_event(group_msg)
     # Per-member copies (so each member's 1:1-style inbox sees it).
     from skchat.group import MemberRole  # noqa: F401
 

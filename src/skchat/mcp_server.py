@@ -2154,6 +2154,7 @@ async def _handle_group_send(args: dict) -> list[TextContent]:
     # Store in local history
     history = _get_history()
     memory_id = history.store_message(message)
+    history.record_event(message)  # authoritative log (flag-gated, idempotent)
 
     # Deliver to each member via SKComms
     messenger = _get_messenger()

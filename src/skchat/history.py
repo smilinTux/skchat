@@ -67,6 +67,29 @@ class ChatHistory:
             else _skchat_home() / "history"
         )
         self._history_dir.mkdir(parents=True, exist_ok=True)
+        # Authoritative event log (lazily opened, flag-gated). See record_event.
+        self._log = None
+
+    def record_event(self, message) -> None:
+        """Best-effort append of *message* to the authoritative ``MessageLog``
+        when ``SKCHAT_MESSAGE_LOG`` is on. Call ONCE per logical message at its
+        CANONICAL write site (never inside a per-member fan-out loop). Idempotent
+        (dedup by id + dedup_key) and NEVER raises, so it can never break a
+        send/receive. Flag OFF (default) => no-op. This is the single append point
+        every writer routes through so all surfaces share one ordered history.
+        """
+        if os.getenv("SKCHAT_MESSAGE_LOG", "").strip().lower() in (
+            "", "0", "false", "no", "off",
+        ):
+            return
+        try:
+            if self._log is None:
+                from skchat.message_log import MessageLog
+
+                self._log = MessageLog()
+            self._log.record(message)
+        except Exception:  # noqa: BLE001 — a log failure must never break a send
+            logger.debug("record_event failed", exc_info=True)
 
     @staticmethod
     def _make_default_store() -> object:

@@ -234,16 +234,10 @@ def _shadow_log(msg) -> None:
     if not _message_log_enabled():
         return
     try:
-        mid = getattr(msg, "id", None)
-        _get_message_log().append(
-            _shadow_conversation_id(msg),
-            message_id=mid,
-            client_dedup_key=mid,
-            sender=getattr(msg, "sender", "") or "",
-            recipient=getattr(msg, "recipient", "") or "",
-            content=getattr(msg, "content", "") or "",
-            kind=str(getattr(msg, "content_type", "text") or "text"),
-        )
+        # Use the shared record() so this path uses the SAME canonical
+        # conversation_id (dm:<a>|<b> / group:<gid>) as every other writer. The
+        # old Lumina-centric _shadow_conversation_id is retired for the log.
+        _get_message_log().record(msg)
     except Exception:
         logger.debug("shadow message-log write failed (send unaffected)", exc_info=True)
 
