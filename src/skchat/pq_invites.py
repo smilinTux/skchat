@@ -158,6 +158,46 @@ def _claims_bytes(claims: dict) -> bytes:
     return _canonical(payload)
 
 
+def sign_canonical(crypto, payload: dict) -> str:
+    """Detached PGP signature over the canonical bytes of *payload* (SOVEREIGN).
+
+    The one generic signer both the invite claims and the Mode-C accept/join
+    records (``guest_accept``) share: a detached signature over
+    ``_canonical(payload)``, returned ASCII-armored, reproducible on both sides.
+    Reuses the identity PGP key held by *crypto* (a
+    :class:`skchat.crypto.ChatCrypto`).
+    """
+    import pgpy
+
+    pgp_message = pgpy.PGPMessage.new(_canonical(payload), cleartext=False)
+    with crypto._private_key.unlock(crypto._passphrase):
+        sig = crypto._private_key.sign(pgp_message)
+    return str(sig)
+
+
+def verify_canonical(payload: dict, sig: str, pubkey_armor: str) -> bool:
+    """Verify *sig* over ``_canonical(payload)`` under the inline *pubkey_armor*.
+
+    Fail-closed: a missing signature, a missing/invalid key, or any tampered
+    field all return ``False``. Shared by the invite-claims verifier and the
+    Mode-C accept/join verifiers so signer and verifier reconstruct byte-identical
+    input regardless of dict ordering.
+    """
+    if not sig or not pubkey_armor:
+        return False
+    try:
+        import pgpy
+
+        pub_key, _ = pgpy.PGPKey.from_blob(pubkey_armor)
+        pgp_sig = pgpy.PGPSignature.from_blob(sig)
+        pgp_message = pgpy.PGPMessage.new(_canonical(payload), cleartext=False)
+        pgp_message |= pgp_sig
+        return bool(pub_key.verify(pgp_message))
+    except Exception as exc:  # noqa: BLE001 — any parse/verify error = reject
+        logger.warning("pq_invites: canonical sig verify failed: %s", exc)
+        return False
+
+
 def sign_invite_claims(crypto, claims: dict) -> str:
     """Detached PGP signature over the canonical invite *claims* (SOVEREIGN).
 
@@ -165,13 +205,7 @@ def sign_invite_claims(crypto, claims: dict) -> str:
     canonical serialization, returned ASCII-armored. Reuses the operator's PGP
     identity key held by *crypto* (a :class:`skchat.crypto.ChatCrypto`).
     """
-    import pgpy
-
-    data = _claims_bytes(claims)
-    pgp_message = pgpy.PGPMessage.new(data, cleartext=False)
-    with crypto._private_key.unlock(crypto._passphrase):
-        sig = crypto._private_key.sign(pgp_message)
-    return str(sig)
+    return sign_canonical(crypto, {field: claims.get(field) for field in _CLAIM_FIELDS})
 
 
 def verify_invite_claims(claims: dict, operator_sig: str, operator_pubkey_armor: str) -> bool:
@@ -183,19 +217,11 @@ def verify_invite_claims(claims: dict, operator_sig: str, operator_pubkey_armor:
     directory lookup, so the invite is self-authenticating against the operator
     identity, independent of the HS256 server secret.
     """
-    if not operator_sig or not operator_pubkey_armor:
-        return False
-    try:
-        import pgpy
-
-        pub_key, _ = pgpy.PGPKey.from_blob(operator_pubkey_armor)
-        sig = pgpy.PGPSignature.from_blob(operator_sig)
-        pgp_message = pgpy.PGPMessage.new(_claims_bytes(claims), cleartext=False)
-        pgp_message |= sig
-        return bool(pub_key.verify(pgp_message))
-    except Exception as exc:  # noqa: BLE001 — any parse/verify error = reject
-        logger.warning("pq_invites: operator sig verify failed: %s", exc)
-        return False
+    return verify_canonical(
+        {field: claims.get(field) for field in _CLAIM_FIELDS},
+        operator_sig,
+        operator_pubkey_armor,
+    )
 
 
 # ── Fragment secret k (H7) ───────────────────────────────────────────────────
