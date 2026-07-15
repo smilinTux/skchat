@@ -163,6 +163,8 @@ def create_group_invite(
     issuer: str = "operator",
     single_use: bool = False,
     mode: str = "group",
+    aud: Optional[str] = None,
+    scope: Optional[str] = None,
     now_fn=None,
 ) -> dict:
     """Mint a signed, room-scoped invite token for ``group_id``.
@@ -200,6 +202,13 @@ def create_group_invite(
     }
     if single_use:
         payload["once"] = True
+    # Macaroon-style caveats (Phase 3): narrow the invite to an audience (peer
+    # FQID / fingerprint) and a permission scope. verify_group_invite enforces
+    # them against a caller-supplied context, fail-closed (wrong aud -> 401).
+    if aud:
+        payload["aud"] = aud
+    if scope:
+        payload["scope"] = scope
 
     # Phase-1 PQ additions (flag-gated, fail-closed) — operator-signed identity
     # claims in the token + fragment-only link secret in the URL.
@@ -291,7 +300,9 @@ class InviteInvalid(Exception):
     """
 
 
-def verify_group_invite(token: str, *, burn_single_use: bool = True) -> dict:
+def verify_group_invite(
+    token: str, *, burn_single_use: bool = True, expected_aud: Optional[str] = None
+) -> dict:
     """Verify an invite token → ``{jti, group_id, exp, single_use}``.
 
     Raises :class:`InviteInvalid` for any bad/expired/revoked/used token. When
@@ -309,13 +320,25 @@ def verify_group_invite(token: str, *, burn_single_use: bool = True) -> dict:
             token,
             _secret(),
             algorithms=["HS256"],
-            options={"require": ["jti", "exp", "iat", "group_id", "tier"]},
+            options={
+                "require": ["jti", "exp", "iat", "group_id", "tier"],
+                # We enforce the macaroon `aud` caveat manually below (PyJWT would
+                # otherwise hard-fail any aud-bearing token when no audience kwarg
+                # is passed, breaking peek/preview callers).
+                "verify_aud": False,
+            },
         )
     except PyJWTError as exc:
         raise InviteInvalid(f"invite decode failed: {exc}") from exc
 
     if payload.get("tier") != _INVITE_TIER:
         raise InviteInvalid("not a group-invite token")
+    # Macaroon `aud` caveat (Phase 3): an audience-scoped invite is only valid for
+    # the intended presenter. Fail-closed: a mismatch (or a missing context when
+    # the invite demands one) is a generic InviteInvalid, no oracle.
+    tok_aud = payload.get("aud")
+    if tok_aud is not None and tok_aud != expected_aud:
+        raise InviteInvalid("invite audience mismatch")
     gid = (payload.get("group_id") or "").strip()
     if not gid:
         raise InviteInvalid("invite missing group_id")
@@ -339,6 +362,8 @@ def verify_group_invite(token: str, *, burn_single_use: bool = True) -> dict:
         ("ik_fp", "ik_fp"),
         ("op_sig", "operator_sig"),
         ("op_pub", "operator_pubkey"),
+        ("aud", "aud"),
+        ("scope", "scope"),
     ):
         val = payload.get(src)
         if val is not None:
