@@ -17,7 +17,9 @@ When the flag is OFF: operator routes 404, guest routes 403 (no oracle).
 from __future__ import annotations
 
 import logging
+import hashlib
 import os
+import threading
 import time
 import uuid as _uuid
 from pathlib import Path
@@ -798,6 +800,170 @@ async def guest_call(request: Request):
     if not call.get("available"):
         raise HTTPException(503, "livekit not configured")
     return JSONResponse(call)
+
+
+# --------------------------------------------------------------------------- #
+# Mode C: non-federated accept/sign (a peer that already has an identity)      #
+# --------------------------------------------------------------------------- #
+# A peer WITH an identity accepts an invite by signing an accept assertion; the
+# operator reviews it (SAS) and counter-signs a mutual join record. The crypto
+# lives in guest_accept.py; these routes carry it over the Funnel (the gift-wrap
+# rendezvous is an alternative transport). Pending assertions are held in memory
+# keyed by jti between accept and counter-sign.
+_mode_c_pending: dict = {}
+_mode_c_lock = threading.Lock()
+
+
+def _mode_c_sas(bc: str, operator_fp: str, peer_fp: str) -> str:
+    """6-digit Short Authentication String over bc + both bundle fingerprints.
+
+    Both sides compute it and compare out-of-band; a MITM key swap changes a
+    fingerprint so the SAS mismatches.
+    """
+    h = hashlib.sha256(f"{bc}|{operator_fp}|{peer_fp}".encode()).digest()
+    return f"{int.from_bytes(h[:4], 'big') % 1_000_000:06d}"
+
+
+@router.post("/mode-c/accept")
+async def mode_c_accept(request: Request):
+    """A peer submits a signed accept assertion for an invite (Mode C, Phase 3).
+
+    Body: ``{invite_token, accept_assertion, sig_peer, accepter_pubkey}``. Verifies
+    the invite + the peer's assertion signature (bc anti-downgrade, aud==peer,
+    scope), holds it pending for operator review, and returns the SAS. Fail-closed:
+    a bad invite / assertion / bc is a generic 401 (no oracle).
+    """
+    _require_flag_guest()
+    from skchat import guest_accept as A
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    invite_token = (body.get("invite_token") or "").strip()
+    assertion = body.get("accept_assertion") or {}
+    sig_peer = (body.get("sig_peer") or "").strip()
+    accepter_pubkey = (body.get("accepter_pubkey") or "").strip()
+    if not (invite_token and assertion and sig_peer and accepter_pubkey):
+        raise HTTPException(400, "accept_assertion, sig_peer, accepter_pubkey required")
+
+    try:
+        info = GG.verify_group_invite(invite_token, burn_single_use=False)
+    except GG.InviteInvalid as exc:
+        logger.info("mode-c accept rejected (invite): %s", exc)
+        raise HTTPException(401, "invalid or expired invite") from exc
+
+    bc = info.get("bc")
+    if not bc or not A.verify_accept_assertion(
+        assertion, sig_peer, accepter_pubkey, expected_bc=bc
+    ):
+        logger.info("mode-c accept rejected: assertion verify failed")
+        raise HTTPException(401, "accept assertion verification failed")
+
+    jti = info["jti"]
+    peer_fp = A.pubkey_fingerprint(accepter_pubkey)
+    sas = _mode_c_sas(bc, info.get("ik_fp") or "", peer_fp)
+    with _mode_c_lock:
+        _mode_c_pending[jti] = {
+            "jti": jti,
+            "group_id": info["group_id"],
+            "assertion": assertion,
+            "sig_peer": sig_peer,
+            "accepter_pubkey": accepter_pubkey,
+            "peer_fp": peer_fp,
+            "bc": bc,
+            "sas": sas,
+            "ts": int(time.time()),
+        }
+    return JSONResponse({"ok": True, "jti": jti, "sas": sas, "peer_fp": peer_fp})
+
+
+@router.get("/mode-c/pending")
+async def mode_c_pending(request: Request):
+    """Operator: list Mode C accept assertions awaiting counter-sign."""
+    _require_flag_operator()
+    from skchat.guest import _require_operator
+
+    _require_operator(request)
+    with _mode_c_lock:
+        items = [
+            {
+                "jti": p["jti"],
+                "group_id": p["group_id"],
+                "peer_fp": p["peer_fp"],
+                "sas": p["sas"],
+                "ts": p["ts"],
+            }
+            for p in _mode_c_pending.values()
+        ]
+    return JSONResponse({"pending": items})
+
+
+@router.post("/mode-c/counter-sign")
+async def mode_c_counter_sign(request: Request):
+    """Operator: counter-sign a pending accept assertion (Mode C, Phase 3).
+
+    Body: ``{jti}``. Builds the mutually-signed join record, burns the invite
+    nonce (H5), and admits the peer to the group. Operator-gated.
+    """
+    _require_flag_operator()
+    from skchat.guest import _require_operator
+
+    _require_operator(request)
+    from skchat import crypto as _crypto
+    from skchat import daemon_proxy_groups as G
+    from skchat import guest_accept as A
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    jti = (body.get("jti") or "").strip()
+    with _mode_c_lock:
+        pend = _mode_c_pending.get(jti)
+    if not pend:
+        raise HTTPException(404, "no pending accept for that jti")
+
+    chat_crypto = _crypto.load_agent_crypto()
+    if chat_crypto is None or not getattr(chat_crypto, "can_sign", False):
+        raise HTTPException(500, "operator signing key unavailable")
+    operator_pub = str(chat_crypto._private_key.pubkey)
+    op_fp = A.pubkey_fingerprint(operator_pub)
+    ts = int(time.time())
+
+    record = A.build_join_record(
+        jti,
+        op_fp,
+        pend["peer_fp"],
+        op_fp,
+        pend["peer_fp"],
+        pend["assertion"],
+        pend["sig_peer"],
+        ts,
+    )
+    sig_operator = A.sign_join_record(chat_crypto, record)
+
+    # Burn the accept nonce so the same assertion cannot be replayed (H5).
+    nonces = A.ConsumedNonces()
+    try:
+        nonces.mark_consumed(jti)
+    finally:
+        nonces.close()
+
+    # Admit the peer to the group (best-effort; the join record is the proof).
+    try:
+        group = G.load_group(pend["group_id"])
+        if group is not None:
+            GG.add_untrusted_guest_member(group, f"peer:{pend['peer_fp'][:16]}", "Peer")
+            G.save_group(group)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("mode-c admit failed: %s", exc)
+
+    with _mode_c_lock:
+        _mode_c_pending.pop(jti, None)
+    return JSONResponse(
+        {"ok": True, "jti": jti, "join_record": record, "sig_operator": sig_operator}
+    )
 
 
 def register_guest_group_routes(app) -> None:
