@@ -150,3 +150,16 @@ def test_record_collapses_fanout_copies_by_dedup_key(tmp_path):
     log.record(canonical)
     log.record(member_copy)
     assert len(log.read("group:g1")) == 1
+
+
+def test_record_stores_full_payload_roundtrip(tmp_path):
+    from skchat.message_log import log_row_to_message
+    log = MessageLog(str(tmp_path / "m.db"))
+    msg = ChatMessage(sender="a", recipient="b", content="hi", reply_to_id="r1",
+                      metadata={"k": "v", "attachments": [{"name": "f.png"}]})
+    log.record(msg)
+    row = log.read(conversation_id_for(msg))[0]
+    back = log_row_to_message(row)
+    assert back.id == msg.id and back.reply_to_id == "r1"
+    assert back.metadata.get("k") == "v"
+    assert back.metadata.get("attachments") == [{"name": "f.png"}]

@@ -132,10 +132,15 @@ class MessageLog:
                 content          TEXT    NOT NULL,
                 ts               TEXT    NOT NULL,
                 kind             TEXT    NOT NULL DEFAULT 'text',
+                payload          TEXT,
                 PRIMARY KEY (conversation_id, seq)
             )
             """
         )
+        # Additive migration for logs created before the payload column existed.
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(message_log)")}
+        if "payload" not in cols:
+            conn.execute("ALTER TABLE message_log ADD COLUMN payload TEXT")
         # Immutable server id — globally unique.
         conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_msglog_message_id "
@@ -163,6 +168,7 @@ class MessageLog:
             "content": row["content"],
             "ts": row["ts"],
             "kind": row["kind"],
+            "payload": row["payload"] if "payload" in row.keys() else None,
         }
 
     def _find_existing(
@@ -197,6 +203,7 @@ class MessageLog:
         recipient: str,
         content: str,
         kind: str = "text",
+        payload: Optional[str] = None,
     ) -> dict:
         """Append a message; assign a monotonic per-conversation ``seq`` + an
         immutable ``message_id`` (generated if ``None``) in ONE transaction.
@@ -227,17 +234,17 @@ class MessageLog:
                     """
                     INSERT INTO message_log
                         (conversation_id, seq, message_id, client_dedup_key,
-                         sender, recipient, content, ts, kind)
+                         sender, recipient, content, ts, kind, payload)
                     VALUES (
                         ?,
                         (SELECT COALESCE(MAX(seq), 0) + 1 FROM message_log
                          WHERE conversation_id = ?),
-                        ?, ?, ?, ?, ?, ?, ?
+                        ?, ?, ?, ?, ?, ?, ?, ?
                     )
                     """,
                     (
                         conversation_id, conversation_id, mid, client_dedup_key,
-                        sender, recipient, content, ts, kind,
+                        sender, recipient, content, ts, kind, payload,
                     ),
                 )
                 row = conn.execute(
@@ -258,6 +265,12 @@ class MessageLog:
         """
         mt = getattr(message, "message_type", None)
         kind = str(getattr(mt, "value", mt) or "text")
+        # Store the FULL message JSON so the log is a complete source of truth
+        # (reactions, attachments, reply_to, metadata all survive a read).
+        try:
+            payload = message.model_dump_json()
+        except Exception:
+            payload = None
         return self.append(
             conversation_id_for(message),
             message_id=(getattr(message, "id", None) or None),
@@ -266,6 +279,7 @@ class MessageLog:
             recipient=(getattr(message, "recipient", "") or ""),
             content=(getattr(message, "content", "") or ""),
             kind=kind,
+            payload=payload,
         )
 
     # ------------------------------------------------------------------
@@ -297,3 +311,27 @@ class MessageLog:
             self._conn.close()
         except Exception:  # pragma: no cover
             logger.debug("message_log close failed", exc_info=True)
+
+
+def log_row_to_message(row: dict):
+    """Reconstruct a full ``ChatMessage`` from a log row.
+
+    Prefers the stored ``payload`` (complete message incl. reactions/attachments/
+    reply_to/metadata); falls back to the flat columns for pre-payload rows so a
+    partially-backfilled log still reads. Readers use this to serve log-sourced
+    history without losing rich message data.
+    """
+    from skchat.models import ChatMessage
+
+    payload = row.get("payload")
+    if payload:
+        try:
+            return ChatMessage.model_validate_json(payload)
+        except Exception:  # noqa: BLE001 — fall back to flat columns
+            logger.debug("log payload parse failed for %s", row.get("message_id"))
+    return ChatMessage(
+        id=row.get("message_id"),
+        sender=row.get("sender", "") or "",
+        recipient=row.get("recipient", "") or "",
+        content=row.get("content", "") or "",
+    )
