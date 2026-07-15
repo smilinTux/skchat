@@ -110,22 +110,21 @@ def _assert_same_group(session: GG.GuestSession, requested_group_id: str) -> Non
 # Operator: invite mint / list / revoke
 # --------------------------------------------------------------------------- #
 @router.post("/groups/{group_id}/invite")
-async def operator_create_invite(group_id: str, request: Request):
+async def operator_create_invite(group_id: str, request: Request, mode: str = "group"):
     """Operator-only: mint a room-scoped, signed invite for ``group_id``.
 
-    Body (all optional): ``{ttl?, single_use?}``. Returns ``{token, join_url}``
-    (relative join url). Operator-gated (tailnet/loopback or
+    Body (all optional): ``{ttl?, single_use?}``. Query ``?mode=dm|group``
+    (default ``group``): ``mode=dm`` mints a NEW 2-seat DM guest group
+    (``metadata.mode="dm"``, seat 1 = operator) and invites into it — the path
+    ``group_id`` is unused in that case; ``mode=group`` is the unchanged
+    behaviour (invite into the existing ``group_id``). Returns ``{token,
+    join_url, ...}``. Operator-gated (tailnet/loopback or
     ``SKCHAT_GUEST_OPERATOR_TOKEN``); 404 when the feature flag is off.
     """
     _require_flag_operator()
     from skchat.guest import _require_operator
 
     _require_operator(request)
-
-    from skchat import daemon_proxy_groups as G
-
-    if G.load_group(group_id) is None:
-        raise HTTPException(404, "group not found")
 
     try:
         body = await request.json()
@@ -138,8 +137,25 @@ async def operator_create_invite(group_id: str, request: Request):
             ttl = int(ttl_raw)
         except (TypeError, ValueError):
             ttl = None
-    single_use = bool(body.get("single_use", False))
 
+    if (mode or "group").strip().lower() == "dm":
+        # A 1:1 DM invite mints its OWN 2-seat guest group; the path group_id is
+        # not used. DMs default single-use (override via body).
+        try:
+            result = GG.create_dm_invite(
+                single_use=bool(body.get("single_use", True)), ttl=ttl
+            )
+        except RuntimeError as exc:  # secret unset
+            raise HTTPException(503, str(exc)) from exc
+        logger.info("guest-group DM invite minted (jti=%s gid=%s)", result["jti"], result["group_id"])
+        return JSONResponse(result)
+
+    from skchat import daemon_proxy_groups as G
+
+    if G.load_group(group_id) is None:
+        raise HTTPException(404, "group not found")
+
+    single_use = bool(body.get("single_use", False))
     try:
         result = GG.create_group_invite(group_id, ttl=ttl, single_use=single_use)
     except RuntimeError as exc:  # secret unset
@@ -235,6 +251,17 @@ async def guest_join(request: Request):
     guest_id = GG.guest_identity(display_name, guest_pubkey)
     fp = GG.pubkey_fingerprint(guest_pubkey)
 
+    # Mode-A DM: a 1:1 is a 2-seat guest group (seat 1 = operator). A NEW guest
+    # that would take a third seat is refused (the DM is full). A returning guest
+    # (same identity) is idempotent and always allowed.
+    if (
+        group.metadata.get("mode") == "dm"
+        and group.get_member(guest_id) is None
+        and group.member_count >= GG.DM_SEAT_CAP
+    ):
+        logger.info("dm join rejected: %s full (%d seats)", group_id, group.member_count)
+        raise HTTPException(403, "direct message is full")
+
     GG.add_untrusted_guest_member(group, guest_id, display)
     G.save_group(group)
 
@@ -246,7 +273,7 @@ async def guest_join(request: Request):
     # reuse the group call room derivation so guests + members share one room.
     call = _mint_guest_call_token(group_id, guest_id, display, request)
 
-    bootstrap = _guest_messages(group_id, limit=200)
+    bootstrap = _guest_messages(group_id, limit=200, guest_id=guest_id)
     return JSONResponse(
         {
             "ok": True,
@@ -318,11 +345,57 @@ def _mint_guest_call_token(group_id: str, guest_id: str, display: str, request: 
 # --------------------------------------------------------------------------- #
 # Guest: read the bound group thread
 # --------------------------------------------------------------------------- #
-def _guest_messages(group_id: str, limit: int = 200) -> list[dict]:
+def _msg_ts_epoch(m) -> float:
+    """Best-effort epoch seconds for a message timestamp (datetime/number/iso)."""
+    ts = getattr(m, "timestamp", None)
+    if isinstance(ts, (int, float)):
+        return float(ts)
+    if hasattr(ts, "timestamp"):
+        try:
+            return float(ts.timestamp())
+        except Exception:
+            return 0.0
+    if isinstance(ts, str) and ts:
+        from datetime import datetime
+
+        try:
+            return datetime.fromisoformat(ts).timestamp()
+        except Exception:
+            return 0.0
+    return 0.0
+
+
+def _dm_epoch_fence(group_id: str, guest_id: str):
+    """Return the epoch-fence cutoff (``added_at``) for a DM guest, else None.
+
+    A ``mode="dm"`` guest sees no group history from before it joined (SimpleX
+    "no pre-epoch history"). Non-dm groups are NOT fenced — existing group-invite
+    history behaviour is unchanged.
+    """
+    if not guest_id:
+        return None
+    from skchat import daemon_proxy_groups as G
+
+    group = G.load_group(group_id)
+    if group is None or group.metadata.get("mode") != "dm":
+        return None
+    entry = (group.metadata.get("guests") or {}).get(guest_id)
+    if not entry:
+        return None
+    added = entry.get("added_at")
+    try:
+        return float(added) if added is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _guest_messages(group_id: str, limit: int = 200, *, guest_id: str = "") -> list[dict]:
     """Load the bound group's thread in the app message contract (guest view).
 
     Reuses ``daemon_proxy._group_msg_to_app`` so the guest UI gets the identical
     shape members get, then decorates each message with the guest-trust markers.
+    For a ``mode="dm"`` guest, an epoch fence drops any message older than the
+    guest's ``added_at`` (no pre-join DM history).
     """
     from skchat import daemon_proxy
     from skchat import daemon_proxy_groups as G
@@ -330,8 +403,11 @@ def _guest_messages(group_id: str, limit: int = 200) -> list[dict]:
     hist = _history()
     rows = G.group_thread_messages(hist, group_id, limit=limit)
     rows.sort(key=lambda x: getattr(x, "timestamp", ""))
+    fence = _dm_epoch_fence(group_id, guest_id)
     out = []
     for m in rows:
+        if fence is not None and _msg_ts_epoch(m) < fence:
+            continue
         d = daemon_proxy._group_msg_to_app(m, group_id=group_id)
         meta = getattr(m, "metadata", {}) or {}
         if meta.get("guest"):
@@ -352,7 +428,12 @@ async def guest_conversation(request: Request):
     _require_flag_guest()
     session = _guest_session(request)
     _bound_group(session)  # 404 if the group vanished
-    return JSONResponse({"group_id": session.group_id, "messages": _guest_messages(session.group_id)})
+    return JSONResponse(
+        {
+            "group_id": session.group_id,
+            "messages": _guest_messages(session.group_id, guest_id=session.guest_id),
+        }
+    )
 
 
 # --------------------------------------------------------------------------- #
