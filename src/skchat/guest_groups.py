@@ -194,6 +194,48 @@ def create_group_invite(
     }
 
 
+# ── 1:1 DM invites (degenerate 2-seat guest group) ──────────────────────────
+#: A ``mode="dm"`` guest group is a 1:1: it may ever hold at most two seats
+#: (seat 1 = operator, seat 2 = the single peer guest). Enforced in ``guest_join``.
+DM_SEAT_CAP = 2
+
+
+def create_dm_invite(
+    *,
+    operator_uri: Optional[str] = None,
+    ttl: Optional[int] = None,
+    single_use: bool = True,
+    now_fn=None,
+) -> dict:
+    """Mint a 1:1 DM invite as a degenerate 2-seat guest group (Mode A DM).
+
+    Phase 0 of the sovereign invite/join architecture: a 1:1 is modelled as a
+    guest group with exactly two seats and ``metadata.mode="dm"``, so the whole
+    existing guest-group machinery (invite/join/scoping/isolation) is reused
+    unchanged. This mints a fresh DM group with the operator in seat 1, tags it
+    ``mode="dm"``, then issues a (single-use by default) invite for it.
+
+    ``operator_uri`` defaults to the running agent's sovereign identity. Returns
+    the :func:`create_group_invite` dict augmented with ``mode="dm"`` (its
+    ``group_id`` is the freshly-minted DM group's id).
+    """
+    from skchat import daemon_proxy_groups as G
+
+    op = (operator_uri or "").strip()
+    if not op:
+        from skchat.identity_bridge import get_sovereign_identity
+
+        op = get_sovereign_identity()
+
+    grp = G.create_group(name="Direct message", creator_uri=op, members=[])
+    grp.metadata["mode"] = "dm"
+    G.save_group(grp)
+
+    invite = create_group_invite(grp.id, ttl=ttl, single_use=single_use, now_fn=now_fn)
+    invite["mode"] = "dm"
+    return invite
+
+
 class InviteInvalid(Exception):
     """Raised when an invite token is invalid/expired/revoked/used/wrong-tier.
 
