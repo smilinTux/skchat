@@ -9,8 +9,10 @@ vector-search / thread helpers remain available.
 
 from __future__ import annotations
 
+import fcntl
 import logging
 import os
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
@@ -95,20 +97,39 @@ class ChatHistory:
     # JSONL save / load
     # ------------------------------------------------------------------
 
+    @contextmanager
+    def _write_lock(self):
+        """Serialize all history writes across processes (daemon/webui/MCP all
+        share these files). Without this, an ``update_message`` full-file rewrite
+        that races a concurrent ``save`` append silently drops the appended line.
+        Advisory ``flock`` on a sidecar lock file (reads never take it).
+        """
+        lock_path = self._history_dir / ".write.lock"
+        fh = open(lock_path, "a", encoding="utf-8")
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+            yield
+        finally:
+            try:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            finally:
+                fh.close()
+
     def save(self, message: ChatMessage) -> None:
         """Append *message* to today's JSONL history file.
 
         File: ``~/.skchat/history/YYYY-MM-DD.jsonl``
-        One JSON line per call, written atomically (append mode).
+        One JSON line per call, serialized against rewrites by ``_write_lock``.
 
         Args:
             message: The ChatMessage to persist.
         """
         date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         path = self._history_dir / f"{date_str}.jsonl"
-        with path.open("a", encoding="utf-8") as fh:
-            fh.write(message.model_dump_json())
-            fh.write("\n")
+        with self._write_lock():
+            with path.open("a", encoding="utf-8") as fh:
+                fh.write(message.model_dump_json())
+                fh.write("\n")
 
     def load(
         self,
@@ -314,32 +335,38 @@ class ChatHistory:
         Returns:
             bool: True if a matching line was found and rewritten.
         """
-        files = sorted(self._history_dir.glob("*.jsonl"), reverse=True)
-        for path in files:
-            try:
-                lines = path.read_text(encoding="utf-8").splitlines()
-            except OSError:
-                continue
-            replaced = False
-            out: list[str] = []
-            for raw in lines:
-                stripped = raw.strip()
-                if not stripped:
+        # Hold the write lock across the whole read-modify-write so a concurrent
+        # save append is not lost, and swap the file in atomically (temp +
+        # os.replace) so a concurrent reader never sees a truncated file.
+        with self._write_lock():
+            files = sorted(self._history_dir.glob("*.jsonl"), reverse=True)
+            for path in files:
+                try:
+                    lines = path.read_text(encoding="utf-8").splitlines()
+                except OSError:
                     continue
-                if not replaced:
-                    try:
-                        existing = ChatMessage.model_validate_json(stripped)
-                    except Exception:
-                        out.append(stripped)
+                replaced = False
+                out: list[str] = []
+                for raw in lines:
+                    stripped = raw.strip()
+                    if not stripped:
                         continue
-                    if existing.id == message.id:
-                        out.append(message.model_dump_json())
-                        replaced = True
-                        continue
-                out.append(stripped)
-            if replaced:
-                path.write_text("\n".join(out) + "\n", encoding="utf-8")
-                return True
+                    if not replaced:
+                        try:
+                            existing = ChatMessage.model_validate_json(stripped)
+                        except Exception:
+                            out.append(stripped)
+                            continue
+                        if existing.id == message.id:
+                            out.append(message.model_dump_json())
+                            replaced = True
+                            continue
+                    out.append(stripped)
+                if replaced:
+                    tmp = path.with_suffix(".jsonl.tmp")
+                    tmp.write_text("\n".join(out) + "\n", encoding="utf-8")
+                    os.replace(tmp, path)
+                    return True
         return False
 
     def set_reaction(self, message_id: str, emoji: str, sender: str) -> Optional[ChatMessage]:
