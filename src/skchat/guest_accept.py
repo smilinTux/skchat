@@ -458,6 +458,8 @@ class ConsumedNonces:
         if not peer_fp:
             return
         with self._lock:
+            # Re-admitting overrides any prior revocation of this peer pin.
+            self._conn.execute("DELETE FROM revoked_pins WHERE pin = ?", (peer_fp,))
             self._conn.execute(
                 "INSERT OR REPLACE INTO admitted_peers "
                 "(peer_fp, operator_id, join_record, sig_operator, sig_peer, admitted_at) "
@@ -511,6 +513,9 @@ class ConsumedNonces:
         if not operator_id or not operator_pubkey:
             return
         with self._lock:
+            # Explicitly (re)trusting overrides any prior revocation of this
+            # operator pin, so a revoked operator CAN be trusted again.
+            self._conn.execute("DELETE FROM revoked_pins WHERE pin = ?", (operator_id,))
             self._conn.execute(
                 "INSERT OR REPLACE INTO trusted_operators "
                 "(operator_id, operator_pubkey, trusted_at) VALUES (?, ?, ?)",

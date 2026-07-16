@@ -871,22 +871,14 @@ def _mode_c_admit(pend: dict, operator_id: str = ""):
     return record, sig_operator
 
 
-@router.post("/mode-c/accept")
-async def mode_c_accept(request: Request):
-    """A peer submits a signed accept assertion for an invite (Mode C, Phase 3).
-
-    Body: ``{invite_token, accept_assertion, sig_peer, accepter_pubkey}``. Verifies
-    the invite + the peer's assertion signature (bc anti-downgrade, aud==peer,
-    scope), holds it pending for operator review, and returns the SAS. Fail-closed:
-    a bad invite / assertion / bc is a generic 401 (no oracle).
-    """
-    _require_flag_guest()
+def _process_mode_c_accept(body: dict):
+    """Core Mode C accept processing, shared by the direct route and the
+    gift-wrapped route: verify the invite + the peer's assertion, inherit trust
+    if the peer proves membership under an opt-in-trusted operator (Mode B), else
+    hold pending for manual review. Returns a JSONResponse; raises HTTPException
+    (400/401) fail-closed."""
     from skchat import guest_accept as A
 
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
     invite_token = (body.get("invite_token") or "").strip()
     assertion = body.get("accept_assertion") or {}
     sig_peer = (body.get("sig_peer") or "").strip()
@@ -946,6 +938,51 @@ async def mode_c_accept(request: Request):
     with _mode_c_lock:
         _mode_c_pending[jti] = pend
     return JSONResponse({"ok": True, "jti": jti, "sas": pend["sas"], "peer_fp": peer_fp})
+
+
+@router.post("/mode-c/accept-giftwrapped")
+async def mode_c_accept_giftwrapped(request: Request):
+    """A peer submits a Mode C accept sealed in a NIP-59 gift-wrap envelope, so a
+    shared rendezvous relay sees only ciphertext + a throwaway key (H6 metadata
+    privacy). Body: the gift-wrap ``envelope``. The operator opens it with its
+    hybrid private key, then processes the inner accept exactly like the direct
+    route. Fail-closed: an unopenable envelope is a generic 401."""
+    _require_flag_guest()
+    from skchat import guest_giftwrap as GW
+    from skchat import pq_prekeys as PQ
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    envelope = body.get("envelope") or body
+    kp = PQ.ensure_agent_keypair()
+    if not kp:
+        raise HTTPException(500, "operator hybrid key unavailable")
+    _, priv = kp
+    try:
+        inner = GW.open_giftwrap(envelope, priv.hex())
+    except Exception as exc:  # noqa: BLE001 — any open failure is a generic reject
+        logger.info("mode-c gift-wrapped accept rejected: %s", exc)
+        raise HTTPException(401, "invalid gift-wrap envelope") from exc
+    return _process_mode_c_accept(inner)
+
+
+@router.post("/mode-c/accept")
+async def mode_c_accept(request: Request):
+    """A peer submits a signed accept assertion for an invite (Mode C, Phase 3).
+
+    Body: ``{invite_token, accept_assertion, sig_peer, accepter_pubkey}``. Verifies
+    the invite + the peer's assertion signature (bc anti-downgrade, aud==peer,
+    scope), holds it pending for operator review, and returns the SAS. Fail-closed:
+    a bad invite / assertion / bc is a generic 401 (no oracle).
+    """
+    _require_flag_guest()
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    return _process_mode_c_accept(body)
 
 
 @router.get("/mode-c/pending")

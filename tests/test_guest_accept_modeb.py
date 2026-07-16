@@ -50,3 +50,20 @@ def test_trust_store_opt_in_and_revoke():
     assert n.is_operator_trusted("op@x.realm") is False
     assert n.operator_pubkey("op@x.realm") is None
     assert n.list_trusted_operators() == []
+
+
+def test_retrust_and_readmit_override_revocation():
+    n = ConsumedNonces(":memory:")
+    # operator: trust -> revoke -> re-trust un-revokes
+    n.trust_operator("op@x", "K1")
+    n.revoke_pin("op@x")
+    assert n.is_operator_trusted("op@x") is False
+    n.trust_operator("op@x", "K2")
+    assert n.is_operator_trusted("op@x") is True
+    assert n.operator_pubkey("op@x") == "K2"
+    # peer: admit -> revoke -> re-admit un-revokes
+    n.record_admission("PFP", "op@x", "{}", "s", "s")
+    n.revoke_pin("PFP")
+    assert n.is_admitted("PFP") is False
+    n.record_admission("PFP", "op@x", "{}", "s", "s")
+    assert n.is_admitted("PFP") is True
