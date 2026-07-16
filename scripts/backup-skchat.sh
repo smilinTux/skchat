@@ -70,16 +70,34 @@ SRC_SKCOMMS_OUTBOX="${HOME_DIR}/.skcomms/outbox"
 SRC_CONFIG_ENV_DIR="${HOME_DIR}/.config/skchat"
 
 TMP_TAR=""
-# Idempotent: safe to call repeatedly (blanks TMP_TAR after removal).
+TMP_RAW=""
+STAGING=""
+# Shred a single file if it exists (falls back to rm when shred is absent).
+_shred_file() {
+    local f="$1"
+    [[ -n "$f" && -f "$f" ]] || return 0
+    if command -v shred >/dev/null 2>&1; then
+        shred -u -z "$f" 2>/dev/null || rm -f "$f"
+    else
+        rm -f "$f"
+    fi
+}
+# Idempotent: safe to call repeatedly (blanks the vars after removal). Shreds
+# BOTH plaintext tars (compressed + uncompressed) and every DB snapshot in the
+# staging dir, since those snapshots are copies of key-adjacent sqlite DBs and
+# must never survive unencrypted on disk.
 cleanup() {
-    if [[ -n "$TMP_TAR" && -f "$TMP_TAR" ]]; then
-        if command -v shred >/dev/null 2>&1; then
-            shred -u -z "$TMP_TAR" 2>/dev/null || rm -f "$TMP_TAR"
-        else
-            rm -f "$TMP_TAR"
-        fi
+    _shred_file "$TMP_TAR"
+    _shred_file "$TMP_RAW"
+    if [[ -n "$STAGING" && -d "$STAGING" ]]; then
+        while IFS= read -r -d '' sf; do
+            _shred_file "$sf"
+        done < <(find "$STAGING" -type f -print0 2>/dev/null)
+        rm -rf "$STAGING"
     fi
     TMP_TAR=""
+    TMP_RAW=""
+    STAGING=""
 }
 # Terminating signals must exit, not fall through to statements that
 # reference the just-deleted temp file. EXIT runs cleanup once more (no-op
@@ -95,6 +113,28 @@ fail() { echo "[backup-skchat] FATAL: $*" >&2; exit 1; }
 
 TAR_ARGS=()
 found_any=0
+
+# Exclude regenerable / bulky non-critical data. The irreplaceable data (the
+# at-rest keys, group keys, message history, consumed-nonces, confs) is tiny;
+# rotating daemon logs and voice recordings are large and regenerable, so they
+# do not belong in a daily encrypted backup. (memory/ is kept: it is not
+# obviously regenerable here; exclude it too if it is Syncthing-synced.)
+TAR_ARGS+=(
+    --exclude=".skchat/*.log"
+    --exclude=".skchat/*.log.*"
+    --exclude=".skchat/lumina-recordings"
+    --exclude=".skchat/cache"
+)
+
+# Exclude the LIVE, daemon-written sqlite DBs from the raw tar; a consistent
+# snapshot of each is taken separately below (sqlite3 .backup) and appended, so
+# the archive never captures a torn mid-write DB. Both patterns are listed
+# because a top-level DB (.skchat/message_log.db) and a nested one
+# (.skchat/pqc/dm_sessions.db) must both be excluded.
+TAR_ARGS+=(
+    --exclude=".skchat/*.db"
+    --exclude=".skchat/**/*.db"
+)
 
 if [[ -d "$SRC_SKCHAT" ]]; then
     TAR_ARGS+=(-C "$HOME_DIR" ".skchat")
@@ -143,10 +183,97 @@ log "encrypt tool: ${ENCRYPT_TOOL} (recipient: ${RECIPIENT})"
 
 mkdir -p "$BACKUP_DIR"
 chmod 700 "$BACKUP_DIR"
+
+# 3a. Consistent snapshot of every live sqlite DB under ~/.skchat, into a
+# staging tree that mirrors the relative path. sqlite3 .backup takes a
+# transactionally-consistent copy even while the daemon is writing; a raw tar
+# of a live DB can capture a corrupt, unrestorable file. If a *.db turns out
+# not to be a sqlite file (or .backup fails), fall back to a plain cp of that
+# one file and log it, never abort.
+STAGING="$(mktemp -d "${BACKUP_DIR}/.skchat-db-staging-XXXXXX")"
+chmod 700 "$STAGING"
+
+# Resolve the sqlite3 CLI robustly: the systemd unit runs with a restricted
+# PATH that does NOT include Homebrew, where sqlite3 lives on this host. If it
+# is not found at all, every DB falls back to a raw cp (with a loud warning) so
+# a backup is still produced, but it will not be a torn-write-safe snapshot.
+SQLITE3="$(command -v sqlite3 2>/dev/null || true)"
+if [[ -z "$SQLITE3" ]]; then
+    for cand in /home/linuxbrew/.linuxbrew/bin/sqlite3 \
+                "${HOME_DIR}/.skenv/bin/sqlite3" \
+                /usr/local/bin/sqlite3 /usr/bin/sqlite3; do
+        if [[ -x "$cand" ]]; then SQLITE3="$cand"; break; fi
+    done
+fi
+[[ -n "$SQLITE3" ]] || log "WARNING: sqlite3 not found on PATH or known locations; DBs will be raw-copied (NOT torn-write-safe)"
+
+db_total=0
+db_ok=0
+if [[ -d "$SRC_SKCHAT" ]]; then
+    while IFS= read -r -d '' db; do
+        db_total=$((db_total + 1))
+        rel="${db#"${HOME_DIR}"/}"      # e.g. .skchat/message_log.db
+        dest="${STAGING}/${rel}"
+        mkdir -p "$(dirname "$dest")"
+        if [[ -n "$SQLITE3" ]] \
+           && "$SQLITE3" "$db" ".backup '${dest}'" 2>/dev/null \
+           && [[ -s "$dest" ]]; then
+            db_ok=$((db_ok + 1))
+        else
+            log "WARNING: sqlite .backup unavailable/failed for ${rel}, falling back to cp"
+            if cp -p "$db" "$dest" 2>/dev/null; then
+                db_ok=$((db_ok + 1))
+            else
+                log "WARNING: cp fallback also failed for ${rel} (DB not captured)"
+            fi
+        fi
+    done < <(find "$SRC_SKCHAT" -type f -name '*.db' -print0 2>/dev/null)
+fi
+[[ $db_total -gt 0 ]] && log "DB snapshots: ${db_ok}/${db_total} captured consistently into staging"
+
+# 3b. Build an UNCOMPRESSED tar of the live tree (DBs excluded) + outbox + env.
+# On a live box the daemon rewrites files while tar reads them; tar then exits 1
+# ("file changed as we read it"), which is expected and the snapshot is still
+# fine. Only exit >= 2 is a real fatal error. errexit is disabled just around
+# the tar call so exit 1 does not abort the whole backup.
+TMP_RAW="$(mktemp "${BACKUP_DIR}/.skchat-backup-raw-XXXXXX.tar")"
+chmod 600 "$TMP_RAW"
+
+set +e
+tar -cf "$TMP_RAW" "${TAR_ARGS[@]}"
+tar_rc=$?
+set -e
+if [[ $tar_rc -eq 0 ]]; then
+    :
+elif [[ $tar_rc -eq 1 ]]; then
+    log "NOTE: tar exit 1 (files changed during read on a live system); snapshot is still consistent, continuing"
+else
+    fail "tar failed with exit ${tar_rc} (>= 2 is a fatal error)"
+fi
+
+# 3c. Append the consistent DB snapshots. Appended from the staging tree, so
+# these land at the same .skchat/... paths as the excluded live DBs would have.
+# (Append needs an uncompressed archive, hence the two-step build.)
+if [[ $db_ok -gt 0 && -d "${STAGING}/.skchat" ]]; then
+    tar -rf "$TMP_RAW" -C "$STAGING" ".skchat"
+    log "appended ${db_ok} consistent DB snapshot(s) to the archive"
+fi
+
+# 3d. Compress into the final plaintext .tar.gz that gets encrypted.
 TMP_TAR="$(mktemp "${BACKUP_DIR}/.skchat-backup-plain-XXXXXX.tar.gz")"
 chmod 600 "$TMP_TAR"
-
-tar -czf "$TMP_TAR" "${TAR_ARGS[@]}"
+gzip -c "$TMP_RAW" > "$TMP_TAR"
+# The uncompressed intermediate and the DB staging tree are no longer needed;
+# shred them now (cleanup also covers them on any early exit).
+_shred_file "$TMP_RAW"
+TMP_RAW=""
+if [[ -n "$STAGING" && -d "$STAGING" ]]; then
+    while IFS= read -r -d '' sf; do
+        _shred_file "$sf"
+    done < <(find "$STAGING" -type f -print0 2>/dev/null)
+    rm -rf "$STAGING"
+    STAGING=""
+fi
 log "built plaintext tar: $(du -h "$TMP_TAR" | cut -f1)"
 
 # --- 4. Encrypt ---------------------------------------------------------
