@@ -361,7 +361,10 @@ Voice / web / call stack:
 - `skchat-webui@.service`: Web UI + voice chat server, one instance per agent;
   live instance is `skchat-webui@lumina.service` (per-agent `webui-<agent>.env`).
 - `skchat-app-web.service`: static server for the built Flutter web client on `:8088`
-  (dev-style `python3 -m http.server`; P3.3 replaces it with a versioned artifact).
+  (`scripts/serve-app-web.sh` -> `scripts/serve_app_web.py`, a hardened stdlib
+  `ThreadingHTTPServer`: correct MIME for .wasm/.js/.json/.css, no-cache on
+  index.html, long immutable cache on content-hashed filenames, no autoindex,
+  loopback bind; tailnet/funnel ingress fronts it).
 - `skchat-lumina-call.service`: Lumina LiveKit conversational agent
   (`lumina-creative/scripts/lumina-call.py`); drop-ins tune TTS/VAD/webui, MuseTalk off.
 - `livekit-server.service`: LiveKit SFU on the tailnet (`:7880`/`:7881`); config
