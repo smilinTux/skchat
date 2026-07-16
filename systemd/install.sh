@@ -18,7 +18,8 @@
 #   Discovery: skchat-nostr-relay (:7447)
 #   Web:       skchat-app-web (:8088)
 #   Agents:    jarvis-heartbeat
-#   Timers:    telegram-catchup.timer + telegram-catchup.service
+#   Timers:    telegram-catchup.timer + telegram-catchup.service,
+#              skchat-backup.timer + skchat-backup.service
 #   Drop-ins:  skchat-daemon.d/{guest,group,dm-ratchet}, skchat-daemon-opus.d/group,
 #              skchat-telegram-{opus,lumina}.d/override,
 #              skchat-lumina-call.d/{fixes,musetalk,tts,vad,webui},
@@ -85,6 +86,8 @@ UNITS=(
     skchat-coturn.service
     telegram-catchup.service
     telegram-catchup.timer
+    skchat-backup.service
+    skchat-backup.timer
 )
 
 # Units to enable by default (matches the .158 live-enabled set). Excludes
@@ -104,6 +107,7 @@ ENABLE_UNITS=(
     jarvis-heartbeat.service
     skchat-coturn.service
     telegram-catchup.timer
+    skchat-backup.timer
 )
 
 # Required secret-bearing EnvironmentFiles (name -> description). Referenced with

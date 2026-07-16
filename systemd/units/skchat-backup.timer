@@ -1,0 +1,15 @@
+# skchat-backup.timer: fires skchat-backup.service daily at 04:30 local
+# (randomized up to 5 min, matching the telegram-catchup.timer pattern).
+# Persistent so a missed run (box asleep/offline) fires on next boot.
+
+[Unit]
+Description=Daily SKChat Encrypted Backup Timer
+Documentation=https://github.com/smilinTux/skchat
+
+[Timer]
+OnCalendar=*-*-* 04:30:00
+RandomizedDelaySec=300
+Persistent=true
+
+[Install]
+WantedBy=timers.target
