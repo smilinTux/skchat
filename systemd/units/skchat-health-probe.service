@@ -1,0 +1,26 @@
+# skchat-health-probe.service: oneshot external health probe of every live
+# skchat network surface (daemon, skcomms transport, webui, coturn Funnel,
+# livekit, nostr relay, piper tts, public HTTPS ingress). See
+# scripts/health-probe.sh for the exact check per surface.
+#
+# Driven by skchat-health-probe.timer (every 5 min). ExecStopPost fires a
+# best-effort sk-alert on failure only; the leading `-` and the shell guard
+# mean a missing/broken sk-alert binary can never fail this unit or mask a
+# real probe failure's own exit code (the probe script itself also alerts
+# with the specific failing surface(s), see health-probe.sh; this
+# ExecStopPost is a second, coarser backstop wired the same way as
+# skchat-backup.service).
+
+[Unit]
+Description=SKChat external health probe (all live surfaces)
+Documentation=https://github.com/smilinTux/skchat
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/bash %h/clawd/skcapstone-repos/skchat/scripts/health-probe.sh
+Environment=PATH=%h/.skenv/bin:%h/.local/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=%h
+TimeoutStartSec=60
+StandardOutput=journal
+StandardError=journal
+ExecStopPost=-/usr/bin/bash -c 'if [ "$SERVICE_RESULT" != "success" ]; then %h/.skenv/bin/sk-alert -l crit -k health-probe-unit -t 1800 "skchat-health-probe.service failed (result=$SERVICE_RESULT, exit=$EXIT_STATUS)" 2>/dev/null || true; fi'
