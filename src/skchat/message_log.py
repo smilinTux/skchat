@@ -298,6 +298,31 @@ class MessageLog:
         ).fetchall()
         return [self._row_to_dict(r) for r in rows]
 
+    def update_payload(self, message_id: str, payload: str) -> bool:
+        """Refresh the stored ``payload`` of an existing logical message.
+
+        A mutation (reaction / edit / receipt) targets the immutable
+        ``message_id`` and updates the ONE logical message's materialized state,
+        so every surface reading the log sees it (this is what fixes the old
+        "a reaction only reaches one fan-out copy" bug). The seq/message_id are
+        never touched. Returns True if a row was updated.
+        """
+        if not message_id:
+            return False
+        with self._lock:
+            conn = self._conn
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                cur = conn.execute(
+                    "UPDATE message_log SET payload=? WHERE message_id=?",
+                    (payload, message_id),
+                )
+                conn.execute("COMMIT")
+                return cur.rowcount > 0
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+
     def latest_seq(self, conversation_id: str) -> int:
         """Return the highest assigned ``seq`` for *conversation_id* (0 if none)."""
         row = self._conn.execute(

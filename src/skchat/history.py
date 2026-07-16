@@ -115,6 +115,27 @@ class ChatHistory:
             logger.debug("read_events failed", exc_info=True)
             return None
 
+    def _update_log_payload(self, message) -> None:
+        """Reflect a mutation (reaction / edit / receipt) into the authoritative
+        log's payload for this message's id, so log-sourced readers see it (and a
+        reaction reaches the ONE logical message, not one fan-out copy). Flag-
+        gated, best-effort, never raises.
+        """
+        if os.getenv("SKCHAT_MESSAGE_LOG", "").strip().lower() in (
+            "", "0", "false", "no", "off",
+        ):
+            return
+        try:
+            if self._log is None:
+                from skchat.message_log import MessageLog
+
+                self._log = MessageLog()
+            mid = getattr(message, "id", None)
+            if mid:
+                self._log.update_payload(mid, message.model_dump_json())
+        except Exception:  # noqa: BLE001
+            logger.debug("_update_log_payload failed", exc_info=True)
+
     @staticmethod
     def _make_default_store() -> object:
         """Create a default SQLite-backed MemoryStore at ~/.skchat/memory/.
@@ -413,6 +434,9 @@ class ChatHistory:
                     tmp = path.with_suffix(".jsonl.tmp")
                     tmp.write_text("\n".join(out) + "\n", encoding="utf-8")
                     os.replace(tmp, path)
+                    # Keep the authoritative log's payload current with this
+                    # mutation so log-sourced readers see the reaction/edit.
+                    self._update_log_payload(message)
                     return True
         return False
 
