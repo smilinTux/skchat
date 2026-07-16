@@ -332,6 +332,21 @@ class ConsumedNonces:
                 "  revoked_at REAL NOT NULL"
                 ")"
             )
+            # TOFU pin store (Mode C polish + Mode B foundation): the durable
+            # record of admitted peers. Each row is a mutually-signed join_record;
+            # `operator_id` is the peer's operator FQID, so Mode B can later grant
+            # opt-in trust inheritance to a whole peer-operator. Trust is revoked
+            # by revoke_pin(peer_fp) or revoke_pin(operator_id).
+            self._conn.execute(
+                "CREATE TABLE IF NOT EXISTS admitted_peers ("
+                "  peer_fp TEXT PRIMARY KEY,"
+                "  operator_id TEXT,"
+                "  join_record TEXT NOT NULL,"
+                "  sig_operator TEXT NOT NULL,"
+                "  sig_peer TEXT NOT NULL,"
+                "  admitted_at REAL NOT NULL"
+                ")"
+            )
             self._conn.commit()
 
     def mark_consumed(self, jti: str) -> bool:
@@ -381,6 +396,65 @@ class ConsumedNonces:
                 "SELECT 1 FROM revoked_pins WHERE pin = ? LIMIT 1", (pin,)
             ).fetchone()
         return row is not None
+
+    # ── TOFU pin store: durable admitted-peer records (Mode C polish + Mode B) ──
+    def record_admission(
+        self,
+        peer_fp: str,
+        operator_id: str,
+        join_record: str,
+        sig_operator: str,
+        sig_peer: str,
+    ) -> None:
+        """Persist a counter-signed admission so it survives restart and is
+        revocable/queryable. ``operator_id`` is the peer's operator FQID, the key
+        Mode B uses for opt-in trust inheritance. Re-admitting a peer refreshes
+        the row (INSERT OR REPLACE)."""
+        if not peer_fp:
+            return
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO admitted_peers "
+                "(peer_fp, operator_id, join_record, sig_operator, sig_peer, admitted_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (peer_fp, operator_id or "", join_record, sig_operator, sig_peer, time.time()),
+            )
+            self._conn.commit()
+
+    def list_admissions(self) -> list[dict]:
+        """All admitted peers whose pin (peer_fp or operator_id) is NOT revoked."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT peer_fp, operator_id, join_record, sig_operator, sig_peer, admitted_at "
+                "FROM admitted_peers ORDER BY admitted_at DESC"
+            ).fetchall()
+            revoked = {
+                r[0] for r in self._conn.execute("SELECT pin FROM revoked_pins")
+            }
+        out = []
+        for r in rows:
+            if r[0] in revoked or (r[1] and r[1] in revoked):
+                continue
+            out.append({
+                "peer_fp": r[0], "operator_id": r[1], "join_record": r[2],
+                "sig_operator": r[3], "sig_peer": r[4], "admitted_at": r[5],
+            })
+        return out
+
+    def is_admitted(self, peer_fp: str) -> bool:
+        """True iff *peer_fp* has a live (non-revoked) admission."""
+        if not peer_fp:
+            return False
+        if self.is_pin_revoked(peer_fp):
+            return False
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT operator_id FROM admitted_peers WHERE peer_fp = ? LIMIT 1",
+                (peer_fp,),
+            ).fetchone()
+        if row is None:
+            return False
+        return not (row[0] and self.is_pin_revoked(row[0]))
 
     def close(self) -> None:
         """Close the underlying SQLite connection."""

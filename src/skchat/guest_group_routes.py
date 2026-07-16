@@ -945,10 +945,17 @@ async def mode_c_counter_sign(request: Request):
     )
     sig_operator = A.sign_join_record(chat_crypto, record)
 
-    # Burn the accept nonce so the same assertion cannot be replayed (H5).
+    # Burn the accept nonce (H5) AND persist the counter-signed admission to the
+    # durable TOFU pin store, so the trust survives restart and is revocable/
+    # listable (and later supports Mode B operator trust inheritance).
+    import json as _json
+
     nonces = A.ConsumedNonces()
     try:
         nonces.mark_consumed(jti)
+        nonces.record_admission(
+            pend["peer_fp"], "", _json.dumps(record), sig_operator, pend["sig_peer"]
+        )
     finally:
         nonces.close()
 
@@ -966,6 +973,58 @@ async def mode_c_counter_sign(request: Request):
     return JSONResponse(
         {"ok": True, "jti": jti, "join_record": record, "sig_operator": sig_operator}
     )
+
+
+@router.get("/mode-c/admitted")
+async def mode_c_admitted(request: Request):
+    """Operator: list durably-admitted peers (the TOFU pin store), newest first.
+
+    Excludes any whose peer or operator pin has been revoked. Operator-gated.
+    """
+    _require_flag_operator()
+    from skchat.guest import _require_operator
+
+    _require_operator(request)
+    from skchat import guest_accept as A
+
+    nonces = A.ConsumedNonces()
+    try:
+        items = [
+            {"peer_fp": a["peer_fp"], "operator_id": a["operator_id"],
+             "admitted_at": a["admitted_at"]}
+            for a in nonces.list_admissions()
+        ]
+    finally:
+        nonces.close()
+    return JSONResponse({"admitted": items})
+
+
+@router.post("/mode-c/revoke")
+async def mode_c_revoke(request: Request):
+    """Operator: revoke an admitted peer's trust pin (H5). Body: ``{peer_fp}``.
+
+    Revokes the identity pin, so its join record no longer counts and the peer
+    drops out of the admitted list. Operator-gated.
+    """
+    _require_flag_operator()
+    from skchat.guest import _require_operator
+
+    _require_operator(request)
+    from skchat import guest_accept as A
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    peer_fp = (body.get("peer_fp") or "").strip()
+    if not peer_fp:
+        raise HTTPException(400, "peer_fp is required")
+    nonces = A.ConsumedNonces()
+    try:
+        nonces.revoke_pin(peer_fp)
+    finally:
+        nonces.close()
+    return JSONResponse({"ok": True, "revoked": peer_fp})
 
 
 def register_guest_group_routes(app) -> None:
