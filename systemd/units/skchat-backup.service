@@ -17,7 +17,7 @@ Documentation=https://github.com/smilinTux/skchat
 [Service]
 Type=oneshot
 ExecStart=/usr/bin/bash %h/clawd/skcapstone-repos/skchat/scripts/backup-skchat.sh
-Environment=PATH=%h/.skenv/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PATH=%h/.skenv/bin:%h/.local/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HOME=%h
 TimeoutStartSec=300
 StandardOutput=journal
