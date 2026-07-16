@@ -37,7 +37,7 @@ across hosts and users.
 | `skchat-webui@lumina.service` | web UI + voice chat | yes | template `skchat-webui@.service` |
 | `skchat-piper-tts.service` | :18797 Piper CPU TTS | yes | canonical TTS |
 | `skchat-nostr-relay.service` | :7447 discovery relay | yes | in-memory; binds host tailnet IP |
-| `skchat-app-web.service` | :8088 Flutter web static | yes | hardened stdlib server (`scripts/serve-app-web.sh`), loopback bind, no autoindex |
+| `skchat-app-web.service` | :8088 Flutter web static | yes | hardened stdlib server (`scripts/serve-app-web.sh`), binds 0.0.0.0 (direct tailnet/LAN, not funnel-fronted), no autoindex |
 | `livekit-server.service` | tailnet :7880/:7881 SFU | yes | config holds 3 API keys |
 | `skchat-coturn.service` | TURN relay (Docker) | yes | systemd-owned container (see below) |
 | `jarvis-heartbeat.service` | inbox poll -> tmux Claude | yes | MemoryMax 512M |

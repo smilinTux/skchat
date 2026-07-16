@@ -6,8 +6,10 @@
 # (`python3 -m http.server`). The new server sets correct Content-Type for
 # .wasm/.js/.json/.css, sends no-cache on index.html and a long immutable
 # cache on content-hashed filenames, and disables directory listing
-# (autoindex) entirely. Binds loopback only (127.0.0.1); the tailnet/funnel
-# ingress fronts this port (see Task 4, systemd/tailscale-ingress.sh).
+# (autoindex) entirely. Binds 0.0.0.0:8088 (SKCHAT_APP_WEB_BIND below) so the
+# Flutter client is reached directly on the tailnet/LAN (it is NOT funnel-
+# fronted; :8088 is not in the tailscale ingress map). Loopback bind plus a
+# funnel mapping is a security follow-up.
 #
 # Requires the Flutter web build to exist at SKCHAT_APP_WEB_ROOT below. Build
 # it on a machine with headroom (NOT .158): see docs/deploy-plan.

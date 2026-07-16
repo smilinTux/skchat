@@ -364,7 +364,8 @@ Voice / web / call stack:
   (`scripts/serve-app-web.sh` -> `scripts/serve_app_web.py`, a hardened stdlib
   `ThreadingHTTPServer`: correct MIME for .wasm/.js/.json/.css, no-cache on
   index.html, long immutable cache on content-hashed filenames, no autoindex,
-  loopback bind; tailnet/funnel ingress fronts it).
+  binds 0.0.0.0 so the client is reached directly on the tailnet/LAN, NOT
+  funnel-fronted; :8088 is not in the tailscale ingress map).
 - `skchat-lumina-call.service`: Lumina LiveKit conversational agent
   (`lumina-creative/scripts/lumina-call.py`); drop-ins tune TTS/VAD/webui, MuseTalk off.
 - `livekit-server.service`: LiveKit SFU on the tailnet (`:7880`/`:7881`); config

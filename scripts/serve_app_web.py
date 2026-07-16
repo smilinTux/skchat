@@ -123,7 +123,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--bind",
         default="127.0.0.1",
-        help="Bind address (loopback by default; ingress fronts this port, see Task 4)",
+        help="Bind address (default 127.0.0.1; the shipped unit sets 0.0.0.0 because :8088 is reached directly on the tailnet/LAN, not funnel-fronted)",
     )
     args = parser.parse_args(argv)
 

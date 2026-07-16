@@ -13,8 +13,9 @@
 #   SKCHAT_APP_WEB_ROOT    directory to serve (default: sibling skchat-app
 #                           repo's build/web)
 #   SKCHAT_APP_WEB_PORT    port to bind (default: 8088, matches the live unit)
-#   SKCHAT_APP_WEB_BIND    bind address (default: 127.0.0.1, loopback; the
-#                           tailnet/funnel ingress fronts this port, see Task 4)
+#   SKCHAT_APP_WEB_BIND    bind address (default 127.0.0.1; the shipped unit
+#                           sets 0.0.0.0 - :8088 is reached directly on the
+#                           tailnet/LAN, not funnel-fronted)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

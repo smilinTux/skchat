@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# health-probe.sh — SKChat external health probe (pass/fail + alerting)
+# health-probe.sh - SKChat external health probe (pass/fail + alerting)
 #
 # Extends check-health.sh (which checks local process/config state) into a
 # probe of every LIVE network-facing skchat surface, from outside the process
@@ -64,7 +64,7 @@ FAILED_SURFACES=()
 green() { printf "  ${GREEN}GREEN${RESET}  %-28s %s\n" "$1" "$2"; PASS=$((PASS + 1)); }
 red()   { printf "  ${RED}RED${RESET}    %-28s %s\n" "$1" "$2"; FAIL=$((FAIL + 1)); FAILED_SURFACES+=("$1"); }
 
-# check_http_json_ok NAME URL — GET URL, GREEN if it returns HTTP 2xx and the
+# check_http_json_ok NAME URL - GET URL, GREEN if it returns HTTP 2xx and the
 # body contains "status":"ok" (tolerant of whitespace after the colon).
 check_http_json_ok() {
     local name="$1" url="$2" body
@@ -76,7 +76,7 @@ check_http_json_ok() {
     fi
 }
 
-# check_http_reachable NAME URL — GET URL, GREEN on any HTTP response at all
+# check_http_reachable NAME URL - GET URL, GREEN on any HTTP response at all
 # (connection + a status line; the surface has no dedicated health route so a
 # live server answering with ANY code, even a 404/405, proves it's up).
 check_http_reachable() {
@@ -89,7 +89,7 @@ check_http_reachable() {
     fi
 }
 
-# check_tcp NAME HOST PORT — plain TCP connect, GREEN if the port accepts a
+# check_tcp NAME HOST PORT - plain TCP connect, GREEN if the port accepts a
 # connection (used for surfaces with no HTTP semantics worth trusting: TURN,
 # the raw SFU/relay ports which are tailnet-bound and websocket-only). Runs
 # the connect attempt in a throwaway subshell so the fd closes automatically
