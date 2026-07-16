@@ -4326,17 +4326,47 @@ async def _handle_skchat_inbox(args: dict) -> list[TextContent]:
             logger.warning("mcp_server.py: %s", e)
             pass  # keep as-is; tag filter will simply miss
 
-    # --- Primary: read from ChatHistory ----------------------------------
-    tags = ["skchat:message", f"skchat:recipient:{identity}"]
-    if resolved_sender:
-        tags.append(f"skchat:sender:{resolved_sender}")
+    # --- Read cutover: the unfiltered inbox serves from the authoritative log
+    # so it matches the app and reflects mutations. Received semantics preserved
+    # (a source change, not a behavior change): DMs addressed to me + group
+    # messages from OTHERS, never my own sends. Sender-filtered queries stay on
+    # the tag-indexed store B (which indexes by sender). Flag off => legacy B. ---
+    events = None if resolved_sender else history.read_recent_events(limit * 8)
+    messages: list[dict]
+    if events is not None:
+        # Normalize the self comparison across aliases (capauth:lumina@... vs
+        # lumina@...) so a self-sent DM never leaks and a DM to any of my aliases
+        # is still shown.
+        def _norm(uri: object) -> str:
+            return str(uri or "").replace("capauth:", "").strip().lower()
 
-    try:
-        memories = history._store.list_memories(tags=tags, limit=limit * 4)
-        messages: list[dict] = [history._memory_to_chat_dict(m) for m in memories]
-    except Exception as exc:
-        logger.warning("skchat_inbox: history read failed: %s", exc)
-        messages = []
+        self_id = _norm(identity)
+        messages = [
+            {
+                "id": e.id,
+                "sender": e.sender,
+                "recipient": e.recipient,
+                "content": e.content,
+                "timestamp": (
+                    e.timestamp.isoformat() if getattr(e, "timestamp", None) else ""
+                ),
+                "thread_id": e.thread_id,
+                "message_type": "text",
+            }
+            for e in events
+            if _norm(e.recipient) == self_id
+            or (str(e.recipient).startswith("group:") and _norm(e.sender) != self_id)
+        ][: limit * 4]
+    else:
+        tags = ["skchat:message", f"skchat:recipient:{identity}"]
+        if resolved_sender:
+            tags.append(f"skchat:sender:{resolved_sender}")
+        try:
+            memories = history._store.list_memories(tags=tags, limit=limit * 4)
+            messages = [history._memory_to_chat_dict(m) for m in memories]
+        except Exception as exc:
+            logger.warning("skchat_inbox: history read failed: %s", exc)
+            messages = []
 
     # --- Fallback: poll AgentMessenger.receive() if history is empty -----
     if not messages:
