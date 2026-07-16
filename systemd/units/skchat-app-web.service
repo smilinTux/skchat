@@ -20,7 +20,7 @@ After=network.target
 [Service]
 Environment=SKCHAT_APP_WEB_ROOT=%h/clawd/skcapstone-repos/skchat-app/build/web
 Environment=SKCHAT_APP_WEB_PORT=8088
-Environment=SKCHAT_APP_WEB_BIND=127.0.0.1
+Environment=SKCHAT_APP_WEB_BIND=0.0.0.0
 ExecStart=/usr/bin/bash %h/clawd/skcapstone-repos/skchat/scripts/serve-app-web.sh
 Restart=on-failure
 RestartSec=5
