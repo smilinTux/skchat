@@ -131,6 +131,39 @@ def sign_accept_assertion(crypto, assertion: dict) -> str:
     return _pqi.sign_canonical(crypto, assertion)
 
 
+# ── Mode B: operator-signed attestation binding an agent to its operator ──────
+def operator_attestation_payload(agent_pubkey: str) -> dict:
+    """Canonical statement a peer-OPERATOR signs to vouch that *agent_pubkey* is
+    one of its agents. Binds the agent's bundle fingerprint (not the raw key, so
+    it is compact and stable)."""
+    return {
+        "statement": "sk-operator-attests-agent",
+        "agent_fp": pubkey_fingerprint(agent_pubkey),
+    }
+
+
+def sign_operator_attestation(operator_crypto, agent_pubkey: str) -> str:
+    """Peer-operator side: sign an attestation vouching for *agent_pubkey*."""
+    return _pqi.sign_canonical(operator_crypto, operator_attestation_payload(agent_pubkey))
+
+
+def verify_operator_attestation(
+    operator_pubkey: str, agent_pubkey: str, attestation_sig: str
+) -> bool:
+    """Verify a peer-operator's attestation over an agent key, under the operator's
+    RECORDED pubkey (never a self-declared one). Fail-closed: any missing field or
+    a bad signature returns False, so a spoofed operator claim cannot inherit
+    trust. This is the gate that makes Mode B inheritance secure."""
+    if not (operator_pubkey and agent_pubkey and attestation_sig):
+        return False
+    try:
+        return _pqi.verify_canonical(
+            operator_attestation_payload(agent_pubkey), attestation_sig, operator_pubkey
+        )
+    except Exception:  # noqa: BLE001 — verify failure = no inheritance
+        return False
+
+
 def verify_accept_assertion(
     assertion: dict,
     sig: str,
@@ -347,6 +380,18 @@ class ConsumedNonces:
                 "  admitted_at REAL NOT NULL"
                 ")"
             )
+            # Mode B: OPT-IN trusted peer-operators. Recording an operator here is
+            # an EXPLICIT decision (never implied by a single admission, H4); its
+            # PGP identity pubkey is stored so an agent under it can be verified
+            # (an operator-signed attestation over the agent key), and trust is
+            # revoked via revoke_pin(operator_id). Absence => no inheritance.
+            self._conn.execute(
+                "CREATE TABLE IF NOT EXISTS trusted_operators ("
+                "  operator_id TEXT PRIMARY KEY,"
+                "  operator_pubkey TEXT NOT NULL,"
+                "  trusted_at REAL NOT NULL"
+                ")"
+            )
             self._conn.commit()
 
     def mark_consumed(self, jti: str) -> bool:
@@ -455,6 +500,52 @@ class ConsumedNonces:
         if row is None:
             return False
         return not (row[0] and self.is_pin_revoked(row[0]))
+
+    # ── Mode B: opt-in trusted peer-operators (trust inheritance substrate) ─────
+    def trust_operator(self, operator_id: str, operator_pubkey: str) -> None:
+        """EXPLICITLY trust a peer-operator (records its PGP identity pubkey).
+
+        An agent that later presents an attestation signed by this operator over
+        its own key is admitted without a fresh SAS (inheritance). Re-trusting
+        refreshes the key. This is never called implicitly (H4)."""
+        if not operator_id or not operator_pubkey:
+            return
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO trusted_operators "
+                "(operator_id, operator_pubkey, trusted_at) VALUES (?, ?, ?)",
+                (operator_id, operator_pubkey, time.time()),
+            )
+            self._conn.commit()
+
+    def operator_pubkey(self, operator_id: str) -> Optional[str]:
+        """The trusted operator's recorded PGP pubkey, or None if not trusted /
+        revoked. Verification MUST use this key, never a self-declared one."""
+        if not operator_id or self.is_pin_revoked(operator_id):
+            return None
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT operator_pubkey FROM trusted_operators WHERE operator_id=? LIMIT 1",
+                (operator_id,),
+            ).fetchone()
+        return row[0] if row else None
+
+    def is_operator_trusted(self, operator_id: str) -> bool:
+        """True iff *operator_id* is opt-in-trusted AND not revoked."""
+        return self.operator_pubkey(operator_id) is not None
+
+    def list_trusted_operators(self) -> list[dict]:
+        """All opt-in-trusted, non-revoked peer-operators."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT operator_id, trusted_at FROM trusted_operators ORDER BY trusted_at DESC"
+            ).fetchall()
+            revoked = {r[0] for r in self._conn.execute("SELECT pin FROM revoked_pins")}
+        return [
+            {"operator_id": r[0], "trusted_at": r[1]}
+            for r in rows
+            if r[0] not in revoked
+        ]
 
     def close(self) -> None:
         """Close the underlying SQLite connection."""

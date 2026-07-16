@@ -826,6 +826,48 @@ def _mode_c_sas(bc: str, operator_fp: str, peer_fp: str) -> str:
     return f"{int.from_bytes(h[:4], 'big') % 1_000_000:06d}"
 
 
+def _mode_c_admit(pend: dict, operator_id: str = ""):
+    """Build + operator-sign the mutual join_record, burn the invite nonce (H5),
+    persist the admission (with the peer's operator_id for Mode B), and admit the
+    peer to the group. Shared by manual counter-sign and trust-inherited auto-
+    admit. Returns ``(join_record, sig_operator)``.
+    """
+    import json as _json
+
+    from skchat import crypto as _crypto
+    from skchat import daemon_proxy_groups as G
+    from skchat import guest_accept as A
+
+    chat_crypto = _crypto.load_agent_crypto()
+    if chat_crypto is None or not getattr(chat_crypto, "can_sign", False):
+        raise HTTPException(500, "operator signing key unavailable")
+    op_fp = A.pubkey_fingerprint(str(chat_crypto._private_key.pubkey))
+    ts = int(time.time())
+    record = A.build_join_record(
+        pend["jti"], op_fp, pend["peer_fp"], op_fp, pend["peer_fp"],
+        pend["assertion"], pend["sig_peer"], ts,
+    )
+    sig_operator = A.sign_join_record(chat_crypto, record)
+
+    nonces = A.ConsumedNonces()
+    try:
+        nonces.mark_consumed(pend["jti"])
+        nonces.record_admission(
+            pend["peer_fp"], operator_id, _json.dumps(record), sig_operator, pend["sig_peer"]
+        )
+    finally:
+        nonces.close()
+
+    try:
+        group = G.load_group(pend["group_id"])
+        if group is not None:
+            GG.add_untrusted_guest_member(group, f"peer:{pend['peer_fp'][:16]}", "Peer")
+            G.save_group(group)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("mode-c admit failed: %s", exc)
+    return record, sig_operator
+
+
 @router.post("/mode-c/accept")
 async def mode_c_accept(request: Request):
     """A peer submits a signed accept assertion for an invite (Mode C, Phase 3).
@@ -864,20 +906,43 @@ async def mode_c_accept(request: Request):
 
     jti = info["jti"]
     peer_fp = A.pubkey_fingerprint(accepter_pubkey)
-    sas = _mode_c_sas(bc, info.get("ik_fp") or "", peer_fp)
+    pend = {
+        "jti": jti,
+        "group_id": info["group_id"],
+        "assertion": assertion,
+        "sig_peer": sig_peer,
+        "accepter_pubkey": accepter_pubkey,
+        "peer_fp": peer_fp,
+        "bc": bc,
+        "sas": _mode_c_sas(bc, info.get("ik_fp") or "", peer_fp),
+        "ts": int(time.time()),
+    }
+    # Mode B: if the peer PROVES (an operator-signed attestation over its own key)
+    # that it belongs to an OPT-IN-trusted peer-operator, inherit trust and
+    # auto-admit (skip the SAS). Fail-closed: a self-declared operator_id with no
+    # valid attestation, or an untrusted/revoked operator, falls through to manual
+    # review, so a spoofed claim can NEVER inherit trust.
+    operator_id = (body.get("operator_id") or "").strip()
+    operator_attestation = (body.get("operator_attestation") or "").strip()
+    if operator_id and operator_attestation:
+        nonces = A.ConsumedNonces()
+        try:
+            op_pub = nonces.operator_pubkey(operator_id)  # trusted AND not revoked
+        finally:
+            nonces.close()
+        if op_pub and A.verify_operator_attestation(
+            op_pub, accepter_pubkey, operator_attestation
+        ):
+            pend["operator_id"] = operator_id
+            record, sig_operator = _mode_c_admit(pend, operator_id)
+            return JSONResponse({
+                "ok": True, "jti": jti, "inherited": True,
+                "join_record": record, "sig_operator": sig_operator,
+            })
+
     with _mode_c_lock:
-        _mode_c_pending[jti] = {
-            "jti": jti,
-            "group_id": info["group_id"],
-            "assertion": assertion,
-            "sig_peer": sig_peer,
-            "accepter_pubkey": accepter_pubkey,
-            "peer_fp": peer_fp,
-            "bc": bc,
-            "sas": sas,
-            "ts": int(time.time()),
-        }
-    return JSONResponse({"ok": True, "jti": jti, "sas": sas, "peer_fp": peer_fp})
+        _mode_c_pending[jti] = pend
+    return JSONResponse({"ok": True, "jti": jti, "sas": pend["sas"], "peer_fp": peer_fp})
 
 
 @router.get("/mode-c/pending")
@@ -926,48 +991,7 @@ async def mode_c_counter_sign(request: Request):
     if not pend:
         raise HTTPException(404, "no pending accept for that jti")
 
-    chat_crypto = _crypto.load_agent_crypto()
-    if chat_crypto is None or not getattr(chat_crypto, "can_sign", False):
-        raise HTTPException(500, "operator signing key unavailable")
-    operator_pub = str(chat_crypto._private_key.pubkey)
-    op_fp = A.pubkey_fingerprint(operator_pub)
-    ts = int(time.time())
-
-    record = A.build_join_record(
-        jti,
-        op_fp,
-        pend["peer_fp"],
-        op_fp,
-        pend["peer_fp"],
-        pend["assertion"],
-        pend["sig_peer"],
-        ts,
-    )
-    sig_operator = A.sign_join_record(chat_crypto, record)
-
-    # Burn the accept nonce (H5) AND persist the counter-signed admission to the
-    # durable TOFU pin store, so the trust survives restart and is revocable/
-    # listable (and later supports Mode B operator trust inheritance).
-    import json as _json
-
-    nonces = A.ConsumedNonces()
-    try:
-        nonces.mark_consumed(jti)
-        nonces.record_admission(
-            pend["peer_fp"], "", _json.dumps(record), sig_operator, pend["sig_peer"]
-        )
-    finally:
-        nonces.close()
-
-    # Admit the peer to the group (best-effort; the join record is the proof).
-    try:
-        group = G.load_group(pend["group_id"])
-        if group is not None:
-            GG.add_untrusted_guest_member(group, f"peer:{pend['peer_fp'][:16]}", "Peer")
-            G.save_group(group)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("mode-c admit failed: %s", exc)
-
+    record, sig_operator = _mode_c_admit(pend, pend.get("operator_id", ""))
     with _mode_c_lock:
         _mode_c_pending.pop(jti, None)
     return JSONResponse(
@@ -1025,6 +1049,76 @@ async def mode_c_revoke(request: Request):
     finally:
         nonces.close()
     return JSONResponse({"ok": True, "revoked": peer_fp})
+
+
+@router.post("/mode-c/trust-operator")
+async def mode_c_trust_operator(request: Request):
+    """Operator: EXPLICITLY opt-in to trust a peer-operator (Mode B trust
+    inheritance). Body: ``{operator_id, operator_pubkey}``. An agent that later
+    presents an attestation signed by this operator over its own key is admitted
+    without a fresh SAS. Never implicit (H4). Operator-gated."""
+    _require_flag_operator()
+    from skchat.guest import _require_operator
+
+    _require_operator(request)
+    from skchat import guest_accept as A
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    operator_id = (body.get("operator_id") or "").strip()
+    operator_pubkey = (body.get("operator_pubkey") or "").strip()
+    if not (operator_id and operator_pubkey):
+        raise HTTPException(400, "operator_id and operator_pubkey are required")
+    nonces = A.ConsumedNonces()
+    try:
+        nonces.trust_operator(operator_id, operator_pubkey)
+    finally:
+        nonces.close()
+    return JSONResponse({"ok": True, "trusted": operator_id})
+
+
+@router.get("/mode-c/trusted-operators")
+async def mode_c_trusted_operators(request: Request):
+    """Operator: list opt-in-trusted peer-operators (non-revoked)."""
+    _require_flag_operator()
+    from skchat.guest import _require_operator
+
+    _require_operator(request)
+    from skchat import guest_accept as A
+
+    nonces = A.ConsumedNonces()
+    try:
+        items = nonces.list_trusted_operators()
+    finally:
+        nonces.close()
+    return JSONResponse({"trusted_operators": items})
+
+
+@router.post("/mode-c/untrust-operator")
+async def mode_c_untrust_operator(request: Request):
+    """Operator: revoke trust in a peer-operator (H5). Body: ``{operator_id}``.
+    Its agents stop inheriting and it drops from the trusted list."""
+    _require_flag_operator()
+    from skchat.guest import _require_operator
+
+    _require_operator(request)
+    from skchat import guest_accept as A
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    operator_id = (body.get("operator_id") or "").strip()
+    if not operator_id:
+        raise HTTPException(400, "operator_id is required")
+    nonces = A.ConsumedNonces()
+    try:
+        nonces.revoke_pin(operator_id)
+    finally:
+        nonces.close()
+    return JSONResponse({"ok": True, "untrusted": operator_id})
 
 
 def register_guest_group_routes(app) -> None:
