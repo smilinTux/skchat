@@ -553,11 +553,14 @@ async def guest_send(request: Request):
     hist.save(group_msg)
     # Authoritative log: the ONE canonical group event, not the member copies.
     hist.record_event(group_msg)
-    # Per-member copies (so each member's 1:1-style inbox sees it).
-    from skchat.group import MemberRole  # noqa: F401
-
+    # Per-member history copies (legacy 1:1-style inbox). Redundant once the
+    # authoritative log is on (record_event above logs the canonical event once);
+    # skip them then to stop the 1->N write amplification. Flag off => legacy.
+    _log_on = os.getenv("SKCHAT_MESSAGE_LOG", "").strip().lower() not in (
+        "", "0", "false", "no", "off",
+    )
     for member in group.members:
-        if member.identity_uri == session.guest_id:
+        if member.identity_uri == session.guest_id or _log_on:
             continue
         try:
             hist.save(

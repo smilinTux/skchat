@@ -970,11 +970,18 @@ def fan_out_send(group, hist, sender_uri: str, content: str,
                       "key_version": group.key_version, "sealed": bool(seal),
                   "encryption_state": enc_state},
         )
-        try:
-            hist.save(member_msg)
-        except Exception as exc:
-            logger.warning("fan_out_send: member copy for %s failed: %s",
-                           member.identity_uri, exc)
+        # The per-member HISTORY copy is redundant once the authoritative log is
+        # on (the canonical group event is recorded ONCE via record_event; the
+        # member copies only amplify writes 1->N and diverge ids). Skip the copy
+        # when the log is on; ALWAYS keep the delivery below. Flag off => legacy.
+        if os.getenv("SKCHAT_MESSAGE_LOG", "").strip().lower() in (
+            "", "0", "false", "no", "off",
+        ):
+            try:
+                hist.save(member_msg)
+            except Exception as exc:
+                logger.warning("fan_out_send: member copy for %s failed: %s",
+                               member.identity_uri, exc)
         # Prefer a direct same-box inbox write (reliable); fall back to the
         # network transport only when the recipient isn't a local agent.
         if not local_deliver_to_agent(member_msg) and _transport is not None:
