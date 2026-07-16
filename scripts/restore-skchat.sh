@@ -45,6 +45,8 @@ fi
 mkdir -p "$TARGET"
 
 TMP_TAR=""
+GPG_ERR=""
+# Idempotent: safe to call repeatedly (blanks the vars after removal).
 cleanup() {
     if [[ -n "$TMP_TAR" && -f "$TMP_TAR" ]]; then
         if command -v shred >/dev/null 2>&1; then
@@ -53,8 +55,16 @@ cleanup() {
             rm -f "$TMP_TAR"
         fi
     fi
+    [[ -n "$GPG_ERR" && -f "$GPG_ERR" ]] && rm -f "$GPG_ERR"
+    TMP_TAR=""
+    GPG_ERR=""
 }
-trap cleanup EXIT INT TERM
+# Terminating signals must exit, not fall through to statements that
+# reference the just-deleted temp file. EXIT re-runs cleanup (no-op after a
+# signal handler already ran it, since cleanup is idempotent).
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
+trap cleanup EXIT
 
 log()  { echo "[restore-skchat] $*"; }
 fail() { echo "[restore-skchat] FATAL: $*" >&2; exit 1; }
@@ -64,10 +74,12 @@ chmod 600 "$TMP_TAR"
 
 decrypted=0
 if command -v gpg >/dev/null 2>&1; then
-    if gpg --batch --yes -o "$TMP_TAR" -d "$ARCHIVE" 2>/tmp/skchat-restore-gpg-err.$$; then
+    GPG_ERR="$(mktemp "${TMPDIR:-/tmp}/skchat-restore-gpg-err-XXXXXX")"
+    if gpg --batch --yes -o "$TMP_TAR" -d "$ARCHIVE" 2>"$GPG_ERR"; then
         decrypted=1
     fi
-    rm -f /tmp/skchat-restore-gpg-err.$$
+    rm -f "$GPG_ERR"
+    GPG_ERR=""
 fi
 
 if [[ $decrypted -eq 0 ]] && command -v sq >/dev/null 2>&1; then
@@ -80,6 +92,26 @@ fi
 [[ -s "$TMP_TAR" ]] || fail "decryption produced an empty file"
 
 log "decrypted archive, extracting to ${TARGET}"
+
+# The archive is encrypted but NOT signed, so treat its member paths as
+# untrusted. List members first and refuse to extract if any is an absolute
+# path or contains a `..` traversal component, so a crafted archive cannot
+# write outside $TARGET. GNU tar additionally strips leading '/' by default
+# (we do NOT pass -P/--absolute-names), which is a second layer of defense.
+while IFS= read -r member; do
+    [[ -z "$member" ]] && continue
+    case "$member" in
+        /*)
+            fail "unsafe absolute path in archive member: ${member}" ;;
+        *..*)
+            # Reject `..` as a full path component (../, /../, trailing /..).
+            case "/$member/" in
+                */../*) fail "unsafe '..' traversal in archive member: ${member}" ;;
+            esac
+            ;;
+    esac
+done < <(tar -tzf "$TMP_TAR")
+
 tar -xzf "$TMP_TAR" -C "$TARGET"
 
 log "restore complete: ${TARGET}"

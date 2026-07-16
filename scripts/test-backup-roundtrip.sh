@@ -28,10 +28,17 @@ BACKUP_DIR="${WORK_DIR}/backups"
 RESTORE_DIR="${WORK_DIR}/restore"
 TEST_RECIPIENT="skchat-roundtrip-test@skchat.invalid"
 
+# Idempotent: safe to call repeatedly.
 cleanup() {
-    rm -rf "$WORK_DIR"
+    [[ -n "${WORK_DIR:-}" && -d "$WORK_DIR" ]] && rm -rf "$WORK_DIR"
+    WORK_DIR=""
 }
-trap cleanup EXIT INT TERM
+# Terminating signals must exit rather than fall through to statements that
+# reference the just-deleted scratch dir. EXIT re-runs cleanup (no-op after a
+# signal handler already ran it, since cleanup is idempotent).
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
+trap cleanup EXIT
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
@@ -44,7 +51,8 @@ chmod 700 "$GNUPGHOME_SCRATCH"
 export GNUPGHOME="$GNUPGHOME_SCRATCH"
 
 echo "[test] generating ephemeral throwaway GPG key for ${TEST_RECIPIENT}..."
-gpg --batch --gen-key <<EOF 2>/tmp/skchat-roundtrip-genkey.$$
+GENKEY_ERR="$(mktemp "${WORK_DIR}/genkey-err-XXXXXX")"
+gpg --batch --gen-key <<EOF 2>"$GENKEY_ERR"
 %no-protection
 Key-Type: EDDSA
 Key-Curve: ed25519
@@ -55,7 +63,7 @@ Name-Email: ${TEST_RECIPIENT}
 Expire-Date: 1d
 %commit
 EOF
-rm -f /tmp/skchat-roundtrip-genkey.$$
+rm -f "$GENKEY_ERR"
 
 gpg --batch --list-keys "$TEST_RECIPIENT" >/dev/null 2>&1 \
     || fail "ephemeral test key not found in scratch keyring after gen-key"

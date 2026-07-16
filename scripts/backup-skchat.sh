@@ -70,6 +70,7 @@ SRC_SKCOMMS_OUTBOX="${HOME_DIR}/.skcomms/outbox"
 SRC_CONFIG_ENV_DIR="${HOME_DIR}/.config/skchat"
 
 TMP_TAR=""
+# Idempotent: safe to call repeatedly (blanks TMP_TAR after removal).
 cleanup() {
     if [[ -n "$TMP_TAR" && -f "$TMP_TAR" ]]; then
         if command -v shred >/dev/null 2>&1; then
@@ -78,8 +79,14 @@ cleanup() {
             rm -f "$TMP_TAR"
         fi
     fi
+    TMP_TAR=""
 }
-trap cleanup EXIT INT TERM
+# Terminating signals must exit, not fall through to statements that
+# reference the just-deleted temp file. EXIT runs cleanup once more (no-op
+# after a signal handler already ran it, since cleanup is idempotent).
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
+trap cleanup EXIT
 
 log()  { echo "[backup-skchat] $*"; }
 fail() { echo "[backup-skchat] FATAL: $*" >&2; exit 1; }
@@ -135,6 +142,7 @@ log "encrypt tool: ${ENCRYPT_TOOL} (recipient: ${RECIPIENT})"
 # --- 3. Build the plaintext tar in a temp file ------------------------------
 
 mkdir -p "$BACKUP_DIR"
+chmod 700 "$BACKUP_DIR"
 TMP_TAR="$(mktemp "${BACKUP_DIR}/.skchat-backup-plain-XXXXXX.tar.gz")"
 chmod 600 "$TMP_TAR"
 
