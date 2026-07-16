@@ -322,39 +322,45 @@ class ChatHistory:
             before = before.replace(tzinfo=timezone.utc)
 
         removed = 0
-        for path in self._history_dir.glob("*.jsonl"):
-            try:
-                lines = path.read_text(encoding="utf-8").splitlines()
-            except OSError:
-                continue
-
-            kept: list[str] = []
-            for raw in lines:
-                stripped = raw.strip()
-                if not stripped:
-                    continue
+        # Serialize against concurrent save()/update_message and swap atomically,
+        # so a prune sweep never races an append or leaves a torn file (the gap
+        # the write lock did not previously cover).
+        with self._write_lock():
+            for path in self._history_dir.glob("*.jsonl"):
                 try:
-                    msg = ChatMessage.model_validate_json(stripped)
-                except Exception as e:
-                    logger.warning("history.py prune: dropping malformed line: %s", e)
-                    removed += 1
+                    lines = path.read_text(encoding="utf-8").splitlines()
+                except OSError:
                     continue
-                ts = msg.timestamp
-                if ts.tzinfo is None:
-                    ts = ts.replace(tzinfo=timezone.utc)
-                if ts < before:
-                    removed += 1
+
+                kept: list[str] = []
+                for raw in lines:
+                    stripped = raw.strip()
+                    if not stripped:
+                        continue
+                    try:
+                        msg = ChatMessage.model_validate_json(stripped)
+                    except Exception as e:
+                        logger.warning("history.py prune: dropping malformed line: %s", e)
+                        removed += 1
+                        continue
+                    ts = msg.timestamp
+                    if ts.tzinfo is None:
+                        ts = ts.replace(tzinfo=timezone.utc)
+                    if ts < before:
+                        removed += 1
+                    else:
+                        kept.append(stripped)
+
+                if kept:
+                    tmp = path.with_suffix(".jsonl.tmp")
+                    tmp.write_text("\n".join(kept) + "\n", encoding="utf-8")
+                    os.replace(tmp, path)
                 else:
-                    kept.append(stripped)
-
-            if kept:
-                path.write_text("\n".join(kept) + "\n", encoding="utf-8")
-            else:
-                # Nothing left in this file — remove it.
-                try:
-                    path.unlink()
-                except OSError as e:
-                    logger.warning("history.py prune: could not remove %s: %s", path, e)
+                    # Nothing left in this file — remove it.
+                    try:
+                        path.unlink()
+                    except OSError as e:
+                        logger.warning("history.py prune: could not remove %s: %s", path, e)
 
         return removed
 
