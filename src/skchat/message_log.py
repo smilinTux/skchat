@@ -323,6 +323,31 @@ class MessageLog:
                 conn.execute("ROLLBACK")
                 raise
 
+    def recent(self, limit: int = 50) -> list[dict]:
+        """Most recent messages across ALL conversations, newest first (an inbox
+        view). Reads the one authoritative log so the inbox matches every other
+        surface and reflects mutations."""
+        rows = self._conn.execute(
+            "SELECT * FROM message_log ORDER BY ts DESC, seq DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [self._row_to_dict(r) for r in rows]
+
+    def conversations(self, limit: int = 200) -> list[dict]:
+        """The latest event per conversation, newest first (a thread list)."""
+        rows = self._conn.execute(
+            """
+            SELECT * FROM message_log m1
+            WHERE seq = (
+                SELECT MAX(seq) FROM message_log m2
+                WHERE m2.conversation_id = m1.conversation_id
+            )
+            ORDER BY ts DESC LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [self._row_to_dict(r) for r in rows]
+
     def latest_seq(self, conversation_id: str) -> int:
         """Return the highest assigned ``seq`` for *conversation_id* (0 if none)."""
         row = self._conn.execute(

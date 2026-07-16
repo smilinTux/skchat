@@ -163,3 +163,20 @@ def test_record_stores_full_payload_roundtrip(tmp_path):
     assert back.id == msg.id and back.reply_to_id == "r1"
     assert back.metadata.get("k") == "v"
     assert back.metadata.get("attachments") == [{"name": "f.png"}]
+
+
+def test_recent_and_conversations(tmp_path):
+    log = MessageLog(str(tmp_path / "m.db"))
+    from datetime import datetime, timezone
+    for i, (conv, sender, content) in enumerate([
+        ("dm:a|b", "a", "one"), ("dm:a|b", "b", "two"), ("group:g", "a", "g1"),
+    ]):
+        log.append(conv, sender=sender, recipient="x", content=content,
+                   client_dedup_key=f"k{i}")
+    # recent: newest-first across all conversations
+    rec = log.recent(limit=10)
+    assert len(rec) == 3 and rec[0]["content"] == "g1"
+    # conversations: latest event per conversation
+    convs = log.conversations()
+    by_conv = {c["conversation_id"]: c["content"] for c in convs}
+    assert by_conv == {"dm:a|b": "two", "group:g": "g1"}

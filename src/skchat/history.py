@@ -115,6 +115,26 @@ class ChatHistory:
             logger.debug("read_events failed", exc_info=True)
             return None
 
+    def read_recent_events(self, limit: int = 50):
+        """Recent messages across ALL conversations from the authoritative log
+        (an inbox view) when ``SKCHAT_MESSAGE_LOG`` is on, else ``None`` so the
+        caller falls back to the legacy store. Best-effort; ``None`` on error."""
+        if os.getenv("SKCHAT_MESSAGE_LOG", "").strip().lower() in (
+            "", "0", "false", "no", "off",
+        ):
+            return None
+        try:
+            if self._log is None:
+                from skchat.message_log import MessageLog
+
+                self._log = MessageLog()
+            from skchat.message_log import log_row_to_message
+
+            return [log_row_to_message(r) for r in self._log.recent(limit)]
+        except Exception:  # noqa: BLE001
+            logger.debug("read_recent_events failed", exc_info=True)
+            return None
+
     def _update_log_payload(self, message) -> None:
         """Reflect a mutation (reaction / edit / receipt) into the authoritative
         log's payload for this message's id, so log-sourced readers see it (and a
