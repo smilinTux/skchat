@@ -29,3 +29,45 @@ def test_host_controls_present():
 
 def test_metadata_changed_drives_render():
     assert "ParticipantMetadataChanged" in _html()
+
+
+def test_join_card_present_with_editable_prefilled_name():
+    html = _html()
+    assert 'id="joinCard"' in html
+    assert 'id="nameInput"' in html
+    assert 'id="join"' in html
+    # editable, not readonly/disabled
+    assert "readonly" not in html.split('id="nameInput"')[1].split(">")[0]
+    assert "disabled" not in html.split('id="nameInput"')[1].split(">")[0]
+
+
+def test_guest_alias_generated_and_remembered_in_localstorage():
+    html = _html()
+    assert "Guest-" in html
+    assert "localStorage" in html
+    assert "skchat.space.guestName" in html
+    # no empty names: falls back to a fresh alias when the field is cleared
+    assert "randomGuestAlias" in html
+
+
+def test_storage_access_is_guarded_never_bare():
+    # localStorage can throw (Safari private mode, storage-disabled policy,
+    # sandboxed iframe); every touch must go through the guarded helpers so a
+    # throw can't kill the script block at load or break the Join click.
+    html = _html()
+    assert "safeStorageGet" in html
+    assert "safeStorageSet" in html
+    # the only direct localStorage calls live inside the try blocks of the helpers
+    assert html.count("localStorage.getItem") == 1
+    assert html.count("localStorage.setItem") == 1
+    assert "try { return localStorage.getItem" in html
+    assert "try { localStorage.setItem" in html
+
+
+def test_share_button_present_with_navigator_share_and_clipboard_fallback():
+    html = _html()
+    assert 'id="share"' in html
+    assert "navigator.share" in html
+    assert "navigator.clipboard" in html
+    assert "Link copied" in html
+    assert '"/space/" + spaceId' in html
