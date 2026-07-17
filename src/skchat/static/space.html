@@ -42,6 +42,11 @@
     line-height:1; cursor:pointer; padding:6px 8px; border-radius:8px; }
   .icon-btn:hover { background:var(--surface); }
   .share-notice { color:var(--accent); font-size:12px; }
+  .invited-banner { display:flex; align-items:center; gap:10px; margin-top:16px;
+    padding:10px 14px; background:rgba(45,212,191,.12); border:1px solid var(--accent);
+    border-radius:11px; font-size:13px; }
+  .invited-banner span { flex:1; }
+  .invited-banner button:not(.icon-btn) { padding:6px 12px; font-size:13px; }
   .join-card { max-width:360px; margin:60px auto 0; background:var(--surface);
     border:1px solid var(--line); border-radius:var(--radius); padding:24px;
     text-align:center; }
@@ -69,6 +74,11 @@
     <button id="join">Join</button>
   </section>
   <div class="speakers" id="speakers"></div>
+  <div class="invited-banner" id="invitedBanner" style="display:none">
+    <span id="invitedText">The host invited you to speak.</span>
+    <button id="invitedJoin">Join stage</button>
+    <button class="icon-btn" id="invitedDismiss" aria-label="Dismiss invite" title="Dismiss">✕</button>
+  </div>
   <div class="bar">
     <button class="ghost" id="mic" style="display:none" disabled>🎙️ Unmute</button>
     <button class="ghost" id="hand" disabled>✋ Raise hand</button>
@@ -85,6 +95,8 @@
   const step = (t) => document.getElementById("step").textContent = t;
   let room;
   let micEnabled = false;  // X Spaces model: promotion/join never auto-publishes; user must click Unmute
+  let invitedDismissed = false;  // dismiss [x] on the invited banner, latched until re-invited
+  let wasInvited = false;  // tracks the false -> true edge that re-arms a dismissed banner
 
   // Guest alias: pre-filled, editable, remembered across visits. No account needed.
   const NAME_STORE_KEY = "skchat.space.guestName";
@@ -136,6 +148,32 @@
     btn.disabled = false;
     btn.textContent = micEnabled ? "🔇 Mute" : "🎙️ Unmute";
     btn.classList.toggle("live", micEnabled);
+  }
+
+  // Mirror the server's consent AND-gate (spec §5: on_stage = hand_raised AND
+  // invited_to_stage) on the guest's own metadata. Covers the gap the operator
+  // hit: invited_to_stage flips true but the guest never raised their hand, so
+  // ParticipantPermissionsChanged (which only fires once BOTH flags are true)
+  // never lands and the invite is invisible. Called after connect and on every
+  // ParticipantMetadataChanged (both already routed through renderSpeakers).
+  function updateInvitedBanner() {
+    const banner = document.getElementById("invitedBanner");
+    const handBtn = document.getElementById("hand");
+    const p = room?.localParticipant;
+    let meta = {};
+    if (p) {
+      try { meta = JSON.parse(p.metadata || "{}"); } catch (_) { /* ignore */ }
+    }
+    const invited = !!meta.invited_to_stage;
+    const handRaised = !!meta.hand_raised;
+    const canPublish = !!p?.permissions?.canPublish;
+    if (invited && !wasInvited) invitedDismissed = false;  // re-arm on false -> true
+    wasInvited = invited;
+    const showBanner = invited && !handRaised && !canPublish && !invitedDismissed;
+    banner.style.display = showBanner ? "flex" : "none";
+    // Same control, same action: while invited and not yet publishing, the
+    // standalone raise-hand button in the control bar relabels too.
+    handBtn.textContent = (invited && !canPublish) ? "Join stage" : "✋ Raise hand";
   }
 
   // Turn a getUserMedia / publish failure into a plain, non-blocking status line.
@@ -206,6 +244,7 @@
       wrap.append(ring, name); el.append(wrap);
     }
     document.getElementById("count").textContent = `${listeners} listening`;
+    updateInvitedBanner();
   }
 
   document.getElementById("join").onclick = async () => {
@@ -310,14 +349,29 @@
     }
   };
 
-  document.getElementById("hand").onclick = async () => {
+  // Shared by the control-bar raise-hand button and the invited banner's Join
+  // stage button: same endpoint, same fetch, same accept action either way.
+  // response.on_stage is authoritative: true means the AND-gate closed and the
+  // ParticipantPermissionsChanged handler above will land the "You're on
+  // stage" step text; false means still gated on the other half (rare race:
+  // the host revoked the invite between render and click), so surface the
+  // same pending copy the plain raise-hand flow already used.
+  async function raiseHand() {
     const identity = room?.localParticipant?.identity;
     if (!identity) return;
-    await fetch(`/spaces/${spaceId}/raise-hand`, {
+    const res = await fetch(`/spaces/${spaceId}/raise-hand`, {
       method:"POST", headers:{"content-type":"application/json"},
       body: JSON.stringify({ identity })
     });
-    step("✋ hand raised, waiting for the host.");
+    let onStage = false;
+    try { onStage = !!(await res.json()).on_stage; } catch (_) { /* ignore */ }
+    if (!onStage) step("✋ hand raised, waiting for the host.");
+  }
+  document.getElementById("hand").onclick = raiseHand;
+  document.getElementById("invitedJoin").onclick = raiseHand;
+  document.getElementById("invitedDismiss").onclick = () => {
+    invitedDismissed = true;
+    updateInvitedBanner();
   };
 
   const hostFqid = (qs.get("host") || "").replace(/[^a-z0-9@._-]/gi, "") || null;  // host controls
