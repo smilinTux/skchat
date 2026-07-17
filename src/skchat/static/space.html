@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>SK Space</title>
-<script src="https://cdn.jsdelivr.net/npm/livekit-client/dist/livekit-client.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/livekit-client@2.6.0/dist/livekit-client.umd.min.js"></script>
 <style>
   :root {
     --bg:#0b0d10; --surface:#13161b; --line:#222831; --text:#e6e9ee;
@@ -34,6 +34,8 @@
     padding:10px 16px; font-weight:600; cursor:pointer; }
   button.ghost { background:transparent; color:var(--text);
     border:1px solid var(--line); }
+  button.ghost.live { background:var(--accent); color:#04201c; border-color:transparent; }
+  button:disabled { opacity:.5; cursor:default; }
   .count { color:var(--muted); font-size:13px; margin-left:auto; }
   .step { color:var(--muted); font-size:13px; min-height:18px; margin-top:12px; }
 </style>
@@ -47,9 +49,10 @@
   <div class="speakers" id="speakers"></div>
   <div class="bar">
     <button id="join">Join</button>
+    <button class="ghost" id="mic" style="display:none" disabled>🎙️ Unmute</button>
     <button class="ghost" id="hand" disabled>✋ Raise hand</button>
     <button class="ghost" id="end" style="display:none">End</button>
-    <span class="count" id="count">—</span>
+    <span class="count" id="count">not connected</span>
   </div>
   <div class="step" id="step"></div>
 </main>
@@ -60,6 +63,40 @@
   const spaceId = (location.pathname.split("/").pop() || "").replace(/[^a-z0-9-]/gi, "");
   const step = (t) => document.getElementById("step").textContent = t;
   let room;
+  let micEnabled = false;  // X Spaces model: promotion/join never auto-publishes; user must click Unmute
+
+  // Show/hide + label the mic button from the current permission + mic state.
+  // Called on connect, on every ParticipantPermissionsChanged event (the promotion race
+  // this button exists to close) and after every toggle attempt, success or failure.
+  function updateMicButton() {
+    const btn = document.getElementById("mic");
+    const canPublish = !!room?.localParticipant?.permissions?.canPublish;
+    if (!canPublish) {
+      btn.style.display = "none";
+      btn.classList.remove("live");
+      micEnabled = false;
+      return;
+    }
+    btn.style.display = "inline-block";
+    btn.disabled = false;
+    btn.textContent = micEnabled ? "🔇 Mute" : "🎙️ Unmute";
+    btn.classList.toggle("live", micEnabled);
+  }
+
+  // Turn a getUserMedia / publish failure into a plain, non-blocking status line.
+  function micErrorMessage(e) {
+    const name = e && e.name || "";
+    if (name === "NotAllowedError" || name === "PermissionDeniedError" || name === "SecurityError") {
+      return "Mic permission denied. Allow microphone access for this site, then try again.";
+    }
+    if (name === "NotFoundError" || name === "DevicesNotFoundError" || name === "OverconstrainedError") {
+      return "No microphone found. Connect one and try again.";
+    }
+    if (name === "NotReadableError" || name === "TrackStartError") {
+      return "Microphone is busy or unavailable, maybe another app has it open. Try again.";
+    }
+    return "Mic error: " + ((e && e.message) || String(e));
+  }
 
   async function getToken() {
     // ?host=<fqid> → join as host (publish + controls); else join as a listener.
@@ -129,24 +166,51 @@
         if (track.kind === "audio") track.attach();  // play speaker audio
       });
       room.on(LK.RoomEvent.ParticipantPermissionsChanged, async (prev, p) => {
-        if (p === room.localParticipant && p.permissions?.canPublish) {
-          await room.localParticipant.setMicrophoneEnabled(true);  // promoted → talk
-          step("You're on stage — mic live.");
+        if (p === room.localParticipant) {
+          const canPublish = !!p.permissions?.canPublish;
+          if (!canPublish && micEnabled) {
+            // demoted mid-session while live: force-mute, never leave a hot mic behind
+            try { await room.localParticipant.setMicrophoneEnabled(false); } catch (_) { /* ignore */ }
+            micEnabled = false;
+            step("Removed from stage, mic muted.");
+          } else if (canPublish) {
+            // promoted: X Spaces model, land muted, the human clicks Unmute
+            step("You're on stage, click Unmute to go live.");
+          }
+          updateMicButton();
         }
         renderSpeakers();
       });
       await room.connect(url, token);
-      // host (or anyone who joins already able to publish) goes live immediately
-      if (room.localParticipant.permissions?.canPublish) {
-        await room.localParticipant.setMicrophoneEnabled(true);
-        step("On stage — your mic is live.");
-      }
       renderSpeakers();
+      updateMicButton();
       document.getElementById("join").style.display = "none";
       document.getElementById("hand").disabled = false;
       if (hostFqid) document.getElementById("end").style.display = "inline";
-      if (!room.localParticipant.permissions?.canPublish) step("Connected — listening.");
+      if (room.localParticipant.permissions?.canPublish) {
+        step("Connected, click Unmute to go live.");
+      } else {
+        step("Connected, listening.");
+      }
     } catch (e) { step("Error: " + e.message); }
+  };
+
+  document.getElementById("mic").onclick = async () => {
+    const btn = document.getElementById("mic");
+    if (!room?.localParticipant?.permissions?.canPublish) return;
+    btn.disabled = true;
+    const next = !micEnabled;
+    try {
+      await room.localParticipant.setMicrophoneEnabled(next);
+      micEnabled = next;
+      step(micEnabled ? "Mic live." : "Mic muted.");
+    } catch (e) {
+      // getUserMedia/publish failed: leave micEnabled unchanged so the button stays
+      // in a retryable state, surface a plain non-blocking message instead of failing silently
+      step(micErrorMessage(e));
+    } finally {
+      updateMicButton();
+    }
   };
 
   async function pollRec() {
@@ -166,7 +230,7 @@
       method:"POST", headers:{"content-type":"application/json"},
       body: JSON.stringify({ identity })
     });
-    step("✋ hand raised — waiting for the host.");
+    step("✋ hand raised, waiting for the host.");
   };
 
   const hostFqid = (qs.get("host") || "").replace(/[^a-z0-9@._-]/gi, "") || null;  // host controls
