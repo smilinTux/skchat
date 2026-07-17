@@ -487,16 +487,23 @@ def register_spaces_routes(
             hosts = []
         return JSONResponse({"hosts": hosts})
 
+    # These HTML shells carry the live client JS. They must never be cached by a
+    # browser, or a phone that loaded a Space before a deploy keeps running stale
+    # JS (this is what hid the promotion unmute button from a guest after the
+    # invited-banner fix shipped). Assets are versioned via query strings; the
+    # shell itself is always revalidated.
+    _no_cache_headers = {"Cache-Control": "no-cache, no-store, must-revalidate"}
+
     @app.get("/spaces/live", response_class=HTMLResponse)
     async def spaces_directory() -> HTMLResponse:
         static = Path(__file__).resolve().parent.parent / "static" / "spaces.html"
         if static.exists():
-            return FileResponse(static, media_type="text/html")
+            return FileResponse(static, media_type="text/html", headers=_no_cache_headers)
         return HTMLResponse("spaces.html missing", status_code=500)
 
     @app.get("/space/{space_id}", response_class=HTMLResponse)
     async def space_page(space_id: str) -> HTMLResponse:  # noqa: ARG001
         static = Path(__file__).resolve().parent.parent / "static" / "space.html"
         if static.exists():
-            return FileResponse(static, media_type="text/html")
+            return FileResponse(static, media_type="text/html", headers=_no_cache_headers)
         return HTMLResponse("space.html missing", status_code=500)
