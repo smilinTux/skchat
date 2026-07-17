@@ -35,6 +35,12 @@
   button.ghost { background:transparent; color:var(--text);
     border:1px solid var(--line); }
   button.ghost.live { background:var(--accent); color:#04201c; border-color:transparent; }
+  /* Promoted, primary control-bar action (state 4 Join stage, state 5 mic):
+     filled and unmistakable, never the muted ghost look. */
+  button.primary { background:var(--accent); color:#04201c; border:0; }
+  /* Live-mic look reuses the same red used by the #rec indicator below, so
+     "you are broadcasting" reads as a single consistent color language. */
+  button.primary.live { background:#ef4444; color:#fff; }
   button:disabled { opacity:.5; cursor:default; }
   .count { color:var(--muted); font-size:13px; margin-left:auto; }
   .step { color:var(--muted); font-size:13px; min-height:18px; margin-top:12px; }
@@ -82,6 +88,7 @@
   <div class="bar">
     <button class="ghost" id="mic" style="display:none" disabled>🎙️ Unmute</button>
     <button class="ghost" id="hand" disabled>✋ Raise hand</button>
+    <button class="ghost" id="leaveStage" style="display:none">Leave stage</button>
     <button class="ghost" id="end" style="display:none">End</button>
     <span class="count" id="count">not connected</span>
   </div>
@@ -132,48 +139,103 @@
   nameInput.value = initialGuestName();
   document.getElementById("joinCardTitle").textContent = document.getElementById("title").textContent;
 
-  // Show/hide + label the mic button from the current permission + mic state.
-  // Called on connect, on every ParticipantPermissionsChanged event (the promotion race
-  // this button exists to close) and after every toggle attempt, success or failure.
-  function updateMicButton() {
-    const btn = document.getElementById("mic");
-    const canPublish = !!room?.localParticipant?.permissions?.canPublish;
-    if (!canPublish) {
-      btn.style.display = "none";
-      btn.classList.remove("live");
-      micEnabled = false;
-      return;
-    }
-    btn.style.display = "inline-block";
-    btn.disabled = false;
-    btn.textContent = micEnabled ? "🔇 Mute" : "🎙️ Unmute";
-    btn.classList.toggle("live", micEnabled);
+  // Parse the local participant's stage metadata, guarded (bad/missing JSON
+  // never throws). Shared by updateStageControls() and the hand-button click
+  // dispatcher so both read the exact same shape.
+  function currentMeta() {
+    const p = room?.localParticipant;
+    if (!p) return {};
+    try { return JSON.parse(p.metadata || "{}"); } catch (_) { return {}; }
   }
 
-  // Mirror the server's consent AND-gate (spec §5: on_stage = hand_raised AND
-  // invited_to_stage) on the guest's own metadata. Covers the gap the operator
-  // hit: invited_to_stage flips true but the guest never raised their hand, so
-  // ParticipantPermissionsChanged (which only fires once BOTH flags are true)
-  // never lands and the invite is invisible. Called after connect and on every
-  // ParticipantMetadataChanged (both already routed through renderSpeakers).
-  function updateInvitedBanner() {
-    const banner = document.getElementById("invitedBanner");
+  // Single owner of the control-bar state machine (X Spaces model). #hand,
+  // #mic, #leaveStage and the invited banner are ALL driven from here, on
+  // every state change (connect, ParticipantPermissionsChanged,
+  // ParticipantMetadataChanged, after each toggle) so they can never drift
+  // out of sync. This replaces the old updateMicButton() + updateInvitedBanner()
+  // split, which was the root cause of the operator bug: #hand was only ever
+  // relabeled, never hidden, so a freshly promoted speaker saw a lit "Raise
+  // hand" button sitting right next to a separate "Unmute" button.
+  //
+  // State 1 listener never sees a mic button; a speaker (state 5) never sees
+  // a raise-hand button; only one of {hand, mic} is ever visible at a time.
+  function updateStageControls() {
     const handBtn = document.getElementById("hand");
+    const micBtn = document.getElementById("mic");
+    const leaveBtn = document.getElementById("leaveStage");
+    const banner = document.getElementById("invitedBanner");
     const p = room?.localParticipant;
-    let meta = {};
-    if (p) {
-      try { meta = JSON.parse(p.metadata || "{}"); } catch (_) { /* ignore */ }
+
+    if (!room || !p) {
+      // State 1: not connected, controls disabled, nothing lit.
+      handBtn.style.display = "inline-block";
+      handBtn.disabled = true;
+      handBtn.classList.remove("live", "primary");
+      handBtn.classList.add("ghost");
+      handBtn.textContent = "✋ Raise hand";
+      micBtn.style.display = "none";
+      micBtn.classList.remove("live");
+      leaveBtn.style.display = "none";
+      banner.style.display = "none";
+      return;
     }
+
+    const meta = currentMeta();
     const invited = !!meta.invited_to_stage;
     const handRaised = !!meta.hand_raised;
-    const canPublish = !!p?.permissions?.canPublish;
+    const canPublish = !!p.permissions?.canPublish;
     if (invited && !wasInvited) invitedDismissed = false;  // re-arm on false -> true
     wasInvited = invited;
-    const showBanner = invited && !handRaised && !canPublish && !invitedDismissed;
-    banner.style.display = showBanner ? "flex" : "none";
-    // Same control, same action: while invited and not yet publishing, the
-    // standalone raise-hand button in the control bar relabels too.
-    handBtn.textContent = (invited && !canPublish) ? "Join stage" : "✋ Raise hand";
+
+    if (canPublish) {
+      // State 5: on stage / speaker. Hide #hand entirely, #mic becomes the
+      // one prominent control. A clean self-service step-down path already
+      // exists server-side (remove-from-stage permits "host OR self", see
+      // routes.py), so a real "Leave stage" button is safe to wire, not
+      // invented.
+      handBtn.style.display = "none";
+      banner.style.display = "none";
+      micBtn.style.display = "inline-block";
+      micBtn.disabled = false;
+      micBtn.classList.remove("ghost");
+      micBtn.classList.add("primary");
+      micBtn.classList.toggle("live", micEnabled);
+      micBtn.textContent = micEnabled ? "🔇 Mute" : "🎙️ Unmute";
+      leaveBtn.style.display = "inline-block";
+      leaveBtn.disabled = false;
+      return;
+    }
+
+    // Not (or no longer) a speaker: state 6 (just demoted) collapses back
+    // into state 2/3 below, exactly like the brief asks.
+    micBtn.style.display = "none";
+    micBtn.classList.remove("live");
+    micEnabled = false;
+    leaveBtn.style.display = "none";
+    handBtn.style.display = "inline-block";
+    handBtn.disabled = false;
+
+    if (invited && !handRaised) {
+      // State 4: invited, not yet on stage. #hand becomes the primary
+      // "Join stage" call to action; the invited banner still shows too.
+      handBtn.classList.remove("ghost", "live");
+      handBtn.classList.add("primary");
+      handBtn.textContent = "Join stage";
+      banner.style.display = invitedDismissed ? "none" : "flex";
+    } else if (handRaised) {
+      // State 3: hand raised, waiting on the host. Clearly RAISED look
+      // (reuses the same "live" = lit/active class the mic uses).
+      handBtn.classList.remove("primary");
+      handBtn.classList.add("ghost", "live");
+      handBtn.textContent = "✋ Hand raised (tap to lower)";
+      banner.style.display = "none";
+    } else {
+      // State 2: plain listener.
+      handBtn.classList.remove("primary", "live");
+      handBtn.classList.add("ghost");
+      handBtn.textContent = "✋ Raise hand";
+      banner.style.display = "none";
+    }
   }
 
   // Turn a getUserMedia / publish failure into a plain, non-blocking status line.
@@ -244,7 +306,7 @@
       wrap.append(ring, name); el.append(wrap);
     }
     document.getElementById("count").textContent = `${listeners} listening`;
-    updateInvitedBanner();
+    updateStageControls();
   }
 
   document.getElementById("join").onclick = async () => {
@@ -277,15 +339,14 @@
             // promoted: X Spaces model, land muted, the human clicks Unmute
             step("You're on stage, click Unmute to go live.");
           }
-          updateMicButton();
+          updateStageControls();
         }
         renderSpeakers();
       });
       await room.connect(url, token);
       renderSpeakers();
-      updateMicButton();
+      updateStageControls();
       document.getElementById("joinCard").style.display = "none";
-      document.getElementById("hand").disabled = false;
       if (hostFqid) document.getElementById("end").style.display = "inline";
       if (room.localParticipant.permissions?.canPublish) {
         step("Connected, click Unmute to go live.");
@@ -309,7 +370,7 @@
       // in a retryable state, surface a plain non-blocking message instead of failing silently
       step(micErrorMessage(e));
     } finally {
-      updateMicButton();
+      updateStageControls();
     }
   };
 
@@ -366,12 +427,46 @@
     let onStage = false;
     try { onStage = !!(await res.json()).on_stage; } catch (_) { /* ignore */ }
     if (!onStage) step("✋ hand raised, waiting for the host.");
+    updateStageControls();
   }
-  document.getElementById("hand").onclick = raiseHand;
+
+  // Self-service step-down: reuses the EXISTING remove-from-stage route,
+  // which already permits "host OR self" (routes.py checks
+  // requester == host_fqid OR requester == identity), so no server route was
+  // added for this. Safe to call whether the caller is already publishing
+  // (state 5 Leave stage) or only has a raised hand (state 3 tap-to-lower):
+  // it idempotently resets hand_raised and invited_to_stage to false either way.
+  async function leaveStage() {
+    const identity = room?.localParticipant?.identity;
+    if (!identity) return;
+    await fetch(`/spaces/${spaceId}/remove-from-stage`, {
+      method:"POST", headers:{"content-type":"application/json"},
+      body: JSON.stringify({ requester: identity, identity })
+    });
+    updateStageControls();
+  }
+
+  // #hand does double (triple) duty across states 2/3/4: raise, lower-while-
+  // waiting, or join. Dispatch on the local participant's own metadata so the
+  // click always does the right thing for the state currently on screen.
+  async function handleHandClick() {
+    const meta = currentMeta();
+    if (meta.hand_raised && !meta.invited_to_stage) {
+      await leaveStage();
+      step("Hand lowered.");
+    } else {
+      await raiseHand();
+    }
+  }
+  document.getElementById("hand").onclick = handleHandClick;
   document.getElementById("invitedJoin").onclick = raiseHand;
+  document.getElementById("leaveStage").onclick = async () => {
+    await leaveStage();
+    step("Left the stage.");
+  };
   document.getElementById("invitedDismiss").onclick = () => {
     invitedDismissed = true;
-    updateInvitedBanner();
+    updateStageControls();
   };
 
   const hostFqid = (qs.get("host") || "").replace(/[^a-z0-9@._-]/gi, "") || null;  // host controls
