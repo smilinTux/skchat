@@ -189,11 +189,34 @@ class ChatDaemon:
         self._send_lock = threading.Lock()
 
         if log_file:
-            logging.basicConfig(
-                filename=str(log_file),
-                level=logging.INFO,
-                format="%(asctime)s [%(levelname)s] %(message)s",
-            )
+            # F1 (card 36450c88): bounded rotating log file instead of an
+            # unbounded basicConfig target; level comes from SKCHAT_LOG_LEVEL
+            # (default INFO). Idempotent across repeated Daemon() constructions.
+            from logging.handlers import RotatingFileHandler
+
+            level_name = os.environ.get("SKCHAT_LOG_LEVEL", "INFO").upper()
+            level = getattr(logging, level_name, logging.INFO)
+            root = logging.getLogger()
+            # Mirror basicConfig semantics: only attach a file handler when
+            # the root logger is unconfigured (basicConfig was a no-op
+            # otherwise, and tests rely on that). delay=True defers the
+            # open until the first record is emitted.
+            if not root.handlers:
+                root.setLevel(level)
+                handler = RotatingFileHandler(
+                    str(Path(log_file).expanduser()),
+                    maxBytes=50 * 1024 * 1024,
+                    backupCount=5,
+                    delay=True,
+                )
+                handler.setFormatter(
+                    logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+                )
+                root.addHandler(handler)
+            # httpx/httpcore log every health probe at INFO; keep them at
+            # WARNING so 5s polls do not flood the daemon log.
+            logging.getLogger("httpx").setLevel(logging.WARNING)
+            logging.getLogger("httpcore").setLevel(logging.WARNING)
 
         signal.signal(signal.SIGINT, self._handle_signal)
         signal.signal(signal.SIGTERM, self._handle_signal)
@@ -1264,8 +1287,16 @@ class ChatDaemon:
             webrtc_active=self._webrtc_active,
             signaling_connected=webrtc_signaling_ok,
         )
-        if self._webrtc_active and signaling_health != "ok":
-            logger.warning("WebRTC signaling %s — relayed calls may fall back", signaling_health)
+        if self._webrtc_active:
+            prev = getattr(self, "_last_signaling_health", None)
+            if signaling_health != "ok":
+                # Log on state change only, not on every stats pass
+                # (was a WARNING every ~30s while :9390 stayed down).
+                if signaling_health != prev:
+                    logger.warning("WebRTC signaling %s — relayed calls may fall back", signaling_health)
+            elif prev is not None and prev != "ok":
+                logger.info("WebRTC signaling recovered (ok)")
+            self._last_signaling_health = signaling_health
 
         stats = {
             "uptime_seconds": uptime_seconds,

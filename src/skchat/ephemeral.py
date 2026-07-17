@@ -125,7 +125,12 @@ class MessageReaper:
             else:
                 result.active_ephemeral += 1
 
-        logger.info(result.summary())
+        if result.expired or result.errors:
+            logger.info(result.summary())
+        else:
+            # Routine no-op sweep: DEBUG so the daemon log is not flooded
+            # every ~30s (card 36450c88 F1).
+            logger.debug(result.summary())
         return result
 
     def is_expired(self, message: ChatMessage) -> bool:
