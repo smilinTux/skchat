@@ -71,3 +71,39 @@ def test_share_button_present_with_navigator_share_and_clipboard_fallback():
     assert "navigator.clipboard" in html
     assert "Link copied" in html
     assert '"/space/" + spaceId' in html
+
+
+def test_invited_banner_present_with_join_and_dismiss_hidden_by_default():
+    html = _html()
+    assert 'id="invitedBanner" style="display:none"' in html
+    assert 'id="invitedJoin"' in html
+    assert 'id="invitedDismiss"' in html
+    assert "The host invited you to speak." in html
+
+
+def test_invited_to_stage_parsed_and_gates_the_banner():
+    html = _html()
+    # invited_to_stage is now parsed on the client, not just hand_raised (was
+    # the bug: the host-side ring only ever read hand_raised, so an invite with
+    # no prior raised hand was invisible to the guest)
+    assert "meta.invited_to_stage" in html
+    assert "meta.hand_raised" in html
+    assert "canPublish" in html
+    # dismiss is latched until the flag transitions false -> true again
+    assert "invitedDismissed" in html
+    assert "wasInvited" in html
+
+
+def test_invited_join_reuses_the_existing_raise_hand_fetch():
+    html = _html()
+    # exactly one raise-hand endpoint call in the whole page: both the
+    # control-bar hand button and the banner's Join stage button share it
+    assert html.count("/raise-hand") == 1
+    assert 'document.getElementById("hand").onclick = raiseHand' in html
+    assert 'document.getElementById("invitedJoin").onclick = raiseHand' in html
+
+
+def test_hand_button_relabels_to_join_stage_while_invited():
+    html = _html()
+    assert "Join stage" in html
+    assert '"Join stage" : "✋ Raise hand"' in html
