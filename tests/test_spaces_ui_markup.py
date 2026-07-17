@@ -50,6 +50,20 @@ def test_guest_alias_generated_and_remembered_in_localstorage():
     assert "randomGuestAlias" in html
 
 
+def test_storage_access_is_guarded_never_bare():
+    # localStorage can throw (Safari private mode, storage-disabled policy,
+    # sandboxed iframe); every touch must go through the guarded helpers so a
+    # throw can't kill the script block at load or break the Join click.
+    html = _html()
+    assert "safeStorageGet" in html
+    assert "safeStorageSet" in html
+    # the only direct localStorage calls live inside the try blocks of the helpers
+    assert html.count("localStorage.getItem") == 1
+    assert html.count("localStorage.setItem") == 1
+    assert "try { return localStorage.getItem" in html
+    assert "try { localStorage.setItem" in html
+
+
 def test_share_button_present_with_navigator_share_and_clipboard_fallback():
     html = _html()
     assert 'id="share"' in html

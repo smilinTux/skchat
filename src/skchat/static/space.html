@@ -88,6 +88,18 @@
 
   // Guest alias: pre-filled, editable, remembered across visits. No account needed.
   const NAME_STORE_KEY = "skchat.space.guestName";
+  // localStorage access can THROW (Safari private mode, storage-disabled policy,
+  // sandboxed iframe). Never let that kill the script block at load or break the
+  // Join click: guard every touch and fall back to an in-memory store for the session.
+  const memStore = {};
+  function safeStorageGet(key) {
+    try { return localStorage.getItem(key); }
+    catch (e) { return Object.prototype.hasOwnProperty.call(memStore, key) ? memStore[key] : null; }
+  }
+  function safeStorageSet(key, value) {
+    try { localStorage.setItem(key, value); }
+    catch (e) { memStore[key] = value; }
+  }
   const GUEST_ANIMALS = ["Falcon","Otter","Panda","Lynx","Heron","Wolf","Finch","Marlin",
     "Badger","Sparrow","Orca","Ibex","Kite","Puffin","Raven","Stag","Tapir","Wren",
     "Yak","Zebra","Bison","Coyote","Dingo","Egret"];
@@ -101,7 +113,7 @@
     // links keep working; otherwise prefer the remembered name, then a fresh alias.
     const fromQuery = (qs.get("name") || "").trim();
     if (fromQuery) return fromQuery;
-    const saved = (localStorage.getItem(NAME_STORE_KEY) || "").trim();
+    const saved = (safeStorageGet(NAME_STORE_KEY) || "").trim();
     return saved || randomGuestAlias();
   }
   const nameInput = document.getElementById("nameInput");
@@ -201,7 +213,7 @@
     // localStorage read would. Persist whatever we actually join with.
     const chosenName = (nameInput.value || "").trim() || randomGuestAlias();
     nameInput.value = chosenName;
-    localStorage.setItem(NAME_STORE_KEY, chosenName);
+    safeStorageSet(NAME_STORE_KEY, chosenName);
     try {
       step("Connecting…");
       const { url, token, title } = await getToken();
