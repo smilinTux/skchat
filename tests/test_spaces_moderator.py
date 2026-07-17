@@ -2,6 +2,7 @@ import asyncio
 import json
 
 import pytest
+from livekit import api
 
 from skchat.spaces.moderation import Moderator
 
@@ -9,6 +10,13 @@ from skchat.spaces.moderation import Moderator
 class FakeParticipant:
     def __init__(self, metadata=""):
         self.metadata = metadata
+
+
+class FakeTrack:
+    def __init__(self, sid, source, muted=False):
+        self.sid = sid
+        self.source = source
+        self.muted = muted
 
 
 class FakeRoomService:
@@ -71,6 +79,51 @@ async def test_remove_from_stage_demotes(mod, fake):
     cp = await mod.stage_action("space-x", "alice", "remove")
     assert cp is False
     assert fake.updates[-1].permission.can_publish is False
+
+
+@pytest.mark.asyncio
+async def test_remove_force_mutes_published_mic_track(mod, fake):
+    # backstop: a frozen/malicious client may ignore the can_publish revoke and
+    # keep publishing, so "remove" must also force-mute any already-published
+    # microphone track. A camera track must be left alone.
+    fake.set_participant("alice", json.dumps({"hand_raised": True, "invited_to_stage": True}))
+    fake._participants["alice"].tracks = [
+        FakeTrack("TR_mic", api.TrackSource.MICROPHONE),
+        FakeTrack("TR_cam", api.TrackSource.CAMERA),
+    ]
+    await mod.stage_action("space-x", "alice", "remove")
+    assert fake.muted == [("alice", "TR_mic", True)]
+
+
+@pytest.mark.asyncio
+async def test_remove_with_no_published_track_is_noop(mod, fake):
+    # best effort: no published track means no mute call and no error.
+    fake.set_participant("alice", json.dumps({"hand_raised": True, "invited_to_stage": True}))
+    await mod.stage_action("space-x", "alice", "remove")
+    assert fake.muted == []
+
+
+@pytest.mark.asyncio
+async def test_non_remove_actions_do_not_force_mute(mod, fake):
+    fake.set_participant("alice", json.dumps({"hand_raised": True, "invited_to_stage": False}))
+    fake._participants["alice"].tracks = [FakeTrack("TR_mic", api.TrackSource.MICROPHONE)]
+    await mod.stage_action("space-x", "alice", "invite")
+    assert fake.muted == []
+
+
+@pytest.mark.asyncio
+async def test_remove_mute_failure_does_not_fail_remove(mod, fake):
+    # a mute failure (e.g. the track vanished mid-race) must not break the
+    # demote itself; the permission revoke already happened and is authoritative.
+    fake.set_participant("alice", json.dumps({"hand_raised": True, "invited_to_stage": True}))
+    fake._participants["alice"].tracks = [FakeTrack("TR_mic", api.TrackSource.MICROPHONE)]
+
+    async def boom(req):
+        raise RuntimeError("track already gone")
+
+    fake.mute_published_track = boom
+    cp = await mod.stage_action("space-x", "alice", "remove")
+    assert cp is False
 
 
 @pytest.mark.asyncio

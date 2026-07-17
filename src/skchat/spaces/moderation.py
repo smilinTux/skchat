@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from dataclasses import dataclass
+
+logger = logging.getLogger("skchat.spaces.moderation")
 
 _ACTIONS = {"raise_hand", "lower_hand", "invite", "uninvite", "remove", "noop"}
 
@@ -132,6 +135,12 @@ class Moderator:
                         ),
                     )
                 )
+                if action == "remove":
+                    # Backstop: a frozen or malicious client may ignore the
+                    # can_publish revoke above and keep publishing audio. Force-mute
+                    # any already-published microphone track(s) directly so the SFU
+                    # itself stops relaying it, regardless of client behavior.
+                    await self._mute_mic_tracks(svc, room, identity, current)
                 return can_publish
         finally:
             # evict the lock once nobody else is holding or waiting for it, so the
@@ -140,6 +149,35 @@ class Moderator:
             if self._lock_users[key] <= 0:
                 self._lock_users.pop(key, None)
                 self._locks.pop(key, None)
+
+    async def _mute_mic_tracks(self, svc, room: str, identity: str, participant) -> None:
+        """Best-effort demote backstop: force-mute any published microphone
+        track(s) on `participant`. No-op if there are none. A mute failure (e.g.
+        the track vanished mid-race) is logged and swallowed rather than raised,
+        since the can_publish revoke already applied and is authoritative; this
+        is defense-in-depth, not the primary control."""
+        from livekit import api
+
+        for track in getattr(participant, "tracks", None) or []:
+            if getattr(track, "source", None) != api.TrackSource.MICROPHONE:
+                continue
+            sid = getattr(track, "sid", "")
+            if not sid:
+                continue
+            try:
+                await svc.mute_published_track(
+                    api.MuteRoomTrackRequest(
+                        room=room, identity=identity, track_sid=sid, muted=True
+                    )
+                )
+            except Exception:
+                logger.warning(
+                    "demote backstop: failed to mute track %s for %s in %s",
+                    sid,
+                    identity,
+                    room,
+                    exc_info=True,
+                )
 
     async def kick(self, room: str, identity: str) -> None:
         from livekit import api
