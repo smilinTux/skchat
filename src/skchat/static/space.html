@@ -38,17 +38,38 @@
   button:disabled { opacity:.5; cursor:default; }
   .count { color:var(--muted); font-size:13px; margin-left:auto; }
   .step { color:var(--muted); font-size:13px; min-height:18px; margin-top:12px; }
+  .icon-btn { background:transparent; border:0; color:var(--text); font-size:16px;
+    line-height:1; cursor:pointer; padding:6px 8px; border-radius:8px; }
+  .icon-btn:hover { background:var(--surface); }
+  .share-notice { color:var(--accent); font-size:12px; }
+  .join-card { max-width:360px; margin:60px auto 0; background:var(--surface);
+    border:1px solid var(--line); border-radius:var(--radius); padding:24px;
+    text-align:center; }
+  .join-card h2 { margin:0 0 18px; font-size:16px; font-weight:600; }
+  .join-card label { display:block; text-align:left; font-size:12px;
+    color:var(--muted); margin-bottom:6px; }
+  .join-card input { width:100%; padding:10px 12px; border-radius:10px;
+    border:1px solid var(--line); background:#0f1216; color:var(--text);
+    font-size:14px; margin-bottom:16px; }
+  .join-card button { width:100%; }
 </style>
 </head>
 <body>
 <header>
   <h1 id="title">SK Space</h1>
+  <button class="icon-btn" id="share" title="Share space link" aria-label="Share space link">🔗</button>
+  <span class="share-notice" id="shareNotice" aria-live="polite"></span>
   <span id="rec">● REC</span>
 </header>
 <main>
+  <section class="join-card" id="joinCard">
+    <h2 id="joinCardTitle">SK Space</h2>
+    <label for="nameInput">Your name</label>
+    <input id="nameInput" type="text" maxlength="40" autocomplete="off" spellcheck="false" />
+    <button id="join">Join</button>
+  </section>
   <div class="speakers" id="speakers"></div>
   <div class="bar">
-    <button id="join">Join</button>
     <button class="ghost" id="mic" style="display:none" disabled>🎙️ Unmute</button>
     <button class="ghost" id="hand" disabled>✋ Raise hand</button>
     <button class="ghost" id="end" style="display:none">End</button>
@@ -64,6 +85,28 @@
   const step = (t) => document.getElementById("step").textContent = t;
   let room;
   let micEnabled = false;  // X Spaces model: promotion/join never auto-publishes; user must click Unmute
+
+  // Guest alias: pre-filled, editable, remembered across visits. No account needed.
+  const NAME_STORE_KEY = "skchat.space.guestName";
+  const GUEST_ANIMALS = ["Falcon","Otter","Panda","Lynx","Heron","Wolf","Finch","Marlin",
+    "Badger","Sparrow","Orca","Ibex","Kite","Puffin","Raven","Stag","Tapir","Wren",
+    "Yak","Zebra","Bison","Coyote","Dingo","Egret"];
+  function randomGuestAlias() {
+    const animal = GUEST_ANIMALS[Math.floor(Math.random() * GUEST_ANIMALS.length)];
+    const digits = String(10 + Math.floor(Math.random() * 90));  // 2 digits
+    return `Guest-${animal}${digits}`;
+  }
+  function initialGuestName() {
+    // ?name= (legacy query-param join path) still wins if present, so old invite
+    // links keep working; otherwise prefer the remembered name, then a fresh alias.
+    const fromQuery = (qs.get("name") || "").trim();
+    if (fromQuery) return fromQuery;
+    const saved = (localStorage.getItem(NAME_STORE_KEY) || "").trim();
+    return saved || randomGuestAlias();
+  }
+  const nameInput = document.getElementById("nameInput");
+  nameInput.value = initialGuestName();
+  document.getElementById("joinCardTitle").textContent = document.getElementById("title").textContent;
 
   // Show/hide + label the mic button from the current permission + mic state.
   // Called on connect, on every ParticipantPermissionsChanged event (the promotion race
@@ -110,9 +153,10 @@
       return res.json();
     }
     const identity = qs.get("identity") || ("listener-" + Math.random().toString(36).slice(2,8));
+    const name = (nameInput.value || "").trim() || randomGuestAlias();
     const res = await fetch(`/spaces/${spaceId}/join`, {
       method:"POST", headers:{"content-type":"application/json"},
-      body: JSON.stringify({ identity, name: qs.get("name") || identity })
+      body: JSON.stringify({ identity, name })
     });
     if (!res.ok) throw new Error("join failed: " + res.status);
     return res.json();
@@ -153,6 +197,11 @@
   }
 
   document.getElementById("join").onclick = async () => {
+    // No empty names: fall back to a fresh generated alias, same as an empty
+    // localStorage read would. Persist whatever we actually join with.
+    const chosenName = (nameInput.value || "").trim() || randomGuestAlias();
+    nameInput.value = chosenName;
+    localStorage.setItem(NAME_STORE_KEY, chosenName);
     try {
       step("Connecting…");
       const { url, token, title } = await getToken();
@@ -184,7 +233,7 @@
       await room.connect(url, token);
       renderSpeakers();
       updateMicButton();
-      document.getElementById("join").style.display = "none";
+      document.getElementById("joinCard").style.display = "none";
       document.getElementById("hand").disabled = false;
       if (hostFqid) document.getElementById("end").style.display = "inline";
       if (room.localParticipant.permissions?.canPublish) {
@@ -222,6 +271,32 @@
     } catch (_) {}
   }
   setInterval(pollRec, 4000);
+
+  // Share: native share sheet where available (phone browsers, iMessage/Telegram/
+  // email picker), else copy the link and show a brief inline "Link copied" notice.
+  document.getElementById("share").onclick = async () => {
+    const link = location.origin + "/space/" + spaceId;
+    const notice = document.getElementById("shareNotice");
+    const flashNotice = (t) => {
+      notice.textContent = t;
+      setTimeout(() => { notice.textContent = ""; }, 2500);
+    };
+    if (navigator.share) {
+      try {
+        await navigator.share({ title: document.getElementById("title").textContent || "SK Space", url: link });
+        return;
+      } catch (e) {
+        // user cancelled the native sheet, or share isn't actually usable here,
+        // fall through to the clipboard fallback below
+      }
+    }
+    try {
+      await navigator.clipboard.writeText(link);
+      flashNotice("Link copied");
+    } catch (e) {
+      flashNotice(link);
+    }
+  };
 
   document.getElementById("hand").onclick = async () => {
     const identity = room?.localParticipant?.identity;
