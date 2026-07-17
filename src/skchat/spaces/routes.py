@@ -29,6 +29,17 @@ def _url() -> str:
     return os.getenv("SKCHAT_LIVEKIT_URL", "ws://skworld-100:7880")
 
 
+def _api_url() -> str:
+    """Server-side RoomService/Twirp base URL for the Moderator and Recorder.
+
+    SKCHAT_LIVEKIT_URL is browser-facing and, behind a path-based Funnel
+    (e.g. wss://host/livekit-ws), makes the LiveKit SDK's Twirp client emit a
+    malformed double-slash URL that a reverse proxy 404s. SKCHAT_LIVEKIT_API_URL
+    is a dedicated plain host:port Twirp endpoint for server-side calls; when
+    unset, fall back to SKCHAT_LIVEKIT_URL for backward compat."""
+    return os.getenv("SKCHAT_LIVEKIT_API_URL", "").strip() or _url()
+
+
 def _public_url(request: Request) -> str:
     """Public-aware SFU URL for a browser/guest: an off-tailnet caller (Tailscale
     Funnel on cellular) gets the public wss URL, a tailnet caller keeps the
@@ -117,7 +128,7 @@ def register_spaces_routes(
             from skchat.spaces.moderation import Moderator
 
             _mod_holder["mod"] = Moderator(
-                _url(),
+                _api_url(),
                 os.getenv("SKCHAT_LIVEKIT_API_KEY", ""),
                 os.getenv("SKCHAT_LIVEKIT_API_SECRET", ""),
             )
@@ -128,7 +139,7 @@ def register_spaces_routes(
             from skchat.spaces.recording import Recorder
 
             _rec_holder["rec"] = Recorder(
-                _url(),
+                _api_url(),
                 os.getenv("SKCHAT_LIVEKIT_API_KEY", ""),
                 os.getenv("SKCHAT_LIVEKIT_API_SECRET", ""),
             )

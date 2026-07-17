@@ -116,6 +116,16 @@ def _url() -> str:
     return os.getenv("SKCHAT_LIVEKIT_URL", "ws://skworld-100:7880")
 
 
+def _api_url() -> str:
+    """Server-side RoomService/Twirp base URL. SKCHAT_LIVEKIT_URL is
+    browser-facing and, behind a path-based Funnel (e.g. wss://host/livekit-ws),
+    makes the LiveKit SDK's Twirp client emit a malformed double-slash URL that
+    a reverse proxy 404s. SKCHAT_LIVEKIT_API_URL is a dedicated plain host:port
+    Twirp endpoint for server-side calls; when unset, fall back to
+    SKCHAT_LIVEKIT_URL for backward compat."""
+    return os.getenv("SKCHAT_LIVEKIT_API_URL", "").strip() or _url()
+
+
 def _public_url(request: Request) -> str:
     try:
         from skchat.livekit_routes import public_aware_livekit_url
@@ -207,7 +217,7 @@ def register_conf_routes(
             from livekit import api
 
             client = api.LiveKitAPI(
-                _http_url(_url()),
+                _http_url(_api_url()),
                 os.getenv("SKCHAT_LIVEKIT_API_KEY", ""),
                 os.getenv("SKCHAT_LIVEKIT_API_SECRET", ""),
             )

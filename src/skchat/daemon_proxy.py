@@ -1093,7 +1093,13 @@ async def _livekit_list_participants(room: str) -> list[dict]:
         from livekit import api  # soft dep
     except ImportError:
         return []
-    url = _os.getenv("SKCHAT_LIVEKIT_URL", "ws://skworld-100:7880")
+    # Server-side RoomService/Twirp call: prefer the dedicated API URL over the
+    # browser-facing SKCHAT_LIVEKIT_URL, which may carry a Funnel path prefix
+    # (e.g. wss://host/livekit-ws) that mangles into a malformed double-slash
+    # Twirp URL. Falls back to SKCHAT_LIVEKIT_URL for backward compat.
+    url = _os.getenv("SKCHAT_LIVEKIT_API_URL", "").strip() or _os.getenv(
+        "SKCHAT_LIVEKIT_URL", "ws://skworld-100:7880"
+    )
     http_url = url.replace("ws://", "http://").replace("wss://", "https://")
     key = _os.getenv("SKCHAT_LIVEKIT_API_KEY", "")
     secret = _os.getenv("SKCHAT_LIVEKIT_API_SECRET", "")
