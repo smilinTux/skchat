@@ -225,6 +225,7 @@ flowchart LR
 | `voice.py` | Piper TTS + Whisper STT (local) |
 | `voice_stream.py`, `voice_backends.py`, `voice_ws_lite.py` | Streaming voice + backend adapters + lite WS signaling |
 | `facetime.py`, `livekit_routes.py` | WebRTC P2P calls + LiveKit SFU routes for group calls |
+| `spaces/` (`routes.py`, `space.py`, `roles.py`, `moderation.py`, `registry.py`, `recording.py`, `consent.py`, `lanes.py`, `federation/`) | Sovereign live-audio Spaces (host/speaker/listener, raise-hand promotion, moderation, recording, federation). Full SOP + diagrams: **[docs/SPACES.md](SPACES.md)** |
 | `lumina_recorder.py`, `lumina_mcp.py` | Lumina-specific recording + MCP helpers |
 | `media.py`, `attachments.py`, `files.py` | Media handling, attachment plumbing, file transfer |
 | `context.py` | Conversation context assembly for advocacy / capture |
