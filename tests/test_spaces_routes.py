@@ -39,6 +39,33 @@ def test_create_returns_host_token_and_registers(client):
     assert any(s["space_id"] == body["space_id"] for s in live)
 
 
+def test_list_spaces_returns_newest_first(client, monkeypatch):
+    """GET /spaces sorts at the source (newest created_at on top) so both the
+    web directory and the Flutter app inherit the order without re-sorting."""
+    import itertools
+
+    import skchat.spaces.routes as routes_mod
+
+    ticks = itertools.count(100.0, 100.0)
+    monkeypatch.setattr(routes_mod.time, "time", lambda: next(ticks))
+
+    first = client.post(
+        "/spaces/create",
+        json={"host_fqid": "lumina@chef.skworld", "title": "Oldest", "slug": "oldest"},
+    ).json()["space_id"]
+    second = client.post(
+        "/spaces/create",
+        json={"host_fqid": "lumina@chef.skworld", "title": "Middle", "slug": "middle"},
+    ).json()["space_id"]
+    third = client.post(
+        "/spaces/create",
+        json={"host_fqid": "lumina@chef.skworld", "title": "Newest", "slug": "newest"},
+    ).json()["space_id"]
+
+    ids = [s["space_id"] for s in client.get("/spaces").json()["spaces"]]
+    assert ids == [third, second, first]
+
+
 def test_create_rejects_overlong_title(client):
     """C1 defense-in-depth: cap title length server-side (cheap XSS-blast guard)."""
     r = client.post(
