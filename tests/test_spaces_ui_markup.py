@@ -189,3 +189,51 @@ def test_listener_never_sees_mic_and_speaker_never_sees_hand():
     # non-speaker tail: mic hidden
     non_speaker_tail = body.split("if (canPublish) {")[1].split("return;", 1)[1]
     assert 'micBtn.style.display = "none";' in non_speaker_tail
+
+
+def test_version_check_build_const_present():
+    # VER: substituted server-side (routes.py) with a real build hash from the
+    # ORIGINAL file bytes so an already-open tab can compare against
+    # GET /spaces/build and notice a newer deploy landed.
+    html = _html()
+    assert 'const SPACE_BUILD = "__SPACE_BUILD__";' in html
+
+
+def test_version_check_listens_for_tab_becoming_visible():
+    html = _html()
+    assert 'addEventListener("visibilitychange"' in html
+    assert 'document.visibilityState === "visible"' in html
+    assert "checkBuild" in html
+
+
+def test_version_check_fetches_build_endpoint_and_debounces():
+    html = _html()
+    assert 'fetch("/spaces/build")' in html
+    # debounced: at most once every few seconds, not on every visibility flip
+    assert "lastBuildCheck" in html
+    body = html.split("async function checkBuild()")[1].split("document.addEventListener(\"visibilitychange\"")[0]
+    assert "now - lastBuildCheck" in body
+
+
+def test_version_check_branches_on_join_card_vs_connected():
+    # Still on the join card (never connected, or already left): reload
+    # automatically, nothing to lose. Connected/on stage: a non-blocking
+    # tap-to-reload banner instead, never yank someone out of a live Space.
+    html = _html()
+    body = html.split("async function checkBuild()")[1].split("document.addEventListener(\"visibilitychange\"")[0]
+    assert 'getElementById("joinCard")' in body
+    assert "location.reload()" in body
+    assert 'getElementById("versionBanner")' in body
+    assert 'banner.style.display = "flex";' in body
+
+
+def test_version_banner_present_hidden_by_default_and_xss_safe():
+    html = _html()
+    assert 'id="versionBanner" style="display:none"' in html
+    assert "A new version is available. Tap to reload." in html
+    # the banner's text is static prebuilt markup, not assembled from the
+    # /spaces/build response, so a hostile build hash can't inject anything.
+    body = html.split("async function checkBuild()")[1].split("document.addEventListener(\"visibilitychange\"")[0]
+    assert "innerHTML" not in body
+    assert "textContent = data" not in body
+    assert 'document.getElementById("versionBanner").onclick = () => location.reload();' in html

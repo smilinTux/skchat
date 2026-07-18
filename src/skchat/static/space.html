@@ -63,6 +63,11 @@
     border:1px solid var(--line); background:#0f1216; color:var(--text);
     font-size:14px; margin-bottom:16px; }
   .join-card button { width:100%; }
+  /* VER: tap-to-reload notice when a newer build deploys under an already-open
+     tab (only shown once connected/on stage; the join card auto-reloads instead). */
+  .version-banner { display:flex; align-items:center; gap:10px; margin-top:16px;
+    padding:10px 14px; background:rgba(59,130,246,.12); border:1px solid var(--self);
+    border-radius:11px; font-size:13px; cursor:pointer; }
 </style>
 </head>
 <body>
@@ -85,6 +90,9 @@
     <button id="invitedJoin">Join stage</button>
     <button class="icon-btn" id="invitedDismiss" aria-label="Dismiss invite" title="Dismiss">✕</button>
   </div>
+  <div class="version-banner" id="versionBanner" style="display:none" title="Tap to reload">
+    <span id="versionBannerText">A new version is available. Tap to reload.</span>
+  </div>
   <div class="bar">
     <button class="ghost" id="mic" style="display:none" disabled>🎙️ Unmute</button>
     <button class="ghost" id="hand" disabled>✋ Raise hand</button>
@@ -104,6 +112,9 @@
   let micEnabled = false;  // X Spaces model: promotion/join never auto-publishes; user must click Unmute
   let invitedDismissed = false;  // dismiss [x] on the invited banner, latched until re-invited
   let wasInvited = false;  // tracks the false -> true edge that re-arms a dismissed banner
+  // VER: build stamp, substituted server-side (routes.py, from the ORIGINAL file
+  // bytes) so an already-open tab can notice a newer deploy landed and self-heal.
+  const SPACE_BUILD = "__SPACE_BUILD__";
 
   // Guest alias: pre-filled, editable, remembered across visits. No account needed.
   const NAME_STORE_KEY = "skchat.space.guestName";
@@ -497,6 +508,39 @@
     if (room) room.disconnect();
     step("Space ended.");
   };
+
+  // VER: self-heal a stale open tab across a deploy. The shell is served
+  // no-cache so a FRESH load always gets the latest JS, but a tab that was
+  // already open keeps running the OLD JS forever, no server header fixes
+  // that. Poll a cheap version endpoint on load and whenever the tab comes
+  // back into view; someone still on the join card just gets reloaded
+  // (nothing to lose), a connected listener or on-stage speaker gets a
+  // tap-to-reload banner instead of being yanked out of a live Space.
+  let lastBuildCheck = 0;
+  async function checkBuild() {
+    const now = Date.now();
+    if (now - lastBuildCheck < 5000) return;  // debounce: at most once every few seconds
+    lastBuildCheck = now;
+    try {
+      const res = await fetch("/spaces/build");
+      if (!res.ok) return;
+      const data = await res.json();
+      if (!data || !data.build || data.build === SPACE_BUILD) return;
+      const joinCard = document.getElementById("joinCard");
+      const onJoinCard = joinCard ? joinCard.style.display !== "none" : true;
+      if (onJoinCard) {
+        location.reload();
+      } else {
+        const banner = document.getElementById("versionBanner");
+        if (banner) banner.style.display = "flex";
+      }
+    } catch (_) { /* offline or blocked: ignore silently, retry on the next check */ }
+  }
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") checkBuild();
+  });
+  setTimeout(checkBuild, 3000);  // once shortly after load
+  document.getElementById("versionBanner").onclick = () => location.reload();
 </script>
 </body>
 </html>
