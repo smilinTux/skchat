@@ -244,6 +244,67 @@ async def test_set_sharing_unknown_identity_is_graceful(mod, fake):
 
 
 @pytest.mark.asyncio
+async def test_set_sharing_false_force_stops_live_video_tracks(mod, fake):
+    # backstop (mirrors the M5 remove/mic backstop): a frozen or
+    # non-cooperative client may ignore the canPublishSources revoke above and
+    # keep publishing screen/camera, so allow=false must also force-stop any
+    # already-published CAMERA/SCREEN_SHARE/SCREEN_SHARE_AUDIO track. The mic
+    # track must be left alone (speaker can still talk).
+    fake.set_participant("alice", json.dumps({"hand_raised": True, "invited_to_stage": True}))
+    fake._participants["alice"].tracks = [
+        FakeTrack("TR_mic", api.TrackSource.MICROPHONE),
+        FakeTrack("TR_cam", api.TrackSource.CAMERA),
+        FakeTrack("TR_screen", api.TrackSource.SCREEN_SHARE),
+        FakeTrack("TR_screen_audio", api.TrackSource.SCREEN_SHARE_AUDIO),
+    ]
+    await mod.set_sharing("space-x", "alice", False)
+    assert sorted(fake.muted) == sorted(
+        [
+            ("alice", "TR_cam", True),
+            ("alice", "TR_screen", True),
+            ("alice", "TR_screen_audio", True),
+        ]
+    )
+
+
+@pytest.mark.asyncio
+async def test_set_sharing_false_with_no_published_video_track_is_noop(mod, fake):
+    # best effort: no published video track means no mute call and no error.
+    fake.set_participant("alice", json.dumps({"hand_raised": True, "invited_to_stage": True}))
+    fake._participants["alice"].tracks = [FakeTrack("TR_mic", api.TrackSource.MICROPHONE)]
+    await mod.set_sharing("space-x", "alice", False)
+    assert fake.muted == []
+
+
+@pytest.mark.asyncio
+async def test_set_sharing_true_does_not_force_stop_tracks(mod, fake):
+    # allow=true must never force-stop anything, even with live video tracks.
+    fake.set_participant("alice", json.dumps({"hand_raised": True, "invited_to_stage": True}))
+    fake._participants["alice"].tracks = [
+        FakeTrack("TR_cam", api.TrackSource.CAMERA),
+        FakeTrack("TR_screen", api.TrackSource.SCREEN_SHARE),
+    ]
+    await mod.set_sharing("space-x", "alice", True)
+    assert fake.muted == []
+
+
+@pytest.mark.asyncio
+async def test_set_sharing_false_mute_failure_does_not_fail_set_sharing(mod, fake):
+    # a mute failure (e.g. the track vanished mid-race) must not break the
+    # permission update itself; the canPublishSources revoke already happened
+    # and is authoritative.
+    fake.set_participant("alice", json.dumps({"hand_raised": True, "invited_to_stage": True}))
+    fake._participants["alice"].tracks = [FakeTrack("TR_cam", api.TrackSource.CAMERA)]
+
+    async def boom(req):
+        raise RuntimeError("track already gone")
+
+    fake.mute_published_track = boom
+    sharing = await mod.set_sharing("space-x", "alice", False)
+    assert sharing is False
+
+
+@pytest.mark.asyncio
 async def test_aclose_closes_injected_client():
     closed = []
 
