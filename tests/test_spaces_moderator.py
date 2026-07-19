@@ -195,6 +195,55 @@ async def test_aclose_noop_when_client_never_built():
 
 
 @pytest.mark.asyncio
+async def test_set_sharing_false_sets_mic_only_sources(mod, fake):
+    # host disables a speaker's video sharing: canPublishSources becomes
+    # mic-only, but can_publish/can_subscribe/can_publish_data stay true so
+    # the speaker can still talk.
+    fake.set_participant("alice", json.dumps({"hand_raised": True, "invited_to_stage": True}))
+    sharing = await mod.set_sharing("space-x", "alice", False)
+    assert sharing is False
+    perm = fake.updates[-1].permission
+    assert list(perm.can_publish_sources) == [api.TrackSource.MICROPHONE]
+    assert perm.can_publish is True
+    assert perm.can_subscribe is True
+    assert perm.can_publish_data is True
+
+
+@pytest.mark.asyncio
+async def test_set_sharing_true_restores_full_sources(mod, fake):
+    fake.set_participant("alice", json.dumps({"hand_raised": True, "invited_to_stage": True}))
+    sharing = await mod.set_sharing("space-x", "alice", True)
+    assert sharing is True
+    perm = fake.updates[-1].permission
+    assert list(perm.can_publish_sources) == [
+        api.TrackSource.MICROPHONE,
+        api.TrackSource.CAMERA,
+        api.TrackSource.SCREEN_SHARE,
+        api.TrackSource.SCREEN_SHARE_AUDIO,
+    ]
+    assert perm.can_publish is True
+
+
+@pytest.mark.asyncio
+async def test_set_sharing_preserves_existing_stage_metadata(mod, fake):
+    # set_sharing must NOT clobber the raise-hand/invited stage state carried
+    # in metadata; it only touches canPublishSources.
+    meta = json.dumps({"hand_raised": True, "invited_to_stage": True})
+    fake.set_participant("alice", meta)
+    await mod.set_sharing("space-x", "alice", False)
+    assert fake.updates[-1].metadata == meta
+
+
+@pytest.mark.asyncio
+async def test_set_sharing_unknown_identity_is_graceful(mod, fake):
+    # no prior participant record; must not raise, still applies mic-only.
+    sharing = await mod.set_sharing("space-x", "ghost", False)
+    assert sharing is False
+    perm = fake.updates[-1].permission
+    assert list(perm.can_publish_sources) == [api.TrackSource.MICROPHONE]
+
+
+@pytest.mark.asyncio
 async def test_aclose_closes_injected_client():
     closed = []
 
