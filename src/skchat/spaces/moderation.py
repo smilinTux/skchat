@@ -179,6 +179,63 @@ class Moderator:
                     exc_info=True,
                 )
 
+    async def set_sharing(self, room: str, identity: str, allow: bool) -> bool:
+        """Host-controlled toggle for a speaker's VIDEO sharing (canPublishSources).
+
+        Leaves the microphone (and can_publish/can_subscribe/can_publish_data)
+        untouched either way, so the speaker can always still talk; only the
+        allowed publish sources change:
+          - allow=False: MICROPHONE only (screen + camera revoked).
+          - allow=True: MICROPHONE + CAMERA + SCREEN_SHARE + SCREEN_SHARE_AUDIO.
+
+        Reads the current participant first so the existing raise-hand/invited
+        stage metadata (see stage_action) is round-tripped unchanged rather than
+        wiped, and shares the per-(room, identity) lock with stage_action so a
+        concurrent invite/remove cannot race this update. Best-effort: an
+        unknown identity is handled the same way stage_action handles it (the
+        fake/real service returns an empty participant, we just proceed)."""
+        from livekit import api
+
+        key = (room, identity)
+        lock = self._locks.setdefault(key, asyncio.Lock())
+        self._lock_users[key] = self._lock_users.get(key, 0) + 1
+        try:
+            async with lock:
+                svc = self._service()
+                current = await svc.get_participant(
+                    api.RoomParticipantIdentity(room=room, identity=identity)
+                )
+                metadata = getattr(current, "metadata", "") or ""
+                sources = (
+                    [
+                        api.TrackSource.MICROPHONE,
+                        api.TrackSource.CAMERA,
+                        api.TrackSource.SCREEN_SHARE,
+                        api.TrackSource.SCREEN_SHARE_AUDIO,
+                    ]
+                    if allow
+                    else [api.TrackSource.MICROPHONE]
+                )
+                await svc.update_participant(
+                    api.UpdateParticipantRequest(
+                        room=room,
+                        identity=identity,
+                        metadata=metadata,
+                        permission=api.ParticipantPermission(
+                            can_publish=True,
+                            can_subscribe=True,
+                            can_publish_data=True,
+                            can_publish_sources=sources,
+                        ),
+                    )
+                )
+                return allow
+        finally:
+            self._lock_users[key] -= 1
+            if self._lock_users[key] <= 0:
+                self._lock_users.pop(key, None)
+                self._locks.pop(key, None)
+
     async def kick(self, room: str, identity: str) -> None:
         from livekit import api
 

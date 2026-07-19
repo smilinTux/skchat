@@ -361,6 +361,21 @@ def register_spaces_routes(
         )
         return JSONResponse({"ok": True})
 
+    @app.post("/spaces/{space_id}/set-sharing")
+    async def set_sharing(space_id: str, request: Request) -> JSONResponse:
+        """Host-only: allow/disallow a speaker's VIDEO sharing (screen + camera)
+        while keeping their mic. See docs/superpowers/specs/
+        2026-07-18-spaces-host-share-control-design.md."""
+        space = reg.get(space_id)
+        if space is None:
+            raise HTTPException(404, "space not found")
+        body = await request.json()
+        _require_host(space, (body.get("requester") or "").strip())
+        identity = (body.get("identity") or "").strip()
+        allow = bool(body.get("allow"))
+        sharing = await _moderator().set_sharing(space.room, identity, allow)
+        return JSONResponse({"ok": True, "sharing": sharing})
+
     @app.post("/spaces/{space_id}/kick")
     async def kick(space_id: str, request: Request) -> JSONResponse:
         space = reg.get(space_id)
