@@ -326,6 +326,10 @@ class ChatDaemon:
 
         if log_file:
             _configure_root_logging(log_file)
+            # httpx/httpcore log every health probe at INFO; keep them at
+            # WARNING so 5s polls do not flood the daemon log (card 36450c88).
+            logging.getLogger("httpx").setLevel(logging.WARNING)
+            logging.getLogger("httpcore").setLevel(logging.WARNING)
 
         signal.signal(signal.SIGINT, self._handle_signal)
         signal.signal(signal.SIGTERM, self._handle_signal)
@@ -1452,13 +1456,15 @@ class ChatDaemon:
             signaling_connected=webrtc_signaling_ok,
         )
         # Only warn on a transition into a non-ok state (A2). Steady degraded/down
-        # cycles stay silent; a fresh degrade after a recovery warns again.
-        if (
-            self._webrtc_active
-            and signaling_health != "ok"
-            and signaling_health != self._last_signaling_health
-        ):
-            logger.warning("WebRTC signaling %s — relayed calls may fall back", signaling_health)
+        # cycles stay silent; a fresh degrade after a recovery warns again, and
+        # a recovery back to ok logs once at INFO (card 36450c88).
+        if self._webrtc_active:
+            if signaling_health != "ok" and signaling_health != self._last_signaling_health:
+                logger.warning(
+                    "WebRTC signaling %s — relayed calls may fall back", signaling_health
+                )
+            elif signaling_health == "ok" and self._last_signaling_health not in (None, "ok"):
+                logger.info("WebRTC signaling recovered (ok)")
         self._last_signaling_health = signaling_health
 
         stats = {
