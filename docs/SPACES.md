@@ -336,6 +336,37 @@ Recording is **audio-only, room-composite, off by default, host-only, and consen
 - An optional, disabled-by-default post-processing hook (`SKCHAT_SPACES_AUTO_WRITEUP=1`) runs a transcript-to-write-up pipeline in a background thread after `record/stop`; it never raises into the request path on failure.
 - **The client-facing gap:** the "● REC" indicator is passive and polled (web: every 4s via `GET /spaces`; matches the recording state on the registry). Starting/stopping a recording from either client is currently only possible by calling the route directly (there is no Start/Stop Recording button wired in Spaces on either client, §2.13 item 3).
 
+### 2.16 Screen share + system audio: platform / browser support matrix
+
+Two surfaces originate a screen share: the **native Flutter desktop app** (uses `flutter_webrtc`'s per-OS capturers) and the **web app in a browser** (uses the browser's own `getDisplayMedia`). "System audio" here means the shared content's audio published as a **separate** `TrackSource.screenShareAudio` track, so the microphone stays independently mutable (drop your voice while the content keeps playing; see the DECOUPLE design in skchat-app `livekit_call_service.dart` `setMicEnabled`). "Screen video" means sharing a screen, window, or tab.
+
+**Native desktop app (Flutter `flutter_webrtc`):**
+
+| OS | Screen video | System audio | Evidence / notes |
+|---|---|---|---|
+| **Linux** | Yes | Yes | PulseAudio/PipeWire monitor capturer, skchat-app `v1.2.0+`, needs the `libpulse` runtime present. Upstreamed as `flutter-webrtc/flutter-webrtc#2115`. Root cause + fix: skchat-app `docs/spaces-system-audio-linux.md`. |
+| **Windows** | Yes | Yes | WASAPI application-loopback capturer (built into `flutter_webrtc`). |
+| **macOS** | Yes | Yes | macOS loopback capturer (built into `flutter_webrtc`). |
+
+**Web app in a browser (`getDisplayMedia`):**
+
+| Browser (engine) | OS | Screen video | System / tab audio | Notes |
+|---|---|---|---|---|
+| Chrome / Edge (Chromium) | **Windows** | Yes | **Yes** (system + tab) | Full parity with the native app; the recommended browser surface. |
+| Chrome / Edge (Chromium) | ChromeOS | Yes | Yes (system + tab) | |
+| Chrome / Edge (Chromium) | macOS | Yes | Tab only | The OS blocks full-system audio capture; a shared browser tab's audio still captures. |
+| Chrome / Edge (Chromium) | Linux | Yes | Tab only (limited) | System/window audio is not captured via `getDisplayMedia`; use the native app for system audio on Linux. |
+| Firefox / Waterfox (Gecko) | any desktop | Yes | No / unreliable | `getDisplayMedia` audio is not reliably supported; screen video and the rest of WebRTC (calls, mic, camera) work fine. |
+| Safari (WebKit) | macOS | Yes | No | `getDisplayMedia` captures video only. |
+| any mobile browser (iOS Safari, Android Chrome) | iOS / Android | No | No | Mobile browsers expose no `getDisplayMedia`; the panel short-circuits with a "needs the desktop app" message (Z1 guard, skchat-app `screen_share_panel.dart`). Joining a Space, watching a share, calls, mic, and camera still work. |
+
+**Rules of thumb:**
+- Need system audio in a share: use the **native desktop app** (any OS), or a **Chromium browser on Windows / ChromeOS**.
+- **Firefox / Waterfox** and **Safari**: screen video shares fine; treat system audio as unavailable there.
+- **Phones**: cannot originate a screen share from a browser; they can still join, watch, talk, and use the camera.
+
+The mic is always a separate track wherever a system-audio track exists, so muting the mic never stops the content. The native capturer (Linux PR #2115) is desktop-app-only; browser system audio comes entirely from the browser's own `getDisplayMedia`.
+
 ---
 
 ## 3. Build
