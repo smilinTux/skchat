@@ -22,6 +22,17 @@ def test_method_specific_inbox():
     assert is_gated("POST", "/api/v1/inbox") is False  # peers delivering to you
 
 
+def test_guest_and_mode_c_routes_are_exempt():
+    # Guest flows carry their own auth (guest-session JWT / invite token);
+    # the operator-session validator does not accept those credentials, so
+    # these families must stay exempt or every guest flow would 401.
+    assert is_gated("POST", "/api/v1/guest/join") is False
+    assert is_gated("GET", "/api/v1/guest/conversation") is False
+    assert is_gated("POST", "/api/v1/mode-c/accept") is False
+    # Regression: the core unguarded data routes stay gated.
+    assert is_gated("GET", "/api/v1/conversations") is True
+
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from starlette.responses import JSONResponse

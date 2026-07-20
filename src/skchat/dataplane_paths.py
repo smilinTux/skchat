@@ -2,8 +2,13 @@
 
 Exempt = genuinely public or auth-bootstrap: health, static app, federation
 inbound (POST /api/v1/inbox), signed discovery, invite/pair/guest join, livekit
-signaling, and the /api/v1/auth/* handshake itself. Everything else under
-/api/v1 (plus the sensitive webui routes) is gated.
+signaling, the /api/v1/auth/* handshake itself, and the guest-authed route
+families mounted under /api/v1 (/api/v1/guest/*, /api/v1/mode-c/*). Those two
+families carry their OWN auth (guest-session JWT via ``_guest_session``, or
+invite-token / operator-token gating) which the operator-session validator
+does not accept, so they must stay exempt from this gate or every guest flow
+would 401 once the flag is flipped on. Everything else under /api/v1 (plus the
+sensitive webui routes) is gated.
 """
 
 from __future__ import annotations
@@ -19,6 +24,7 @@ _EXEMPT_EXACT = {
 _EXEMPT_PREFIX = (
     "/app", "/static", "/favicon", "/.well-known/",
     "/join", "/guest", "/pair", "/livekit", "/ws/",
+    "/api/v1/guest", "/api/v1/mode-c",
 )
 
 
