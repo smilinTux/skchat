@@ -6,8 +6,12 @@ tokens never share a key. Ships dark: nothing calls this until the middleware
 gate is enabled in the final rollout task.
 """
 from __future__ import annotations
-import os, time, uuid, secrets
+
+import os
+import time
+import uuid
 from dataclasses import dataclass
+
 import jwt  # PyJWT, already a dependency (see guest_groups.py)
 
 _TIER = "operator-session"
