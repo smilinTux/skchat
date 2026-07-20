@@ -52,6 +52,11 @@ async def _operator_auth_gate(request, call_next):
     (zero behavior change to the live daemon). Flag ON -> gated requests
     (per `is_gated`) must carry a valid operator-session JWT or capauth
     assertion, or the request is refused with a 401 before reaching the route.
+
+    WEBSOCKET BOUNDARY: this is an ``@app.middleware("http")`` gate, it does
+    NOT cover websocket routes (``/ws/*``, e.g. ``/ws/chat`` below). See the
+    module docstring in ``dataplane_paths.py`` for the full boundary note and
+    why that is currently low-risk (refresh-signal metadata only, no content).
     """
     if dataplane_auth_enabled() and is_gated(request.method, request.url.path):
         try:

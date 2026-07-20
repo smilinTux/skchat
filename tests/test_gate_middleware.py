@@ -44,6 +44,47 @@ def test_exempt_prefix_anchoring():
     assert is_gated("POST", "/api/v1/mode-c/accept") is False
 
 
+def test_prekey_directory_is_method_aware():
+    # Public PQ key directory: peers fetch bundles unauthenticated (GET), but
+    # publishing a bundle (POST) is an operator-owned write and stays gated.
+    assert is_gated("GET", "/api/v1/prekey/lumina") is False
+    assert is_gated("GET", "/api/v1/prekey") is False
+    assert is_gated("POST", "/api/v1/prekey") is True
+
+
+def test_file_bytes_are_gated():
+    # Raw attachment bytes are the same data class as the gated /inbox.
+    assert is_gated("GET", "/file/abc123") is True
+    assert is_gated("GET", "/file/abc123/thumb") is True
+
+
+def test_media_file_stream_is_gated():
+    assert is_gated("GET", "/media/file") is True
+
+
+def test_coord_board_proxy_is_gated():
+    assert is_gated("GET", "/api/board") is True
+
+
+def test_adapters_health_is_gated():
+    assert is_gated("GET", "/adapters") is True
+
+
+def test_identity_and_capabilities_bootstrap_are_exempt():
+    # Pre-session UI bootstrap reads: low-sensitivity discovery surfaces the
+    # app fetches before a session exists. Gating them would break an
+    # unenrolled/unauthed client's startup.
+    assert is_gated("GET", "/api/v1/identity") is False
+    assert is_gated("GET", "/api/v1/capabilities") is False
+    # Regression: adjacent, more sensitive /api/v1 routes stay gated.
+    assert is_gated("GET", "/api/v1/status") is True
+    assert is_gated("GET", "/api/v1/household/agents") is True
+
+
+def test_favicon_ico_is_exempt():
+    assert is_gated("GET", "/favicon.ico") is False
+
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from starlette.responses import JSONResponse
