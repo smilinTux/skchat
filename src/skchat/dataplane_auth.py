@@ -79,6 +79,17 @@ def _verify_capauth_credential(token: str) -> bool:
     checks the signature, freshness and the FQID->pubkey pin, raising on any
     problem). Lazy-imported so importing this module never drags in capauth.
     """
+    # Operator-session JWT (the app's Bearer credential). Try this first;
+    # fall through to the OpenPGP assertion path for daemon/agent callers.
+    try:
+        from .operator_auth import OperatorAuthError, verify_operator_session
+        verify_operator_session(token)
+        return True
+    except OperatorAuthError:
+        pass
+    except Exception:
+        pass
+
     import base64
     import json
 
