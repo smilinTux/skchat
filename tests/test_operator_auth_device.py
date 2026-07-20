@@ -1,8 +1,9 @@
 import base64
-import pytest
+
+from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
-from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
+
 from skchat import operator_auth as oa
 
 
