@@ -194,6 +194,22 @@ try:
 except ImportError as _e:
     logger.warning("daemon API proxy not registered: %s", _e)
 
+# Operator device-key auth handshake (/api/v1/auth/*). Ships dark: routes are
+# live but nothing is gated on their output until the enforcement middleware
+# is added in a later task.
+try:
+    from .operator_auth import DeviceStore as _DeviceStore
+    from .operator_auth_routes import (
+        register_operator_auth_routes as _register_operator_auth_routes,
+    )
+
+    _operator_device_store = _DeviceStore(
+        os.path.expanduser("~/.skchat/state/operator_devices.json")
+    )
+    _register_operator_auth_routes(app, device_store=_operator_device_store)
+except ImportError as _e:
+    logger.warning("operator auth routes not registered: %s", _e)
+
 
 @app.get("/")
 async def root() -> RedirectResponse:
@@ -255,9 +271,10 @@ async def access_tool_proxy(request: Request):
     capauth-signed token, so the access gate authorizes it exactly as before.
     Body: ``{node, token, tool, arguments}``.
     """
-    from fastapi import HTTPException
     import urllib.error
     import urllib.request
+
+    from fastapi import HTTPException
 
     body = await request.json()
     node = body.get("node", ".158")
