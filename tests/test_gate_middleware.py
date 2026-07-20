@@ -33,6 +33,17 @@ def test_guest_and_mode_c_routes_are_exempt():
     assert is_gated("GET", "/api/v1/conversations") is True
 
 
+def test_exempt_prefix_anchoring():
+    # Anchor exempt-prefix matches to path-segment boundaries to prevent
+    # silent-leak traps where future routes sharing a prefix get wrongly exempted.
+    # Examples: /api/v1/guest/ is exempt, but /api/v1/guestbook/ must stay gated.
+    assert is_gated("GET", "/api/v1/guestbook") is True
+    assert is_gated("GET", "/api/v1/mode-config") is True
+    # Real exemptions still work.
+    assert is_gated("POST", "/api/v1/guest/join") is False
+    assert is_gated("POST", "/api/v1/mode-c/accept") is False
+
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from starlette.responses import JSONResponse

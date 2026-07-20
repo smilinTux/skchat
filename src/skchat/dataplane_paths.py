@@ -35,7 +35,7 @@ def is_gated(method: str, path: str) -> bool:
     if path == "/":
         return False
     for p in _EXEMPT_PREFIX:
-        if path.startswith(p):
+        if path == p or path.startswith(p + "/"):
             return False
     return path.startswith("/api/v1") or path.startswith("/api/send") or path in (
         "/inbox", "/send", "/messages", "/groups", "/upload", "/agent/state")
