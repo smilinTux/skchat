@@ -36,11 +36,29 @@ from fastapi.responses import (
 )
 
 from . import __version__
-from .dataplane_auth import require_dataplane_auth
+from .dataplane_auth import dataplane_auth_enabled, enforce_dataplane_auth, require_dataplane_auth
+from .dataplane_paths import is_gated
 
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="SKChat Web UI")
+
+
+@app.middleware("http")
+async def _operator_auth_gate(request, call_next):
+    """Method+path-aware operator-auth gate (dark, flag OFF by default).
+
+    Flag OFF -> `dataplane_auth_enabled()` is False, this is a pure passthrough
+    (zero behavior change to the live daemon). Flag ON -> gated requests
+    (per `is_gated`) must carry a valid operator-session JWT or capauth
+    assertion, or the request is refused with a 401 before reaching the route.
+    """
+    if dataplane_auth_enabled() and is_gated(request.method, request.url.path):
+        try:
+            enforce_dataplane_auth(request)
+        except Exception:
+            return JSONResponse({"detail": "capauth authentication required"}, status_code=401)
+    return await call_next(request)
 
 
 @app.middleware("http")
