@@ -83,6 +83,46 @@ def test_session_rejects_unenrolled_device(client):
     assert r.status_code == 401
 
 
+def test_second_enroll_in_same_window_is_rejected(client):
+    # Operator enrollment is one device per explicit window
+    # (PairingGate(max_accepts_per_window=1)), not the pairing-gate default of 3.
+    priv1, pub1 = _kp()
+    priv2, pub2 = _kp()
+    w = client.post("/api/v1/auth/enroll/open").json()
+    first = client.post(
+        "/api/v1/auth/enroll",
+        json={
+            "device_pubkey": pub1,
+            "window_nonce": w["window_nonce"],
+            "sig": _sig(priv1, _canon({"nonce": w["window_nonce"], "device_pubkey": pub1})),
+        },
+    )
+    assert first.status_code == 200
+    second = client.post(
+        "/api/v1/auth/enroll",
+        json={
+            "device_pubkey": pub2,
+            "window_nonce": w["window_nonce"],
+            "sig": _sig(priv2, _canon({"nonce": w["window_nonce"], "device_pubkey": pub2})),
+        },
+    )
+    assert second.status_code == 401
+
+
+def test_enroll_rejects_tampered_sig(client):
+    priv, pub = _kp()
+    w = client.post("/api/v1/auth/enroll/open").json()
+    # Sign a DIFFERENT payload than the one the server will canonicalize and
+    # verify against, so the signature does not match: proves tampered/mismatched
+    # signatures are rejected rather than silently accepted.
+    bad_sig = _sig(priv, _canon({"nonce": w["window_nonce"], "device_pubkey": "not-" + pub}))
+    r = client.post(
+        "/api/v1/auth/enroll",
+        json={"device_pubkey": pub, "window_nonce": w["window_nonce"], "sig": bad_sig},
+    )
+    assert r.status_code == 401
+
+
 def test_session_rejects_replayed_nonce(client):
     priv, pub = _kp()
     w = client.post("/api/v1/auth/enroll/open").json()

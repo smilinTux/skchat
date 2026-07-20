@@ -135,7 +135,13 @@ class DeviceStore:
         with self._lock:
             self._data[fp] = device_pubkey_b64
             self._path.parent.mkdir(parents=True, exist_ok=True)
-            self._path.write_text(json.dumps(self._data))
+            # Atomic write: temp file in the same directory, then os.replace()
+            # onto the target, so a crash mid-write never leaves a torn file
+            # (either the old contents are intact or the new ones are, never
+            # a half-written mix).
+            tmp = self._path.with_suffix(self._path.suffix + f".tmp-{os.getpid()}")
+            tmp.write_text(json.dumps(self._data))
+            os.replace(tmp, self._path)
         return fp
 
     def is_enrolled(self, device_fp: str) -> bool:

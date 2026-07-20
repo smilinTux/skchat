@@ -18,7 +18,7 @@ from . import operator_auth as oa
 from .guest import _require_operator
 from .pairing_gate import PairingGate
 
-_pairing = PairingGate()
+_pairing = PairingGate(max_accepts_per_window=1)  # operator enroll: 1 device per window
 
 
 def _canon(obj) -> bytes:
