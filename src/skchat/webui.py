@@ -233,6 +233,16 @@ try:
 except ImportError as _e:
     logger.warning("operator auth routes not registered: %s", _e)
 
+# TEMP debug beacon for the [SPVID] camera-share bug repro (commit b0ae75b in
+# skchat-app): POST /spvid-log, not under /api/v1 so the operator-auth gate
+# never touches it. Delete once the bug is diagnosed.
+try:
+    from .spvid_debug import register_spvid_debug as _register_spvid_debug
+
+    _register_spvid_debug(app)
+except ImportError as _e:
+    logger.warning("spvid debug route not registered: %s", _e)
+
 
 @app.get("/")
 async def root() -> RedirectResponse:
