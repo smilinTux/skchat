@@ -471,15 +471,30 @@ def _lumina_messages(limit: int = 200) -> list[dict]:
 
 
 def _lumina_conversation() -> dict:
-    """The pinned Lumina conversation entry (app conversation shape)."""
+    """The pinned Lumina conversation entry (app conversation shape).
+
+    Carries BOTH the conversation-contract keys (``peer_id``/``display_name``/
+    ``soul_fingerprint``, read by the Flutter app's ``Conversation.fromJson``)
+    and aliased peer-contract keys (``name``/``fingerprint``). This same dict
+    also backs ``GET /api/v1/peers`` (see ``api_peers``), which the app reads
+    with ``PeerInfo.fromJson`` -- a DIFFERENT model that only ever looked at
+    ``name``/``fingerprint``. Without the aliases, every peer discovered only
+    through ``/api/v1/peers`` (no conversation thread yet) parsed to an empty
+    name and a null fingerprint, and the app's fallback then substituted the
+    peerId itself for the fingerprint -- which the peer-trust tier resolver
+    treats as "no real key", permanently showing the peer as unverifiable
+    instead of their true keyed/red tier.
+    """
     msgs = _lumina_messages(limit=50)
     last = msgs[-1] if msgs else None
     return {
         "peer_id": LUMINA_ID,
         "display_name": LUMINA_NAME,
+        "name": LUMINA_NAME,
         "last_message": (last or {}).get("content", "") if last else "",
         "last_message_time": (last or {}).get("timestamp", _now_iso()),
         "soul_fingerprint": LUMINA_FINGERPRINT,
+        "fingerprint": LUMINA_FINGERPRINT,
         "is_online": _operator_online(),
         "is_agent": True,
         "unread_count": 0,
@@ -494,6 +509,10 @@ def _other_peers() -> list[dict]:
     """Best-effort: known peers from ~/.skcapstone/peers/*.json (Lumina excluded).
 
     Lumina is added separately and pinned first; this just enriches the list.
+
+    See the ``name``/``fingerprint`` note on :func:`_lumina_conversation` --
+    this dict shape backs both ``/api/v1/conversations`` and ``/api/v1/peers``,
+    so it carries both key sets for the same reason.
     """
     import json
 
@@ -509,13 +528,17 @@ def _other_peers() -> list[dict]:
         handle = (data.get("handle") or data.get("identity") or p.stem).strip()
         if _is_lumina(handle) or _is_lumina(data.get("identity", "")) or p.stem == "lumina":
             continue
+        display_name = data.get("name") or p.stem.title()
+        fingerprint = data.get("fingerprint", "")
         out.append(
             {
                 "peer_id": data.get("handle") or data.get("identity") or p.stem,
-                "display_name": data.get("name") or p.stem.title(),
+                "display_name": display_name,
+                "name": display_name,
                 "last_message": "",
                 "last_message_time": _now_iso(),
-                "soul_fingerprint": data.get("fingerprint", ""),
+                "soul_fingerprint": fingerprint,
+                "fingerprint": fingerprint,
                 "is_online": False,
                 "is_agent": (data.get("agent_type") == "ai")
                 or (data.get("entity_type") == "ai-agent"),
