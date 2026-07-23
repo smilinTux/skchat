@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from dataclasses import dataclass
+
+logger = logging.getLogger("skchat.spaces.moderation")
 
 _ACTIONS = {"raise_hand", "lower_hand", "invite", "uninvite", "remove", "noop"}
 
@@ -132,10 +135,146 @@ class Moderator:
                         ),
                     )
                 )
+                if action == "remove":
+                    # Backstop: a frozen or malicious client may ignore the
+                    # can_publish revoke above and keep publishing audio. Force-mute
+                    # any already-published microphone track(s) directly so the SFU
+                    # itself stops relaying it, regardless of client behavior.
+                    await self._mute_mic_tracks(svc, room, identity, current)
                 return can_publish
         finally:
             # evict the lock once nobody else is holding or waiting for it, so the
             # dict does not grow unbounded across many distinct identities.
+            self._lock_users[key] -= 1
+            if self._lock_users[key] <= 0:
+                self._lock_users.pop(key, None)
+                self._locks.pop(key, None)
+
+    async def _mute_mic_tracks(self, svc, room: str, identity: str, participant) -> None:
+        """Best-effort demote backstop: force-mute any published microphone
+        track(s) on `participant`. No-op if there are none. A mute failure (e.g.
+        the track vanished mid-race) is logged and swallowed rather than raised,
+        since the can_publish revoke already applied and is authoritative; this
+        is defense-in-depth, not the primary control."""
+        from livekit import api
+
+        for track in getattr(participant, "tracks", None) or []:
+            if getattr(track, "source", None) != api.TrackSource.MICROPHONE:
+                continue
+            sid = getattr(track, "sid", "")
+            if not sid:
+                continue
+            try:
+                await svc.mute_published_track(
+                    api.MuteRoomTrackRequest(
+                        room=room, identity=identity, track_sid=sid, muted=True
+                    )
+                )
+            except Exception:
+                logger.warning(
+                    "demote backstop: failed to mute track %s for %s in %s",
+                    sid,
+                    identity,
+                    room,
+                    exc_info=True,
+                )
+
+    async def _stop_video_tracks(self, svc, room: str, identity: str, participant) -> None:
+        """Best-effort sharing-revoke backstop: force-stop any already-published
+        CAMERA/SCREEN_SHARE/SCREEN_SHARE_AUDIO track(s) on `participant`. No-op
+        if there are none. A mute failure (e.g. the track vanished mid-race) is
+        logged and swallowed rather than raised, since the canPublishSources
+        revoke already applied and is authoritative; this is defense-in-depth,
+        not the primary control. Mirrors `_mute_mic_tracks` (the M5 demote
+        backstop), but for video sources instead of the mic."""
+        from livekit import api
+
+        video_sources = {
+            api.TrackSource.CAMERA,
+            api.TrackSource.SCREEN_SHARE,
+            api.TrackSource.SCREEN_SHARE_AUDIO,
+        }
+        for track in getattr(participant, "tracks", None) or []:
+            if getattr(track, "source", None) not in video_sources:
+                continue
+            sid = getattr(track, "sid", "")
+            if not sid:
+                continue
+            try:
+                await svc.mute_published_track(
+                    api.MuteRoomTrackRequest(
+                        room=room, identity=identity, track_sid=sid, muted=True
+                    )
+                )
+            except Exception:
+                logger.warning(
+                    "sharing backstop: failed to mute track %s for %s in %s",
+                    sid,
+                    identity,
+                    room,
+                    exc_info=True,
+                )
+
+    async def set_sharing(self, room: str, identity: str, allow: bool) -> bool:
+        """Host-controlled toggle for a speaker's VIDEO sharing (canPublishSources).
+
+        Leaves the microphone (and can_publish/can_subscribe/can_publish_data)
+        untouched either way, so the speaker can always still talk; only the
+        allowed publish sources change:
+          - allow=False: MICROPHONE only (screen + camera revoked).
+          - allow=True: MICROPHONE + CAMERA + SCREEN_SHARE + SCREEN_SHARE_AUDIO.
+
+        Reads the current participant first so the existing raise-hand/invited
+        stage metadata (see stage_action) is round-tripped unchanged rather than
+        wiped, and shares the per-(room, identity) lock with stage_action so a
+        concurrent invite/remove cannot race this update. Best-effort: an
+        unknown identity is handled the same way stage_action handles it (the
+        fake/real service returns an empty participant, we just proceed)."""
+        from livekit import api
+
+        key = (room, identity)
+        lock = self._locks.setdefault(key, asyncio.Lock())
+        self._lock_users[key] = self._lock_users.get(key, 0) + 1
+        try:
+            async with lock:
+                svc = self._service()
+                current = await svc.get_participant(
+                    api.RoomParticipantIdentity(room=room, identity=identity)
+                )
+                metadata = getattr(current, "metadata", "") or ""
+                sources = (
+                    [
+                        api.TrackSource.MICROPHONE,
+                        api.TrackSource.CAMERA,
+                        api.TrackSource.SCREEN_SHARE,
+                        api.TrackSource.SCREEN_SHARE_AUDIO,
+                    ]
+                    if allow
+                    else [api.TrackSource.MICROPHONE]
+                )
+                await svc.update_participant(
+                    api.UpdateParticipantRequest(
+                        room=room,
+                        identity=identity,
+                        metadata=metadata,
+                        permission=api.ParticipantPermission(
+                            can_publish=True,
+                            can_subscribe=True,
+                            can_publish_data=True,
+                            can_publish_sources=sources,
+                        ),
+                    )
+                )
+                if not allow:
+                    # Backstop: a frozen or non-cooperative client may ignore the
+                    # canPublishSources revoke above and keep publishing screen/
+                    # camera video. Force-stop any already-published video
+                    # track(s) directly so the SFU itself stops relaying it,
+                    # regardless of client behavior. Mirrors the M5 demote/mic
+                    # backstop above; the mic is left untouched.
+                    await self._stop_video_tracks(svc, room, identity, current)
+                return allow
+        finally:
             self._lock_users[key] -= 1
             if self._lock_users[key] <= 0:
                 self._lock_users.pop(key, None)

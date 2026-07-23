@@ -48,6 +48,10 @@ sovereign path:
   profiles), both signed into Tailscale. Tier-1 ICE assumes both peers
   `on_tailnet` (see `connectivity.py`); off-tailnet needs coturn env
   (`SKCHAT_TURN_SECRET`/`SKCHAT_TURN_URLS`), which is **not** wired per-peer yet.
+  The TURN path is **sovereign-only**: the ICE ladder is Tailscale -> LAN ->
+  sovereign coturn (Funnel `:8443`), and it fails closed (no relay offered at
+  all) when the sovereign coturn is not configured. There is no third-party
+  TURN fallback of any kind.
 - A microphone on each device (camera optional). `tailscale serve` over HTTPS is
   a **secure context**, so `getUserMedia` (mic/cam) is permitted.
 
@@ -234,7 +238,9 @@ webui + reachable SFU with trusted TLS + a full Chromium build.)
   (sig-gate correctly dropping it) **or** B's page not polling (check `/call/incoming`
   directly).
 - Both join but no audio → ICE/SFU reachability (confirm `:8443` reachable from the
-  browser's tailnet; check `preferred_tier`); off-tailnet needs coturn env (not wired).
+  browser's tailnet; check `preferred_tier`); off-tailnet needs coturn env (not
+  wired). This is expected to fail closed (no call) rather than fall back to any
+  third-party TURN relay.
 - Page loads but never connects → check browser console for the livekit-client ESM
   load (the F-6 fix removed a fatal bad `TrackPublishOptions` import; a regression
   there breaks `room`/`connect`).
@@ -247,11 +253,11 @@ webui + reachable SFU with trusted TLS + a full Chromium build.)
 |---|---|
 | Call routes (`/call/start` ring, `/call/answer`, `/call/incoming` sig-gate, `/call/peers`) | **CI** — `tests/test_call_routes.py` (16 cases) |
 | Call session (`derive_room()` per-pair, `CALL_INVITE` build/parse) | **CI** — `tests/test_call_session.py` (12 cases) |
-| Connectivity (ICE tier ladder) | **CI** — `tests/test_connectivity.py` (11 cases) |
+| Connectivity (ICE tier ladder, sovereign-only, fails closed) | **CI** - `tests/test_connectivity.py` (17 cases) |
 | Call wiring end-to-end (in-process) | **CI-int** — `test_call_integration.py` |
 | Two headless browsers join SFU + data-channel round-trip | **LIVE ✅** — `scripts/qa_two_browser.py` (matrix F-6) |
 | **Human 1:1 A/V via the ring/sig-gate path (this runbook)** | **LIVE ⏳** — needs this run on the tailnet with two real browsers |
-| Off-tailnet call (Tier-3 coturn relay) | **GATED** — per-peer off-tailnet ICE detection not wired; coturn env not provisioned for calls |
+| Off-tailnet call (Tier-3 sovereign coturn relay, sovereign-only, fails closed) | **GATED** - per-peer off-tailnet ICE detection not wired; coturn env not provisioned for calls |
 | Agent-as-callee (Lumina answers) | **GATED on .100 GPU** — needs `skchat-lumina-call.service` + TTS/STT/LLM up |
 
 So: the **media + SFU + data-channel** legs are CI-proven and LIVE ✅ (F-6); the
@@ -271,7 +277,8 @@ gated extensions are off-tailnet (coturn) and agent-callee (.100 GPU).
   `/call/incoming` `/call/peers` `/connectivity/ice`.
 - `src/skchat/call_session.py` — `derive_room()`, `build_invite_body()`,
   `parse_invite_body()`, `CALL_INVITE_SUBJECT`.
-- `src/skchat/connectivity.py` — `ice_config()` (Tier 1 tailnet → Tier 3 coturn).
+- `src/skchat/connectivity.py` - `ice_config()` (Tier 1 tailnet -> Tier 3 sovereign
+  coturn, fails closed to no relay if the sovereign coturn is not configured).
 - `src/skchat/livekit_routes.py` — `register_livekit_routes`, `_mint_token()`,
   `/livekit/config`, `/livekit/token`, `/livekit` page.
 - `src/skchat/static/livekit.html` — `connect()`, auto-join on `room`+`identity`,

@@ -79,4 +79,14 @@ class SpaceRegistry:
             self._save()
 
     def live(self) -> list[Space]:
-        return [s for s in self._spaces.values() if s.status != SpaceStatus.ENDED]
+        """The 'live now' list, newest-created first.
+
+        Sorted at the source (the registry) so every consumer of ``live()`` -
+        the GET /spaces route (web directory + Flutter app both read it) and
+        any future caller - gets a consistent newest-on-top order without
+        having to re-sort itself. Spaces created before ``created_at`` existed
+        default to 0.0 and sort last, not wherever insertion order happened to
+        put them.
+        """
+        live = [s for s in self._spaces.values() if s.status != SpaceStatus.ENDED]
+        return sorted(live, key=lambda s: s.created_at, reverse=True)

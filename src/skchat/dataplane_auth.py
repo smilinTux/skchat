@@ -56,9 +56,9 @@ class CapAuthValidator:
     credential capauth affirms; it **fails closed** (returns False) on a missing
     credential, a verification failure, or any error resolving the backend.
 
-    The wire form is a base64url-encoded signed FQID assertion — the same
-    ``{"claim", "sig"}`` capauth-proof the sovereign join / sk-lk-authd routes
-    already accept — verified through :func:`assertion.verify_signed`.
+    Accepts an operator-session JWT (Bearer) or base64url-encoded {"claim", "sig"}
+    OpenPGP FQID assertion, tried in that order. The OpenPGP form is verified
+    through :func:`assertion.verify_signed`.
     """
 
     def validate(self, token: str) -> bool:
@@ -79,6 +79,17 @@ def _verify_capauth_credential(token: str) -> bool:
     checks the signature, freshness and the FQID->pubkey pin, raising on any
     problem). Lazy-imported so importing this module never drags in capauth.
     """
+    # Operator-session JWT (the app's Bearer credential). Try this first;
+    # fall through to the OpenPGP assertion path for daemon/agent callers.
+    try:
+        from .operator_auth import OperatorAuthError, verify_operator_session
+        verify_operator_session(token)
+        return True
+    except OperatorAuthError:
+        pass
+    except Exception:
+        logger.debug("operator-session credential check errored, falling through", exc_info=True)
+
     import base64
     import json
 

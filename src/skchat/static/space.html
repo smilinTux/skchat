@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>SK Space</title>
-<script src="https://cdn.jsdelivr.net/npm/livekit-client/dist/livekit-client.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/livekit-client@2.6.0/dist/livekit-client.umd.min.js"></script>
 <style>
   :root {
     --bg:#0b0d10; --surface:#13161b; --line:#222831; --text:#e6e9ee;
@@ -34,22 +34,71 @@
     padding:10px 16px; font-weight:600; cursor:pointer; }
   button.ghost { background:transparent; color:var(--text);
     border:1px solid var(--line); }
+  button.ghost.live { background:var(--accent); color:#04201c; border-color:transparent; }
+  /* Promoted, primary control-bar action (state 4 Join stage, state 5 mic):
+     filled and unmistakable, never the muted ghost look. */
+  button.primary { background:var(--accent); color:#04201c; border:0; }
+  /* Live-mic look reuses the same red used by the #rec indicator below, so
+     "you are broadcasting" reads as a single consistent color language. */
+  button.primary.live { background:#ef4444; color:#fff; }
+  button:disabled { opacity:.5; cursor:default; }
   .count { color:var(--muted); font-size:13px; margin-left:auto; }
   .step { color:var(--muted); font-size:13px; min-height:18px; margin-top:12px; }
+  .icon-btn { background:transparent; border:0; color:var(--text); font-size:16px;
+    line-height:1; cursor:pointer; padding:6px 8px; border-radius:8px; }
+  .icon-btn:hover { background:var(--surface); }
+  .share-notice { color:var(--accent); font-size:12px; }
+  .invited-banner { display:flex; align-items:center; gap:10px; margin-top:16px;
+    padding:10px 14px; background:rgba(45,212,191,.12); border:1px solid var(--accent);
+    border-radius:11px; font-size:13px; }
+  .invited-banner span { flex:1; }
+  .invited-banner button:not(.icon-btn) { padding:6px 12px; font-size:13px; }
+  .join-card { max-width:360px; margin:60px auto 0; background:var(--surface);
+    border:1px solid var(--line); border-radius:var(--radius); padding:24px;
+    text-align:center; }
+  .join-card h2 { margin:0 0 18px; font-size:16px; font-weight:600; }
+  .join-card label { display:block; text-align:left; font-size:12px;
+    color:var(--muted); margin-bottom:6px; }
+  .join-card input { width:100%; padding:10px 12px; border-radius:10px;
+    border:1px solid var(--line); background:#0f1216; color:var(--text);
+    font-size:14px; margin-bottom:16px; }
+  .join-card button { width:100%; }
+  /* VER: tap-to-reload notice when a newer build deploys under an already-open
+     tab (only shown once connected/on stage; the join card auto-reloads instead). */
+  .version-banner { display:flex; align-items:center; gap:10px; margin-top:16px;
+    padding:10px 14px; background:rgba(59,130,246,.12); border:1px solid var(--self);
+    border-radius:11px; font-size:13px; cursor:pointer; }
 </style>
 </head>
 <body>
 <header>
   <h1 id="title">SK Space</h1>
+  <button class="icon-btn" id="share" title="Share space link" aria-label="Share space link">🔗</button>
+  <span class="share-notice" id="shareNotice" aria-live="polite"></span>
   <span id="rec">● REC</span>
 </header>
 <main>
-  <div class="speakers" id="speakers"></div>
-  <div class="bar">
+  <section class="join-card" id="joinCard">
+    <h2 id="joinCardTitle">SK Space</h2>
+    <label for="nameInput">Your name</label>
+    <input id="nameInput" type="text" maxlength="40" autocomplete="off" spellcheck="false" />
     <button id="join">Join</button>
+  </section>
+  <div class="speakers" id="speakers"></div>
+  <div class="invited-banner" id="invitedBanner" style="display:none">
+    <span id="invitedText">The host invited you to speak.</span>
+    <button id="invitedJoin">Join stage</button>
+    <button class="icon-btn" id="invitedDismiss" aria-label="Dismiss invite" title="Dismiss">✕</button>
+  </div>
+  <div class="version-banner" id="versionBanner" style="display:none" title="Tap to reload">
+    <span id="versionBannerText">A new version is available. Tap to reload.</span>
+  </div>
+  <div class="bar">
+    <button class="ghost" id="mic" style="display:none" disabled>🎙️ Unmute</button>
     <button class="ghost" id="hand" disabled>✋ Raise hand</button>
+    <button class="ghost" id="leaveStage" style="display:none">Leave stage</button>
     <button class="ghost" id="end" style="display:none">End</button>
-    <span class="count" id="count">—</span>
+    <span class="count" id="count">not connected</span>
   </div>
   <div class="step" id="step"></div>
 </main>
@@ -60,6 +109,160 @@
   const spaceId = (location.pathname.split("/").pop() || "").replace(/[^a-z0-9-]/gi, "");
   const step = (t) => document.getElementById("step").textContent = t;
   let room;
+  let micEnabled = false;  // X Spaces model: promotion/join never auto-publishes; user must click Unmute
+  let invitedDismissed = false;  // dismiss [x] on the invited banner, latched until re-invited
+  let wasInvited = false;  // tracks the false -> true edge that re-arms a dismissed banner
+  // VER: build stamp, substituted server-side (routes.py, from the ORIGINAL file
+  // bytes) so an already-open tab can notice a newer deploy landed and self-heal.
+  const SPACE_BUILD = "__SPACE_BUILD__";
+
+  // Guest alias: pre-filled, editable, remembered across visits. No account needed.
+  const NAME_STORE_KEY = "skchat.space.guestName";
+  // localStorage access can THROW (Safari private mode, storage-disabled policy,
+  // sandboxed iframe). Never let that kill the script block at load or break the
+  // Join click: guard every touch and fall back to an in-memory store for the session.
+  const memStore = {};
+  function safeStorageGet(key) {
+    try { return localStorage.getItem(key); }
+    catch (e) { return Object.prototype.hasOwnProperty.call(memStore, key) ? memStore[key] : null; }
+  }
+  function safeStorageSet(key, value) {
+    try { localStorage.setItem(key, value); }
+    catch (e) { memStore[key] = value; }
+  }
+  const GUEST_ANIMALS = ["Falcon","Otter","Panda","Lynx","Heron","Wolf","Finch","Marlin",
+    "Badger","Sparrow","Orca","Ibex","Kite","Puffin","Raven","Stag","Tapir","Wren",
+    "Yak","Zebra","Bison","Coyote","Dingo","Egret"];
+  function randomGuestAlias() {
+    const animal = GUEST_ANIMALS[Math.floor(Math.random() * GUEST_ANIMALS.length)];
+    const digits = String(10 + Math.floor(Math.random() * 90));  // 2 digits
+    return `Guest-${animal}${digits}`;
+  }
+  function initialGuestName() {
+    // ?name= (legacy query-param join path) still wins if present, so old invite
+    // links keep working; otherwise prefer the remembered name, then a fresh alias.
+    const fromQuery = (qs.get("name") || "").trim();
+    if (fromQuery) return fromQuery;
+    const saved = (safeStorageGet(NAME_STORE_KEY) || "").trim();
+    return saved || randomGuestAlias();
+  }
+  const nameInput = document.getElementById("nameInput");
+  nameInput.value = initialGuestName();
+  document.getElementById("joinCardTitle").textContent = document.getElementById("title").textContent;
+
+  // Parse the local participant's stage metadata, guarded (bad/missing JSON
+  // never throws). Shared by updateStageControls() and the hand-button click
+  // dispatcher so both read the exact same shape.
+  function currentMeta() {
+    const p = room?.localParticipant;
+    if (!p) return {};
+    try { return JSON.parse(p.metadata || "{}"); } catch (_) { return {}; }
+  }
+
+  // Single owner of the control-bar state machine (X Spaces model). #hand,
+  // #mic, #leaveStage and the invited banner are ALL driven from here, on
+  // every state change (connect, ParticipantPermissionsChanged,
+  // ParticipantMetadataChanged, after each toggle) so they can never drift
+  // out of sync. This replaces the old updateMicButton() + updateInvitedBanner()
+  // split, which was the root cause of the operator bug: #hand was only ever
+  // relabeled, never hidden, so a freshly promoted speaker saw a lit "Raise
+  // hand" button sitting right next to a separate "Unmute" button.
+  //
+  // State 1 listener never sees a mic button; a speaker (state 5) never sees
+  // a raise-hand button; only one of {hand, mic} is ever visible at a time.
+  function updateStageControls() {
+    const handBtn = document.getElementById("hand");
+    const micBtn = document.getElementById("mic");
+    const leaveBtn = document.getElementById("leaveStage");
+    const banner = document.getElementById("invitedBanner");
+    const p = room?.localParticipant;
+
+    if (!room || !p) {
+      // State 1: not connected, controls disabled, nothing lit.
+      handBtn.style.display = "inline-block";
+      handBtn.disabled = true;
+      handBtn.classList.remove("live", "primary");
+      handBtn.classList.add("ghost");
+      handBtn.textContent = "✋ Raise hand";
+      micBtn.style.display = "none";
+      micBtn.classList.remove("live");
+      leaveBtn.style.display = "none";
+      banner.style.display = "none";
+      return;
+    }
+
+    const meta = currentMeta();
+    const invited = !!meta.invited_to_stage;
+    const handRaised = !!meta.hand_raised;
+    const canPublish = !!p.permissions?.canPublish;
+    if (invited && !wasInvited) invitedDismissed = false;  // re-arm on false -> true
+    wasInvited = invited;
+
+    if (canPublish) {
+      // State 5: on stage / speaker. Hide #hand entirely, #mic becomes the
+      // one prominent control. A clean self-service step-down path already
+      // exists server-side (remove-from-stage permits "host OR self", see
+      // routes.py), so a real "Leave stage" button is safe to wire, not
+      // invented.
+      handBtn.style.display = "none";
+      banner.style.display = "none";
+      micBtn.style.display = "inline-block";
+      micBtn.disabled = false;
+      micBtn.classList.remove("ghost");
+      micBtn.classList.add("primary");
+      micBtn.classList.toggle("live", micEnabled);
+      micBtn.textContent = micEnabled ? "🔇 Mute" : "🎙️ Unmute";
+      leaveBtn.style.display = "inline-block";
+      leaveBtn.disabled = false;
+      return;
+    }
+
+    // Not (or no longer) a speaker: state 6 (just demoted) collapses back
+    // into state 2/3 below, exactly like the brief asks.
+    micBtn.style.display = "none";
+    micBtn.classList.remove("live");
+    micEnabled = false;
+    leaveBtn.style.display = "none";
+    handBtn.style.display = "inline-block";
+    handBtn.disabled = false;
+
+    if (invited && !handRaised) {
+      // State 4: invited, not yet on stage. #hand becomes the primary
+      // "Join stage" call to action; the invited banner still shows too.
+      handBtn.classList.remove("ghost", "live");
+      handBtn.classList.add("primary");
+      handBtn.textContent = "Join stage";
+      banner.style.display = invitedDismissed ? "none" : "flex";
+    } else if (handRaised) {
+      // State 3: hand raised, waiting on the host. Clearly RAISED look
+      // (reuses the same "live" = lit/active class the mic uses).
+      handBtn.classList.remove("primary");
+      handBtn.classList.add("ghost", "live");
+      handBtn.textContent = "✋ Hand raised (tap to lower)";
+      banner.style.display = "none";
+    } else {
+      // State 2: plain listener.
+      handBtn.classList.remove("primary", "live");
+      handBtn.classList.add("ghost");
+      handBtn.textContent = "✋ Raise hand";
+      banner.style.display = "none";
+    }
+  }
+
+  // Turn a getUserMedia / publish failure into a plain, non-blocking status line.
+  function micErrorMessage(e) {
+    const name = e && e.name || "";
+    if (name === "NotAllowedError" || name === "PermissionDeniedError" || name === "SecurityError") {
+      return "Mic permission denied. Allow microphone access for this site, then try again.";
+    }
+    if (name === "NotFoundError" || name === "DevicesNotFoundError" || name === "OverconstrainedError") {
+      return "No microphone found. Connect one and try again.";
+    }
+    if (name === "NotReadableError" || name === "TrackStartError") {
+      return "Microphone is busy or unavailable, maybe another app has it open. Try again.";
+    }
+    return "Mic error: " + ((e && e.message) || String(e));
+  }
 
   async function getToken() {
     // ?host=<fqid> → join as host (publish + controls); else join as a listener.
@@ -73,9 +276,10 @@
       return res.json();
     }
     const identity = qs.get("identity") || ("listener-" + Math.random().toString(36).slice(2,8));
+    const name = (nameInput.value || "").trim() || randomGuestAlias();
     const res = await fetch(`/spaces/${spaceId}/join`, {
       method:"POST", headers:{"content-type":"application/json"},
-      body: JSON.stringify({ identity, name: qs.get("name") || identity })
+      body: JSON.stringify({ identity, name })
     });
     if (!res.ok) throw new Error("join failed: " + res.status);
     return res.json();
@@ -113,9 +317,15 @@
       wrap.append(ring, name); el.append(wrap);
     }
     document.getElementById("count").textContent = `${listeners} listening`;
+    updateStageControls();
   }
 
   document.getElementById("join").onclick = async () => {
+    // No empty names: fall back to a fresh generated alias, same as an empty
+    // localStorage read would. Persist whatever we actually join with.
+    const chosenName = (nameInput.value || "").trim() || randomGuestAlias();
+    nameInput.value = chosenName;
+    safeStorageSet(NAME_STORE_KEY, chosenName);
     try {
       step("Connecting…");
       const { url, token, title } = await getToken();
@@ -129,24 +339,50 @@
         if (track.kind === "audio") track.attach();  // play speaker audio
       });
       room.on(LK.RoomEvent.ParticipantPermissionsChanged, async (prev, p) => {
-        if (p === room.localParticipant && p.permissions?.canPublish) {
-          await room.localParticipant.setMicrophoneEnabled(true);  // promoted → talk
-          step("You're on stage — mic live.");
+        if (p === room.localParticipant) {
+          const canPublish = !!p.permissions?.canPublish;
+          if (!canPublish && micEnabled) {
+            // demoted mid-session while live: force-mute, never leave a hot mic behind
+            try { await room.localParticipant.setMicrophoneEnabled(false); } catch (_) { /* ignore */ }
+            micEnabled = false;
+            step("Removed from stage, mic muted.");
+          } else if (canPublish) {
+            // promoted: X Spaces model, land muted, the human clicks Unmute
+            step("You're on stage, click Unmute to go live.");
+          }
+          updateStageControls();
         }
         renderSpeakers();
       });
       await room.connect(url, token);
-      // host (or anyone who joins already able to publish) goes live immediately
-      if (room.localParticipant.permissions?.canPublish) {
-        await room.localParticipant.setMicrophoneEnabled(true);
-        step("On stage — your mic is live.");
-      }
       renderSpeakers();
-      document.getElementById("join").style.display = "none";
-      document.getElementById("hand").disabled = false;
+      updateStageControls();
+      document.getElementById("joinCard").style.display = "none";
       if (hostFqid) document.getElementById("end").style.display = "inline";
-      if (!room.localParticipant.permissions?.canPublish) step("Connected — listening.");
+      if (room.localParticipant.permissions?.canPublish) {
+        step("Connected, click Unmute to go live.");
+      } else {
+        step("Connected, listening.");
+      }
     } catch (e) { step("Error: " + e.message); }
+  };
+
+  document.getElementById("mic").onclick = async () => {
+    const btn = document.getElementById("mic");
+    if (!room?.localParticipant?.permissions?.canPublish) return;
+    btn.disabled = true;
+    const next = !micEnabled;
+    try {
+      await room.localParticipant.setMicrophoneEnabled(next);
+      micEnabled = next;
+      step(micEnabled ? "Mic live." : "Mic muted.");
+    } catch (e) {
+      // getUserMedia/publish failed: leave micEnabled unchanged so the button stays
+      // in a retryable state, surface a plain non-blocking message instead of failing silently
+      step(micErrorMessage(e));
+    } finally {
+      updateStageControls();
+    }
   };
 
   async function pollRec() {
@@ -159,14 +395,89 @@
   }
   setInterval(pollRec, 4000);
 
-  document.getElementById("hand").onclick = async () => {
+  // Share: native share sheet where available (phone browsers, iMessage/Telegram/
+  // email picker), else copy the link and show a brief inline "Link copied" notice.
+  document.getElementById("share").onclick = async () => {
+    const link = location.origin + "/space/" + spaceId;
+    const notice = document.getElementById("shareNotice");
+    const flashNotice = (t) => {
+      notice.textContent = t;
+      setTimeout(() => { notice.textContent = ""; }, 2500);
+    };
+    if (navigator.share) {
+      try {
+        await navigator.share({ title: document.getElementById("title").textContent || "SK Space", url: link });
+        return;
+      } catch (e) {
+        // user cancelled the native sheet, or share isn't actually usable here,
+        // fall through to the clipboard fallback below
+      }
+    }
+    try {
+      await navigator.clipboard.writeText(link);
+      flashNotice("Link copied");
+    } catch (e) {
+      flashNotice(link);
+    }
+  };
+
+  // Shared by the control-bar raise-hand button and the invited banner's Join
+  // stage button: same endpoint, same fetch, same accept action either way.
+  // response.on_stage is authoritative: true means the AND-gate closed and the
+  // ParticipantPermissionsChanged handler above will land the "You're on
+  // stage" step text; false means still gated on the other half (rare race:
+  // the host revoked the invite between render and click), so surface the
+  // same pending copy the plain raise-hand flow already used.
+  async function raiseHand() {
     const identity = room?.localParticipant?.identity;
     if (!identity) return;
-    await fetch(`/spaces/${spaceId}/raise-hand`, {
+    const res = await fetch(`/spaces/${spaceId}/raise-hand`, {
       method:"POST", headers:{"content-type":"application/json"},
       body: JSON.stringify({ identity })
     });
-    step("✋ hand raised — waiting for the host.");
+    let onStage = false;
+    try { onStage = !!(await res.json()).on_stage; } catch (_) { /* ignore */ }
+    if (!onStage) step("✋ hand raised, waiting for the host.");
+    updateStageControls();
+  }
+
+  // Self-service step-down: reuses the EXISTING remove-from-stage route,
+  // which already permits "host OR self" (routes.py checks
+  // requester == host_fqid OR requester == identity), so no server route was
+  // added for this. Safe to call whether the caller is already publishing
+  // (state 5 Leave stage) or only has a raised hand (state 3 tap-to-lower):
+  // it idempotently resets hand_raised and invited_to_stage to false either way.
+  async function leaveStage() {
+    const identity = room?.localParticipant?.identity;
+    if (!identity) return;
+    await fetch(`/spaces/${spaceId}/remove-from-stage`, {
+      method:"POST", headers:{"content-type":"application/json"},
+      body: JSON.stringify({ requester: identity, identity })
+    });
+    updateStageControls();
+  }
+
+  // #hand does double (triple) duty across states 2/3/4: raise, lower-while-
+  // waiting, or join. Dispatch on the local participant's own metadata so the
+  // click always does the right thing for the state currently on screen.
+  async function handleHandClick() {
+    const meta = currentMeta();
+    if (meta.hand_raised && !meta.invited_to_stage) {
+      await leaveStage();
+      step("Hand lowered.");
+    } else {
+      await raiseHand();
+    }
+  }
+  document.getElementById("hand").onclick = handleHandClick;
+  document.getElementById("invitedJoin").onclick = raiseHand;
+  document.getElementById("leaveStage").onclick = async () => {
+    await leaveStage();
+    step("Left the stage.");
+  };
+  document.getElementById("invitedDismiss").onclick = () => {
+    invitedDismissed = true;
+    updateStageControls();
   };
 
   const hostFqid = (qs.get("host") || "").replace(/[^a-z0-9@._-]/gi, "") || null;  // host controls
@@ -197,6 +508,39 @@
     if (room) room.disconnect();
     step("Space ended.");
   };
+
+  // VER: self-heal a stale open tab across a deploy. The shell is served
+  // no-cache so a FRESH load always gets the latest JS, but a tab that was
+  // already open keeps running the OLD JS forever, no server header fixes
+  // that. Poll a cheap version endpoint on load and whenever the tab comes
+  // back into view; someone still on the join card just gets reloaded
+  // (nothing to lose), a connected listener or on-stage speaker gets a
+  // tap-to-reload banner instead of being yanked out of a live Space.
+  let lastBuildCheck = 0;
+  async function checkBuild() {
+    const now = Date.now();
+    if (now - lastBuildCheck < 5000) return;  // debounce: at most once every few seconds
+    lastBuildCheck = now;
+    try {
+      const res = await fetch("/spaces/build");
+      if (!res.ok) return;
+      const data = await res.json();
+      if (!data || !data.build || data.build === SPACE_BUILD) return;
+      const joinCard = document.getElementById("joinCard");
+      const onJoinCard = joinCard ? joinCard.style.display !== "none" : true;
+      if (onJoinCard) {
+        location.reload();
+      } else {
+        const banner = document.getElementById("versionBanner");
+        if (banner) banner.style.display = "flex";
+      }
+    } catch (_) { /* offline or blocked: ignore silently, retry on the next check */ }
+  }
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") checkBuild();
+  });
+  setTimeout(checkBuild, 3000);  // once shortly after load
+  document.getElementById("versionBanner").onclick = () => location.reload();
 </script>
 </body>
 </html>

@@ -22,6 +22,10 @@ class FakeModerator:
     async def mute(self, room, identity, track_sid):
         self.calls.append(("mute", room, identity, track_sid))
 
+    async def set_sharing(self, room, identity, allow):
+        self.calls.append(("set_sharing", room, identity, allow))
+        return allow
+
 
 @pytest.fixture
 def setup(tmp_path, monkeypatch):
@@ -110,6 +114,47 @@ def test_host_can_kick_and_mute(setup):
     )
     assert ("kick", sid, "troll@x.y") in mod.calls
     assert ("mute", sid, "loud@x.y", "TR_1") in mod.calls
+
+
+def test_non_host_cannot_set_sharing(setup):
+    c, sid, mod, reg, led = setup
+    r = c.post(
+        f"/spaces/{sid}/set-sharing",
+        json={"requester": "rando@x.y", "identity": "alice@x.y", "allow": False},
+    )
+    assert r.status_code == 403
+    assert all(call[0] != "set_sharing" for call in mod.calls)
+
+
+def test_host_can_disable_sharing(setup):
+    c, sid, mod, reg, led = setup
+    r = c.post(
+        f"/spaces/{sid}/set-sharing",
+        json={"requester": "lumina@chef.skworld", "identity": "alice@x.y", "allow": False},
+    )
+    assert r.status_code == 200
+    assert r.json() == {"ok": True, "sharing": False}
+    assert ("set_sharing", sid, "alice@x.y", False) in mod.calls
+
+
+def test_host_can_re_allow_sharing(setup):
+    c, sid, mod, reg, led = setup
+    r = c.post(
+        f"/spaces/{sid}/set-sharing",
+        json={"requester": "lumina@chef.skworld", "identity": "alice@x.y", "allow": True},
+    )
+    assert r.status_code == 200
+    assert r.json() == {"ok": True, "sharing": True}
+    assert ("set_sharing", sid, "alice@x.y", True) in mod.calls
+
+
+def test_set_sharing_unknown_space_404s(setup):
+    c, sid, mod, reg, led = setup
+    r = c.post(
+        "/spaces/nope-space-000000000/set-sharing",
+        json={"requester": "lumina@chef.skworld", "identity": "alice@x.y", "allow": False},
+    )
+    assert r.status_code == 404
 
 
 def test_self_can_remove_from_stage(setup):

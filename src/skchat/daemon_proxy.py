@@ -471,15 +471,30 @@ def _lumina_messages(limit: int = 200) -> list[dict]:
 
 
 def _lumina_conversation() -> dict:
-    """The pinned Lumina conversation entry (app conversation shape)."""
+    """The pinned Lumina conversation entry (app conversation shape).
+
+    Carries BOTH the conversation-contract keys (``peer_id``/``display_name``/
+    ``soul_fingerprint``, read by the Flutter app's ``Conversation.fromJson``)
+    and aliased peer-contract keys (``name``/``fingerprint``). This same dict
+    also backs ``GET /api/v1/peers`` (see ``api_peers``), which the app reads
+    with ``PeerInfo.fromJson`` -- a DIFFERENT model that only ever looked at
+    ``name``/``fingerprint``. Without the aliases, every peer discovered only
+    through ``/api/v1/peers`` (no conversation thread yet) parsed to an empty
+    name and a null fingerprint, and the app's fallback then substituted the
+    peerId itself for the fingerprint -- which the peer-trust tier resolver
+    treats as "no real key", permanently showing the peer as unverifiable
+    instead of their true keyed/red tier.
+    """
     msgs = _lumina_messages(limit=50)
     last = msgs[-1] if msgs else None
     return {
         "peer_id": LUMINA_ID,
         "display_name": LUMINA_NAME,
+        "name": LUMINA_NAME,
         "last_message": (last or {}).get("content", "") if last else "",
         "last_message_time": (last or {}).get("timestamp", _now_iso()),
         "soul_fingerprint": LUMINA_FINGERPRINT,
+        "fingerprint": LUMINA_FINGERPRINT,
         "is_online": _operator_online(),
         "is_agent": True,
         "unread_count": 0,
@@ -494,6 +509,10 @@ def _other_peers() -> list[dict]:
     """Best-effort: known peers from ~/.skcapstone/peers/*.json (Lumina excluded).
 
     Lumina is added separately and pinned first; this just enriches the list.
+
+    See the ``name``/``fingerprint`` note on :func:`_lumina_conversation` --
+    this dict shape backs both ``/api/v1/conversations`` and ``/api/v1/peers``,
+    so it carries both key sets for the same reason.
     """
     import json
 
@@ -509,13 +528,17 @@ def _other_peers() -> list[dict]:
         handle = (data.get("handle") or data.get("identity") or p.stem).strip()
         if _is_lumina(handle) or _is_lumina(data.get("identity", "")) or p.stem == "lumina":
             continue
+        display_name = data.get("name") or p.stem.title()
+        fingerprint = data.get("fingerprint", "")
         out.append(
             {
                 "peer_id": data.get("handle") or data.get("identity") or p.stem,
-                "display_name": data.get("name") or p.stem.title(),
+                "display_name": display_name,
+                "name": display_name,
                 "last_message": "",
                 "last_message_time": _now_iso(),
-                "soul_fingerprint": data.get("fingerprint", ""),
+                "soul_fingerprint": fingerprint,
+                "fingerprint": fingerprint,
                 "is_online": False,
                 "is_agent": (data.get("agent_type") == "ai")
                 or (data.get("entity_type") == "ai-agent"),
@@ -527,6 +550,72 @@ def _other_peers() -> list[dict]:
             }
         )
     return out
+
+
+def _peers_dir() -> Path:
+    """The capauth peer store directory (patchable in tests)."""
+    return Path(os.path.expanduser("~/.skcapstone/peers"))
+
+
+def _peer_fingerprint_index() -> dict[str, str]:
+    """Build a ``{key -> fingerprint}`` map from ``~/.skcapstone/peers/*.json``.
+
+    Each peer is indexed under every address it might be referenced by (full
+    ``identity`` URI, ``handle``, ``fqid``, file stem, and short name), all
+    lower-cased, so a member/participant identity in any of those forms resolves
+    to the same real capauth fingerprint the 1:1 conversation list uses. Read
+    fresh (no cache) so a newly-added peer is picked up without a restart, same
+    as :func:`_other_peers`.
+    """
+    import json
+
+    idx: dict[str, str] = {}
+    peers_dir = _peers_dir()
+    if not peers_dir.is_dir():
+        return idx
+    for p in sorted(peers_dir.glob("*.json")):
+        try:
+            data = json.loads(p.read_text())
+        except Exception:
+            continue
+        fp = (data.get("fingerprint") or "").strip()
+        if not fp:
+            continue
+        keys = [
+            data.get("identity"),
+            data.get("handle"),
+            data.get("fqid"),
+            p.stem,
+            _short_name(data.get("identity") or data.get("handle") or p.stem),
+        ]
+        for k in keys:
+            if k:
+                idx[k.strip().lower()] = fp
+    return idx
+
+
+def fingerprint_for_identity(identity: str, index: dict[str, str] | None = None) -> str:
+    """Best-effort capauth fingerprint for a member/participant *identity*.
+
+    Resolves a group member's ``identity_uri`` (``capauth:steward@skworld.io``),
+    handle (``steward@skworld.io``), or short name (``steward``) to the
+    fingerprint in the peer store, special-casing Lumina to her pinned key.
+    Returns ``""`` for an unknown identity so the app treats the member as
+    keyless (no badge), never a fabricated key. Pass a prebuilt [index] (from
+    :func:`_peer_fingerprint_index`) to avoid re-reading the store per member.
+    """
+    if not identity:
+        return ""
+    if _is_lumina(identity):
+        return LUMINA_FINGERPRINT
+    idx = index if index is not None else _peer_fingerprint_index()
+    ident = identity.strip().lower()
+    for key in (ident, ident[len("capauth:"):] if ident.startswith("capauth:") else ident,
+                _short_name(identity).lower()):
+        fp = idx.get(key)
+        if fp:
+            return fp
+    return ""
 
 
 # --------------------------------------------------------------------------- #
@@ -879,7 +968,13 @@ async def api_group_members(group_id: str):
     group = G.load_group(group_id)
     if group is None:
         raise HTTPException(404, "group not found")
-    return JSONResponse([G.member_to_app(m) for m in group.members])
+    # Resolve every member's capauth fingerprint from the peer store once, so
+    # each member row carries a real key for the per-member trust badge.
+    idx = _peer_fingerprint_index()
+    return JSONResponse([
+        G.member_to_app(m, fingerprint=fingerprint_for_identity(m.identity_uri, idx))
+        for m in group.members
+    ])
 
 
 @router.post("/v1/groups/{group_id}/members")
@@ -909,7 +1004,7 @@ async def api_group_add_member(group_id: str, request: Request):
         )
         return JSONResponse(
             {"ok": True, "promoted": True, "group": G.group_to_conversation(group),
-             "members": [G.member_to_app(m) for m in group.members]}
+             "members": [G.member_to_app(m, fingerprint=fingerprint_for_identity(m.identity_uri)) for m in group.members]}
         )
 
     if not G.can_add_members(group, OPERATOR_ID):
@@ -917,7 +1012,7 @@ async def api_group_add_member(group_id: str, request: Request):
     added = G.add_member(group, identity, role=role)
     return JSONResponse(
         {"ok": True, "added": added,
-         "members": [G.member_to_app(m) for m in group.members]}
+         "members": [G.member_to_app(m, fingerprint=fingerprint_for_identity(m.identity_uri)) for m in group.members]}
     )
 
 
@@ -950,7 +1045,7 @@ async def api_group_remove_member(group_id: str, identity: str):
         raise HTTPException(404, "member not found")
     return JSONResponse(
         {"ok": True, "removed": identity,
-         "members": [G.member_to_app(m) for m in group.members]}
+         "members": [G.member_to_app(m, fingerprint=fingerprint_for_identity(m.identity_uri)) for m in group.members]}
     )
 
 
@@ -1080,7 +1175,7 @@ async def api_group_call_participants(group_id: str):
             "room": room,
             "active": len(participants),
             "participants": participants,
-            "members": [G.member_to_app(m) for m in group.members],
+            "members": [G.member_to_app(m, fingerprint=fingerprint_for_identity(m.identity_uri)) for m in group.members],
         }
     )
 
@@ -1093,7 +1188,13 @@ async def _livekit_list_participants(room: str) -> list[dict]:
         from livekit import api  # soft dep
     except ImportError:
         return []
-    url = _os.getenv("SKCHAT_LIVEKIT_URL", "ws://skworld-100:7880")
+    # Server-side RoomService/Twirp call: prefer the dedicated API URL over the
+    # browser-facing SKCHAT_LIVEKIT_URL, which may carry a Funnel path prefix
+    # (e.g. wss://host/livekit-ws) that mangles into a malformed double-slash
+    # Twirp URL. Falls back to SKCHAT_LIVEKIT_URL for backward compat.
+    url = _os.getenv("SKCHAT_LIVEKIT_API_URL", "").strip() or _os.getenv(
+        "SKCHAT_LIVEKIT_URL", "ws://skworld-100:7880"
+    )
     http_url = url.replace("ws://", "http://").replace("wss://", "https://")
     key = _os.getenv("SKCHAT_LIVEKIT_API_KEY", "")
     secret = _os.getenv("SKCHAT_LIVEKIT_API_SECRET", "")

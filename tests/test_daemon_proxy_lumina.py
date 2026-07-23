@@ -13,6 +13,8 @@ The qwen3.6 HTTP backend is never touched — a stub ``LuminaBrain`` is injected
 
 from __future__ import annotations
 
+import json
+import os
 import time as _time
 
 import pytest
@@ -76,6 +78,92 @@ def test_lumina_always_present_in_peers_and_conversations(client):
         for key in ("last_message", "last_message_time", "soul_fingerprint",
                     "unread_count", "is_group", "member_count", "avatar_url"):
             assert key in first
+        # Peer-contract aliases (`name`/`fingerprint`) must ALSO be present:
+        # `GET /api/v1/peers` is parsed by the Flutter app's `PeerInfo.fromJson`,
+        # which only reads `name`/`fingerprint`, not `display_name`/
+        # `soul_fingerprint`. Missing aliases here previously meant every peer
+        # discovered only through `/api/v1/peers` (no conversation thread yet)
+        # parsed to an empty name and a null fingerprint app-side, and the
+        # app's fallback then substituted the peerId itself for the
+        # fingerprint -- treated as "no real key" by the peer-trust tier
+        # resolver, permanently rendering the peer unverifiable.
+        assert first["name"] == "Lumina"
+        assert first["fingerprint"] == daemon_proxy.LUMINA_FINGERPRINT
+
+
+def test_other_peers_carry_name_and_fingerprint_aliases(client, monkeypatch):
+    """A real (non-Lumina) peer's ``/api/v1/peers`` entry must carry both the
+    conversation-shape keys (``display_name``/``soul_fingerprint``) AND the
+    peer-shape aliases (``name``/``fingerprint``) the app's ``PeerInfo``
+    model reads, so a peer with no conversation thread yet still resolves to
+    their real capauth fingerprint via the app's peers-only fallback.
+    """
+    jarvis_fp = "BCF7ED87AC8117B448B7677F45BF78F335767EF8"
+    monkeypatch.setattr(
+        daemon_proxy,
+        "_other_peers",
+        lambda: [
+            {
+                "peer_id": "jarvis@skworld.io",
+                "display_name": "Jarvis",
+                "name": "Jarvis",
+                "last_message": "",
+                "last_message_time": "2026-01-01T00:00:00+00:00",
+                "soul_fingerprint": jarvis_fp,
+                "fingerprint": jarvis_fp,
+                "is_online": False,
+                "is_agent": True,
+                "unread_count": 0,
+                "last_delivery_status": "sent",
+                "is_group": False,
+                "member_count": 0,
+                "avatar_url": "",
+            }
+        ],
+    )
+    r = client.get("/api/v1/peers")
+    assert r.status_code == 200
+    body = r.json()
+    jarvis = next(p for p in body if p["peer_id"] == "jarvis@skworld.io")
+    assert jarvis["name"] == "Jarvis"
+    assert jarvis["fingerprint"] == jarvis_fp
+    assert jarvis["fingerprint"] != jarvis["peer_id"]
+
+
+def test_other_peers_reads_real_fingerprint_with_both_key_shapes(tmp_path, monkeypatch):
+    """Unit-test ``_other_peers()`` itself (not monkeypatched away here) against
+    a real ``~/.skcapstone/peers/*.json`` fixture, the same schema the live
+    peer store on disk uses. Each entry must carry the real fingerprint under
+    BOTH ``soul_fingerprint`` (conversation contract) and ``fingerprint``
+    (peer contract) so it survives whichever model the app parses it with.
+    """
+    peers_dir = tmp_path / "peers"
+    peers_dir.mkdir()
+    (peers_dir / "jarvis.json").write_text(json.dumps({
+        "name": "Jarvis",
+        "identity": "capauth:jarvis@skworld.io",
+        "fingerprint": "BCF7ED87AC8117B448B7677F45BF78F335767EF8",
+        "handle": "jarvis@skworld.io",
+        "agent_type": "ai",
+    }))
+
+    real_expanduser = os.path.expanduser
+
+    def _fake_expanduser(p):
+        if p == "~/.skcapstone/peers":
+            return str(peers_dir)
+        return real_expanduser(p)
+
+    monkeypatch.setattr(daemon_proxy.os.path, "expanduser", _fake_expanduser)
+
+    peers = daemon_proxy._other_peers()
+    assert len(peers) == 1
+    jarvis = peers[0]
+    assert jarvis["peer_id"] == "jarvis@skworld.io"
+    assert jarvis["display_name"] == "Jarvis"
+    assert jarvis["name"] == "Jarvis"
+    assert jarvis["soul_fingerprint"] == "BCF7ED87AC8117B448B7677F45BF78F335767EF8"
+    assert jarvis["fingerprint"] == "BCF7ED87AC8117B448B7677F45BF78F335767EF8"
 
 
 def test_send_to_lumina_persists_pair_and_returns_reply(client):

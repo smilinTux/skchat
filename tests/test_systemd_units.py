@@ -51,6 +51,10 @@ EXPECTED_UNITS = {
     "skchat-coturn.service",
     "telegram-catchup.service",
     "telegram-catchup.timer",
+    "skchat-backup.service",
+    "skchat-backup.timer",
+    "skchat-health-probe.service",
+    "skchat-health-probe.timer",
 }
 
 # Old bridge units replaced by the skchat-telegram-*/skchat-telegram@ template.

@@ -1,11 +1,17 @@
 # skchat-app-web.service: static file server for the built Flutter web client.
 #
-# Serves skchat-app/build/web on :8088. This is a stopgap dev-style server
-# (python3 -m http.server); P3.3 in the deploy plan replaces it with a
-# versioned artifact behind a real proxy. Reconciled from live .158 with the
-# hardcoded /home/cbrd21 path replaced by %h so it is portable.
+# Serves skchat-app/build/web on :8088 via scripts/serve-app-web.sh, a
+# hardened stdlib-only static server (Task 7 of skchat-resilience-v1, coord
+# b5078963). Replaces the earlier stopgap dev-style server
+# (`python3 -m http.server`). The new server sets correct Content-Type for
+# .wasm/.js/.json/.css, sends no-cache on index.html and a long immutable
+# cache on content-hashed filenames, and disables directory listing
+# (autoindex) entirely. Binds 0.0.0.0:8088 (SKCHAT_APP_WEB_BIND below) so the
+# Flutter client is reached directly on the tailnet/LAN (it is NOT funnel-
+# fronted; :8088 is not in the tailscale ingress map). Loopback bind plus a
+# funnel mapping is a security follow-up.
 #
-# Requires the Flutter web build to exist at the WorkingDirectory below. Build
+# Requires the Flutter web build to exist at SKCHAT_APP_WEB_ROOT below. Build
 # it on a machine with headroom (NOT .158): see docs/deploy-plan.
 
 [Unit]
@@ -14,8 +20,10 @@ Documentation=https://github.com/smilinTux/skchat
 After=network.target
 
 [Service]
-WorkingDirectory=%h/clawd/skcapstone-repos/skchat-app/build/web
-ExecStart=/usr/bin/python3 -m http.server 8088 --bind 0.0.0.0
+Environment=SKCHAT_APP_WEB_ROOT=%h/clawd/skcapstone-repos/skchat-app/build/web
+Environment=SKCHAT_APP_WEB_PORT=8088
+Environment=SKCHAT_APP_WEB_BIND=0.0.0.0
+ExecStart=/usr/bin/bash %h/clawd/skcapstone-repos/skchat/scripts/serve-app-web.sh
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal

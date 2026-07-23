@@ -1,0 +1,25 @@
+# skchat-backup.service: oneshot encrypted backup of the live skchat
+# stateful data set (at-rest keys, message-log/history DB, group-key
+# stores, coturn config, the skcomms outbox, and bot-token env files).
+#
+# Driven by skchat-backup.timer (daily 04:30). Runs
+# scripts/backup-skchat.sh, which encrypts to Chef's PGP recipient and
+# never writes an unencrypted archive to disk (see the script header for
+# the gpg/sq selection and fail-loudly-if-no-key logic). ExecStopPost fires
+# a best-effort sk-alert on failure only; the leading `-` and the shell
+# guard mean a missing/broken sk-alert binary can never fail this unit or
+# mask a real backup failure's own exit code.
+
+[Unit]
+Description=SKChat encrypted backup of live stateful data
+Documentation=https://github.com/smilinTux/skchat
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/bash %h/clawd/skcapstone-repos/skchat/scripts/backup-skchat.sh
+Environment=PATH=%h/.skenv/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=%h
+TimeoutStartSec=300
+StandardOutput=journal
+StandardError=journal
+ExecStopPost=-/usr/bin/bash -c 'if [ "$SERVICE_RESULT" != "success" ]; then %h/.skenv/bin/sk-alert -l crit "skchat-backup.service failed (result=$SERVICE_RESULT, exit=$EXIT_STATUS)" 2>/dev/null || true; fi'

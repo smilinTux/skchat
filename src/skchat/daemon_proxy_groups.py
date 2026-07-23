@@ -582,11 +582,22 @@ def group_to_conversation(group, *, online_uris: Optional[set[str]] = None) -> d
     }
 
 
-def member_to_app(member, *, online_uris: Optional[set[str]] = None) -> dict:
+def member_to_app(
+    member,
+    *,
+    online_uris: Optional[set[str]] = None,
+    fingerprint: str = "",
+) -> dict:
     """Map a ``GroupMember`` to the app member shape (``GroupMemberInfo.fromJson``).
 
     The Flutter parser reads ``identity_uri``, ``display_name``, ``role``,
-    ``participant_type``, ``is_online``.
+    ``participant_type``, ``is_online``. [fingerprint] is this member's real
+    capauth fingerprint (resolved by the caller via
+    ``daemon_proxy.fingerprint_for_identity``); it is emitted under BOTH the
+    conversation-contract key (``soul_fingerprint``) and the peer alias
+    (``fingerprint``) so the app can anchor a per-member trust badge exactly as
+    it does for a 1:1 peer. Empty when the member has no known key (keyless ->
+    no badge, never a fabricated key).
     """
     online = bool(online_uris and member.identity_uri in online_uris)
     display = member.display_name or member.identity_uri.split(":")[-1].split("@")[0]
@@ -596,6 +607,8 @@ def member_to_app(member, *, online_uris: Optional[set[str]] = None) -> dict:
         "role": member.role.value,
         "participant_type": member.participant_type.value,
         "is_online": online,
+        "soul_fingerprint": fingerprint,
+        "fingerprint": fingerprint,
     }
 
 
