@@ -186,7 +186,13 @@ def register_spaces_routes(
     def _token_response(
         identity: str, name: str, role: Role, space: Space, request: Request
     ) -> dict:
-        token = mint_space_token(identity, name, role, space.space_id, _DEFAULT_TTL)
+        # NO trust-badge metadata: the plain space-join identity is caller-
+        # supplied and unproven (create/join trust the tailnet, not a capauth
+        # proof), so stamping its fingerprint would be spoofable. Proven Space
+        # joins go through the federation authd path, which stamps it there.
+        token = mint_space_token(
+            identity, name, role, space.space_id, _DEFAULT_TTL,
+        )
         return {
             "space_id": space.space_id,
             "room": space.room,

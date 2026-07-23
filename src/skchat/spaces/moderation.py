@@ -21,6 +21,10 @@ _ACTIONS = {"raise_hand", "lower_hand", "invite", "uninvite", "remove", "noop"}
 class StageState:
     hand_raised: bool = False
     invited_to_stage: bool = False
+    # M1b: the participant's capauth fingerprint, set once at token mint. Carried
+    # here (not just the two stage flags) so a hand-raise/invite read-modify-write
+    # of participant metadata does not CLOBBER it (the trust badge would vanish).
+    soul_fingerprint: str = ""
 
     @property
     def on_stage(self) -> bool:
@@ -37,12 +41,17 @@ def parse_meta(metadata: str) -> StageState:
     return StageState(
         hand_raised=bool(d.get("hand_raised", False)),
         invited_to_stage=bool(d.get("invited_to_stage", False)),
+        soul_fingerprint=str(d.get("soul_fingerprint", "") or ""),
     )
 
 
 def dump_meta(state: StageState) -> str:
     return json.dumps(
-        {"hand_raised": state.hand_raised, "invited_to_stage": state.invited_to_stage}
+        {
+            "hand_raised": state.hand_raised,
+            "invited_to_stage": state.invited_to_stage,
+            "soul_fingerprint": state.soul_fingerprint,
+        }
     )
 
 
@@ -51,7 +60,8 @@ def apply_action(state: StageState, action: str) -> tuple[StageState, bool]:
     when both flags are set after the action."""
     if action not in _ACTIONS:
         raise ValueError(f"unknown stage action: {action!r}")
-    s = StageState(state.hand_raised, state.invited_to_stage)
+    # Carry soul_fingerprint through the copy so a stage action never drops it.
+    s = StageState(state.hand_raised, state.invited_to_stage, state.soul_fingerprint)
     if action == "raise_hand":
         s.hand_raised = True
     elif action == "lower_hand":

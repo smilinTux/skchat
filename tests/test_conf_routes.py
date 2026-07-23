@@ -331,3 +331,24 @@ def test_conf_page_escapes_room_name(client):
     r = client.get("/conf/%3Cimg%20src=x%3E")
     assert r.status_code == 200
     assert "<img src=x>" not in r.text
+
+
+def _full_claims(token):
+    return jwt.decode(
+        token, _SECRET, algorithms=["HS256"], options={"verify_aud": False}
+    )
+
+
+def test_public_conf_token_does_NOT_stamp_fingerprint(client):
+    """SECURITY: the unauthenticated /conf/{room}/token join identity is
+    caller-supplied and unproven, so the minted token must NOT carry a
+    soul_fingerprint (a public caller could otherwise wear any keyed agent's
+    trust badge by claiming its identity). Proven joins go through
+    /join/sovereign; federated joins through /conf/{room}/federated-token."""
+    room = _create(client).json()["room"]
+    r = client.post(
+        f"/conf/{room}/token",
+        json={"identity": "lumina@chef.skworld", "name": "Impostor"},
+    )
+    assert r.status_code == 200
+    assert not _full_claims(r.json()["token"]).get("metadata")

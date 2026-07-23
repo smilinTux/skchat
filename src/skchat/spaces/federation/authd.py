@@ -24,9 +24,15 @@ class AuthDenied(Exception):
 
 
 def _default_mint(identity: str, role: Role, space_id: str) -> str:
+    from skchat.daemon_proxy import soul_metadata_for
     from skchat.spaces.tokens import mint_space_token
 
-    return mint_space_token(identity, identity.split("@")[0], role, space_id, 3600)
+    # identity is the PROVEN fqid (verify_signed in authorize), so its capauth
+    # fingerprint is a real, unspoofable M1b trust-badge signal.
+    return mint_space_token(
+        identity, identity.split("@")[0], role, space_id, 3600,
+        metadata=soul_metadata_for(identity),
+    )
 
 
 _ROLE_FOR = {AccessLevel.FULL: Role.SPEAKER, AccessLevel.SUBSCRIBE: Role.LISTENER}

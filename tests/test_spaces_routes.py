@@ -195,3 +195,30 @@ def test_moderator_falls_back_to_public_url_when_api_url_unset(tmp_path, monkeyp
     c.post(f"/spaces/{sid}/raise-hand", json={"identity": "alice@x.y"})
 
     assert captured["ws_url"] == "ws://test-sfu:7880"
+
+
+def _meta(token):
+    return jwt.decode(
+        token, _SECRET, algorithms=["HS256"], options={"verify_aud": False}
+    ).get("metadata")
+
+
+def test_public_space_join_does_NOT_stamp_fingerprint(client):
+    """SECURITY: the unauthenticated /spaces/create + /spaces/{id}/join identity
+    is caller-supplied and unproven, so the token must NOT carry a soul_fingerprint
+    (else any caller could wear a keyed agent's trust badge by claiming its
+    identity). Proven Space joins get their badge via the federation authd path."""
+    create = client.post(
+        "/spaces/create",
+        json={"host_fqid": "lumina@chef.skworld", "title": "T", "slug": "t"},
+    )
+    assert create.status_code == 200
+    assert not _meta(create.json()["token"])  # host token: no metadata claim
+
+    sid = create.json()["space_id"]
+    join = client.post(
+        f"/spaces/{sid}/join",
+        json={"identity": "lumina@chef.skworld", "name": "Impostor"},
+    )
+    assert join.status_code == 200
+    assert not _meta(join.json()["token"])  # a spoof-claim of Lumina carries NO badge

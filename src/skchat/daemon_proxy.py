@@ -560,12 +560,14 @@ def _peers_dir() -> Path:
 def _peer_fingerprint_index() -> dict[str, str]:
     """Build a ``{key -> fingerprint}`` map from ``~/.skcapstone/peers/*.json``.
 
-    Each peer is indexed under every address it might be referenced by (full
-    ``identity`` URI, ``handle``, ``fqid``, file stem, and short name), all
-    lower-cased, so a member/participant identity in any of those forms resolves
-    to the same real capauth fingerprint the 1:1 conversation list uses. Read
-    fresh (no cache) so a newly-added peer is picked up without a restart, same
-    as :func:`_other_peers`.
+    Each peer is indexed ONLY under its fully-qualified addresses (``identity``
+    URI, ``handle``, ``fqid``), all lower-cased. Bare short names / file stems
+    are DELIBERATELY excluded: the swarm reuses identical agent short-names
+    (``artisan``, ``steward``, ``lumina`` ...) across realms, so a short-name
+    key would let a cross-realm ``artisan@opB.skworld.io`` collide onto the
+    LOCAL ``artisan``'s fingerprint (cross-realm key misattribution). Only a
+    full, realm-qualified match is trustworthy. Read fresh (no cache) so a
+    newly-added peer is picked up without a restart, same as :func:`_other_peers`.
     """
     import json
 
@@ -581,13 +583,8 @@ def _peer_fingerprint_index() -> dict[str, str]:
         fp = (data.get("fingerprint") or "").strip()
         if not fp:
             continue
-        keys = [
-            data.get("identity"),
-            data.get("handle"),
-            data.get("fqid"),
-            p.stem,
-            _short_name(data.get("identity") or data.get("handle") or p.stem),
-        ]
+        # Full, realm-qualified keys ONLY (no bare short name / stem).
+        keys = [data.get("identity"), data.get("handle"), data.get("fqid")]
         for k in keys:
             if k:
                 idx[k.strip().lower()] = fp
@@ -595,14 +592,13 @@ def _peer_fingerprint_index() -> dict[str, str]:
 
 
 def fingerprint_for_identity(identity: str, index: dict[str, str] | None = None) -> str:
-    """Best-effort capauth fingerprint for a member/participant *identity*.
+    """Real capauth fingerprint for a FULLY-QUALIFIED *identity*.
 
-    Resolves a group member's ``identity_uri`` (``capauth:steward@skworld.io``),
-    handle (``steward@skworld.io``), or short name (``steward``) to the
-    fingerprint in the peer store, special-casing Lumina to her pinned key.
-    Returns ``""`` for an unknown identity so the app treats the member as
-    keyless (no badge), never a fabricated key. Pass a prebuilt [index] (from
-    :func:`_peer_fingerprint_index`) to avoid re-reading the store per member.
+    Matches only a full ``identity`` URI (``capauth:steward@skworld.io``),
+    ``handle`` (``steward@skworld.io``), or ``fqid`` against the peer store, plus
+    the Lumina special-case. A bare short name or a cross-realm fqid that isn't a
+    known local peer returns ``""`` (keyless -> no badge), never a fabricated or
+    misattributed key. Pass a prebuilt [index] to avoid re-reading the store.
     """
     if not identity:
         return ""
@@ -610,12 +606,25 @@ def fingerprint_for_identity(identity: str, index: dict[str, str] | None = None)
         return LUMINA_FINGERPRINT
     idx = index if index is not None else _peer_fingerprint_index()
     ident = identity.strip().lower()
-    for key in (ident, ident[len("capauth:"):] if ident.startswith("capauth:") else ident,
-                _short_name(identity).lower()):
+    for key in (
+        ident,
+        ident[len("capauth:"):] if ident.startswith("capauth:") else ident,
+    ):
         fp = idx.get(key)
         if fp:
             return fp
     return ""
+
+
+def soul_metadata_for(identity: str) -> str:
+    """JSON participant metadata carrying *identity*'s capauth soul_fingerprint
+    (M1b trust badges). Empty fingerprint for an unknown identity (keyless -> no
+    badge). MUST only be stamped from a PROVEN or operator-gated identity: a
+    fingerprint minted from an unauthenticated caller-chosen identity is a
+    trust-badge SPOOF (see the participant-badge security review)."""
+    import json
+
+    return json.dumps({"soul_fingerprint": fingerprint_for_identity(identity)})
 
 
 # --------------------------------------------------------------------------- #

@@ -38,6 +38,15 @@ logger = logging.getLogger("skchat.conf.routes")
 
 _DEFAULT_TTL = int(os.getenv("SKCHAT_LIVEKIT_TOKEN_TTL", "21600"))
 
+
+def soul_metadata_for(identity: str) -> str:
+    """Trust-badge participant metadata for a PROVEN identity (thin re-export of
+    :func:`skchat.daemon_proxy.soul_metadata_for`). Only call with a
+    cryptographically-verified fqid, never a caller-supplied one."""
+    from skchat.daemon_proxy import soul_metadata_for as _impl
+
+    return _impl(identity)
+
 _MAX_FEDERATION_AGE = 300
 
 _NONCE_CACHE: dict = {}
@@ -279,6 +288,10 @@ def register_conf_routes(
         # federated peer can discover + elect it (best-effort, never fatal).
         _advertise_conf(host_fqid=host, room=conf.room, title=conf.title)
         # Host is SOVEREIGN with room_admin so it can moderate / tear down.
+        # NO trust-badge metadata here: create trusts the tailnet, host_fqid is
+        # asserted-not-proven (see the SECURITY note above), so stamping its
+        # fingerprint would be a spoofable trust signal. The host gets its badge
+        # via the capauth-PROVEN /join/sovereign path when it actually joins.
         token = mint_conf_token(
             host,
             host.split("@")[0],
@@ -323,6 +336,11 @@ def register_conf_routes(
             role = ConfRole(role_raw)
         except ValueError as exc:
             raise HTTPException(400, f"unknown conf role: {role_raw!r}") from exc
+        # NO trust-badge metadata: this is the UNAUTHENTICATED join seam, the
+        # identity is caller-supplied and unproven (a public caller could claim
+        # any keyed agent's identity). Stamping its fingerprint here is exactly
+        # the trust-badge spoof the security review flagged. Proven joins use
+        # /join/sovereign; federated joins use /conf/{room}/federated-token.
         token = mint_conf_token(identity, name, role, conf.room, _DEFAULT_TTL)
         return JSONResponse(
             {
@@ -798,12 +816,17 @@ def register_conf_routes(
         if rmr == "listener":
             role = ConfRole.GUEST_CONF
 
+        # PROVEN path: assertion.fqid was cryptographically verified
+        # (verify_signed above), so stamping its capauth fingerprint is a real,
+        # unspoofable trust signal. A cross-realm fqid the local peer store does
+        # not know resolves to "" (keyless), never a mis-matched local key.
         token = mint_conf_token(
             assertion.fqid,
             assertion.fqid.split("@")[0],
             role,
             conf.room,
             _DEFAULT_TTL,
+            metadata=soul_metadata_for(assertion.fqid),
         )
         # Federation observability: a remote peer just redeemed a cross-realm
         # token against this instance's SFU (best-effort counter, never fatal).

@@ -435,24 +435,32 @@ def test_members_endpoint_carries_fingerprint(client, monkeypatch):
 
 
 def test_fingerprint_for_identity_matches_peer_store(tmp_path, monkeypatch):
-    """fingerprint_for_identity maps identity_uri / handle / short-name to the
-    peer store's fingerprint, special-cases Lumina, and returns '' for unknowns
-    (never a fabricated key)."""
+    """fingerprint_for_identity matches ONLY fully-qualified identity_uri / handle
+    / fqid, special-cases Lumina, and returns '' for unknowns and BARE short
+    names (never a fabricated or cross-realm-misattributed key)."""
     import json as _json
     peers = tmp_path / "peers"
     peers.mkdir()
     (peers / "steward.json").write_text(_json.dumps({
         "identity": "capauth:steward@skworld.io",
         "handle": "steward@skworld.io",
+        "fqid": "steward@chef.skworld",
         "fingerprint": "4E06A71935D1DF1FB9848112D8634AB3E7B55236",
     }))
     monkeypatch.setattr(daemon_proxy, "_peers_dir", lambda: peers)
 
     fpi = daemon_proxy.fingerprint_for_identity
     expect = "4E06A71935D1DF1FB9848112D8634AB3E7B55236"
+    # Full, realm-qualified forms match.
     assert fpi("capauth:steward@skworld.io") == expect
     assert fpi("steward@skworld.io") == expect
-    assert fpi("steward") == expect
+    assert fpi("steward@chef.skworld") == expect
     assert fpi("capauth:lumina@skworld.io") == daemon_proxy.LUMINA_FINGERPRINT
+    # A BARE short name does NOT match (would cross-realm-collide in the swarm).
+    assert fpi("steward") == ""
+    # A cross-realm agent sharing the local short name resolves keyless, NOT the
+    # local steward's key (the security-review collision guard).
+    assert fpi("steward@otheroperator.skworld.io") == ""
+    assert fpi("capauth:steward@otheroperator.skworld.io") == ""
     assert fpi("nobody@nowhere") == ""
     assert fpi("") == ""

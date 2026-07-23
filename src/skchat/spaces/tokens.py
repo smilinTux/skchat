@@ -41,7 +41,10 @@ def _video_grants_from(g: RoleGrant):
     return grants
 
 
-def _build_token(api_module, key: str, secret: str, identity: str, name: str, g: RoleGrant, ttl: int) -> str:
+def _build_token(
+    api_module, key: str, secret: str, identity: str, name: str, g: RoleGrant, ttl: int,
+    metadata: str = "",
+) -> str:
     grants = _video_grants_from(g)
     token = (
         api_module.AccessToken(key, secret)
@@ -50,6 +53,11 @@ def _build_token(api_module, key: str, secret: str, identity: str, name: str, g:
         .with_grants(grants)
         .with_ttl(timedelta(seconds=ttl))
     )
+    # Participant metadata is the unspoofable server->client channel for a
+    # participant's capauth soul_fingerprint (M1b trust badges). Guests lack the
+    # can_update_own_metadata grant, so only the trusted mint sets it.
+    if metadata:
+        token = token.with_metadata(metadata)
     return token.to_jwt()
 
 
@@ -62,19 +70,21 @@ def mint_space_token(
     *,
     api_key: str | None = None,
     api_secret: str | None = None,
+    metadata: str = "",
 ) -> str:
     """Build a participant JWT scoped to an *audio Space* `role` in `space_id`.
 
     Creds default to the same env vars livekit_routes uses; tests pass explicit
     dummy creds so no live SFU is required. Raises ImportError if livekit-api is
-    not installed, ValueError on an unknown role.
+    not installed, ValueError on an unknown role. [metadata] (a JSON string) is
+    embedded as participant metadata (M1b: carries the capauth soul_fingerprint).
     """
     from livekit import api  # soft dep, local import
 
     key = api_key or os.getenv("SKCHAT_LIVEKIT_API_KEY", "")
     secret = api_secret or os.getenv("SKCHAT_LIVEKIT_API_SECRET", "")
     g = grant_for(role, space_id)
-    return _build_token(api, key, secret, identity, name, g, ttl)
+    return _build_token(api, key, secret, identity, name, g, ttl, metadata=metadata)
 
 
 def mint_conf_token(
@@ -87,6 +97,7 @@ def mint_conf_token(
     sovereign_admin: bool = False,
     api_key: str | None = None,
     api_secret: str | None = None,
+    metadata: str = "",
 ) -> str:
     """Build a participant JWT scoped to a *conference video* `role` in `space_id`.
 
@@ -103,4 +114,4 @@ def mint_conf_token(
     key = api_key or os.getenv("SKCHAT_LIVEKIT_API_KEY", "")
     secret = api_secret or os.getenv("SKCHAT_LIVEKIT_API_SECRET", "")
     g = conf_grant_for(role, space_id, sovereign_admin=sovereign_admin)
-    return _build_token(api, key, secret, identity, name, g, ttl)
+    return _build_token(api, key, secret, identity, name, g, ttl, metadata=metadata)
