@@ -389,3 +389,70 @@ def test_fan_out_send_prefers_local_delivery_over_network(client, monkeypatch, t
 
     inbox = tmp_path / ".skcapstone" / "agents" / "lumina" / "comms" / "inbox"
     assert list(inbox.glob("*.skc.json"))
+
+
+# --------------------------------------------------------------------------- #
+# Per-member trust fingerprint (M1b group trust badges)
+# --------------------------------------------------------------------------- #
+def test_member_to_app_emits_soul_fingerprint():
+    """member_to_app carries the per-member capauth fingerprint under BOTH the
+    conversation-contract key (soul_fingerprint) and the peer alias (fingerprint),
+    so the Flutter GroupMemberInfo parser + peer-trust tier resolver can anchor a
+    per-member trust badge (same shape as the 1:1 conversation)."""
+    from types import SimpleNamespace
+    from skchat import daemon_proxy_groups as G
+
+    fp = "4E06A71935D1DF1FB9848112D8634AB3E7B55236"
+    m = SimpleNamespace(
+        identity_uri="capauth:steward@skworld.io",
+        display_name="Steward",
+        role=SimpleNamespace(value="member"),
+        participant_type=SimpleNamespace(value="human"),
+    )
+    d = G.member_to_app(m, fingerprint=fp)
+    assert d["soul_fingerprint"] == fp
+    assert d["fingerprint"] == fp
+    # a member with no known key stays keyless (no fake key -> no badge app-side)
+    d0 = G.member_to_app(m)
+    assert d0["soul_fingerprint"] == ""
+    assert d0["fingerprint"] == ""
+
+
+def test_members_endpoint_carries_fingerprint(client, monkeypatch):
+    """GET /members enriches each member with its capauth fingerprint from the
+    peer store (via fingerprint_for_identity)."""
+    monkeypatch.setattr(
+        daemon_proxy, "fingerprint_for_identity",
+        lambda ident, index=None: "AABBCC112233" if "lumina" in ident else "",
+    )
+    gid = _create(client, members=["lumina"])["group_id"]
+    members = client.get(f"/api/v1/groups/{gid}/members").json()
+    by_uri = {m["identity_uri"]: m for m in members}
+    assert by_uri["lumina"]["soul_fingerprint"] == "AABBCC112233"
+    assert by_uri["lumina"]["fingerprint"] == "AABBCC112233"
+    # the human operator has no peer-store key here -> keyless
+    assert by_uri[daemon_proxy.OPERATOR_ID]["soul_fingerprint"] == ""
+
+
+def test_fingerprint_for_identity_matches_peer_store(tmp_path, monkeypatch):
+    """fingerprint_for_identity maps identity_uri / handle / short-name to the
+    peer store's fingerprint, special-cases Lumina, and returns '' for unknowns
+    (never a fabricated key)."""
+    import json as _json
+    peers = tmp_path / "peers"
+    peers.mkdir()
+    (peers / "steward.json").write_text(_json.dumps({
+        "identity": "capauth:steward@skworld.io",
+        "handle": "steward@skworld.io",
+        "fingerprint": "4E06A71935D1DF1FB9848112D8634AB3E7B55236",
+    }))
+    monkeypatch.setattr(daemon_proxy, "_peers_dir", lambda: peers)
+
+    fpi = daemon_proxy.fingerprint_for_identity
+    expect = "4E06A71935D1DF1FB9848112D8634AB3E7B55236"
+    assert fpi("capauth:steward@skworld.io") == expect
+    assert fpi("steward@skworld.io") == expect
+    assert fpi("steward") == expect
+    assert fpi("capauth:lumina@skworld.io") == daemon_proxy.LUMINA_FINGERPRINT
+    assert fpi("nobody@nowhere") == ""
+    assert fpi("") == ""

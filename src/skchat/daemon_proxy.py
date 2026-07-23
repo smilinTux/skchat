@@ -552,6 +552,72 @@ def _other_peers() -> list[dict]:
     return out
 
 
+def _peers_dir() -> Path:
+    """The capauth peer store directory (patchable in tests)."""
+    return Path(os.path.expanduser("~/.skcapstone/peers"))
+
+
+def _peer_fingerprint_index() -> dict[str, str]:
+    """Build a ``{key -> fingerprint}`` map from ``~/.skcapstone/peers/*.json``.
+
+    Each peer is indexed under every address it might be referenced by (full
+    ``identity`` URI, ``handle``, ``fqid``, file stem, and short name), all
+    lower-cased, so a member/participant identity in any of those forms resolves
+    to the same real capauth fingerprint the 1:1 conversation list uses. Read
+    fresh (no cache) so a newly-added peer is picked up without a restart, same
+    as :func:`_other_peers`.
+    """
+    import json
+
+    idx: dict[str, str] = {}
+    peers_dir = _peers_dir()
+    if not peers_dir.is_dir():
+        return idx
+    for p in sorted(peers_dir.glob("*.json")):
+        try:
+            data = json.loads(p.read_text())
+        except Exception:
+            continue
+        fp = (data.get("fingerprint") or "").strip()
+        if not fp:
+            continue
+        keys = [
+            data.get("identity"),
+            data.get("handle"),
+            data.get("fqid"),
+            p.stem,
+            _short_name(data.get("identity") or data.get("handle") or p.stem),
+        ]
+        for k in keys:
+            if k:
+                idx[k.strip().lower()] = fp
+    return idx
+
+
+def fingerprint_for_identity(identity: str, index: dict[str, str] | None = None) -> str:
+    """Best-effort capauth fingerprint for a member/participant *identity*.
+
+    Resolves a group member's ``identity_uri`` (``capauth:steward@skworld.io``),
+    handle (``steward@skworld.io``), or short name (``steward``) to the
+    fingerprint in the peer store, special-casing Lumina to her pinned key.
+    Returns ``""`` for an unknown identity so the app treats the member as
+    keyless (no badge), never a fabricated key. Pass a prebuilt [index] (from
+    :func:`_peer_fingerprint_index`) to avoid re-reading the store per member.
+    """
+    if not identity:
+        return ""
+    if _is_lumina(identity):
+        return LUMINA_FINGERPRINT
+    idx = index if index is not None else _peer_fingerprint_index()
+    ident = identity.strip().lower()
+    for key in (ident, ident[len("capauth:"):] if ident.startswith("capauth:") else ident,
+                _short_name(identity).lower()):
+        fp = idx.get(key)
+        if fp:
+            return fp
+    return ""
+
+
 # --------------------------------------------------------------------------- #
 # Misc passthrough routes (unchanged)
 # --------------------------------------------------------------------------- #
@@ -902,7 +968,13 @@ async def api_group_members(group_id: str):
     group = G.load_group(group_id)
     if group is None:
         raise HTTPException(404, "group not found")
-    return JSONResponse([G.member_to_app(m) for m in group.members])
+    # Resolve every member's capauth fingerprint from the peer store once, so
+    # each member row carries a real key for the per-member trust badge.
+    idx = _peer_fingerprint_index()
+    return JSONResponse([
+        G.member_to_app(m, fingerprint=fingerprint_for_identity(m.identity_uri, idx))
+        for m in group.members
+    ])
 
 
 @router.post("/v1/groups/{group_id}/members")
@@ -932,7 +1004,7 @@ async def api_group_add_member(group_id: str, request: Request):
         )
         return JSONResponse(
             {"ok": True, "promoted": True, "group": G.group_to_conversation(group),
-             "members": [G.member_to_app(m) for m in group.members]}
+             "members": [G.member_to_app(m, fingerprint=fingerprint_for_identity(m.identity_uri)) for m in group.members]}
         )
 
     if not G.can_add_members(group, OPERATOR_ID):
@@ -940,7 +1012,7 @@ async def api_group_add_member(group_id: str, request: Request):
     added = G.add_member(group, identity, role=role)
     return JSONResponse(
         {"ok": True, "added": added,
-         "members": [G.member_to_app(m) for m in group.members]}
+         "members": [G.member_to_app(m, fingerprint=fingerprint_for_identity(m.identity_uri)) for m in group.members]}
     )
 
 
@@ -973,7 +1045,7 @@ async def api_group_remove_member(group_id: str, identity: str):
         raise HTTPException(404, "member not found")
     return JSONResponse(
         {"ok": True, "removed": identity,
-         "members": [G.member_to_app(m) for m in group.members]}
+         "members": [G.member_to_app(m, fingerprint=fingerprint_for_identity(m.identity_uri)) for m in group.members]}
     )
 
 
@@ -1103,7 +1175,7 @@ async def api_group_call_participants(group_id: str):
             "room": room,
             "active": len(participants),
             "participants": participants,
-            "members": [G.member_to_app(m) for m in group.members],
+            "members": [G.member_to_app(m, fingerprint=fingerprint_for_identity(m.identity_uri)) for m in group.members],
         }
     )
 
