@@ -565,7 +565,9 @@ def _get_transport(identity: str):
         from .transport import ChatTransport
 
         comm = SKComms.from_config()
-        return ChatTransport(skcomms=comm, history=_get_history(), identity=identity)
+        # from_config wires ChatCrypto → DM ratchet can seal (card 3d0a3fef); the
+        # bare constructor left crypto=None and sent plaintext to ratchet peers.
+        return ChatTransport.from_config(skcomms=comm, history=_get_history(), identity=identity)
     except Exception as e:
         logger.warning("webui.py: %s", e)
         return None

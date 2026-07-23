@@ -113,7 +113,10 @@ class AgentMessenger:
                 skcomms = SKComms.from_config()
             from .transport import ChatTransport
 
-            return ChatTransport(
+            # from_config wires ChatCrypto → DM ratchet can seal (card 3d0a3fef);
+            # the bare constructor left crypto=None and sent plaintext to ratchet
+            # peers.
+            return ChatTransport.from_config(
                 skcomms=skcomms,
                 history=history,
                 identity=identity,

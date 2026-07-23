@@ -508,7 +508,10 @@ class SKSealPlugin(ChatPlugin):
 
             skcomms = SKComms.from_config()
             history = ChatHistory.from_config()
-            transport = ChatTransport(
+            # from_config wires ChatCrypto → DM ratchet can seal (card 3d0a3fef);
+            # the bare constructor left crypto=None and sent plaintext to ratchet
+            # peers.
+            transport = ChatTransport.from_config(
                 skcomms=skcomms,
                 history=history,
                 identity=sender,

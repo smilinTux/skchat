@@ -829,7 +829,9 @@ def _delivery_transport(identity: str):
         comm = SKComms.from_config()
         if not getattr(comm, "router", None) or not comm.router.transports:
             return None
-        return ChatTransport(skcomms=comm, history=ChatHistory(), identity=identity)
+        # from_config wires ChatCrypto → DM ratchet can seal (card 3d0a3fef); the
+        # bare constructor left crypto=None and sent plaintext to ratchet peers.
+        return ChatTransport.from_config(skcomms=comm, history=ChatHistory(), identity=identity)
     except Exception as exc:  # noqa: BLE001
         logger.debug("group delivery transport unavailable: %s", exc)
         return None
