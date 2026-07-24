@@ -13,6 +13,11 @@ standards.
 ## [Unreleased]
 
 ### Added
+- **Group threads carry per-member participants (unified conversation list).**
+  `daemon_proxy` `/conversations` group threads now carry per-member
+  participants with server-resolved `soul_fingerprint`, feeding the client's
+  new aggregate group trust badge (see skchat-app `CHANGELOG.md`). Builds on
+  the existing `fingerprint_for_identity` / `member_to_app` resolution below.
 - **Per-member + per-participant capauth fingerprint (M1b trust badges).**
   `daemon_proxy.fingerprint_for_identity()` resolves a member/participant identity
   to its real capauth fingerprint from the peer store (Lumina special-cased).
