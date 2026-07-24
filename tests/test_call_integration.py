@@ -17,7 +17,10 @@ def _make_client(monkeypatch, self_fqid, paired_fqid, sent):
     monkeypatch.setattr(cr, "_send_invite", lambda **kw: sent.append(kw))
     app = FastAPI()
     cr.register_call_routes(app)
-    return TestClient(app)
+    # /call/start and /call/answer are gated like /livekit/token (loopback/
+    # tailnet or an operator token); use a loopback host so this integration
+    # test exercises the room/identity logic, not the gate.
+    return TestClient(app, client=("127.0.0.1", 12345))
 
 
 def test_opus_starts_lumina_answers_same_room(monkeypatch):

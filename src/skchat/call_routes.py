@@ -22,6 +22,7 @@ from .connectivity import ice_config
 from .livekit_routes import (
     _ONTAILNET_NETS,
     LIVEKIT_URL,
+    _gate_token_mint,
     _have_creds,
     _mint_token,
     _real_client_ip,
@@ -151,6 +152,14 @@ async def _peer_arg(request: Request) -> str:
 def register_call_routes(app: FastAPI) -> None:
     @app.post("/call/start")
     async def call_start(request: Request) -> JSONResponse:
+        # /call/start mints a full-publish LiveKit JWT exactly like
+        # /livekit/token (via _prepare_call -> _mint_token below), plus rings
+        # the peer and alerts the operator. It must therefore never be MORE
+        # open than /livekit/token: gate it with the identical, always-on
+        # check (loopback/tailnet OR a valid SKCHAT_GUEST_OPERATOR_TOKEN)
+        # rather than relying on the flag-gated dataplane-auth middleware,
+        # which exempts the /livekit prefix entirely.
+        _gate_token_mint(request)
         peer = await _peer_arg(request)
         try:
             body = await request.json()
@@ -172,13 +181,19 @@ def register_call_routes(app: FastAPI) -> None:
 
     @app.post("/call/answer")
     async def call_answer(request: Request) -> JSONResponse:
+        # Same token-minting exposure as /call/start above -> same gate.
+        _gate_token_mint(request)
         peer = await _peer_arg(request)
         ctx = _prepare_call(peer)  # no _send_invite — answering never rings
         return _call_response(ctx)
 
     @app.get("/call/incoming")
-    async def call_incoming() -> JSONResponse:
+    async def call_incoming(request: Request) -> JSONResponse:
         """Surface CALL_INVITE envelopes addressed to us, newest first."""
+        # Read-only, but it discloses who is calling whom; gate it the same
+        # as the token-minting call routes rather than leaving it the one
+        # unauthenticated /call/* surface.
+        _gate_token_mint(request)
         me = _self_fqid()
         invites = []
         for env, _verify in _read_inbox():
