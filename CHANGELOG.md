@@ -12,6 +12,33 @@ standards.
 
 ## [Unreleased]
 
+### Added
+- **Per-member + per-participant capauth fingerprint (M1b trust badges).**
+  `daemon_proxy.fingerprint_for_identity()` resolves a member/participant identity
+  to its real capauth fingerprint from the peer store (Lumina special-cased).
+  `member_to_app` emits it under both `soul_fingerprint` and the `fingerprint`
+  alias for `GET /groups/{id}/members`; conf/Space/call participant tokens embed
+  it in LiveKit participant metadata (`spaces/tokens.py` `_build_token` gains a
+  `metadata` param) so the client can anchor a per-participant trust badge.
+- **resilience-v1 folded into `main`** (tag `v0.14.105`): the operator auth gate
+  (`dataplane_auth`, `operator_auth*`), Spaces work, and the resilience-v1
+  hardening are now on the canonical branch, matching what is deployed.
+
+### Security (crypto-relevant)
+- **Trust-badge fingerprint is stamped ONLY from a cryptographically-proven
+  identity.** An earlier draft stamped it on the unauthenticated
+  `/conf/{room}/token` and `/spaces/{id}/join` join routes, where a caller could
+  claim any keyed agent's identity and wear its badge (a trust spoof, caught by
+  adversarial review). Now stamped only after `verify_signed` (`/join/sovereign`,
+  Space/conf federation authd, conf `federated-token`); the unauthenticated and
+  operator-gated-but-caller-chosen (`/livekit/token`) paths stamp nothing.
+  Regression tests assert the public routes do NOT stamp.
+- **`fingerprint_for_identity` is STRICT** (full identity/handle/fqid only, no
+  bare short-name), closing a cross-realm collision where a remote
+  `artisan@opB.skworld.io` would inherit the LOCAL `artisan`'s key.
+- **Space moderation round-trips `soul_fingerprint`** (`StageState`), so a
+  hand-raise / invite no longer clobbers a participant's trust-badge fingerprint.
+
 ## [0.14.0] - 2026-07-03
 
 ### Added
