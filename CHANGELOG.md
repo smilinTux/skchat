@@ -12,6 +12,17 @@ standards.
 
 ## [Unreleased]
 
+### Security (crypto-relevant)
+- **`/call/start`, `/call/answer`, and `/call/incoming` are now gated by
+  `_gate_token_mint`, matching `/livekit/token`.** Both `/call/start` and
+  `/call/answer` mint the same full-publish LiveKit JWT as `/livekit/token`
+  (via `_prepare_call` -> `_mint_token`) but previously had no auth check at
+  all; `/call/incoming` discloses who is calling whom and was equally
+  unguarded. All three now require the same loopback/tailnet origin or a
+  valid `SKCHAT_GUEST_OPERATOR_TOKEN` that `/livekit/token` already enforces,
+  so a call route is never more open than token minting (see skchat-app
+  `SECURITY.md` for the client-facing note).
+
 ### Added
 - **Group threads carry per-member participants (unified conversation list).**
   `daemon_proxy` `/conversations` group threads now carry per-member
