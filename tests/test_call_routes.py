@@ -23,9 +23,14 @@ def client(monkeypatch):
     sent = []
     monkeypatch.setattr(cr, "_send_invite", lambda **kw: sent.append(kw))
     monkeypatch.setattr(cr, "_alert_operator", lambda **kw: None)
+    monkeypatch.delenv("SKCHAT_GUEST_OPERATOR_TOKEN", raising=False)
     app = FastAPI()
     cr.register_call_routes(app)
-    c = TestClient(app)
+    # /call/start, /call/answer and /call/incoming are gated the same as
+    # /livekit/token (loopback/tailnet or an operator token; see
+    # test_livekit_token_gate.py). Use a loopback client host so the fixture
+    # exercises the routes' own logic, not the gate itself.
+    c = TestClient(app, client=("127.0.0.1", 12345))
     c._sent = sent
     return c
 
@@ -420,3 +425,72 @@ def test_call_start_threads_topic_and_alerts(client, monkeypatch):
     assert r.status_code == 200
     assert client._sent[0]["topic"] == "ingest debugging"  # invite carried the topic
     assert len(alerts) == 1 and alerts[0]["topic"] == "ingest debugging"
+
+
+# ── Task 7: /call/start, /call/answer, /call/incoming must not be MORE open
+# than /livekit/token (both mint the same full-publish LiveKit JWT). Mirrors
+# tests/test_livekit_token_gate.py: a public/non-tailnet caller with no
+# SKCHAT_GUEST_OPERATOR_TOKEN is refused before any route logic runs; a
+# loopback/tailnet caller, or a public caller presenting a valid operator
+# token, is let through. ──────────────────────────────────────────────────────
+
+
+def _gated_app(monkeypatch):
+    monkeypatch.setattr(cr, "_list_peers", lambda: {"lumina@chef.skworld": {"fingerprint": "FP"}})
+    monkeypatch.setattr(cr, "_self_fqid", lambda: "opus@chef.skworld")
+    monkeypatch.setattr(cr, "_have_creds", lambda: True)
+    monkeypatch.setattr(
+        cr, "_mint_token", lambda identity, name, room, ttl: f"tok::{identity}::{room}"
+    )
+    monkeypatch.setattr(cr, "_send_invite", lambda **kw: None)
+    monkeypatch.setattr(cr, "_alert_operator", lambda **kw: None)
+    monkeypatch.setattr(cr, "_read_inbox", lambda: [])
+    app = FastAPI()
+    cr.register_call_routes(app)
+    return app
+
+
+def _gated_client(app: FastAPI, *, host: str) -> TestClient:
+    return TestClient(app, client=(host, 12345))
+
+
+def test_call_start_public_caller_without_token_rejected(monkeypatch):
+    monkeypatch.delenv("SKCHAT_GUEST_OPERATOR_TOKEN", raising=False)
+    c = _gated_client(_gated_app(monkeypatch), host="8.8.8.8")
+    r = c.post("/call/start", json={"peer": "lumina@chef.skworld"})
+    assert r.status_code in (401, 403), r.text
+
+
+def test_call_answer_public_caller_without_token_rejected(monkeypatch):
+    monkeypatch.delenv("SKCHAT_GUEST_OPERATOR_TOKEN", raising=False)
+    c = _gated_client(_gated_app(monkeypatch), host="8.8.8.8")
+    r = c.post("/call/answer", json={"peer": "lumina@chef.skworld"})
+    assert r.status_code in (401, 403), r.text
+
+
+def test_call_incoming_public_caller_without_token_rejected(monkeypatch):
+    monkeypatch.delenv("SKCHAT_GUEST_OPERATOR_TOKEN", raising=False)
+    c = _gated_client(_gated_app(monkeypatch), host="8.8.8.8")
+    r = c.get("/call/incoming")
+    assert r.status_code in (401, 403), r.text
+
+
+def test_call_start_tailnet_caller_passes_gate(monkeypatch):
+    monkeypatch.delenv("SKCHAT_GUEST_OPERATOR_TOKEN", raising=False)
+    c = _gated_client(_gated_app(monkeypatch), host="100.101.102.103")
+    r = c.post("/call/start", json={"peer": "lumina@chef.skworld"})
+    assert r.status_code == 200, r.text
+
+
+def test_call_start_public_caller_with_valid_operator_token_allowed(monkeypatch):
+    monkeypatch.setenv("SKCHAT_GUEST_OPERATOR_TOKEN", "op-token-xyz")
+    c = _gated_client(_gated_app(monkeypatch), host="8.8.8.8")
+    # Wrong/missing token -> 401.
+    assert c.post("/call/start", json={"peer": "lumina@chef.skworld"}).status_code == 401
+    # Correct token -> passes the gate.
+    r = c.post(
+        "/call/start",
+        json={"peer": "lumina@chef.skworld"},
+        headers={"Authorization": "Bearer op-token-xyz"},
+    )
+    assert r.status_code == 200, r.text
