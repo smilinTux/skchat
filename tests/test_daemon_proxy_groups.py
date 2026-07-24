@@ -23,6 +23,7 @@ from fastapi.testclient import TestClient
 
 from skchat import daemon_proxy
 from skchat import daemon_proxy_groups as G
+from skchat.group import GroupChat, MemberRole
 
 
 @pytest.fixture
@@ -464,3 +465,29 @@ def test_fingerprint_for_identity_matches_peer_store(tmp_path, monkeypatch):
     assert fpi("capauth:steward@otheroperator.skworld.io") == ""
     assert fpi("nobody@nowhere") == ""
     assert fpi("") == ""
+
+
+def test_group_to_conversation_embeds_participants_with_fingerprints():
+    group = GroupChat(name="Ops", kem_suite="rsa-pgp-wrap-v1")
+    group.add_member("capauth:lumina@skworld.io", role=MemberRole.ADMIN)
+    group.add_member("steward@skworld.io", role=MemberRole.MEMBER)
+
+    fps = {
+        "capauth:lumina@skworld.io": "AAAA1111",
+        "steward@skworld.io": "BBBB2222",
+    }
+    conv = G.group_to_conversation(group, fingerprint_for=lambda i: fps.get(i, ""))
+
+    assert conv["is_group"] is True
+    parts = conv["participants"]
+    assert {p["identity_uri"] for p in parts} == set(fps)
+    by_id = {p["identity_uri"]: p for p in parts}
+    assert by_id["capauth:lumina@skworld.io"]["soul_fingerprint"] == "AAAA1111"
+    assert by_id["steward@skworld.io"]["soul_fingerprint"] == "BBBB2222"
+
+
+def test_group_to_conversation_participants_default_empty_fingerprint():
+    group = GroupChat(name="Ops", kem_suite="rsa-pgp-wrap-v1")
+    group.add_member("capauth:chef@skworld.io", role=MemberRole.ADMIN)
+    conv = G.group_to_conversation(group)  # no resolver passed
+    assert conv["participants"][0]["soul_fingerprint"] == ""

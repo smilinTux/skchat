@@ -34,7 +34,7 @@ import logging
 import os
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 logger = logging.getLogger("skchat.daemon_proxy.groups")
 
@@ -553,13 +553,29 @@ def can_add_members(group, by_uri: str) -> bool:
 # --------------------------------------------------------------------------- #
 # Serialization (Flutter contract)
 # --------------------------------------------------------------------------- #
-def group_to_conversation(group, *, online_uris: Optional[set[str]] = None) -> dict:
+def group_to_conversation(
+    group,
+    *,
+    online_uris: Optional[set[str]] = None,
+    fingerprint_for: Optional[Callable[[str], str]] = None,
+) -> dict:
     """Map a ``GroupChat`` to the app conversation shape (``is_group:true``).
 
     Matches ``Conversation.fromJson`` + ``GroupsNotifier`` expectations:
     ``peer_id`` (== group id), ``display_name``, ``is_group``, ``member_count``,
-    ``last_message``, ``last_message_time``.
+    ``last_message``, ``last_message_time``. When [fingerprint_for] is given,
+    each participant carries the member's real capauth ``soul_fingerprint`` so
+    the unified list can fold an aggregate group trust badge (empty string ->
+    keyless -> no badge; never a fabricated key).
     """
+    participants = [
+        member_to_app(
+            m,
+            online_uris=online_uris,
+            fingerprint=(fingerprint_for(m.identity_uri) if fingerprint_for else ""),
+        )
+        for m in group.members
+    ]
     return {
         "peer_id": group.id,
         "display_name": group.name,
@@ -575,6 +591,7 @@ def group_to_conversation(group, *, online_uris: Optional[set[str]] = None) -> d
         "avatar_url": "",
         "description": group.description,
         "acl": _acl(group),
+        "participants": participants,
         # Observable encryption posture: the app can render a lock/warning and the
         # operator can always tell sealed vs cleartext vs degraded (flag on, not
         # sealing) — no silent state.
