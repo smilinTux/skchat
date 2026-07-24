@@ -822,13 +822,22 @@ async def api_conversations():
 
 
 def _group_conversations() -> list[dict]:
-    """All persisted groups in the app conversation shape (``is_group:true``)."""
+    """All persisted groups in the app conversation shape (``is_group:true``),
+    each carrying per-member ``participants`` with server-resolved
+    ``soul_fingerprint`` so the unified list can fold an aggregate group badge.
+    """
     from skchat import daemon_proxy_groups as G
 
     out: list[dict] = []
     try:
+        idx = _peer_fingerprint_index()
         for grp in G.list_groups():
-            out.append(G.group_to_conversation(grp))
+            out.append(
+                G.group_to_conversation(
+                    grp,
+                    fingerprint_for=lambda i: fingerprint_for_identity(i, idx),
+                )
+            )
     except Exception:
         logger.exception("group conversation list failed")
     return out
