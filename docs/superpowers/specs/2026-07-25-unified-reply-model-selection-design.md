@@ -180,6 +180,44 @@ those keys populated alongside the new ones during migration).
   the hard-fallback (now `ornith-tiny`) still catches a backend error; a fresh
   agent with no selection defaults to `ornith-tiny` (fast).
 
+## 5b. Legacy `qwen3.6` reference migration (relabel to reality)
+
+`qwen3.6-27b-abliterated` is a stale label: it aliases ornith on `.100:8082`,
+and the bridges already hit that backend name-agnostically, so they run ornith
+today. This refactor relabels every live chat-reply reference to its real intent.
+
+**Two knobs (so the eventual opus -> ornith-big cutover is one edit, per Chef):**
+- `LOCAL_MODEL` = **`ornith-tiny`** (fast .100 backend; the uncensored default +
+  the reliability fallback for every surface).
+- `CAPABLE_MODEL` = **`claude-opus-4-8`** now, a single centralized constant/env
+  Chef will later flip to **`ornith-big`** (the chiap08 35B) with no code sweep.
+  Uncensored jobs must NOT use `CAPABLE_MODEL` while it is a Claude model (Opus
+  refuses the unhinged/creative content); they stay on `LOCAL_MODEL`.
+
+**skchat active references -> `ornith-tiny`** (all uncensored / fallback /
+utility; a pure truth-in-labeling change, no behavior change since the backend is
+already ornith):
+- `scripts/telegram_bridge.py:94` `SKC_BRIDGE_LLM_MODEL` default
+- `scripts/bridge_consciousness.py:487` `DEFAULT_LLM_MODEL`
+- `scripts/lumina-bridge.py:543` + `scripts/opus-bridge.py:474`
+  `SKCHAT_LLM_FALLBACK_MODEL`
+- `src/skchat/voice_engine/config.py:46` `SKVOICE_FALLBACK_MODEL`
+- `src/skchat/agent_model.py:48` hardcoded entry (removed; the catalog is dynamic)
+- systemd env (live): `skchat-telegram-opus.service` + `skchat-telegram-lumina.service`
+  `SKC_BRIDGE_LLM_MODEL=` (relabel + `daemon-reload`/restart the two bridges)
+- `~/.skcapstone/agents/lumina/config/skwhisper.toml:20` `summarize_model`
+
+**Related follow-on (tracked, NOT in this plan):** the *capable/reasoning* jobs
+outside skchat that used qwen3.6 for its abliterated reasoning -- skingest
+wiki-LLM synthesis (`SKINGEST_WIKI_LLM_MODEL`), `sktrip`, the wiki `relens.py`
+dual-lens -- move to `CAPABLE_MODEL` (opus now). These get their own categorized
+sweep so each is retargeted by intent, not blindly. The `qwen3.6-27b-abliterated`
+SKGateway alias is retained until all references are gone, then retired.
+
+**Explicitly out of scope:** the `qwen3.6-VL` vision/OCR references in skingest
+are a different model and pipeline (image OCR to `.100`/`chiap08` vision
+endpoints), not a chat-reply model; untouched here.
+
 ## 6. Out of scope
 
 - Native `.41` operator-token persistence (that is the separate calling Option A
