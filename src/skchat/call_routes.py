@@ -107,17 +107,27 @@ def _client_on_tailnet(request: Request) -> bool:
 
 
 def _resolve_peer(peer: str) -> str:
-    """Resolve a peer arg (FQID or bare name) to a paired FQID, or 404."""
+    """Resolve a peer arg to a paired FQID, or raise 404/409.
+
+    Accepted (in priority): an exact paired FQID; otherwise reduce to the bare
+    agent name and match, so a bare name, a ``capauth:<agent>@<domain>`` wire
+    URI (what the Flutter client sends), and a differently-realmed FQID all
+    resolve to the same paired agent. This keeps resolution working across the
+    realm-string drift the peer store carried (see the calling-backend design
+    doc). Bare-name ambiguity across operators raises 409.
+    """
     peers = _list_peers()
     if peer in peers:
         return peer
-    matches = [fqid for fqid in peers if fqid.split("@", 1)[0] == peer]
+    probe = peer[len("capauth:"):] if peer.startswith("capauth:") else peer
+    bare = probe.split("@", 1)[0]
+    matches = [fqid for fqid in peers if fqid.split("@", 1)[0] == bare]
     if len(matches) == 1:
         return matches[0]
     if len(matches) > 1:
         raise HTTPException(
             status_code=409,
-            detail=f"ambiguous bare name {peer!r}: matches {matches}; use full FQID",
+            detail=f"ambiguous peer {peer!r}: matches {matches}; use full FQID",
         )
     raise HTTPException(status_code=404, detail=f"peer not paired: {peer}")
 

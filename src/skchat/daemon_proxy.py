@@ -39,7 +39,7 @@ router = APIRouter(prefix="/api")
 _SKCOMMS_API = "http://127.0.0.1:9384"
 
 # ── Lumina identity (the always-present companion) ─────────────────────────── #
-LUMINA_ID = "lumina@chef.skworld"
+LUMINA_ID = "lumina@chef.skworld.io"
 LUMINA_URI = "capauth:lumina@skworld.io"
 LUMINA_NAME = "Lumina"
 LUMINA_FINGERPRINT = "02BC0EB3CAD31DB691A753C70C5629AB893F9746"

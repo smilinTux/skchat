@@ -494,3 +494,14 @@ def test_call_start_public_caller_with_valid_operator_token_allowed(monkeypatch)
         headers={"Authorization": "Bearer op-token-xyz"},
     )
     assert r.status_code == 200, r.text
+
+
+def test_resolve_peer_accepts_capauth_and_drifted_realm(monkeypatch):
+    """_resolve_peer accepts the exact fqid, a bare name, the capauth: wire URI
+    the Flutter client sends, and a differently-realmed fqid, all -> paired."""
+    from skchat import call_routes as CR
+    monkeypatch.setattr(CR, "_list_peers", lambda: {"opus@chef.skworld.io": {}})
+    assert CR._resolve_peer("opus@chef.skworld.io") == "opus@chef.skworld.io"
+    assert CR._resolve_peer("opus") == "opus@chef.skworld.io"
+    assert CR._resolve_peer("capauth:opus@skworld.io") == "opus@chef.skworld.io"
+    assert CR._resolve_peer("opus@chef.skworld") == "opus@chef.skworld.io"
