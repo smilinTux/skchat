@@ -116,8 +116,11 @@ Precedence:
    - a **role** -> `skos.models.resolve(role=...)` -> `(url, model)`; `sk-auto`
      routes THROUGH SKGateway's classifier (as today).
    - a **concrete model id** -> `(SKGATEWAY_URL, id)` direct.
-3. **Default** -> the per-bot default role (`SKC_BRIDGE_DEFAULT_ROLE`, e.g.
-   Lumina = `sk-creative`) or the registry default (`sk-auto`).
+3. **Default** -> `ornith-tiny` (the fast .100 backend). `get_selection` returns
+   this when the agent has no stored selection, so step 2 always yields a value
+   and this is the floor. A per-bot default role (`SKC_BRIDGE_DEFAULT_ROLE`, e.g.
+   Lumina = `sk-creative`) is honored only when it is the agent's stored
+   selection, not as an implicit override of the fast default.
 
 If the selection is a concrete id SKGateway no longer serves (validated against
 the live catalog), the resolver skips it and falls through to the default
