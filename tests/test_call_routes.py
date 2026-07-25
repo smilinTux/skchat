@@ -475,6 +475,24 @@ def test_call_incoming_public_caller_without_token_rejected(monkeypatch):
     assert r.status_code in (401, 403), r.text
 
 
+def test_call_peers_public_caller_without_token_rejected(monkeypatch):
+    # /call/peers discloses the paired-peer roster + fingerprints; a public
+    # Funnel caller with no operator token must be refused, same as the other
+    # /call/* routes (card 750ae88b: it was the one ungated /call/* surface).
+    monkeypatch.delenv("SKCHAT_GUEST_OPERATOR_TOKEN", raising=False)
+    c = _gated_client(_gated_app(monkeypatch), host="8.8.8.8")
+    r = c.get("/call/peers")
+    assert r.status_code in (401, 403), r.text
+
+
+def test_call_peers_tailnet_caller_passes_gate(monkeypatch):
+    monkeypatch.delenv("SKCHAT_GUEST_OPERATOR_TOKEN", raising=False)
+    c = _gated_client(_gated_app(monkeypatch), host="100.101.102.103")
+    r = c.get("/call/peers")
+    assert r.status_code == 200, r.text
+    assert any(p["fqid"] == "lumina@chef.skworld" for p in r.json()["peers"])
+
+
 def test_call_start_tailnet_caller_passes_gate(monkeypatch):
     monkeypatch.delenv("SKCHAT_GUEST_OPERATOR_TOKEN", raising=False)
     c = _gated_client(_gated_app(monkeypatch), host="100.101.102.103")
