@@ -235,8 +235,12 @@ def register_call_routes(app: FastAPI) -> None:
         return JSONResponse({"invites": invites})
 
     @app.get("/call/peers")
-    async def call_peers() -> JSONResponse:
+    async def call_peers(request: Request) -> JSONResponse:
         """List paired peers (FQID + fingerprint) for the call UI."""
+        # Discloses the paired-peer roster + fingerprints; gate it the same as
+        # the other /call/* routes so it is not the one unauthenticated surface
+        # a public Funnel caller can enumerate (card 750ae88b).
+        _gate_token_mint(request)
         peers = [
             {"fqid": fqid, "fingerprint": (meta or {}).get("fingerprint")}
             for fqid, meta in _list_peers().items()
