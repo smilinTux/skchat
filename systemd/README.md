@@ -33,8 +33,10 @@ across hosts and users.
 | `skchat-daemon-chef.service` | :9389, chef receive-only | no (disabled) | isolated `~/.skchat-chef`; shipped, not enabled |
 | `skchat-telegram-opus.service` | Opus Telegram bridge | yes | @seaBird_Opus_bot, qwen3.6 @ .100:8082 |
 | `skchat-telegram-lumina.service` | Lumina Telegram bridge | yes | @seaBird_Lumi_bot, default role sk-creative |
-| `skchat-lumina-call.service` | LiveKit voice agent | yes | lumina-creative `lumina-call.py` |
-| `skchat-webui@lumina.service` | web UI + voice chat | yes | template `skchat-webui@.service` |
+| `skchat-lumina-call.service` | LiveKit voice agent (Space) | no (disabled) | lumina-creative `lumina-call.py`; hardwired to `lumina-and-chef`, 401-crash-looped on the auth gate. Superseded by the 1:1 answerer below |
+| `skchat-call-answerer@opus.service` | 1:1 call auto-answer | yes | template `skchat-call-answerer@.service`; polls the opus webui `/call/incoming`, joins the derived LiveKit room, publishes audio. Reads `webui-opus.env` (operator token + `SKCHAT_PORT`) |
+| `skchat-webui@lumina.service` | web UI + voice chat (:8765) | yes | template `skchat-webui@.service` |
+| `skchat-webui@opus.service` | opus web UI (:8766, callee surface) | yes | callee-identity `/call/*` surface for Lumina->Opus; the answerer polls it |
 | `skchat-piper-tts.service` | :18797 Piper CPU TTS | yes | canonical TTS |
 | `skchat-nostr-relay.service` | :7447 discovery relay | yes | in-memory; binds host tailnet IP |
 | `skchat-app-web.service` | :8088 Flutter web static | yes | hardened stdlib server (`scripts/serve-app-web.sh`), binds 0.0.0.0 (direct tailnet/LAN, not funnel-fronted), no autoindex |

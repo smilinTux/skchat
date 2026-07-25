@@ -1,0 +1,32 @@
+[Unit]
+Description=SKChat 1:1 call auto-answer service (%i)
+Documentation=file://%h/clawd/skcapstone-repos/skchat/docs/superpowers/plans/2026-07-25-calling-backend-agent-to-agent.md
+# Polls the per-agent webui /call/incoming and joins the derived LiveKit room.
+# The %i webui (SKAGENT=%i) is the callee-identity surface: its /call/incoming
+# reads %i's inbox and /call/answer mints a %i token. For opus that is :8766.
+After=skchat-webui@%i.service livekit-server.service network-online.target
+Wants=skchat-webui@%i.service
+
+[Service]
+Type=simple
+Environment=PATH=%h/.skenv/bin:/usr/local/bin:/usr/bin:/bin
+Environment=VIRTUAL_ENV=%h/.skenv
+Environment=PYTHONUNBUFFERED=1
+Environment=SKAGENT=%i
+Environment=SKCAPSTONE_AGENT=%i
+Environment=SKMEMORY_AGENT=%i
+# Operator token + SKCHAT_PORT come from the same env file the %i webui uses; the
+# secret is externalized, never inlined in the unit. The answerer derives its
+# webui URL from SKCHAT_PORT (opus webui is 8766), so it polls the CALLEE-identity
+# surface (%i), NOT the lumina webui on 8765.
+EnvironmentFile=%h/.config/skchat/webui-%i.env
+Environment=SKCHAT_ANSWERER_POLL_S=3
+# Co-located answerer joins the local SFU directly (livekit-server binds the
+# tailnet IP :7880, not loopback). Overrides the advertised public/funnel URL.
+Environment=SKCHAT_ANSWERER_LIVEKIT_URL=ws://100.108.59.57:7880
+ExecStart=%h/.skenv/bin/python %h/clawd/skcapstone-repos/skchat/scripts/call_answerer.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
