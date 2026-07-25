@@ -31,7 +31,23 @@ except Exception:  # pragma: no cover
 logger = logging.getLogger(__name__)
 
 POLL_INTERVAL_S = float(os.getenv("SKCHAT_ANSWERER_POLL_S", "3"))
-DEFAULT_WEBUI_URL = os.getenv("SKCHAT_WEBUI_URL", "http://localhost:8765")
+
+
+def _resolve_webui_url() -> str:
+    """The callee webui the answerer polls.
+
+    Explicit ``SKCHAT_WEBUI_URL`` wins. Otherwise derive from ``SKCHAT_PORT``
+    (each agent's ``webui-<agent>.env`` sets its own port, e.g. opus is 8766), so
+    the systemd template stays genuinely per-agent instead of hardcoding a port.
+    Falls back to the lumina default only when neither is set.
+    """
+    explicit = os.getenv("SKCHAT_WEBUI_URL", "").strip()
+    if explicit:
+        return explicit
+    port = os.getenv("SKCHAT_PORT", "").strip()
+    if port:
+        return f"http://localhost:{port}"
+    return "http://localhost:8765"
 
 
 def poll_and_answer(api, seen: set) -> Optional[dict]:
@@ -165,13 +181,13 @@ def run_answerer(
     """Runnable loop: poll -> answer -> join the dynamic room and publish audio.
 
     Reads config from the environment when not passed:
-    ``SKCHAT_WEBUI_URL`` (default ``http://localhost:8765``),
-    ``SKCHAT_GUEST_OPERATOR_TOKEN`` (required),
+    ``SKCHAT_WEBUI_URL`` or ``SKCHAT_PORT`` (the callee webui, see
+    ``_resolve_webui_url``), ``SKCHAT_GUEST_OPERATOR_TOKEN`` (required),
     ``SKCHAT_ANSWERER_POLL_S`` (default 3s).
     """
     import asyncio
 
-    base_url = base_url or DEFAULT_WEBUI_URL
+    base_url = base_url or _resolve_webui_url()
     operator_token = operator_token or os.getenv("SKCHAT_GUEST_OPERATOR_TOKEN", "")
     interval = poll_interval_s if poll_interval_s is not None else POLL_INTERVAL_S
     if not operator_token:
@@ -188,7 +204,19 @@ def run_answerer(
             logger.warning("poll cycle error: %s", e)
             joinable = None
         if joinable:
-            logger.info("answering call -> room=%s", joinable["room"])
+            # A co-located answerer joins the LOCAL SFU directly. The advertised
+            # livekit_url is a public/funnel URL for off-box browsers; from the
+            # same host that path is a wasteful round-trip (and the opus webui's
+            # advertised URL is a misconfigured :8443 TLS port that is not the
+            # signaling ws). SKCHAT_ANSWERER_LIVEKIT_URL (e.g. ws://<tailnet-ip>:7880)
+            # overrides it. The token is URL-independent (signed by a key the
+            # server knows), so overriding the host is safe.
+            direct = os.getenv("SKCHAT_ANSWERER_LIVEKIT_URL", "").strip()
+            if direct:
+                joinable = {**joinable, "livekit_url": direct}
+            logger.info(
+                "answering call -> room=%s via %s", joinable["room"], joinable["livekit_url"]
+            )
             try:
                 asyncio.run(_join_and_publish(joinable))
             except Exception as e:
