@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""lumina-bridge.py — Lumina consciousness loop for SKChat.
+"""lumina-bridge.py: Lumina consciousness loop for SKChat.
 
 Polls skchat inbox for messages addressed to Lumina, routes them through
 skcapstone LLMBridge (consciousness), and sends Lumina's response back
@@ -23,7 +23,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-import skchat  # noqa: F401 — verify install
+import skchat  # noqa: F401 (verify install)
 
 # ─── Logging: journal (stdout) + file ────────────────────────────────────────
 
@@ -32,7 +32,7 @@ LOG_DIR.mkdir(parents=True, exist_ok=True)
 LOG_FILE = LOG_DIR / "lumina-bridge.log"
 RESPONSE_LOG = LOG_DIR / "lumina-responses.log"
 
-_fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s — %(message)s")
+_fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
 _file_handler = logging.FileHandler(LOG_FILE)
 _file_handler.setFormatter(_fmt)
@@ -52,7 +52,7 @@ RATE_LIMIT_SECONDS = 10
 CONTEXT_MESSAGES = 5
 
 # When True, the consciousness loop still runs (poll, dedup, generate replies)
-# but no reply is actually delivered — send_reply logs what it WOULD send
+# but no reply is actually delivered; send_reply logs what it WOULD send
 # instead. Toggled by the --dry-run CLI flag.
 DRY_RUN = False
 
@@ -113,7 +113,7 @@ def _seed_backlog_as_processed() -> None:
     if os.environ.get("LUMINA_BRIDGE_ANSWER_BACKLOG", "0").strip().lower() in (
         "1", "true", "yes", "on",
     ):
-        logger.info("LUMINA_BRIDGE_ANSWER_BACKLOG set — pending backlog WILL be answered")
+        logger.info("LUMINA_BRIDGE_ANSWER_BACKLOG set, pending backlog WILL be answered")
         return
     try:
         pending: list[dict] = []
@@ -373,7 +373,7 @@ def _soul_prefix(soul: dict) -> str:
 
     comm_style = soul.get("communication_style", "")
     if isinstance(comm_style, dict):
-        # Legacy format — flatten tone_markers or patterns into a string
+        # Legacy format: flatten tone_markers or patterns into a string
         markers = comm_style.get("tone_markers") or comm_style.get("patterns") or []
         comm_style = ", ".join(markers)
 
@@ -454,7 +454,7 @@ def _record_response(sender: str) -> None:
     _METRICS["last_response_timestamp"] = now
 
 
-# ─── Consciousness call (direct Python API — no MCP subprocess) ───────────────
+# ─── Consciousness call (direct Python API, no MCP subprocess) ───────────────
 
 # Module-level cache: created once at bridge start, reused across all messages.
 # Avoids re-loading consciousness config and re-building the system prompt on
@@ -463,7 +463,7 @@ _bridge_cache: dict = {}
 
 
 def _get_bridge_objects() -> tuple:
-    """Return (config, bridge, builder, _classify_message) — cached after first call."""
+    """Return (config, bridge, builder, _classify_message); cached after first call."""
     if _bridge_cache:
         return (
             _bridge_cache["config"],
@@ -486,7 +486,7 @@ def _get_bridge_objects() -> tuple:
     config = load_consciousness_config(agent_home)
 
     # Custom router config for the Lumina bridge:
-    # 1. Remove qwen3-coder from FAST tier (18 GB Ollama — always times out on CPU-only).
+    # 1. Remove qwen3-coder from FAST tier (18 GB Ollama, always times out on CPU-only).
     # 2. Redirect CODE tier to the same lightweight models as FAST.
     #    Chat messages with "test"/"debug" keywords must NOT invoke devstral (24 GB).
     _default = ModelRouterConfig.default()
@@ -514,37 +514,84 @@ def _get_bridge_objects() -> tuple:
     return config, bridge, builder, _classify_message
 
 
+def _openai_chat_url(base_url: str) -> str:
+    """Normalize a backend url (…/v1 or a full …/chat/completions) to the
+    chat-completions endpoint this bridge POSTs to."""
+    u = base_url.rstrip("/")
+    if u.endswith("/chat/completions"):
+        return u
+    if u.endswith("/v1"):
+        return u + "/chat/completions"
+    return u + "/v1/chat/completions"
+
+
+def _role_resolve(role: str) -> tuple[str | None, str | None]:
+    """Resolve a skos.models role (sk-default/sk-creative/...) to a concrete
+    (url, model) pair for the shared resolver's `role_resolve_fn`. Returns
+    (None, None) when skos.models is unavailable or resolution fails, so the
+    resolver falls back to the gateway default (ornith-tiny)."""
+    try:
+        import skos.models as _skmodels
+    except Exception:
+        return None, None
+    try:
+        b = _skmodels.resolve(role=role)
+    except Exception:
+        logger.debug("skos.models resolve(role=%s) failed", role, exc_info=True)
+        return None, None
+    if b and b.url:
+        return _openai_chat_url(b.url), (b.model or None)
+    return None, None
+
+
 def _skgateway_reply(system_prompt: str, message: str) -> str | None:
     """Generate a reply via SKGateway (OpenAI-compatible) when configured.
 
     When ``SKCHAT_LLM_URL`` is set (e.g. the local SKGateway at
-    ``http://localhost:18780/v1/chat/completions``), the reply is generated by
-    the model the operator selected in-app (``skchat.agent_model``) — typically
-    a Claude model or the local qwen3.6-27b.  Returns the assistant text, or
-    ``None`` when SKGateway is not configured or the call fails, so callers fall
-    back to the local consciousness cascade.
+    ``http://localhost:18780/v1/chat/completions``), the reply backend is
+    resolved through the shared resolver
+    (skchat.reply_model.resolve_reply_backend), honoring the operator's
+    per-agent selection (skchat.agent_model): a concrete model id routes
+    straight to SKGateway, a role (e.g. sk-creative) resolves via
+    skos.models, and any resolution failure falls back to the gateway
+    default. Returns the assistant text, or ``None`` when SKGateway is not
+    configured or the call fails, so callers fall back to the local
+    consciousness cascade.
     """
     url = os.environ.get("SKCHAT_LLM_URL")
     if not url:
         return None
 
-    from skchat.agent_model import get_model
-
     agent = os.environ.get("SKAGENT", "lumina")
-    model = get_model(agent)
+    default_fallback = os.environ.get("SKCHAT_LLM_FALLBACK_MODEL", "ornith-tiny")
+    try:
+        from skchat.agent_model import get_selection
+        from skchat.reply_model import resolve_reply_backend
 
-    out = _skgateway_call(url, model, system_prompt, message)
+        reply_url, model = resolve_reply_backend(
+            agent,
+            selection_fn=get_selection,
+            role_resolve_fn=_role_resolve,
+            chat_pin_fn=lambda _ctx: None,
+            gateway_url=url,
+        )
+    except Exception:
+        logger.debug("resolve_reply_backend failed; using gateway default", exc_info=True)
+        reply_url, model = url, default_fallback
+
+    out = _skgateway_call(reply_url, model, system_prompt, message)
     if out:
         logger.info("skgateway reply via model=%s (%d chars)", model, len(out))
         return out
 
     # Fallback to the local, no-auth model so an expired/unreachable cloud model
     # (e.g. a 401 on claude-opus) never drops us to the passthrough echo.
-    fallback = os.environ.get("SKCHAT_LLM_FALLBACK_MODEL", "qwen3.6-27b-abliterated")
-    if model != fallback:
-        out = _skgateway_call(url, fallback, system_prompt, message)
+    if model != default_fallback:
+        out = _skgateway_call(url, default_fallback, system_prompt, message)
         if out:
-            logger.info("skgateway reply via fallback model=%s (%d chars)", fallback, len(out))
+            logger.info(
+                "skgateway reply via fallback model=%s (%d chars)", default_fallback, len(out)
+            )
             return out
     return None
 
@@ -615,12 +662,12 @@ def call_consciousness(message: str, soul_prefix: str = "", classify_text: str =
             return gateway_reply
 
         # When a gateway IS configured but unreachable (and even the local qwen
-        # fallback failed), do NOT fall through to the consciousness cascade — its
+        # fallback failed), do NOT fall through to the consciousness cascade; its
         # passthrough backend echoes the prompt back. Return a clean notice.
         if os.environ.get("SKCHAT_LLM_URL"):
-            logger.error("skgateway + fallback both failed — returning connectivity notice")
+            logger.error("skgateway + fallback both failed, returning connectivity notice")
             return (
-                "⚠️ No models available through SKGateway right now — both the "
+                "⚠️ No models available through SKGateway right now, both the "
                 "selected model and the local fallback are unreachable. "
                 "Please try again shortly."
             )
@@ -636,14 +683,14 @@ def call_consciousness(message: str, soul_prefix: str = "", classify_text: str =
         return f"[Lumina error: {exc}]"
 
 
-# ─── Inbox polling (ChatHistory direct — covers both CLI and agent messages) ──
+# ─── Inbox polling (ChatHistory direct, covers both CLI and agent messages) ──
 
 def check_inbox_for_lumina() -> list[dict]:
     """Poll Lumina's inbox via ChatHistory and return unhandled messages.
 
     Queries the memory store directly by recipient tag so that messages
     sent via `skchat send` (which lack `agent_comm` metadata) are also
-    routed through the consciousness loop — not only AgentMessenger sends.
+    routed through the consciousness loop, not only AgentMessenger sends.
     """
     try:
         from skchat.history import ChatHistory
@@ -720,7 +767,7 @@ def poll_outbox_for_lumina() -> list[dict]:
         key = f"outbox:{envelope_id}"
 
         if key in BRIDGE_HISTORY:
-            # Already handled in a previous cycle — clean up the stale file
+            # Already handled in a previous cycle; clean up the stale file
             try:
                 env_file.unlink()
             except OSError:
@@ -901,7 +948,7 @@ def _consume_inbox_file(msg: dict) -> None:
         logger.warning("Could not remove inbox file %s: %s", path_str, exc)
 
 
-# ─── Reply delivery (direct inbox write — bypasses outbox) ───────────────────
+# ─── Reply delivery (direct inbox write, bypasses outbox) ───────────────────
 
 def deliver_reply_to_inbox(
     reply_text: str,
@@ -1049,13 +1096,13 @@ def _build_arg_parser():
 
     parser = argparse.ArgumentParser(
         prog="lumina-bridge",
-        description="Lumina consciousness bridge — polls the inbox and replies as Lumina.",
+        description="Lumina consciousness bridge: polls the inbox and replies as Lumina.",
     )
     parser.add_argument(
         "--dry-run",
         action="store_true",
         default=False,
-        help="Run the loop but do NOT deliver replies — log what would be sent instead.",
+        help="Run the loop but do NOT deliver replies; log what would be sent instead.",
     )
     return parser
 
@@ -1090,7 +1137,7 @@ def run_bridge() -> None:
 
     while True:
         try:
-            # FAST PATH — file-transport inbox (loopback from ChatTransport) and
+            # FAST PATH: file-transport inbox (loopback from ChatTransport) and
             # outbox files written by skchat send / REST API.  New messages land
             # here immediately so they are never stuck behind the SQLite backlog.
             inbox_msgs = poll_inbox_file_for_lumina()
@@ -1105,7 +1152,7 @@ def run_bridge() -> None:
                     fast_msgs.append(_om)
                     fast_contents.add(_om.get("content", ""))
 
-            # SLOW PATH — ChatHistory (SQLite) may contain a large backlog of old
+            # SLOW PATH: ChatHistory (SQLite) may contain a large backlog of old
             # unprocessed messages.  Limit to 1 per cycle so the fast path is never
             # starved: new messages are always handled within one poll interval.
             sqlite_msgs = check_inbox_for_lumina()
@@ -1142,7 +1189,7 @@ def run_bridge() -> None:
                     logger.info("skip agent-loop guard: %s", sender or "(empty)")
                     continue
 
-                # Rate limiting (skip if sender is empty — can't track rate limits)
+                # Rate limiting (skip if sender is empty, can't track rate limits)
                 if sender and _is_rate_limited(sender):
                     continue
 
@@ -1176,7 +1223,7 @@ def run_bridge() -> None:
                 # CRITICAL FIX: use a plain daemon thread instead of ThreadPoolExecutor.
                 # With `with ThreadPoolExecutor`, a TimeoutError inside the `with` block
                 # causes __exit__ → shutdown(wait=True) which BLOCKS until the background
-                # LLM thread actually returns — freezing the loop for the full LLM call
+                # LLM thread actually returns, freezing the loop for the full LLM call
                 # duration even after the timeout fires.  A daemon=True thread is
                 # completely detached: join(timeout=N) returns immediately when N expires
                 # and the main loop continues to the next message.
@@ -1204,7 +1251,7 @@ def run_bridge() -> None:
 
                 if not _result_box["done"]:
                     logger.warning(
-                        "Consciousness timeout (%ds) for %s — skipping",
+                        "Consciousness timeout (%ds) for %s, skipping",
                         _OUTER_TIMEOUT, sender,
                     )
                     _METRICS["errors"] += 1
@@ -1213,7 +1260,7 @@ def run_bridge() -> None:
 
                 response = _result_box.get("response") or ""
                 if not response:
-                    logger.warning("Empty/error LLM response for %s — skipping", sender)
+                    logger.warning("Empty/error LLM response for %s, skipping", sender)
                     _METRICS["errors"] += 1
                     _record_response(sender)
                     continue

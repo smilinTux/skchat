@@ -44,15 +44,16 @@ AVAILABLE_MODELS: list[dict] = [
         "provider": "local",
         "local": True,
     },
-    {
-        "id": "qwen3.6-27b-abliterated",
-        "label": "Qwen 3.6 27B (local)",
-        "provider": "local",
-        "local": True,
-    },
 ]
 
 _VALID_IDS = {m["id"] for m in AVAILABLE_MODELS}
+
+_LEGACY_ALIASES = {"qwen3.6-27b-abliterated": "ornith-tiny"}
+
+# Shared knob for capable/reasoning jobs (NOT for uncensored jobs, those must stay
+# on a local uncensored model). Chef will flip this to "ornith-big" once that
+# backend is live; until then it defaults to Claude Opus.
+CAPABLE_MODEL = os.environ.get("SKCHAT_CAPABLE_MODEL", "claude-opus-4-8")
 
 _lock = threading.Lock()
 
@@ -68,9 +69,31 @@ def default_model() -> str:
     return os.environ.get("SKCHAT_LLM_MODEL", "claude-opus-4-8")
 
 
+def default_selection() -> str:
+    """The fast local default (ornith-tiny on .100). Was claude-opus; changed for
+    speed."""
+    return "ornith-tiny"
+
+
 def list_models() -> list[dict]:
     """Return the curated list of selectable models (copy)."""
     return [dict(m) for m in AVAILABLE_MODELS]
+
+
+def list_choices(*, gateway_fetch, roles_source) -> dict:
+    """Dynamic catalog: skos roles + SKGateway-served models (legacy aliases
+    collapsed to their canonical id so one backend shows once)."""
+    roles = list(roles_source() or [])
+    seen = set()
+    models = []
+    for m in (gateway_fetch() or {}).get("data", []):
+        mid = _LEGACY_ALIASES.get(m.get("id"), m.get("id"))
+        if not mid or mid in seen:
+            continue
+        seen.add(mid)
+        models.append({"id": mid, "provider": m.get("provider"),
+                       "free": m.get("free")})
+    return {"roles": roles, "models": models}
 
 
 def _read() -> dict:
@@ -81,12 +104,50 @@ def _read() -> dict:
         return {}
 
 
+def _load() -> dict:
+    """Load agent selections from SKCHAT_AGENT_MODEL_PATH."""
+    return _read()
+
+
+def _save(data: dict) -> None:
+    """Save agent selections to SKCHAT_AGENT_MODEL_PATH."""
+    with _lock:
+        path = _state_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        tmp.replace(path)
+
+
+def classify(value: str, valid_roles: set) -> str:
+    """Classify a value as 'role' or 'model' based on valid_roles set."""
+    return "role" if value in valid_roles else "model"
+
+
+def get_selection(agent: str) -> str:
+    """Get the stored selection for agent, or the default if unset."""
+    data = _load()
+    return data.get(agent) or default_selection()
+
+
+def set_selection(agent: str, value: str, *, valid_roles: set, valid_models: set
+                  ) -> str:
+    """Store a selection (role or model) for agent.
+
+    Raises:
+        ValueError: if value is neither a known role nor a served model.
+    """
+    if value not in valid_roles and value not in valid_models:
+        raise ValueError(f"unknown selection {value!r} (not a role or served model)")
+    data = _load()
+    data[agent] = value
+    _save(data)
+    return value
+
+
 def get_model(agent: str) -> str:
     """Return the selected model for *agent*, or the default if unset/invalid."""
-    selected = _read().get(agent)
-    if selected in _VALID_IDS:
-        return selected
-    return default_model()
+    return get_selection(agent)
 
 
 def set_model(agent: str, model: str) -> str:
@@ -97,12 +158,4 @@ def set_model(agent: str, model: str) -> str:
     """
     if model not in _VALID_IDS:
         raise ValueError(f"unknown model {model!r}; valid: {sorted(_VALID_IDS)}")
-    with _lock:
-        path = _state_path()
-        data = _read()
-        data[agent] = model
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
-        tmp.replace(path)
-    return model
+    return set_selection(agent, model, valid_roles=set(), valid_models=_VALID_IDS)

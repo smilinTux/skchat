@@ -264,6 +264,68 @@ def _is_group_message(msg: "ChatMessage", groups: list[str]) -> bool:
     return (not groups) or (key in groups) or (f"group:{tid}" in groups)
 
 
+def _fetch_gateway_models() -> dict:
+    """GET SKGateway's served-model list. Fail-soft: any error returns {}.
+
+    Backs the live catalog behind ``/api/v1/agent/model`` (roles + models the
+    picker offers). The gateway base comes from ``SKCHAT_LLM_URL`` (the same
+    env the reply path already routes through, see ``group_responder.py`` /
+    ``lumina-bridge.py``), normalized from a ``.../chat/completions`` URL down
+    to the ``.../v1`` root, then ``/models`` is appended. Falls back to the
+    local SKGateway default (``http://localhost:18780``) when unset.
+    """
+    import os
+    import urllib.request
+
+    base = os.environ.get("SKCHAT_LLM_URL") or "http://localhost:18780/v1/chat/completions"
+    root = base.rsplit("/chat/completions", 1)[0]
+    if not root.endswith("/v1"):
+        root = root.rstrip("/") + "/v1"
+    url = root + "/models"
+    try:
+        with urllib.request.urlopen(url, timeout=2) as resp:  # noqa: S310
+            parsed = json.loads(resp.read().decode())
+            return parsed if isinstance(parsed, dict) else {}
+    except Exception as exc:
+        logger.debug("agent/model: gateway model fetch failed (%s): %s", url, exc)
+        return {}
+
+
+def _skos_roles() -> list:
+    """Role names from the skos.models registry. Fail-soft: [] on any error,
+    including ImportError when skos isn't installed in this environment."""
+    try:
+        import skos.models as _skmodels
+    except ImportError:
+        return []
+    try:
+        return list(_skmodels.list_roles().keys())
+    except Exception as exc:
+        logger.debug("agent/model: skos.models.list_roles failed: %s", exc)
+        return []
+
+
+def _resolved_model_for(selection: str, kind: str) -> str:
+    """Best-effort concrete model a *selection* implies, for display.
+
+    A ``role`` selection resolves through the skos.models registry to its
+    mapped backend's model id; a concrete ``model`` selection (or anything
+    that could not be resolved) is displayed as-is. Fail-soft: never raises.
+    """
+    if kind != "role":
+        return selection
+    try:
+        import skos.models as _skmodels
+    except ImportError:
+        return selection
+    try:
+        backend = _skmodels.resolve(role=selection)
+        return getattr(backend, "model", "") or selection
+    except Exception as exc:
+        logger.debug("agent/model: skos.models.resolve failed for role %s: %s", selection, exc)
+        return selection
+
+
 class DaemonShutdown(Exception):
     """Raised to trigger graceful daemon shutdown."""
 
@@ -1260,7 +1322,7 @@ class ChatDaemon:
                     import os
                     from urllib.parse import parse_qs, urlparse
 
-                    from .agent_model import default_model, get_model, list_models
+                    from .agent_model import classify, get_selection, list_choices
 
                     qs = parse_qs(urlparse(self.path).query)
                     agent = (
@@ -1268,13 +1330,25 @@ class ChatDaemon:
                         or getattr(daemon_ref, "_agent", None)
                         or os.environ.get("SKAGENT", "lumina")
                     )
+                    catalog = list_choices(
+                        gateway_fetch=_fetch_gateway_models, roles_source=_skos_roles
+                    )
+                    sel = get_selection(agent)
+                    kind = classify(sel, set(catalog["roles"]))
                     self._respond_json(
                         200,
                         {
                             "agent": agent,
-                            "model": get_model(agent),
-                            "default": default_model(),
-                            "available": list_models(),
+                            "selection": sel,
+                            "kind": kind,
+                            "resolved_model": _resolved_model_for(sel, kind),
+                            "catalog": catalog,
+                            # No models came back from SKGateway: either it is
+                            # unreachable or serving nothing, so the picker's
+                            # model list is stale (roles/skos are unaffected).
+                            "stale": not catalog["models"],
+                            "model": sel,  # back-compat
+                            "available": catalog["models"],  # back-compat
                         },
                     )
                     return
@@ -1343,7 +1417,7 @@ class ChatDaemon:
                     return
                 import os
 
-                from .agent_model import get_model, list_models, set_model
+                from .agent_model import classify, get_selection, list_choices, set_selection
 
                 try:
                     length = int(self.headers.get("Content-Length", 0))
@@ -1357,15 +1431,35 @@ class ChatDaemon:
                     self._respond_json(400, {"error": "invalid JSON body"})
                     return
                 agent = data.get("agent") or os.environ.get("SKAGENT", "lumina")
-                model = data.get("model")
+                # "model" accepted too, for back-compat with the pre-catalog client.
+                selection = data.get("selection") or data.get("model")
+                catalog = list_choices(
+                    gateway_fetch=_fetch_gateway_models, roles_source=_skos_roles
+                )
                 try:
-                    set_model(agent, model)
+                    set_selection(
+                        agent,
+                        selection,
+                        valid_roles=set(catalog["roles"]),
+                        valid_models={m["id"] for m in catalog["models"]},
+                    )
                 except ValueError as exc:
                     self._respond_json(400, {"error": str(exc)})
                     return
+                sel = get_selection(agent)
+                kind = classify(sel, set(catalog["roles"]))
                 self._respond_json(
                     200,
-                    {"agent": agent, "model": get_model(agent), "available": list_models()},
+                    {
+                        "agent": agent,
+                        "selection": sel,
+                        "kind": kind,
+                        "resolved_model": _resolved_model_for(sel, kind),
+                        "catalog": catalog,
+                        "stale": not catalog["models"],
+                        "model": sel,  # back-compat
+                        "available": catalog["models"],  # back-compat
+                    },
                 )
 
             def log_message(self, fmt, *args) -> None:  # noqa: N802

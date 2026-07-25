@@ -91,7 +91,7 @@ LLM_URL = os.environ.get("SKC_BRIDGE_LLM_URL", "http://192.168.0.100:8082/v1/cha
 # Local SKGateway — sk-auto chats route here so its difficulty classifier picks
 # the model per message (easy->ornith, hard->opus, image->VL). Local hop on .158.
 _GATEWAY_URL = os.environ.get("SKC_BRIDGE_GATEWAY_URL", "http://127.0.0.1:18780/v1")
-LLM_MODEL = os.environ.get("SKC_BRIDGE_LLM_MODEL", "qwen3.6-27b-abliterated")
+LLM_MODEL = os.environ.get("SKC_BRIDGE_LLM_MODEL", "ornith-tiny")
 AGENT = os.environ.get("SKC_BRIDGE_AGENT", "Opus")
 
 # ── Wedge detection (sd_notify heartbeat + poll-failure watchdog) ──────────── #
@@ -156,34 +156,89 @@ def _openai_chat_url(base_url: str) -> str:
     return u + "/v1/chat/completions"
 
 
-def _resolve_backend_for_chat(chat_id) -> tuple[str, str]:
-    """Resolve (url, model) for this chat via the skmodels registry, honoring any
-    `/model` toggle pinned on `chat:<id>`. Falls back to the static LLM_URL/MODEL
-    when skos.models is unavailable or resolution fails."""
+def _role_resolve(role: str) -> tuple[str | None, str | None]:
+    """Resolve a skos.models role (sk-default/sk-creative/...) to a concrete
+    (url, model) pair for the shared resolver's `role_resolve_fn`. Returns
+    (None, None) when skos.models is unavailable or resolution fails.
+
+    sk-auto needs SKGateway's per-request difficulty classifier, the bot can't
+    classify, so it's routed THROUGH the local gateway (which reads the same
+    registry + attaches x-sk-context) so easy->ornith/hard->opus/image->VL
+    happens automatically, unchanged from the bridge's pre-unification behavior."""
+    if role == "sk-auto" and _GATEWAY_URL:
+        return _openai_chat_url(_GATEWAY_URL), "sk-auto"
     if _skmodels is None:
-        return LLM_URL, LLM_MODEL
+        return None, None
+    try:
+        b = _skmodels.resolve(role=role)
+    except Exception:
+        log.debug("skmodels resolve(role=%s) failed", role, exc_info=True)
+        return None, None
+    if b and b.url:
+        return _openai_chat_url(b.url), (b.model or None)
+    return None, None
+
+
+def _chat_pin_resolve(chat_context: str) -> tuple[str, str] | None:
+    """Resolve the pre-existing per-chat skos.models pin (registry
+    `contexts: chat:<id>`, set via `/model pin <role>`) to a concrete
+    (url, model), for the shared resolver's `chat_pin_fn`. Returns None when
+    this chat has no pin (or skos.models is unavailable), so the resolver
+    falls through to the agent's shared per-agent selection.
+
+    This is the ONLY reader of the chat-scoped pin now. The old per-bot
+    SKC_BRIDGE_DEFAULT_ROLE static override (e.g. Lumina -> sk-creative) is
+    retired here per the unified design (per-bot defaults must be an explicit,
+    stored per-agent selection, not an implicit resolver override): set it
+    once with `/model sk-creative` instead, which persists to agent_model.json
+    and is honored on every surface, not just this bot."""
+    if _skmodels is None:
+        return None
     _fresh_registry()  # pick up external/synced toggles live (no restart)
     try:
         reg = _skmodels.load_registry()
-        ctx_key = _chat_context_key(chat_id)
-        # Per-bot default role (SKC_BRIDGE_DEFAULT_ROLE) overrides the registry's
-        # global default for THIS agent only — e.g. Lumina defaults to sk-creative
-        # (abliterated qwen = her personality/creative brain) while Opus stays on
-        # the global sk-auto. A per-chat `/model` toggle still wins over both.
-        default_role = os.environ.get("SKC_BRIDGE_DEFAULT_ROLE") or reg.default_role
+        ctx_key = chat_context
         pinned = (reg.contexts or {}).get(ctx_key)
-        target = pinned or default_role
-        # sk-auto needs SKGateway's per-request difficulty classifier — the bot
-        # can't classify. Route sk-auto chats THROUGH the local gateway (it reads
-        # the same registry + attaches x-sk-context) so easy->ornith/hard->opus/
-        # image->VL happens automatically. Pinned concrete roles go direct (fast).
-        if target == "sk-auto" and _GATEWAY_URL:
+        if not pinned:
+            return None
+        if pinned == "sk-auto" and _GATEWAY_URL:
             return _openai_chat_url(_GATEWAY_URL), "sk-auto"
-        b = _skmodels.resolve(context=ctx_key) if pinned else _skmodels.resolve(role=default_role)
+        b = _skmodels.resolve(context=ctx_key)
         if b and b.url:
             return _openai_chat_url(b.url), (b.model or LLM_MODEL)
     except Exception:
-        log.debug("skmodels resolve failed for %s", chat_id, exc_info=True)
+        log.debug("chat pin resolve failed for %s", chat_context, exc_info=True)
+    return None
+
+
+def _resolve_backend_for_chat(chat_id) -> tuple[str, str]:
+    """Resolve (url, model) for this chat via the shared reply-model resolver
+    (skchat.reply_model.resolve_reply_backend), the one place every surface
+    (app, Telegram, voice) resolves an agent's reply backend. Precedence:
+    per-chat skos pin (`/model pin <role>`, unchanged, highest) > per-agent
+    selection (skchat.agent_model, shared with the app picker) > default
+    ornith-tiny. Falls back to the static LLM_URL/LLM_MODEL when skos.models
+    is unavailable or resolution fails for any reason."""
+    if _skmodels is None:
+        return LLM_URL, LLM_MODEL
+    _fresh_registry()  # pick up external/synced skos toggles live (no restart)
+    try:
+        from skchat.agent_model import get_selection
+        from skchat.reply_model import resolve_reply_backend
+
+        gw = _openai_chat_url(_GATEWAY_URL) if _GATEWAY_URL else LLM_URL
+        url, model = resolve_reply_backend(
+            AGENT_NAME,
+            chat_context=_chat_context_key(chat_id),
+            selection_fn=get_selection,
+            role_resolve_fn=_role_resolve,
+            chat_pin_fn=_chat_pin_resolve,
+            gateway_url=gw,
+        )
+        if url and model:
+            return url, model
+    except Exception:
+        log.debug("resolve_reply_backend failed for %s", chat_id, exc_info=True)
     return LLM_URL, LLM_MODEL
 AGENT_HOME = os.environ.get("SKC_BRIDGE_AGENT_HOME", os.path.expanduser("~/.skcapstone/agents/opus"))
 
@@ -982,18 +1037,55 @@ def _llm(chat_key: str, user_text: str) -> tuple[str, str | None]:
     return reply, concrete_model
 
 
+def _fetch_gateway_models() -> dict:
+    """GET SKGateway's served-model list. Fail-soft: any error returns {}.
+
+    Backs `/model`'s live catalog (skchat.agent_model.list_choices' `models`
+    section). Mirrors daemon.py's `_fetch_gateway_models`, reading the bridge's
+    own gateway env (`SKC_BRIDGE_GATEWAY_URL` / `_GATEWAY_URL`) instead."""
+    root = (_GATEWAY_URL or "http://localhost:18780/v1").rstrip("/")
+    if not root.endswith("/v1"):
+        root = root + "/v1"
+    url = root + "/models"
+    try:
+        with urllib.request.urlopen(url, timeout=2) as resp:  # noqa: S310
+            parsed = json.loads(resp.read().decode())
+            return parsed if isinstance(parsed, dict) else {}
+    except Exception as exc:
+        log.debug("model command: gateway model fetch failed (%s): %s", url, exc)
+        return {}
+
+
+def _skos_roles() -> list:
+    """Role names from the skos.models registry. Fail-soft: [] on any error,
+    including when skos isn't importable in this bridge's environment."""
+    if _skmodels is None:
+        return []
+    try:
+        return list((_skmodels.list_roles() or {}).keys())
+    except Exception:
+        log.debug("model command: skos.models.list_roles failed", exc_info=True)
+        return []
+
+
 def _handle_model_command(chat_id, text: str) -> str | None:
-    """Handle the `/model` slash command for live per-chat model swapping.
+    """Handle the `/model` slash command for live model switching.
 
     Returns the reply text to send (and the caller then skips the LLM), or None
     when *text* is not a /model command.
 
-      /model            → show available roles + this chat's current model
-      /model list       → same
-      /model <role>     → pin chat:<id> to <role> (skmodels set) and confirm
+      /model                     -> list roles + models (skchat.agent_model's
+                                     dynamic catalog), current selection marked
+      /model list                -> same
+      /model <role-or-model-id>  -> set the shared PER-AGENT selection
+                                     (skchat.agent_model), honored on every
+                                     surface (app, voice, this bridge)
+      /model pin <role>          -> pin THIS CHAT to <role> (skos.models
+                                     `contexts: chat:<id>`); a Telegram-only,
+                                     highest-precedence override, unchanged
+                                     from before unification
 
-    Writes the toggle via skos.models.set_context (registry `contexts:`), the
-    same thing `skmodels set chat:<id> <role>` does — comment-preserving.
+    See docs/superpowers/specs/2026-07-25-unified-reply-model-selection-design.md.
     """
     stripped = text.strip()
     # Accept "/model", "/model@seaBird_Opus_bot" (group @-mention form), args after.
@@ -1001,49 +1093,75 @@ def _handle_model_command(chat_id, text: str) -> str | None:
     head = parts[0].split("@", 1)[0].lower() if parts else ""
     if head != "/model":
         return None
-    arg = parts[1].strip().lower() if len(parts) > 1 else ""
+    rest = [p.strip().lower() for p in parts[1:]]
+    arg = rest[0] if rest else ""
 
-    if _skmodels is None:
-        return ("(model routing unavailable — skos.models isn't importable in this "
-                "bridge's environment, so /model can't switch backends here.)")
+    from skchat.agent_model import classify, get_selection, list_choices, set_selection
 
-    _fresh_registry()  # reflect any external/synced changes in the roster + current
-    roles = _skmodels.list_roles() or {}
-    backends = _skmodels.list_backends() or {}
-
-    def _current_line() -> str:
-        b = _skmodels.resolve(context=_chat_context_key(chat_id))
-        pinned = (_skmodels.list_contexts() or {}).get(_chat_context_key(chat_id))
-        via = f"pinned → {pinned}" if pinned else "default"
-        vis = " [vision]" if getattr(b, "vision", False) else ""
-        return f"current: {b.name} ({b.model}){vis} — {via}"
+    catalog = list_choices(gateway_fetch=_fetch_gateway_models, roles_source=_skos_roles)
+    roles = catalog["roles"]
+    model_ids = [m.get("id") for m in catalog["models"] if m.get("id")]
 
     if arg in ("", "list", "status", "get"):
-        lines = ["Available models (roles):"]
-        for role, target in roles.items():
-            bk = backends.get(target, {})
-            vtag = " [vision]" if bk.get("vision") else ""
-            lines.append(f"  {role} → {target}{vtag}")
+        sel = get_selection(AGENT_NAME)
+        kind = classify(sel, set(roles))
+        lines = [f"{AGENT}'s selection (all surfaces):", ""]
+        lines.append("Roles:")
+        for role in roles:
+            mark = "  <- current" if kind == "role" and role == sel else ""
+            lines.append(f"  {role}{mark}")
         lines.append("")
-        lines.append(_current_line())
+        lines.append("Models:")
+        for mid in model_ids:
+            mark = "  <- current" if kind == "model" and mid == sel else ""
+            lines.append(f"  {mid}{mark}")
         lines.append("")
-        lines.append("Swap with:  /model <role>   (e.g. /model sk-vision)")
+        pin = None
+        if _skmodels is not None:
+            try:
+                pin = (_skmodels.list_contexts() or {}).get(_chat_context_key(chat_id))
+            except Exception:
+                log.debug("model command: list_contexts failed", exc_info=True)
+        if pin:
+            lines.append(f"this chat is PINNED to {pin} (wins over the selection above)")
+            lines.append("")
+        lines.append("Set the agent's selection: /model <role-or-model-id>")
+        lines.append("Pin just this chat instead: /model pin <role>")
         return "\n".join(lines)
 
-    # A swap request: validate the target is a known role OR a concrete backend.
-    if arg not in roles and arg not in backends:
-        valid = ", ".join(list(roles) + list(backends))
-        return f"unknown model '{arg}'. valid targets: {valid}"
+    if arg == "pin":
+        role = rest[1] if len(rest) > 1 else ""
+        if not role:
+            return "usage: /model pin <role>   (e.g. /model pin sk-vision)"
+        if _skmodels is None:
+            return ("(chat pin unavailable, skos.models isn't importable in this "
+                    "bridge's environment.)")
+        _fresh_registry()  # reflect any external/synced changes in the roster
+        backends = _skmodels.list_backends() or {}
+        if role not in roles and role not in backends:
+            valid = ", ".join(list(roles) + list(backends))
+            return f"unknown model '{role}'. valid targets: {valid}"
+        try:
+            _skmodels.set_context(_chat_context_key(chat_id), role)
+        except Exception:
+            log.exception("skmodels set_context failed")
+            return f"(failed to pin this chat to {role}, registry write error; check the bridge logs.)"
+        b = _skmodels.resolve(context=_chat_context_key(chat_id))
+        vis = " [vision]" if getattr(b, "vision", False) else ""
+        log.info("chat pin: %s -> %s (%s)", _chat_context_key(chat_id), role, b.name)
+        return (f"pinned this chat to {role} -> {b.name} ({b.model}){vis}. "
+                "Replies here now route there (overrides the agent selection).")
 
+    # A swap request: set the shared per-agent selection.
     try:
-        _skmodels.set_context(_chat_context_key(chat_id), arg)
-    except Exception:
-        log.exception("skmodels set_context failed")
-        return f"(failed to switch to {arg} — registry write error; check the bridge logs.)"
-    b = _skmodels.resolve(context=_chat_context_key(chat_id))
-    vis = " [vision]" if getattr(b, "vision", False) else ""
-    log.info("model swap: %s → %s (%s)", _chat_context_key(chat_id), arg, b.name)
-    return f"✅ switched this chat to {arg} → {b.name} ({b.model}){vis}. Replies now route there."
+        set_selection(AGENT_NAME, arg, valid_roles=set(roles), valid_models=set(model_ids))
+    except ValueError:
+        valid = ", ".join(list(roles) + model_ids)
+        return f"unknown model '{arg}'. valid targets: {valid}"
+    kind = classify(arg, set(roles))
+    log.info("agent selection: %s -> %s (%s)", AGENT_NAME, arg, kind)
+    return (f"switched {AGENT}'s selection to {arg} ({kind}). Applies on every "
+            "chat/surface, unless this chat is pinned (see /model pin).")
 
 
 # Voice-reply policy: "voice" (default) = speak back only when spoken to;
