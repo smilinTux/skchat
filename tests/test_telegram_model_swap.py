@@ -6,7 +6,7 @@ Covers:
   - `/model` / `/model list` shows roles AND models (skchat.agent_model's
     dynamic catalog), current selection marked
   - `/model <role-or-model-id>` sets the shared PER-AGENT selection
-    (skchat.agent_model.set_selection) — NOT a chat-scoped write
+    (skchat.agent_model.set_selection) , NOT a chat-scoped write
   - `/model pin <role>` still writes the pre-existing skos.models registry
     `contexts:` toggle (chat:<id> -> role), a Telegram-only override
   - unknown roles/models are rejected without mutating either store
@@ -215,7 +215,7 @@ def test_unpin_reverts_to_agent_selection(bridge):
 
 def test_external_registry_pin_edit_picked_up_live(bridge):
     """A pin written by ANOTHER process (CLI `skmodels set` / Syncthing) must
-    take effect in the long-running bridge without a restart — _chat_pin_
+    take effect in the long-running bridge without a restart , _chat_pin_
     resolve drops the path-keyed cache before resolving."""
     tb, reg = bridge
     # baseline: no per-chat pin yet, so the (default) agent selection applies
