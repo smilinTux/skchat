@@ -43,6 +43,27 @@ while keeping the skos.models registry as the role-to-backend routing engine
 (it is the more capable router: per-chat pins, `sk-auto` classifier, live YAML
 reload) and keeping SKGateway as the single inference gateway.
 
+## 2b. Backend reality (2026-07-25, from `skgateway.yaml`)
+
+The refactor also corrects stale model naming. Authoritative SKGateway routing:
+
+- **`.100:8082` (beellama)** — canonical id **`ornith-tiny`** (9B NVFP4+MTP, fast).
+  `ornith-1.0-9b` and the **legacy alias `qwen3.6-27b-abliterated`** route to the
+  SAME backend. "qwen3.6" no longer exists as a distinct model; it is ornith on
+  .100. **`ornith-tiny` is the default for speed.**
+- **`chiap08:11436` (beellama)** — `ornith-1.0-35b` / alias `ornith-big`
+  (Ornith-1.0-35B, 256K ctx, the larger reasoning model; the "37b").
+- Claude family via the anthropic backend; other cloud models via NVIDIA.
+
+Consequences baked into this design:
+- The per-agent **default selection** and the hard-fallback become **`ornith-tiny`**,
+  replacing every `qwen3.6-27b-abliterated` default/fallback constant
+  (`SKCHAT_LLM_FALLBACK_MODEL`, `agent_model.AVAILABLE_MODELS` seed, the
+  `lumina-bridge`/telegram fallbacks).
+- Because the catalog is fetched live from SKGateway (§3.2), the model list
+  self-corrects; the picker collapses known **legacy aliases** (`qwen3.6...` ->
+  `ornith-tiny`) to their canonical id so one real backend shows once.
+
 ## 3. Architecture
 
 Three small units with clear boundaries; every surface depends only on the
@@ -54,9 +75,12 @@ Extend `agent_model.py`. A per-agent **selection** is either a **role** (a name
 in the skos.models registry) or a **concrete model id** (a name SKGateway
 serves). Persisted at `~/.skchat/agent_model.json` (unchanged path).
 
-- `get_selection(agent) -> str` (a role or a model id; falls back to a default).
+- `get_selection(agent) -> str` (a role or a model id; falls back to the default
+  `ornith-tiny`, the fast .100 backend).
 - `set_selection(agent, value) -> str` (validates `value` is a known role OR a
   currently-served model id; raises on anything else).
+- `default_selection() -> "ornith-tiny"` (was `claude-opus-4-8`; changed for
+  speed per Chef).
 - Back-compat: the existing `get_model`/`set_model` names remain as thin aliases
   so nothing breaks mid-migration.
 
@@ -96,9 +120,10 @@ Precedence:
    Lumina = `sk-creative`) or the registry default (`sk-auto`).
 
 If the selection is a concrete id SKGateway no longer serves (validated against
-the live catalog), the resolver skips it and falls through to the role default,
-logging the drop. The existing qwen3.6 hard-fallback on a failed call stays, so
-a reply never degrades to an echo.
+the live catalog), the resolver skips it and falls through to the default
+(`ornith-tiny`), logging the drop. The hard-fallback on a failed call becomes
+`ornith-tiny` (the fast .100 backend, replacing the old `qwen3.6` constant),
+so a reply never degrades to an echo.
 
 This function is the extraction of the pattern `lumina-bridge.py:_skgateway_reply`
 already implements; the app path is refactored onto it, and Telegram + voice
@@ -149,7 +174,8 @@ those keys populated alongside the new ones during migration).
   the same resolved model (one store); set a role via Telegram `/model` -> the
   app shows it selected. Pick a concrete model -> a voice call uses it.
 - **No regression:** existing per-chat `/model` role pins still win where set;
-  the qwen3.6 hard-fallback still catches a backend error.
+  the hard-fallback (now `ornith-tiny`) still catches a backend error; a fresh
+  agent with no selection defaults to `ornith-tiny` (fast).
 
 ## 6. Out of scope
 
