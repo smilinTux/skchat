@@ -49,6 +49,20 @@ class TestFetchGatewayModels:
         with patch("urllib.request.urlopen", return_value=_FakeResp()):
             assert _fetch_gateway_models() == {}
 
+    def test_fails_soft_to_empty_dict_on_non_dict_json(self) -> None:
+        class _FakeResp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def read(self):
+                return b"[1, 2, 3]"
+
+        with patch("urllib.request.urlopen", return_value=_FakeResp()):
+            assert _fetch_gateway_models() == {}
+
     def test_derives_models_url_from_skchat_llm_url(self, monkeypatch) -> None:
         monkeypatch.setenv("SKCHAT_LLM_URL", "http://example:9999/v1/chat/completions")
         seen = {}

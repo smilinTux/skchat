@@ -284,7 +284,8 @@ def _fetch_gateway_models() -> dict:
     url = root + "/models"
     try:
         with urllib.request.urlopen(url, timeout=2) as resp:  # noqa: S310
-            return json.loads(resp.read().decode())
+            parsed = json.loads(resp.read().decode())
+            return parsed if isinstance(parsed, dict) else {}
     except Exception as exc:
         logger.debug("agent/model: gateway model fetch failed (%s): %s", url, exc)
         return {}
