@@ -36,3 +36,18 @@ def test_get_selection_defaults_when_unset(tmp_path, monkeypatch):
     monkeypatch.setenv("SKCHAT_AGENT_MODEL_PATH", str(tmp_path / "sel.json"))
     importlib.reload(AM)
     assert AM.get_selection("newagent") == "ornith-tiny"
+
+
+def test_list_choices_merges_roles_and_models_collapsing_qwen_alias():
+    choices = AM.list_choices(
+        gateway_fetch=lambda: {"data": [
+            {"id": "ornith-tiny"}, {"id": "qwen3.6-27b-abliterated"},
+            {"id": "claude-opus-4-8"},
+        ]},
+        roles_source=lambda: ["sk-creative", "sk-auto"],
+    )
+    assert "sk-creative" in choices["roles"]
+    ids = [m["id"] for m in choices["models"]]
+    assert "ornith-tiny" in ids
+    assert "claude-opus-4-8" in ids
+    assert "qwen3.6-27b-abliterated" not in ids  # collapsed to ornith-tiny

@@ -54,6 +54,8 @@ AVAILABLE_MODELS: list[dict] = [
 
 _VALID_IDS = {m["id"] for m in AVAILABLE_MODELS}
 
+_LEGACY_ALIASES = {"qwen3.6-27b-abliterated": "ornith-tiny"}
+
 _lock = threading.Lock()
 
 
@@ -77,6 +79,22 @@ def default_selection() -> str:
 def list_models() -> list[dict]:
     """Return the curated list of selectable models (copy)."""
     return [dict(m) for m in AVAILABLE_MODELS]
+
+
+def list_choices(*, gateway_fetch, roles_source) -> dict:
+    """Dynamic catalog: skos roles + SKGateway-served models (legacy aliases
+    collapsed to their canonical id so one backend shows once)."""
+    roles = list(roles_source() or [])
+    seen = set()
+    models = []
+    for m in (gateway_fetch() or {}).get("data", []):
+        mid = _LEGACY_ALIASES.get(m.get("id"), m.get("id"))
+        if not mid or mid in seen:
+            continue
+        seen.add(mid)
+        models.append({"id": mid, "provider": m.get("provider"),
+                       "free": m.get("free")})
+    return {"roles": roles, "models": models}
 
 
 def _read() -> dict:
