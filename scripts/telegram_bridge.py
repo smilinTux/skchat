@@ -91,7 +91,7 @@ LLM_URL = os.environ.get("SKC_BRIDGE_LLM_URL", "http://192.168.0.100:8082/v1/cha
 # Local SKGateway — sk-auto chats route here so its difficulty classifier picks
 # the model per message (easy->ornith, hard->opus, image->VL). Local hop on .158.
 _GATEWAY_URL = os.environ.get("SKC_BRIDGE_GATEWAY_URL", "http://127.0.0.1:18780/v1")
-LLM_MODEL = os.environ.get("SKC_BRIDGE_LLM_MODEL", "qwen3.6-27b-abliterated")
+LLM_MODEL = os.environ.get("SKC_BRIDGE_LLM_MODEL", "ornith-tiny")
 AGENT = os.environ.get("SKC_BRIDGE_AGENT", "Opus")
 
 # ── Wedge detection (sd_notify heartbeat + poll-failure watchdog) ──────────── #

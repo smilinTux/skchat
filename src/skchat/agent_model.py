@@ -44,17 +44,16 @@ AVAILABLE_MODELS: list[dict] = [
         "provider": "local",
         "local": True,
     },
-    {
-        "id": "qwen3.6-27b-abliterated",
-        "label": "Qwen 3.6 27B (local)",
-        "provider": "local",
-        "local": True,
-    },
 ]
 
 _VALID_IDS = {m["id"] for m in AVAILABLE_MODELS}
 
 _LEGACY_ALIASES = {"qwen3.6-27b-abliterated": "ornith-tiny"}
+
+# Shared knob for capable/reasoning jobs (NOT for uncensored jobs, those must stay
+# on a local uncensored model). Chef will flip this to "ornith-big" once that
+# backend is live; until then it defaults to Claude Opus.
+CAPABLE_MODEL = os.environ.get("SKCHAT_CAPABLE_MODEL", "claude-opus-4-8")
 
 _lock = threading.Lock()
 

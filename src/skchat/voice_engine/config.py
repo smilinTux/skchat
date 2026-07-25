@@ -43,7 +43,7 @@ class VoiceConfig:
             fallback_url=g(
                 "SKVOICE_FALLBACK_URL", "http://192.168.0.100:8082/v1/chat/completions"
             ),
-            fallback_model=g("SKVOICE_FALLBACK_MODEL", "qwen3.6-27b-abliterated"),
+            fallback_model=g("SKVOICE_FALLBACK_MODEL", "ornith-tiny"),
             max_tokens=int(g("SKVOICE_MAX_TOKENS", "200")),
             stt_url=g("SKVOICE_STT_URL", "http://skworld-100:18794/v1/audio/transcriptions"),
             stt_min_rms=int(g("SKVOICE_STT_MIN_RMS", "800")),

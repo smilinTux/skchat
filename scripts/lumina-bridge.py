@@ -540,7 +540,7 @@ def _skgateway_reply(system_prompt: str, message: str) -> str | None:
 
     # Fallback to the local, no-auth model so an expired/unreachable cloud model
     # (e.g. a 401 on claude-opus) never drops us to the passthrough echo.
-    fallback = os.environ.get("SKCHAT_LLM_FALLBACK_MODEL", "qwen3.6-27b-abliterated")
+    fallback = os.environ.get("SKCHAT_LLM_FALLBACK_MODEL", "ornith-tiny")
     if model != fallback:
         out = _skgateway_call(url, fallback, system_prompt, message)
         if out:

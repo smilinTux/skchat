@@ -484,7 +484,7 @@ class VoiceIO:
 DEFAULT_LLM_URL = os.environ.get(
     "SKC_BRIDGE_LLM_URL", "http://192.168.0.100:8082/v1/chat/completions"
 )
-DEFAULT_LLM_MODEL = os.environ.get("SKC_BRIDGE_LLM_MODEL", "qwen3.6-27b-abliterated")
+DEFAULT_LLM_MODEL = os.environ.get("SKC_BRIDGE_LLM_MODEL", "ornith-tiny")
 
 
 class LuminaBrain:
