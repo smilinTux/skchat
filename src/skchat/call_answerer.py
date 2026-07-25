@@ -50,6 +50,40 @@ def _resolve_webui_url() -> str:
     return "http://localhost:8765"
 
 
+# Leave a room this long after joining if no remote party ever appears (a stale
+# invite, or a caller that rang but never connected). Prevents the answerer from
+# holding an empty room forever and never returning to poll.
+ALONE_TIMEOUT_S = float(os.getenv("SKCHAT_ANSWERER_ALONE_TIMEOUT_S", "45"))
+# Hard cap on a single call so a wedged room can never pin the service.
+MAX_CALL_S = float(os.getenv("SKCHAT_ANSWERER_MAX_CALL_S", "3600"))
+
+
+def _should_leave(
+    remote_count: int,
+    ever_saw_peer: bool,
+    alone_elapsed_s: float,
+    call_elapsed_s: float,
+    *,
+    alone_timeout_s: float = ALONE_TIMEOUT_S,
+    max_call_s: float = MAX_CALL_S,
+) -> bool:
+    """Whether the answerer should leave the room and return to polling.
+
+    Pure decision so the exit policy is unit-tested without LiveKit. Leave when:
+    the call exceeded the hard cap; the caller hung up (a remote party was seen
+    and then the room emptied); or no remote party ever joined within the alone
+    timeout (a stale/unanswered ring). Otherwise stay (a party is present, or we
+    are still inside the alone grace window).
+    """
+    if call_elapsed_s >= max_call_s:
+        return True
+    if remote_count > 0:
+        return False
+    if ever_saw_peer:
+        return True
+    return alone_elapsed_s >= alone_timeout_s
+
+
 def poll_and_answer(api, seen: set) -> Optional[dict]:
     """One poll cycle: answer the newest un-seen invite.
 
@@ -157,16 +191,44 @@ async def _join_and_publish(joinable: dict, hold_s: float = 0.0) -> None:
     logger.info("answerer audio track published in room=%s", room.name)
 
     # Keepalive: push 20ms silence frames so the track stays live for the caller.
-    # Loop until the room closes (caller hangs up) or the optional hold expires.
+    # Leave (return to polling) when the caller hangs up, when no one ever joins
+    # within the alone timeout, or at the hard call cap. `hold_s` (>0) forces a
+    # fixed hold instead, for tests.
     frame_ms = 20
     samples = sample_rate * frame_ms // 1000
     silence = rtc.AudioFrame.create(sample_rate, 1, samples)
-    deadline = (time.monotonic() + hold_s) if hold_s > 0 else None
+    start = time.monotonic()
+    fixed_deadline = (start + hold_s) if hold_s > 0 else None
+    ever_saw_peer = False
+    alone_since: Optional[float] = start
     try:
         while room.connection_state == rtc.ConnectionState.CONN_CONNECTED:
             await source.capture_frame(silence)
             await asyncio.sleep(frame_ms / 1000)
-            if deadline is not None and time.monotonic() >= deadline:
+            now = time.monotonic()
+            if fixed_deadline is not None:
+                if now >= fixed_deadline:
+                    break
+                continue
+            remote_count = len(room.remote_participants)
+            if remote_count > 0:
+                if not ever_saw_peer:
+                    logger.info(
+                        "answerer: peer joined room=%s (%s)",
+                        room.name,
+                        [p.identity for p in room.remote_participants.values()],
+                    )
+                ever_saw_peer = True
+                alone_since = None
+            elif alone_since is None:
+                alone_since = now
+            alone_elapsed = (now - alone_since) if alone_since is not None else 0.0
+            if _should_leave(remote_count, ever_saw_peer, alone_elapsed, now - start):
+                reason = (
+                    "peer hung up" if ever_saw_peer
+                    else f"no peer within {ALONE_TIMEOUT_S:.0f}s"
+                )
+                logger.info("answerer leaving room=%s (%s)", room.name, reason)
                 break
     finally:
         await room.disconnect()

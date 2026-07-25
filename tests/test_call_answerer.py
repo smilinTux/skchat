@@ -3,7 +3,25 @@
 The network + LiveKit layers sit behind the `AnswererApi` seam, so these tests
 inject a fake and never touch live HTTP or LiveKit.
 """
-from skchat.call_answerer import poll_and_answer
+from skchat.call_answerer import _should_leave, poll_and_answer
+
+
+def test_should_leave_stays_while_peer_present():
+    assert _should_leave(1, True, 0.0, 10.0) is False
+
+
+def test_should_leave_when_peer_hangs_up():
+    # A peer was seen, now the room is empty: caller hung up.
+    assert _should_leave(0, True, 1.0, 30.0) is True
+
+
+def test_should_leave_after_alone_timeout_when_nobody_joins():
+    assert _should_leave(0, False, 5.0, 5.0, alone_timeout_s=45) is False
+    assert _should_leave(0, False, 45.0, 45.0, alone_timeout_s=45) is True
+
+
+def test_should_leave_at_hard_call_cap_even_with_peer():
+    assert _should_leave(1, True, 0.0, 3600.0, max_call_s=3600) is True
 
 
 class _FakeApi:
