@@ -30,8 +30,7 @@ def _load_narrate_hints() -> tuple[str, ...]:
 
         hints = hints + tuple(_extra)
     except Exception as exc:  # private package absent — neutral base only
-        log.debug("lumina_creative narrate hints unavailable (%s: %s)",
-                  type(exc).__name__, exc)
+        log.debug("lumina_creative narrate hints unavailable (%s: %s)", type(exc).__name__, exc)
     return hints
 
 

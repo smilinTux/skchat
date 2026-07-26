@@ -42,7 +42,13 @@ def _video_grants_from(g: RoleGrant):
 
 
 def _build_token(
-    api_module, key: str, secret: str, identity: str, name: str, g: RoleGrant, ttl: int,
+    api_module,
+    key: str,
+    secret: str,
+    identity: str,
+    name: str,
+    g: RoleGrant,
+    ttl: int,
     metadata: str = "",
 ) -> str:
     grants = _video_grants_from(g)

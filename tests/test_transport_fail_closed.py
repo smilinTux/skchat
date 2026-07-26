@@ -76,9 +76,7 @@ class TestFailClosedRatchet:
         # HARD requirement: no plaintext envelope was ever handed to skcomms.
         mock_skcomms.send.assert_not_called()
 
-    def test_live_ratchet_seal_returning_unsealed_is_fail_closed(
-        self, mock_skcomms, mock_history
-    ):
+    def test_live_ratchet_seal_returning_unsealed_is_fail_closed(self, mock_skcomms, mock_history):
         """Seal returns the body UNSEALED (no ratchet frame) → ConfidentialityError."""
         crypto = MagicMock()
         crypto.is_ratchet_message.return_value = False  # seal did not produce a frame
@@ -151,9 +149,7 @@ class TestSigningDegraded:
         transport = _transport(mock_skcomms, mock_history, crypto=None)
         assert transport.signing_degraded is False
 
-    def test_signing_degraded_false_legacy_crypto_without_attr(
-        self, mock_skcomms, mock_history
-    ):
+    def test_signing_degraded_false_legacy_crypto_without_attr(self, mock_skcomms, mock_history):
         """A crypto object predating ``can_sign`` is assumed to sign (no false alarm)."""
 
         class _LegacyCrypto:

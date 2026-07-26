@@ -1,15 +1,21 @@
 """Task 3: read cutover — group_thread_messages serves from the authoritative
 log when SKCHAT_MESSAGE_LOG is on (deduped, full payloads), else legacy."""
+
 from __future__ import annotations
 
-from skchat.history import ChatHistory
 from skchat import daemon_proxy_groups as G
+from skchat.history import ChatHistory
 from skchat.models import ChatMessage
 
 
 def _mk_group_msg(gid, content, sender="lumina"):
-    return ChatMessage(sender=sender, recipient=f"group:{gid}", content=content,
-                       thread_id=gid, metadata={"group_id": gid})
+    return ChatMessage(
+        sender=sender,
+        recipient=f"group:{gid}",
+        content=content,
+        thread_id=gid,
+        metadata={"group_id": gid},
+    )
 
 
 def test_group_read_from_log_when_flag_on(tmp_path, monkeypatch):

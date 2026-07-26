@@ -217,7 +217,6 @@ def migrate_groups(dry_run: bool = True) -> dict:
     Live mode round-trip verifies each migrated group and ONLY persists when the
     probe decrypts identically; a failed verify is reported, never saved.
     """
-    from .group import GroupChat
 
     plans = plan_groups()
     result: dict[str, Any] = {
@@ -296,9 +295,9 @@ def plan_store() -> dict:
         "message_count": count,
         "action": "rewrap" if hybrid else "rewrap",
         "reason": (
-            "DEK is hybrid-wrapped; migrate_store re-encrypts every message under "
-            "it (idempotent)" if hybrid else
-            "store would be created/re-wrapped under the hybrid DEK"
+            "DEK is hybrid-wrapped; migrate_store re-encrypts every message under it (idempotent)"
+            if hybrid
+            else "store would be created/re-wrapped under the hybrid DEK"
         ),
     }
 

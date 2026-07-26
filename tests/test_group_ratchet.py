@@ -264,9 +264,7 @@ def test_forward_secrecy_removed_member_cannot_derive_new_epoch():
     assert bob_uri not in new_dist  # not distributed to a removed member (FS)
     # Even if Bob replays his OLD wrapped payload, it decrypts the OLD secret,
     # which no longer matches the group's CURRENT epoch secret.
-    old_secret = GroupKeyDistributor.unwrap_epoch_secret_for_member(
-        old_dist[bob_uri], bob_priv
-    )
+    old_secret = GroupKeyDistributor.unwrap_epoch_secret_for_member(old_dist[bob_uri], bob_priv)
     assert old_secret != g.epoch_secret_hex
 
 
@@ -283,9 +281,7 @@ def test_post_compromise_security_leaked_epoch_secret_useless_next_epoch():
     g.rotate_key(reason="manual_pcs")
     assert g.epoch_secret_hex != leaked
     env_next = g.encrypt_message("next epoch msg")
-    bad_key = gr.derive_message_key(
-        bytes.fromhex(leaked), env_next["epoch"], env_next["index"]
-    )
+    bad_key = gr.derive_message_key(bytes.fromhex(leaked), env_next["epoch"], env_next["index"])
     with pytest.raises(ValueError):
         GroupMessageEncryptor.decrypt(env_next["ciphertext"], bad_key.hex())
 

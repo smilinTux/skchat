@@ -91,8 +91,7 @@ def list_choices(*, gateway_fetch, roles_source) -> dict:
         if not mid or mid in seen:
             continue
         seen.add(mid)
-        models.append({"id": mid, "provider": m.get("provider"),
-                       "free": m.get("free")})
+        models.append({"id": mid, "provider": m.get("provider"), "free": m.get("free")})
     return {"roles": roles, "models": models}
 
 
@@ -130,8 +129,7 @@ def get_selection(agent: str) -> str:
     return data.get(agent) or default_selection()
 
 
-def set_selection(agent: str, value: str, *, valid_roles: set, valid_models: set
-                  ) -> str:
+def set_selection(agent: str, value: str, *, valid_roles: set, valid_models: set) -> str:
     """Store a selection (role or model) for agent.
 
     Raises:

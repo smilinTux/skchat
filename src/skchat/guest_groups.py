@@ -87,8 +87,21 @@ GUEST_CALL_TOKEN_TTL = 21600  # 6h
 # operator/agent in the roster). Reuses guest.py's set + the swarm agents.
 _RESERVED_NAMES = frozenset(
     {
-        "chef", "lumina", "opus", "jarvis", "ava", "sovereign", "admin", "host",
-        "artisan", "herald", "sentinel", "architect", "scholar", "steward", "coder",
+        "chef",
+        "lumina",
+        "opus",
+        "jarvis",
+        "ava",
+        "sovereign",
+        "admin",
+        "host",
+        "artisan",
+        "herald",
+        "sentinel",
+        "architect",
+        "scholar",
+        "steward",
+        "coder",
     }
 )
 
@@ -285,9 +298,7 @@ def create_dm_invite(
     grp.metadata["mode"] = "dm"
     G.save_group(grp)
 
-    invite = create_group_invite(
-        grp.id, ttl=ttl, single_use=single_use, mode="dm", now_fn=now_fn
-    )
+    invite = create_group_invite(grp.id, ttl=ttl, single_use=single_use, mode="dm", now_fn=now_fn)
     invite["mode"] = "dm"
     return invite
 
@@ -402,7 +413,12 @@ class GuestSession:
 
 
 def mint_guest_session(
-    *, group_id: str, guest_id: str, name: str, fp: str, ttl: Optional[int] = None,
+    *,
+    group_id: str,
+    guest_id: str,
+    name: str,
+    fp: str,
+    ttl: Optional[int] = None,
     now_fn=None,
 ) -> str:
     """Mint a guest session JWT scoped to exactly one ``group_id``."""

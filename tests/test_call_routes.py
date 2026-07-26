@@ -189,7 +189,9 @@ def test_connectivity_ice_offtailnet_caller_gets_relay_servers(client, monkeypat
     data = r.json()
     assert data["on_tailnet"] is False
     assert data["preferred_tier"] == 3
-    assert data["ice_servers"], "expected non-empty iceServers (STUN/TURN) for a non-tailnet caller"
+    assert data["ice_servers"], (
+        "expected non-empty iceServers (STUN/TURN) for a non-tailnet caller"
+    )
 
 
 def test_connectivity_ice_tailnet_caller_gets_tailnet_path(monkeypatch):
@@ -233,7 +235,9 @@ def test_connectivity_ice_funnel_loopback_caller_gets_relay(monkeypatch):
     data = r.json()
     assert data["on_tailnet"] is False
     assert data["preferred_tier"] == 3
-    assert data["ice_servers"], "expected STUN/TURN servers for a Funnel-proxied off-tailnet caller"
+    assert data["ice_servers"], (
+        "expected STUN/TURN servers for a Funnel-proxied off-tailnet caller"
+    )
 
 
 def test_connectivity_ice_forwarded_tailnet_client_stays_direct(monkeypatch):
@@ -518,6 +522,7 @@ def test_resolve_peer_accepts_capauth_and_drifted_realm(monkeypatch):
     """_resolve_peer accepts the exact fqid, a bare name, the capauth: wire URI
     the Flutter client sends, and a differently-realmed fqid, all -> paired."""
     from skchat import call_routes as CR
+
     monkeypatch.setattr(CR, "_list_peers", lambda: {"opus@chef.skworld.io": {}})
     assert CR._resolve_peer("opus@chef.skworld.io") == "opus@chef.skworld.io"
     assert CR._resolve_peer("opus") == "opus@chef.skworld.io"

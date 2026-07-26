@@ -6,6 +6,7 @@ last-write-wins per (chat_id, msg_id), rating rows back-filling model from the
 send row, score-range validation, windowing, and graceful degrade on a missing
 file.
 """
+
 from __future__ import annotations
 
 import importlib

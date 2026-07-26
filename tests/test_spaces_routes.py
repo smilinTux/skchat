@@ -198,9 +198,9 @@ def test_moderator_falls_back_to_public_url_when_api_url_unset(tmp_path, monkeyp
 
 
 def _meta(token):
-    return jwt.decode(
-        token, _SECRET, algorithms=["HS256"], options={"verify_aud": False}
-    ).get("metadata")
+    return jwt.decode(token, _SECRET, algorithms=["HS256"], options={"verify_aud": False}).get(
+        "metadata"
+    )
 
 
 def test_public_space_join_does_NOT_stamp_fingerprint(client):

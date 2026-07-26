@@ -15,6 +15,7 @@ command used here. That runner always reports "No tests were found" (exit
 code 79) since the file has no test() blocks, which is expected and ignored;
 only the emitted JSON line on stdout matters.
 """
+
 import json
 import os
 import shutil
@@ -52,12 +53,18 @@ def test_native_guest_identity_signature_verifies_server_side():
     env = dict(os.environ, PATH=FLUTTER_BIN + os.pathsep + os.environ.get("PATH", ""))
     proc = subprocess.run(
         ["flutter", "test", "--no-pub", "test/fixtures/emit_device_fixture.dart"],
-        cwd=APP_DIR, env=env, text=True, capture_output=True,
+        cwd=APP_DIR,
+        env=env,
+        text=True,
+        capture_output=True,
     )
     fx = _extract_fixture(proc.stdout)
-    assert verify_device_signature(
-        device_pubkey_b64=fx["pubkey_b64"],
-        payload=fx["payload"].encode(),
-        sig_b64=fx["sig_b64"],
-    ) is True
+    assert (
+        verify_device_signature(
+            device_pubkey_b64=fx["pubkey_b64"],
+            payload=fx["payload"].encode(),
+            sig_b64=fx["sig_b64"],
+        )
+        is True
+    )
     assert device_fingerprint(fx["pubkey_b64"]) == fx["fingerprint"]

@@ -3,6 +3,7 @@
 Flag OFF (default) -> no-op (no log touched). Flag ON -> one log row per logical
 message on the canonical conversation_id; the 1+N group fan-out copies collapse.
 """
+
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -28,12 +29,18 @@ def test_record_event_group_fanout_collapses_to_one_row(tmp_path, monkeypatch):
     # canonical group event + a per-member copy (different id, member recipient,
     # SAME metadata.group_id) -> both map to group:g1 and dedup to one row.
     canonical = ChatMessage(
-        sender="lumina", recipient="group:g1", content="team",
-        metadata={"group_id": "g1"}, timestamp=ts,
+        sender="lumina",
+        recipient="group:g1",
+        content="team",
+        metadata={"group_id": "g1"},
+        timestamp=ts,
     )
     member = ChatMessage(
-        sender="lumina", recipient="chef", content="team",
-        metadata={"group_id": "g1"}, timestamp=ts,
+        sender="lumina",
+        recipient="chef",
+        content="team",
+        metadata={"group_id": "g1"},
+        timestamp=ts,
     )
     h.record_event(canonical)
     h.record_event(member)

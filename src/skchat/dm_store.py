@@ -63,9 +63,7 @@ class DmSessionStore:
                 tampered with (AEAD authentication failure — never a silent restore).
         """
         with sqlite3.connect(self.db_path) as conn:
-            row = conn.execute(
-                "SELECT sealed FROM dm_sessions WHERE peer = ?", (peer,)
-            ).fetchone()
+            row = conn.execute("SELECT sealed FROM dm_sessions WHERE peer = ?", (peer,)).fetchone()
         if row is None:
             return None
         sealed = row[0]

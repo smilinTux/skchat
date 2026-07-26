@@ -216,10 +216,12 @@ def test_receive_from_federated_peer_prewarms_prekey(tmp_path, alice_keys, pq):
     tx._prekey_http_get = stub_get
     tx._federation_target = lambda r: "jarvis@chef.skworld"
 
-    inbound = ChatMessage(sender="capauth:jarvis@skworld.io", recipient=tx.identity,
-                          content="classical inbound")
-    tx._skcomms._inbound = [{"sender": "capauth:jarvis@skworld.io",
-                             "payload": {"content": inbound.model_dump_json()}}]
+    inbound = ChatMessage(
+        sender="capauth:jarvis@skworld.io", recipient=tx.identity, content="classical inbound"
+    )
+    tx._skcomms._inbound = [
+        {"sender": "capauth:jarvis@skworld.io", "payload": {"content": inbound.model_dump_json()}}
+    ]
 
     got = tx.poll_inbox()
     assert any(m.content == "classical inbound" for m in got)

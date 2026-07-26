@@ -414,9 +414,7 @@ class ChatCrypto:
                 sender=message.sender,
                 recipient=message.recipient,
             )
-            token = f"{PQDM_SCHEME}{HYBRID_SUITE}:" + base64.b64encode(sealed).decode(
-                "ascii"
-            )
+            token = f"{PQDM_SCHEME}{HYBRID_SUITE}:" + base64.b64encode(sealed).decode("ascii")
             # Sign the plaintext (classical, Phase-2 will go hybrid).
             pgp_message = pgpy.PGPMessage.new(message.content.encode("utf-8"))
             with self._private_key.unlock(self._passphrase):
@@ -845,9 +843,7 @@ def load_agent_crypto(identity: Optional[str] = None) -> Optional["ChatCrypto"]:
         agent = (identity or "").split(":")[-1].split("@")[0].strip()
         if not agent:
             agent = (os.environ.get("SKAGENT") or "lumina").strip()
-        key_path = os.path.expanduser(
-            f"~/.skcapstone/agents/{agent}/capauth/identity/private.asc"
-        )
+        key_path = os.path.expanduser(f"~/.skcapstone/agents/{agent}/capauth/identity/private.asc")
         if not os.path.isfile(key_path):
             # P0.2: a missing PGP *signing* key must NOT disable ratchet
             # confidentiality. Return a ratchet-only engine so the DM ratchet

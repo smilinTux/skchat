@@ -5,6 +5,7 @@ tier ("operator-session") and its own signing secret so operator and guest
 tokens never share a key. Ships dark: nothing calls this until the middleware
 gate is enabled in the final rollout task.
 """
+
 from __future__ import annotations
 
 import base64
@@ -63,7 +64,9 @@ def mint_operator_session(*, device_fp: str, ttl: int | None = None) -> str:
 def verify_operator_session(token: str) -> OperatorSession:
     try:
         claims = jwt.decode(
-            token, _secret(), algorithms=["HS256"],
+            token,
+            _secret(),
+            algorithms=["HS256"],
             options={"require": ["jti", "tier", "device_fp", "iat", "exp"]},
         )
     except jwt.PyJWTError as e:
@@ -71,6 +74,7 @@ def verify_operator_session(token: str) -> OperatorSession:
     if claims.get("tier") != _TIER:
         raise OperatorAuthError("wrong tier")
     from .guest import _is_revoked  # reuse the guest revocation set
+
     if _is_revoked(claims["jti"]):
         raise OperatorAuthError("revoked")
     return OperatorSession(jti=claims["jti"], device_fp=claims["device_fp"], exp=claims["exp"])
@@ -103,9 +107,7 @@ def consume_challenge(nonce: str) -> bool:
     return exp is not None and exp >= int(time.time())
 
 
-def verify_device_signature(
-    *, device_pubkey_b64: str, payload: bytes, sig_b64: str
-) -> bool:
+def verify_device_signature(*, device_pubkey_b64: str, payload: bytes, sig_b64: str) -> bool:
     try:
         spki = base64.b64decode(device_pubkey_b64)
         pub = serialization.load_der_public_key(spki)

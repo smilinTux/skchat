@@ -207,9 +207,7 @@ def seal_giftwrap(inner_payload: dict, recipient_hybrid_pub_hex: str) -> dict:
 
     Ed25519PrivateKey, _Pub, Encoding, PublicFormat = _load_ed25519()
     throwaway = Ed25519PrivateKey.generate()
-    throwaway_pub = _b64e(
-        throwaway.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
-    )
+    throwaway_pub = _b64e(throwaway.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw))
 
     aad = _aad(p_tag, created_at, throwaway_pub)
 

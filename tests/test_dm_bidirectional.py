@@ -33,7 +33,7 @@ def test_true_interleaved_bidirectional_single_session():
 
     # Interleave: each side seals BEFORE opening the other's first frame.
     fa = alice.seal(b"a->b 1", peer_hybrid_pub=b_kp.public_key)  # alice send epoch 0
-    fb = bob.seal(b"b->a 1", peer_hybrid_pub=a_kp.public_key)    # bob send epoch 0
+    fb = bob.seal(b"b->a 1", peer_hybrid_pub=a_kp.public_key)  # bob send epoch 0
 
     # The crux: alice already sealed at epoch 0, yet must still re-key from bob's
     # epoch-0 KAM (separate recv namespace) — and symmetrically for bob.
@@ -85,9 +85,9 @@ def test_send_recv_epoch_secrets_are_independent_namespaces():
     alice = DmSession(peer="bob")
     bob = DmSession(peer="alice")
 
-    alice.seal(b"x", peer_hybrid_pub=b_kp.public_key)            # alice send epoch 0
-    fb = bob.seal(b"y", peer_hybrid_pub=a_kp.public_key)         # bob send epoch 0
-    alice.open(fb, my_hybrid_priv=a_kp.private_key)              # alice recv epoch 0
+    alice.seal(b"x", peer_hybrid_pub=b_kp.public_key)  # alice send epoch 0
+    fb = bob.seal(b"y", peer_hybrid_pub=a_kp.public_key)  # bob send epoch 0
+    alice.open(fb, my_hybrid_priv=a_kp.private_key)  # alice recv epoch 0
 
     send0 = alice._send_epoch_secret_for_test(0)
     recv0 = alice._recv_epoch_secret_for_test(0)

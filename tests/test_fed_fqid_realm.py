@@ -53,8 +53,7 @@ def test_emitted_fqid_matches_pin_filename(tmp_path):
     out = verify_signed(
         signed,
         resolve_pubkey=lambda fqid: federation_pubkey(fqid, base=tmp_path),
-        verify=lambda payload, sig, pub: pub == armor
-        and sig == "SIG(" + payload.decode() + ")",
+        verify=lambda payload, sig, pub: pub == armor and sig == "SIG(" + payload.decode() + ")",
     )
     assert out.fqid == CANONICAL_FQID
 
@@ -83,8 +82,7 @@ def test_wire_uri_form_is_not_a_valid_federation_fqid(tmp_path):
 
 
 @pytest.mark.skipif(
-    not (_LUMINA_KEYS / "private.asc").is_file()
-    or not (_LUMINA_KEYS / "public.asc").is_file(),
+    not (_LUMINA_KEYS / "private.asc").is_file() or not (_LUMINA_KEYS / "public.asc").is_file(),
     reason="lumina capauth keys not present on this box",
 )
 def test_real_capauth_roundtrip_lumina(tmp_path):

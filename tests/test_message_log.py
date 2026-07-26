@@ -154,9 +154,15 @@ def test_record_collapses_fanout_copies_by_dedup_key(tmp_path):
 
 def test_record_stores_full_payload_roundtrip(tmp_path):
     from skchat.message_log import log_row_to_message
+
     log = MessageLog(str(tmp_path / "m.db"))
-    msg = ChatMessage(sender="a", recipient="b", content="hi", reply_to_id="r1",
-                      metadata={"k": "v", "attachments": [{"name": "f.png"}]})
+    msg = ChatMessage(
+        sender="a",
+        recipient="b",
+        content="hi",
+        reply_to_id="r1",
+        metadata={"k": "v", "attachments": [{"name": "f.png"}]},
+    )
     log.record(msg)
     row = log.read(conversation_id_for(msg))[0]
     back = log_row_to_message(row)
@@ -167,12 +173,14 @@ def test_record_stores_full_payload_roundtrip(tmp_path):
 
 def test_recent_and_conversations(tmp_path):
     log = MessageLog(str(tmp_path / "m.db"))
-    from datetime import datetime, timezone
-    for i, (conv, sender, content) in enumerate([
-        ("dm:a|b", "a", "one"), ("dm:a|b", "b", "two"), ("group:g", "a", "g1"),
-    ]):
-        log.append(conv, sender=sender, recipient="x", content=content,
-                   client_dedup_key=f"k{i}")
+    for i, (conv, sender, content) in enumerate(
+        [
+            ("dm:a|b", "a", "one"),
+            ("dm:a|b", "b", "two"),
+            ("group:g", "a", "g1"),
+        ]
+    ):
+        log.append(conv, sender=sender, recipient="x", content=content, client_dedup_key=f"k{i}")
     # recent: newest-first across all conversations
     rec = log.recent(limit=10)
     assert len(rec) == 3 and rec[0]["content"] == "g1"

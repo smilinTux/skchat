@@ -2,12 +2,13 @@
 capauth fingerprint in the LiveKit token metadata (unspoofable channel that
 reaches every conf/Space/call snapshot), and the Space moderation layer must
 round-trip it instead of clobbering it on a hand-raise/invite."""
+
 import json
 
 import jwt
 
 from skchat.spaces import tokens
-from skchat.spaces.moderation import StageState, parse_meta, dump_meta, apply_action
+from skchat.spaces.moderation import StageState, apply_action, dump_meta, parse_meta
 
 _KEY = "test-key"
 _SECRET = "test-secret-0123456789"
@@ -20,8 +21,13 @@ def _claims(token: str) -> dict:
 
 def test_conf_token_carries_metadata():
     tok = tokens.mint_conf_token(
-        "capauth:steward@skworld.io", "Steward", "sovereign", "room1", 3600,
-        api_key=_KEY, api_secret=_SECRET,
+        "capauth:steward@skworld.io",
+        "Steward",
+        "sovereign",
+        "room1",
+        3600,
+        api_key=_KEY,
+        api_secret=_SECRET,
         metadata=json.dumps({"soul_fingerprint": _FP}),
     )
     meta = json.loads(_claims(tok)["metadata"])
@@ -30,8 +36,13 @@ def test_conf_token_carries_metadata():
 
 def test_space_token_carries_metadata():
     tok = tokens.mint_space_token(
-        "capauth:steward@skworld.io", "Steward", "listener", "space1", 3600,
-        api_key=_KEY, api_secret=_SECRET,
+        "capauth:steward@skworld.io",
+        "Steward",
+        "listener",
+        "space1",
+        3600,
+        api_key=_KEY,
+        api_secret=_SECRET,
         metadata=json.dumps({"soul_fingerprint": _FP}),
     )
     meta = json.loads(_claims(tok)["metadata"])
@@ -41,8 +52,13 @@ def test_space_token_carries_metadata():
 def test_token_without_metadata_omits_it():
     # Back-compat: no metadata arg -> no metadata claim (or empty), never a crash.
     tok = tokens.mint_space_token(
-        "guest", "Guest", "listener", "space1", 3600,
-        api_key=_KEY, api_secret=_SECRET,
+        "guest",
+        "Guest",
+        "listener",
+        "space1",
+        3600,
+        api_key=_KEY,
+        api_secret=_SECRET,
     )
     claims = _claims(tok)
     assert not claims.get("metadata")
@@ -52,9 +68,7 @@ def test_moderation_round_trip_preserves_soul_fingerprint():
     """The LOAD-BEARING fix: a stage action (parse -> apply -> dump) must keep
     the mint-time soul_fingerprint, else the badge vanishes after first
     hand-raise/invite."""
-    meta_in = json.dumps(
-        {"hand_raised": True, "invited_to_stage": False, "soul_fingerprint": _FP}
-    )
+    meta_in = json.dumps({"hand_raised": True, "invited_to_stage": False, "soul_fingerprint": _FP})
     state = parse_meta(meta_in)
     assert state.soul_fingerprint == _FP
 
@@ -76,10 +90,11 @@ from skchat.daemon_proxy import LUMINA_FINGERPRINT, soul_metadata_for
 
 def test_soul_metadata_for_strict_resolution():
     # Lumina (special-case) resolves; an unknown/cross-realm identity is keyless.
-    assert json.loads(soul_metadata_for("lumina@chef.skworld"))[
-        "soul_fingerprint"] == LUMINA_FINGERPRINT
-    assert json.loads(soul_metadata_for("ghost@otherrealm.io"))[
-        "soul_fingerprint"] == ""
+    assert (
+        json.loads(soul_metadata_for("lumina@chef.skworld"))["soul_fingerprint"]
+        == LUMINA_FINGERPRINT
+    )
+    assert json.loads(soul_metadata_for("ghost@otherrealm.io"))["soul_fingerprint"] == ""
 
 
 def test_proven_sovereign_join_stamps_fingerprint(monkeypatch):
@@ -88,10 +103,8 @@ def test_proven_sovereign_join_stamps_fingerprint(monkeypatch):
     monkeypatch.setenv("SKCHAT_LIVEKIT_API_SECRET", _SECRET)
     from skchat import join_routes
 
-    tok = join_routes._default_mint("lumina@chef.skworld", "room1",
-                                    sovereign_admin=True)
-    assert json.loads(_claims(tok)["metadata"])["soul_fingerprint"] == \
-        LUMINA_FINGERPRINT
+    tok = join_routes._default_mint("lumina@chef.skworld", "room1", sovereign_admin=True)
+    assert json.loads(_claims(tok)["metadata"])["soul_fingerprint"] == LUMINA_FINGERPRINT
 
 
 def test_proven_space_federation_stamps_fingerprint(monkeypatch):
@@ -102,5 +115,4 @@ def test_proven_space_federation_stamps_fingerprint(monkeypatch):
     from skchat.spaces.roles import Role
 
     tok = authd._default_mint("lumina@chef.skworld", Role.SPEAKER, "space1")
-    assert json.loads(_claims(tok)["metadata"])["soul_fingerprint"] == \
-        LUMINA_FINGERPRINT
+    assert json.loads(_claims(tok)["metadata"])["soul_fingerprint"] == LUMINA_FINGERPRINT

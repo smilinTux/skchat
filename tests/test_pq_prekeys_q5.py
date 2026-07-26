@@ -74,9 +74,7 @@ def test_daemon_inbound_open_and_outbound_seal_roundtrip(pq_home, monkeypatch):
     lum_pub, lum_priv = pq_home.ensure_lumina_keypair()
 
     # 1) Operator seals a DM to LUMINA's prekey; the daemon opens it.
-    lum_bundle = pqdm.PrekeyBundle(
-        suite=pqdm.HYBRID_SUITE, hybrid_public_hex=lum_pub.hex()
-    )
+    lum_bundle = pqdm.PrekeyBundle(suite=pqdm.HYBRID_SUITE, hybrid_public_hex=lum_pub.hex())
     sealed = pqdm.seal(
         "hi lumina (hybrid)".encode(), lum_bundle, sender="chef", recipient="lumina"
     )
@@ -92,12 +90,15 @@ def test_daemon_inbound_open_and_outbound_seal_roundtrip(pq_home, monkeypatch):
     )
     reply_token = DP._seal_hybrid_outbound("reply from lumina", recipient_short="chef")
     assert reply_token is not None and reply_token.startswith("pqdm1:")
-    rest = reply_token[len("pqdm1:"):]
+    rest = reply_token[len("pqdm1:") :]
     suite, _, b64 = rest.partition(":")
     re_sealed = base64.b64decode(b64)
     clear = pqdm.open_sealed(
-        re_sealed, op_kp.private_key,
-        sender="lumina", recipient="chef", expected_suite=suite,
+        re_sealed,
+        op_kp.private_key,
+        sender="lumina",
+        recipient="chef",
+        expected_suite=suite,
     )
     assert clear.decode() == "reply from lumina"
 
@@ -119,8 +120,8 @@ def test_operator_outbound_token_not_openable_with_own_key(pq_home):
     assume the sender can open their own copy.
     """
     from skcomms.pqdm import (
-        DowngradeDetected,
         HYBRID_SUITE,
+        DowngradeDetected,
         PrekeyBundle,
         open_sealed,
         seal,
@@ -129,15 +130,16 @@ def test_operator_outbound_token_not_openable_with_own_key(pq_home):
     sender_kp = pqkem.hybrid_keypair()  # the operator's own device keypair
     recipient_kp = pqkem.hybrid_keypair()  # Lumina's prekey
 
-    bundle = PrekeyBundle(
-        suite=HYBRID_SUITE, hybrid_public_hex=recipient_kp.public_key.hex()
-    )
+    bundle = PrekeyBundle(suite=HYBRID_SUITE, hybrid_public_hex=recipient_kp.public_key.hex())
     sealed = seal(b"my own outbound", bundle, sender="chef", recipient="lumina")
 
     # The recipient (Lumina) CAN open it.
     clear = open_sealed(
-        sealed, recipient_kp.private_key,
-        sender="chef", recipient="lumina", expected_suite=HYBRID_SUITE,
+        sealed,
+        recipient_kp.private_key,
+        sender="chef",
+        recipient="lumina",
+        expected_suite=HYBRID_SUITE,
     )
     assert clear == b"my own outbound"
 
@@ -145,8 +147,11 @@ def test_operator_outbound_token_not_openable_with_own_key(pq_home):
     # encapsulated to the recipient's public key, not the sender's.
     with pytest.raises(DowngradeDetected):
         open_sealed(
-            sealed, sender_kp.private_key,
-            sender="chef", recipient="lumina", expected_suite=HYBRID_SUITE,
+            sealed,
+            sender_kp.private_key,
+            sender="chef",
+            recipient="lumina",
+            expected_suite=HYBRID_SUITE,
         )
 
 
@@ -155,9 +160,11 @@ def test_lumina_reply_aad_binding_matches_app_open(pq_home):
     app's ``openIncoming`` opens an inbound reply with sender=<peer> (lumina),
     recipient=<localShort> (chef). Prove that exact party binding round-trips so
     HER reply opens (not the 'could not decrypt' placeholder)."""
-    from skchat import daemon_proxy as DP
-    from skcomms.pqdm import open_sealed
     import base64 as _b64
+
+    from skcomms.pqdm import open_sealed
+
+    from skchat import daemon_proxy as DP
 
     op_kp = pqkem.hybrid_keypair()
     pq_home.store_peer_bundle(
@@ -167,12 +174,15 @@ def test_lumina_reply_aad_binding_matches_app_open(pq_home):
     reply_token = DP._seal_hybrid_outbound("her reply 🔐", recipient_short="chef")
     assert reply_token is not None and reply_token.startswith("pqdm1:")
 
-    rest = reply_token[len("pqdm1:"):]
+    rest = reply_token[len("pqdm1:") :]
     suite, _, b64 = rest.partition(":")
     sealed = _b64.b64decode(b64)
     # App binds sender=lumina (the peer), recipient=chef (localShort).
     clear = open_sealed(
-        sealed, op_kp.private_key,
-        sender="lumina", recipient="chef", expected_suite=suite,
+        sealed,
+        op_kp.private_key,
+        sender="lumina",
+        recipient="chef",
+        expected_suite=suite,
     )
     assert clear.decode() == "her reply 🔐"

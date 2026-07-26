@@ -12,6 +12,7 @@ The engine run is always MOCKED here: no real coding task, no real subprocess.
 telegram_bridge.py is loaded once via importlib with a dummy token and a tmp
 agent home so no real agent state is touched.
 """
+
 from __future__ import annotations
 
 import importlib.util
@@ -30,20 +31,31 @@ def bridge(tmp_path_factory):
     """Load scripts/telegram_bridge.py once (heavy import) with a dummy token and
     an isolated agent home so the awakening reads no real agent state."""
     home = tmp_path_factory.mktemp("agent-home")
-    saved = {k: os.environ.get(k) for k in
-             ("SKC_BRIDGE_TOKEN", "SKC_BRIDGE_AGENT_HOME",
-              "SKC_BRIDGE_CODE_ENABLED", "SKC_BRIDGE_CODE_ALLOWED_IDS",
-              "SKC_BRIDGE_CODE_DEFAULT_REPO")}
+    saved = {
+        k: os.environ.get(k)
+        for k in (
+            "SKC_BRIDGE_TOKEN",
+            "SKC_BRIDGE_AGENT_HOME",
+            "SKC_BRIDGE_CODE_ENABLED",
+            "SKC_BRIDGE_CODE_ALLOWED_IDS",
+            "SKC_BRIDGE_CODE_DEFAULT_REPO",
+        )
+    }
     os.environ["SKC_BRIDGE_TOKEN"] = "dummy:test-token"
     os.environ["SKC_BRIDGE_AGENT_HOME"] = str(home)
-    for k in ("SKC_BRIDGE_CODE_ENABLED", "SKC_BRIDGE_CODE_ALLOWED_IDS",
-              "SKC_BRIDGE_CODE_DEFAULT_REPO"):
+    for k in (
+        "SKC_BRIDGE_CODE_ENABLED",
+        "SKC_BRIDGE_CODE_ALLOWED_IDS",
+        "SKC_BRIDGE_CODE_DEFAULT_REPO",
+    ):
         os.environ.pop(k, None)
     import sys
+
     if str(_SCRIPTS) not in sys.path:
         sys.path.insert(0, str(_SCRIPTS))
     spec = importlib.util.spec_from_file_location(
-        "telegram_bridge_code_test", _SCRIPTS / "telegram_bridge.py")
+        "telegram_bridge_code_test", _SCRIPTS / "telegram_bridge.py"
+    )
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     yield mod
@@ -100,8 +112,7 @@ class TestParse:
 
 
 class TestDisabledByDefault:
-    def test_flag_off_refuses_and_never_calls_engine(self, bridge, mock_engine,
-                                                     monkeypatch):
+    def test_flag_off_refuses_and_never_calls_engine(self, bridge, mock_engine, monkeypatch):
         monkeypatch.delenv("SKC_BRIDGE_CODE_ENABLED", raising=False)
         monkeypatch.setenv("SKC_BRIDGE_CODE_ALLOWED_IDS", "42")
         reply = bridge._handle_code_command(42, 42, "/code repo=skchat fix it")
@@ -208,6 +219,7 @@ class TestEngineSeam:
         import skharness.autocode.engineering as ac_eng
         import skharness.autocode.harness as ac_harness
         import skharness.autocode.journal as ac_journal
+
         monkeypatch.setattr(ac_config, "load", lambda *a, **k: cfg)
         monkeypatch.setattr(ac_direct, "DirectExecutor", direct_cls)
         monkeypatch.setattr(ac_eng, "EngineeringExecutor", eng_cls)
@@ -215,6 +227,7 @@ class TestEngineSeam:
         monkeypatch.setattr(ac_journal, "handle", lambda *a, **k: MagicMock())
         import skcapstone.coordination as coord
         import skcapstone.mcp_tools._helpers as helpers
+
         monkeypatch.setattr(coord, "Board", lambda *a, **k: MagicMock())
         monkeypatch.setattr(helpers, "_shared_root", lambda *a, **k: "/tmp/shared")
 

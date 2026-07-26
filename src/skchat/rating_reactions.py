@@ -13,13 +13,13 @@ unlike the Hermes shim which couldn't import skchat).
 Reaction map: 👎=1 🤷=2 👍=3 ❤️=4 🔥=5. Other emojis are ignored so casual
 social reactions don't poison the rollup.
 """
+
 from __future__ import annotations
 
 import json
 import logging
 import threading
 import time
-from pathlib import Path
 from typing import Optional
 
 from . import rating
@@ -52,8 +52,12 @@ def record_image_send(chat_id, message_id, image_path: str) -> None:
     """Persist (chat_id, message_id) -> image_path so a later reaction resolves."""
     try:
         SENT_LOG.parent.mkdir(parents=True, exist_ok=True)
-        row = {"chat_id": str(chat_id), "message_id": str(message_id),
-               "image_path": str(image_path), "ts": time.time()}
+        row = {
+            "chat_id": str(chat_id),
+            "message_id": str(message_id),
+            "image_path": str(image_path),
+            "ts": time.time(),
+        }
         with _lock, SENT_LOG.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(row) + "\n")
     except Exception as e:
@@ -91,8 +95,9 @@ def _image_id_for_path(image_path: str) -> Optional[str]:
     return None
 
 
-def record_telegram_reaction(chat_id, message_id, emoji: str,
-                             note: str | None = None) -> Optional[int]:
+def record_telegram_reaction(
+    chat_id, message_id, emoji: str, note: str | None = None
+) -> Optional[int]:
     """Reaction → score. Returns the score on success, else None."""
     score = score_from_emoji(emoji)
     if score is None:
@@ -105,8 +110,9 @@ def record_telegram_reaction(chat_id, message_id, emoji: str,
     if image_id is None:
         # Image was sent without a sidecar (e.g. an ad-hoc reply) — create one so
         # ANY posted image is ratable.
-        rec = rating.record_render(image_path=image_path, prompt="", loras=[],
-                                   extra={"source": "reaction-autocreate"})
+        rec = rating.record_render(
+            image_path=image_path, prompt="", loras=[], extra={"source": "reaction-autocreate"}
+        )
         image_id = rec.image_id
     rec = rating.record_score(image_id, score, note=note, via="telegram")
     if rec is None:

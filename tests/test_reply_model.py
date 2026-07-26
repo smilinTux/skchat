@@ -27,7 +27,8 @@ def test_role_selection_resolves_via_skos():
 
 def test_chat_pin_wins():
     url, model = resolve_reply_backend(
-        "lumina", chat_context="chat:42",
+        "lumina",
+        chat_context="chat:42",
         selection_fn=lambda a: "claude-opus-4-8",
         role_resolve_fn=lambda r: ("http://skos", "x"),
         chat_pin_fn=lambda c: ("http://pinned", "pinned-model"),

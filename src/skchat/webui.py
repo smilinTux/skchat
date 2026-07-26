@@ -213,6 +213,7 @@ except ImportError as _e:
 # Daemon API proxy for the Flutter app
 try:
     from .daemon_proxy import router as daemon_api_router
+
     app.include_router(daemon_api_router)
 except ImportError as _e:
     logger.warning("daemon API proxy not registered: %s", _e)
@@ -267,8 +268,10 @@ async def media_file(path: str, node: str = ".158"):
     """
     from fastapi import HTTPException
     from fastapi.responses import FileResponse
+
     try:
         from skcomms.access.files import get_default_access
+
         resolved = get_default_access()._resolve_checked(path, must_exist=True)
     except Exception as exc:  # PathDenied / traversal / hard-denied secret
         raise HTTPException(status_code=403, detail=f"denied: {exc}")
@@ -1156,8 +1159,10 @@ async def api_send(
     if _grp is not None:
         history = _get_history()
         own = ChatMessage(
-            sender=identity, recipient=f"group:{_grp.id}",
-            content=content, thread_id=_grp.id,
+            sender=identity,
+            recipient=f"group:{_grp.id}",
+            content=content,
+            thread_id=_grp.id,
         )
         history.save(own)
         for member in _grp.members:
@@ -1167,8 +1172,10 @@ async def api_send(
                 if transport:
                     transport.send_message(
                         ChatMessage(
-                            sender=identity, recipient=member.identity_uri,
-                            content=content, thread_id=_grp.id,
+                            sender=identity,
+                            recipient=member.identity_uri,
+                            content=content,
+                            thread_id=_grp.id,
                         )
                     )
             except Exception as exc:  # noqa: BLE001

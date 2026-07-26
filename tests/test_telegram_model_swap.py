@@ -24,6 +24,7 @@ default (``~/.skchat/agent_model.json``), same file the live daemon/app/voice
 read. Every test here redirects it to a tmp_path via
 ``SKCHAT_AGENT_MODEL_PATH`` so nothing here ever touches live agent state.
 """
+
 from __future__ import annotations
 
 import json
@@ -64,7 +65,8 @@ def bridge(tmp_path, monkeypatch):
         pytest.skip("skos.models unavailable in this env")
     # invalidate any cached registry so resolution reads our temp copy
     tb._skmodels.load_registry.cache_clear() if hasattr(
-        tb._skmodels.load_registry, "cache_clear") else None
+        tb._skmodels.load_registry, "cache_clear"
+    ) else None
     return tb, reg
 
 
@@ -195,8 +197,9 @@ def test_call_attaches_context_header_and_resolved_backend(bridge, monkeypatch):
     monkeypatch.setattr(tb, "_TOOLS_CACHE", [])
     # _run_tool_loop returns (reply, concrete_model); the fake response
     # carries no "model" key so the concrete model is None here.
-    out, concrete = tb._run_tool_loop([{"role": "user", "content": "hi"}],
-                                      chat_id=str(CHAT), url=url, model=model)
+    out, concrete = tb._run_tool_loop(
+        [{"role": "user", "content": "hi"}], chat_id=str(CHAT), url=url, model=model
+    )
     assert out == "hi"
     assert concrete is None
     assert captured["headers"].get("x-sk-context") == f"chat:{CHAT}"

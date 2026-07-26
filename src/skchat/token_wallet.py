@@ -25,6 +25,7 @@ metadata carries the grant markers (``consent_accept`` / ``consent_token``); the
 recipient builds it with :func:`build_accept_message` and the sender harvests the
 token with :func:`extract_accept_token` on receive.
 """
+
 from __future__ import annotations
 
 import json

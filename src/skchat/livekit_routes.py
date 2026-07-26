@@ -743,8 +743,7 @@ def register_livekit_routes(app: FastAPI) -> None:
 
         try:
             segment_duration = int(
-                body.get("segment_duration")
-                or os.getenv("SKCHAT_HLS_SEGMENT_DURATION", "6")
+                body.get("segment_duration") or os.getenv("SKCHAT_HLS_SEGMENT_DURATION", "6")
             )
         except (TypeError, ValueError):
             segment_duration = 6
@@ -812,9 +811,7 @@ def register_livekit_routes(app: FastAPI) -> None:
             except Exception:
                 authorized = True
         if not authorized:
-            raise HTTPException(
-                status_code=403, detail="not authorized to stop this egress"
-            )
+            raise HTTPException(status_code=403, detail="not authorized to stop this egress")
         try:
             result = await _egress_stop(egress_id)
         except ImportError:

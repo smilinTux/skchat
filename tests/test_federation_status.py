@@ -125,14 +125,22 @@ def test_route_returns_200_and_shape(monkeypatch):
     r = client.get("/federation/status")
     assert r.status_code == 200
     body = r.json()
-    for key in ("identity", "relays", "trust", "pinned_peers",
-                "discovered_focus", "counts", "errors"):
+    for key in (
+        "identity",
+        "relays",
+        "trust",
+        "pinned_peers",
+        "discovered_focus",
+        "counts",
+        "errors",
+    ):
         assert key in body
 
 
 def test_route_never_500_on_assembly_failure(monkeypatch):
     monkeypatch.setattr(
-        fs, "build_federation_status",
+        fs,
+        "build_federation_status",
         lambda **kw: (_ for _ in ()).throw(RuntimeError("kaboom")),
     )
     client = _client()

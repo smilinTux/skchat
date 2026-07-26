@@ -265,7 +265,7 @@ class TestTokenMatchLeftBoundary:
     # -- emails must NOT match -------------------------------------------------
 
     def test_email_local_part_suffix_does_not_match(self):
-        """"sam.opus@opus-mail.com" contains "@opus" but is preceded by a word
+        """ "sam.opus@opus-mail.com" contains "@opus" but is preceded by a word
         char ('s' of "opus") — must not match."""
         assert _token_match("please cc sam.opus@opus-mail.com on the reply", "@opus") is False
 
@@ -273,16 +273,20 @@ class TestTokenMatchLeftBoundary:
         assert should_advocate("please cc sam.opus@opus-mail.com on the reply") is False
 
     def test_lumina_domain_email_does_not_match(self):
-        """"danielle@lumina-imports.com" contains "@lumina" preceded by 'e' —
+        """ "danielle@lumina-imports.com" contains "@lumina" preceded by 'e' —
         must not match."""
-        assert _token_match(
-            "reach danielle at danielle@lumina-imports.com about the invoice", "@lumina"
-        ) is False
+        assert (
+            _token_match(
+                "reach danielle at danielle@lumina-imports.com about the invoice", "@lumina"
+            )
+            is False
+        )
 
     def test_should_advocate_false_for_lumina_email(self):
-        assert should_advocate(
-            "reach danielle at danielle@lumina-imports.com about the invoice"
-        ) is False
+        assert (
+            should_advocate("reach danielle at danielle@lumina-imports.com about the invoice")
+            is False
+        )
 
     # -- real mentions must still match -----------------------------------------
 

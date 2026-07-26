@@ -18,10 +18,9 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from skchat import daemon_proxy
+from skchat import daemon_proxy, livekit_routes
 from skchat import daemon_proxy_groupcall as GC
 from skchat import daemon_proxy_groups as G
-from skchat import livekit_routes
 
 _KEY = "test-key"
 _SECRET = "test-secret-0123456789abcdef0123456789abcdef"
@@ -120,8 +119,9 @@ def test_start_call_mints_member_token_and_rings(client):
     assert body["room"] == GC.derive_group_room(gid)
     assert body["token"]
     # Caller token decodes + is scoped to the derived room.
-    claims = jwt.decode(body["token"], _SECRET, algorithms=["HS256"],
-                        options={"verify_aud": False})
+    claims = jwt.decode(
+        body["token"], _SECRET, algorithms=["HS256"], options={"verify_aud": False}
+    )
     assert claims["video"]["room"] == body["room"]
     # Roster includes the operator + the two added members.
     uris = {m["identity_uri"] for m in body["members"]}

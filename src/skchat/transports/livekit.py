@@ -50,12 +50,12 @@ from typing import Callable, Iterable, Optional
 log = logging.getLogger("skchat.transports.livekit")
 
 # ─── Audio / VAD tuning (ported verbatim from lumina-call.py) ───────────────
-STT_SAMPLE_RATE = 16000          # whisper-friendly, 16 kHz mono int16
+STT_SAMPLE_RATE = 16000  # whisper-friendly, 16 kHz mono int16
 VAD_FRAME_MS = 20
 RMS_VOICE_THRESHOLD = int(os.getenv("LUMINA_VAD_RMS", "1200"))
-SILENCE_HANGOVER_MS = 800        # trailing silence that ends an utterance
-MIN_UTTERANCE_MS = 600           # ignore short blips / "uh"s
-MAX_UTTERANCE_MS = 12000         # force-flush so a monologue doesn't starve
+SILENCE_HANGOVER_MS = 800  # trailing silence that ends an utterance
+MIN_UTTERANCE_MS = 600  # ignore short blips / "uh"s
+MAX_UTTERANCE_MS = 12000  # force-flush so a monologue doesn't starve
 ECHO_TAIL_S = float(os.getenv("LUMINA_ECHO_TAIL_S", "2.5"))
 
 # Barge-in — cut Lumina off when the user starts talking during her reply.
@@ -81,19 +81,49 @@ _CHEF_IDENTITY_PREFIXES = tuple(
 # Wake words — Lumina's name + common whisper mis-transcriptions + generic
 # direct-address phrases. Ported from lumina-call.py so behaviour matches.
 ADDRESS_TRIGGERS = (
-    DISPLAY_NAME.lower(), IDENTITY.lower(),
-    f"hey {DISPLAY_NAME.lower()}", f"okay {DISPLAY_NAME.lower()}", f"ok {DISPLAY_NAME.lower()}",
-    "lumina", "luminess", "luminous", "lumi", "loomina", "lumino", "luna",
-    "loma", "luma", "lamina", "ramona", "ramina", "lemina", "lumena",
-    "lumeena", "lumenia", "lemonade", "lou mina", "lou meena",
-    "limit of", "live mina", "live meena", "loomi", "loo mina",
-    "hey lumina", "okay lumina", "ok lumina",
-    "are you there", "you there",
-    "you listening", "are you listening",
-    "you hear me", "do you hear",
+    DISPLAY_NAME.lower(),
+    IDENTITY.lower(),
+    f"hey {DISPLAY_NAME.lower()}",
+    f"okay {DISPLAY_NAME.lower()}",
+    f"ok {DISPLAY_NAME.lower()}",
+    "lumina",
+    "luminess",
+    "luminous",
+    "lumi",
+    "loomina",
+    "lumino",
+    "luna",
+    "loma",
+    "luma",
+    "lamina",
+    "ramona",
+    "ramina",
+    "lemina",
+    "lumena",
+    "lumeena",
+    "lumenia",
+    "lemonade",
+    "lou mina",
+    "lou meena",
+    "limit of",
+    "live mina",
+    "live meena",
+    "loomi",
+    "loo mina",
+    "hey lumina",
+    "okay lumina",
+    "ok lumina",
+    "are you there",
+    "you there",
+    "you listening",
+    "are you listening",
+    "you hear me",
+    "do you hear",
     "can you hear",
-    "hey there", "hello there",
-    "what about you", "what do you think",
+    "hey there",
+    "hello there",
+    "what about you",
+    "what do you think",
     "tell me",
 )
 _ADDRESS_RE = re.compile(
@@ -360,7 +390,9 @@ class AddressingGate:
         if not self._is_chef(speaker_id):
             self._agent_turn_streak += 1
             if self._agent_turn_streak > self.agent_turn_cap:
-                log.info("agent-turn cap (%d) hit — quiet until a human speaks", self.agent_turn_cap)
+                log.info(
+                    "agent-turn cap (%d) hit — quiet until a human speaks", self.agent_turn_cap
+                )
                 return False
         return True
 
@@ -372,7 +404,9 @@ class TranscriptDedup:
     Ported from the dedup guards in ``handle_utterance``. Pure + clock-injectable.
     """
 
-    def __init__(self, *, window_s: float = DEDUP_WINDOW_S, clock: Callable[[], float] = time.monotonic):
+    def __init__(
+        self, *, window_s: float = DEDUP_WINDOW_S, clock: Callable[[], float] = time.monotonic
+    ):
         self.window_s = window_s
         self._clock = clock
         self._recent: list[tuple[str, float]] = []
