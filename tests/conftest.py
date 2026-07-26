@@ -711,6 +711,67 @@ def pytest_ignore_collect(collection_path, config):
     return None
 
 
+# --- runtime-coupled test gates ------------------------------------------
+# A handful of tests can only pass when a prerequisite that a bare CI runner
+# lacks is present. Unlike the collect gate above (whole files that import an
+# absent module at all), these are individual tests whose coupling is a
+# runtime value (a private package's data, a sibling imported INSIDE the test
+# body, or the operator's local peer store). We skip precisely those tests when
+# the prerequisite is absent, so the rest of their file still runs in CI; on a
+# developer/deployed node (where the prerequisite exists) they run normally.
+_HAS_LUMINA_CREATIVE = _ilu.find_spec("lumina_creative") is not None
+_HAS_SKSECURITY = _ilu.find_spec("sksecurity") is not None
+
+
+def _has_lumina_peer_fingerprint() -> bool:
+    # The fingerprint tests resolve "lumina@chef.skworld" to the real capauth
+    # fingerprint via the operator's local peer store (daemon_proxy). Absent in
+    # a bare CI runner -> resolution is "" (keyless) and the assertions can't hold.
+    try:
+        from skchat.daemon_proxy import fingerprint_for_identity
+
+        return bool(fingerprint_for_identity("lumina@chef.skworld"))
+    except Exception:
+        return False
+
+
+# test name -> (prerequisite-present flag, human reason)
+def pytest_collection_modifyitems(config, items):
+    lumina_creative_tests = {
+        "test_phase2_api_is_importable_from_package_root",
+        "test_wants_narrate_and_action_detectors",
+        "test_respond_builds_persona_prefetches_memory_and_calls_llm",
+        "test_build_default_registry_has_expected_tools",
+        "test_operator_only_flags",
+    }
+    sksecurity_tests = {
+        "test_self_report_reflects_negotiated_suite",
+        "test_roundtrip_trusted_fqid_mints_token",
+    }
+    fingerprint_tests = {
+        "test_soul_metadata_for_strict_resolution",
+        "test_proven_sovereign_join_stamps_fingerprint",
+        "test_proven_space_federation_stamps_fingerprint",
+    }
+    has_peer = _has_lumina_peer_fingerprint()
+    for item in items:
+        name = getattr(item, "originalname", None) or item.name
+        if name in lumina_creative_tests and not _HAS_LUMINA_CREATIVE:
+            item.add_marker(
+                pytest.mark.skip(
+                    reason="private lumina_creative package absent (narrate hints + creative tools)"
+                )
+            )
+        elif name in sksecurity_tests and not _HAS_SKSECURITY:
+            item.add_marker(pytest.mark.skip(reason="sksecurity sibling package absent"))
+        elif name in fingerprint_tests and not has_peer:
+            item.add_marker(
+                pytest.mark.skip(
+                    reason="lumina fingerprint not in local peer store (deployment-state)"
+                )
+            )
+
+
 # --- CI agent state ------------------------------------------------------
 # Many tests resolve the active agent (get_active_agent_name) or build an
 # agent-scoped identity/transport. A bare CI runner has no SKAGENT and no
@@ -722,6 +783,27 @@ import os as _os
 
 _os.environ.setdefault("SKAGENT", "lumina")
 _os.environ.setdefault("SKCAPSTONE_AGENT", "lumina")
+
+# skmemory (<=0.11.4 on PyPI, which CI installs) resolves the active agent at
+# IMPORT time (seeds.py module-level get_agent_paths()) and RAISES "No agent
+# configured" when no non-template agent dir exists. A bare CI runner has none,
+# so importing skmemory blows up ~14 tests. We can't patch the PyPI package, so
+# provision a minimal agent dir in the DEFAULT location (NOT via SKCAPSTONE_HOME,
+# which would repoint every agent-scoped path and break other tests). Only
+# creates it when SKAGENT resolves to a dir that does not exist; a developer's
+# real ~/.skcapstone/agents is left untouched. skmemory>=0.11.5 guards this at
+# the source (seeds.py try/except) and makes the shim a harmless no-op.
+try:
+    from pathlib import Path as _P
+
+    _agent_name = _os.environ.get("SKAGENT", "lumina")
+    _skcap_home = _os.environ.get("SKCAPSTONE_HOME") or _os.path.expanduser("~/.skcapstone")
+    _agent_dir = _P(_skcap_home) / "agents" / _agent_name
+    if not _agent_dir.exists():
+        for _sub in ("seeds", "config", "soul"):
+            (_agent_dir / _sub).mkdir(parents=True, exist_ok=True)
+except Exception:  # never let test bootstrap fail on this best-effort shim
+    pass
 
 
 # --- env isolation -------------------------------------------------------
