@@ -47,10 +47,10 @@ def soul_metadata_for(identity: str) -> str:
 
     return _impl(identity)
 
+
 _MAX_FEDERATION_AGE = 300
 
 _NONCE_CACHE: dict = {}
-
 
 
 def _check_fed_nonce(fqid: str, nonce: str) -> bool:
@@ -63,6 +63,7 @@ def _check_fed_nonce(fqid: str, nonce: str) -> bool:
         return False
     _NONCE_CACHE[key] = now
     return True
+
 
 # --- On-demand Lumina conf-agent (pull the AI into THIS room) ----------------
 # The resident single-room agent is ``skchat-lumina-call.service``; this is the
@@ -104,7 +105,7 @@ def _agent_unit(room: str) -> str:
 
 def _default_runner(cmd: list[str]) -> subprocess.CompletedProcess:
     """Default command runner — actually invokes the process.
-    
+
     Tests inject their own runner (no real spawn). Raises ``FileNotFoundError``
     if ``cmd[0]`` is missing, which callers translate into a graceful 503.
     """
@@ -138,6 +139,7 @@ def _api_url() -> str:
 def _public_url(request: Request) -> str:
     try:
         from skchat.livekit_routes import public_aware_livekit_url
+
         return public_aware_livekit_url(request)
     except Exception:
         return _url()
@@ -152,7 +154,12 @@ def _have_creds() -> bool:
 
 
 _PRIVATE_PREFIXES = (
-    "127.", "10.", "192.168.", "100.", "::1", "fd",
+    "127.",
+    "10.",
+    "192.168.",
+    "100.",
+    "::1",
+    "fd",
 )
 
 
@@ -211,6 +218,7 @@ def register_conf_routes(
             advertise_conf(host_fqid=host_fqid, room=room, title=title)
         except Exception as exc:  # noqa: BLE001 - advertise must never fail create
             logger.warning("conf: focus-advertise failed for %s: %s", room, exc)
+
     # Lazy LiveKit room-service client (mirrors Moderator._service): only built
     # when a route actually needs the live SFU, and only if creds are present.
     _svc_holder = {"svc": room_service}
@@ -424,10 +432,14 @@ def register_conf_routes(
             f"--unit={unit}",
             "--property=MemoryMax=2G",
             "--property=CPUQuota=200%",
-            "-E", f"SKAGENT={agent}",
-            "-E", f"SKCHAT_WEBUI_URL=http://127.0.0.1:{os.getenv('SKCHAT_PORT', '8765')}",
-            "-E", f"SKCHAT_LIVEKIT_API_KEY={os.getenv('SKCHAT_LIVEKIT_API_KEY', '')}",
-            "-E", f"SKCHAT_LIVEKIT_API_SECRET={os.getenv('SKCHAT_LIVEKIT_API_SECRET', '')}",
+            "-E",
+            f"SKAGENT={agent}",
+            "-E",
+            f"SKCHAT_WEBUI_URL=http://127.0.0.1:{os.getenv('SKCHAT_PORT', '8765')}",
+            "-E",
+            f"SKCHAT_LIVEKIT_API_KEY={os.getenv('SKCHAT_LIVEKIT_API_KEY', '')}",
+            "-E",
+            f"SKCHAT_LIVEKIT_API_SECRET={os.getenv('SKCHAT_LIVEKIT_API_SECRET', '')}",
             _agent_python(),
             _lumina_call_script(),
             "--room",
@@ -474,9 +486,7 @@ def register_conf_routes(
             raise HTTPException(400, "requester required")
         host = (body.get("host") or "").strip() or None
         fqid = (body.get("fqid") or "").strip() or None
-        greeting = (
-            body.get("greet") or "Lumina here — joining the federated conference."
-        ).strip()
+        greeting = (body.get("greet") or "Lumina here — joining the federated conference.").strip()
         if len(greeting) > 500:
             raise HTTPException(400, "greeting too long (max 500 chars)")
 
@@ -664,7 +674,7 @@ def register_conf_routes(
     @app.get("/conf/health")
     async def conf_ops_health() -> JSONResponse:
         """Standalone ops health endpoint for the conf subsystem.
-        
+
         Reports conf registry stats, LiveKit credential status, and
         any running agent-worker units (best-effort).
         """
@@ -680,15 +690,17 @@ def register_conf_routes(
                         agent_units.append(parts[0])
         except Exception:
             pass
-        return JSONResponse({
-            "service": "skchat-conf",
-            "status": "ok",
-            "live_confs": len(live),
-            "total_participants": sum(len(c.participants) for c in live),
-            "total_waiting": sum(len(c.waiting_room) for c in live),
-            "livekit_configured": _have_creds(),
-            "agent_workers": agent_units,
-        })
+        return JSONResponse(
+            {
+                "service": "skchat-conf",
+                "status": "ok",
+                "live_confs": len(live),
+                "total_participants": sum(len(c.participants) for c in live),
+                "total_waiting": sum(len(c.waiting_room) for c in live),
+                "livekit_configured": _have_creds(),
+                "agent_workers": agent_units,
+            }
+        )
 
     @app.post("/conf/{room}/waiting")
     async def enter_waiting_room(room: str, request: Request) -> JSONResponse:
@@ -718,12 +730,14 @@ def register_conf_routes(
         if tailnet:
             reg.admit_guest(room, identity)
             return JSONResponse({"admitted": True, "identity": identity, "auto_admitted": True})
-        return JSONResponse({
-            "admitted": False,
-            "identity": identity,
-            "position": len(conf.waiting_room),
-            "message": "Waiting for host to admit you",
-        })
+        return JSONResponse(
+            {
+                "admitted": False,
+                "identity": identity,
+                "position": len(conf.waiting_room),
+                "message": "Waiting for host to admit you",
+            }
+        )
 
     @app.get("/conf/{room}/waiting")
     async def waiting_room_status(room: str) -> JSONResponse:
@@ -731,12 +745,14 @@ def register_conf_routes(
         conf = reg.get(room)
         if conf is None:
             raise HTTPException(404, "conf not found")
-        return JSONResponse({
-            "room": room,
-            "waiting": conf.waiting_room,
-            "admitted": conf.admitted,
-            "denied": conf.denied,
-        })
+        return JSONResponse(
+            {
+                "room": room,
+                "waiting": conf.waiting_room,
+                "admitted": conf.admitted,
+                "denied": conf.denied,
+            }
+        )
 
     @app.post("/conf/{room}/admit")
     async def admit_guest(room: str, request: Request) -> JSONResponse:
@@ -773,11 +789,11 @@ def register_conf_routes(
     @app.post("/conf/{room}/federated-token")
     async def conf_federated_token(room: str, request: Request) -> JSONResponse:
         """sk-lk-authd for conferences: cross-instance token minting.
-        
+
         Accepts a capauth-signed FQID assertion ``{claim, sig}``, verifies
         the assertion signature and freshness, checks trust policy, and mints
         a conf PARTICIPANT token for this host's LiveKit SFU.
-        
+
         This is the conf parallel of ``POST /sfu/get`` (which mints audio Space
         tokens). The assertion uses the same capauth-signing format, so a remote
         agent can present the same identity credential to either endpoint.
@@ -785,6 +801,8 @@ def register_conf_routes(
         try:
             from skchat.spaces.federation.assertion import (
                 AssertionError as FedAssertionError,
+            )
+            from skchat.spaces.federation.assertion import (
                 verify_signed,
             )
             from skchat.spaces.federation.trust import AccessLevel, TrustPolicy
@@ -836,14 +854,16 @@ def register_conf_routes(
             incr("fed_tokens_redeemed")
         except Exception:  # noqa: BLE001 - observability must never break the mint
             pass
-        return JSONResponse({
-            "token": token,
-            "url": _public_url(request),
-            "role": role.value,
-            "identity": assertion.fqid,
-            "conf_id": conf.conf_id,
-            "room": conf.room,
-        })
+        return JSONResponse(
+            {
+                "token": token,
+                "url": _public_url(request),
+                "role": role.value,
+                "identity": assertion.fqid,
+                "conf_id": conf.conf_id,
+                "room": conf.room,
+            }
+        )
 
     @app.get("/app/{rest:path}", response_class=FileResponse)
     async def flutter_app(rest: str) -> FileResponse:
@@ -864,9 +884,7 @@ def register_conf_routes(
                 "version.json",
             }
             headers = (
-                {"Cache-Control": "no-cache, must-revalidate"}
-                if p.name in volatile
-                else None
+                {"Cache-Control": "no-cache, must-revalidate"} if p.name in volatile else None
             )
             return FileResponse(p, headers=headers)
 

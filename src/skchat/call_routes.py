@@ -119,7 +119,7 @@ def _resolve_peer(peer: str) -> str:
     peers = _list_peers()
     if peer in peers:
         return peer
-    probe = peer[len("capauth:"):] if peer.startswith("capauth:") else peer
+    probe = peer[len("capauth:") :] if peer.startswith("capauth:") else peer
     bare = probe.split("@", 1)[0]
     matches = [fqid for fqid in peers if fqid.split("@", 1)[0] == bare]
     if len(matches) == 1:

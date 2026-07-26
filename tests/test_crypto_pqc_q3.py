@@ -136,8 +136,6 @@ def test_self_report_reflects_negotiated_suite():
     surf, comp, suite, note = conversation_surface_for(HYBRID_SUITE, "dm", "bob")
     assert suite == HYBRID_SUITE
     assert "HNDL-resistant" in note
-    surf2, _, suite2, note2 = conversation_surface_for(
-        pqdm.CLASSICAL_SUITE, "dm", "bob"
-    )
+    surf2, _, suite2, note2 = conversation_surface_for(pqdm.CLASSICAL_SUITE, "dm", "bob")
     assert suite2 == pqdm.CLASSICAL_SUITE
     assert "CLASSICAL" in note2

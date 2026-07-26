@@ -30,8 +30,8 @@ def frame(amplitude: int) -> bytes:
     return struct.pack(f"<{SAMPLES}h", *([amplitude] * SAMPLES))
 
 
-VOICED = frame(3000)   # well above 1200 speech gate and 2000 barge-in gate
-QUIET = frame(0)       # silence
+VOICED = frame(3000)  # well above 1200 speech gate and 2000 barge-in gate
+QUIET = frame(0)  # silence
 
 
 class FakeClock:
@@ -195,8 +195,7 @@ def test_follow_up_window_rolls_unnamed_turns():
     clk.advance(120)
     # After the window a bare un-named turn (no wake word, other agent present)
     # no longer engages.
-    assert not g.is_addressed("chef-laptop", "and the time?", mode="group",
-                              other_agents=("opus",))
+    assert not g.is_addressed("chef-laptop", "and the time?", mode="group", other_agents=("opus",))
 
 
 def test_generic_wakeword_only_when_alone():
@@ -218,13 +217,13 @@ def test_roundtable_broadcast_window():
     g.note_own_speech()  # Lumina just spoke → broadcast window open
     clk.advance(5)
     # A peer AGENT's un-named turn within the window drives the roundtable.
-    assert g.is_addressed("opus", "I agree with that", mode="group",
-                          other_agents=("opus",))
+    assert g.is_addressed("opus", "I agree with that", mode="group", other_agents=("opus",))
     # …but Chef's un-directed turn does NOT get grabbed via broadcast window.
     g2 = make_gate(clk, follow_up_window_s=60)
     g2.note_own_speech()
-    assert not g2.is_addressed("chef-laptop", "hmm interesting", mode="group",
-                               other_agents=("opus",))
+    assert not g2.is_addressed(
+        "chef-laptop", "hmm interesting", mode="group", other_agents=("opus",)
+    )
 
 
 def test_agent_turn_cap_damps_pingpong():

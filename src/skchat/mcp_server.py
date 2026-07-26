@@ -1620,7 +1620,7 @@ def _self_consent_agent() -> str:
 
     uri = _get_identity()
     if uri.startswith("capauth:"):
-        uri = uri[len("capauth:"):]
+        uri = uri[len("capauth:") :]
     local = uri.split("@", 1)[0]
     return local or "lumina"
 
@@ -1665,9 +1665,7 @@ async def _handle_accept_contact_request(args: dict) -> list[TextContent]:
     token = build_pipeline(agent).on_accept(sender)
     # Clear the queued knock (idempotent; promotion already happened).
     consent_requests.accept_request(agent, sender)
-    return _json(
-        {"agent": agent, "sender": sender, "result": "accepted", "token": token}
-    )
+    return _json({"agent": agent, "sender": sender, "result": "accepted", "token": token})
 
 
 async def _handle_decline_contact_request(args: dict) -> list[TextContent]:
@@ -3322,9 +3320,7 @@ async def _handle_get_group_history(args: dict) -> list[TextContent]:
             {
                 "sender": m.sender,
                 "content": m.content,
-                "timestamp": (
-                    m.timestamp.isoformat() if getattr(m, "timestamp", None) else ""
-                ),
+                "timestamp": (m.timestamp.isoformat() if getattr(m, "timestamp", None) else ""),
             }
             for m in events
         ]
@@ -3472,9 +3468,7 @@ async def _handle_skchat_group_create(args: dict) -> list[TextContent]:
             _member_hybrid = _PQ.hybrid_pub_hex_for(identity)
         except Exception:
             _member_hybrid = ""
-        member = group.add_member(
-            identity_uri=identity, hybrid_kem_public_hex=_member_hybrid
-        )
+        member = group.add_member(identity_uri=identity, hybrid_kem_public_hex=_member_hybrid)
         if member:
             added.append(identity)
 
@@ -4347,9 +4341,7 @@ async def _handle_skchat_inbox(args: dict) -> list[TextContent]:
                 "sender": e.sender,
                 "recipient": e.recipient,
                 "content": e.content,
-                "timestamp": (
-                    e.timestamp.isoformat() if getattr(e, "timestamp", None) else ""
-                ),
+                "timestamp": (e.timestamp.isoformat() if getattr(e, "timestamp", None) else ""),
                 "thread_id": e.thread_id,
                 "message_type": "text",
             }

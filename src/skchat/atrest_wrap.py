@@ -168,17 +168,13 @@ def _pack_header(suite_id: str) -> bytes:
 def _parse_header(blob: bytes) -> tuple[str, int]:
     """Validate magic/version and return ``(suite_id, body_offset)``."""
     if not isinstance(blob, (bytes, bytearray)):
-        raise AtRestWrapFormatError(
-            f"wrap blob must be bytes, got {type(blob).__name__}"
-        )
+        raise AtRestWrapFormatError(f"wrap blob must be bytes, got {type(blob).__name__}")
     head_len = len(WRAP_MAGIC) + 3  # magic + version(1) + suite_len(2)
     if len(blob) < head_len:
         raise AtRestWrapFormatError("wrap blob truncated (header)")
     if bytes(blob[: len(WRAP_MAGIC)]) != WRAP_MAGIC:
         raise AtRestWrapFormatError("not a SKAW wrap blob (bad magic)")
-    version, suite_len = struct.unpack(
-        ">BH", bytes(blob[len(WRAP_MAGIC) : head_len])
-    )
+    version, suite_len = struct.unpack(">BH", bytes(blob[len(WRAP_MAGIC) : head_len]))
     if version != WRAP_FORMAT_VERSION:
         raise AtRestWrapFormatError(
             f"unsupported wrap format version {version} (expected {WRAP_FORMAT_VERSION})"
@@ -258,8 +254,7 @@ def unwrap_dek(blob: bytes, recipient_hybrid_priv: bytes) -> bytes:
     expected_body = HYBRID_CIPHERTEXT_LEN + _WRAP_NONCE_LEN + _WRAPPED_DEK_LEN
     if len(body) != expected_body:
         raise AtRestWrapFormatError(
-            f"wrap body for suite {suite_id!r} must be {expected_body} bytes, "
-            f"got {len(body)}"
+            f"wrap body for suite {suite_id!r} must be {expected_body} bytes, got {len(body)}"
         )
 
     ciphertext = body[:HYBRID_CIPHERTEXT_LEN]

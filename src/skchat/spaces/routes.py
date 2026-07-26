@@ -146,6 +146,7 @@ def register_spaces_routes(
             advertise_space(host_fqid=host_fqid, space_id=space_id, title=title)
         except Exception as exc:  # noqa: BLE001 - advertise must never fail create
             logger.warning("spaces: focus-advertise failed for %s: %s", space_id, exc)
+
     _mod_holder = {"mod": moderator}
     from skchat.spaces.consent import ConsentLedger
 
@@ -191,7 +192,11 @@ def register_spaces_routes(
         # proof), so stamping its fingerprint would be spoofable. Proven Space
         # joins go through the federation authd path, which stamps it there.
         token = mint_space_token(
-            identity, name, role, space.space_id, _DEFAULT_TTL,
+            identity,
+            name,
+            role,
+            space.space_id,
+            _DEFAULT_TTL,
         )
         return {
             "space_id": space.space_id,
@@ -271,7 +276,9 @@ def register_spaces_routes(
         except GuestJoinError as exc:
             raise HTTPException(403, f"invalid invite: {exc}") from exc
         return JSONResponse(
-            _token_response(guest.identity, guest.display or display, Role.LISTENER, space, request)
+            _token_response(
+                guest.identity, guest.display or display, Role.LISTENER, space, request
+            )
         )
 
     @app.get("/spaces")

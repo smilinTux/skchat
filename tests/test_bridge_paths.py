@@ -108,9 +108,7 @@ class TestComputeSrcPaths:
         lone = tmp_path / "lonely" / "skchat" / "scripts" / "telegram_bridge.py"
         lone.parent.mkdir(parents=True)
         lone.write_text("# placeholder\n")
-        out = bp.compute_src_paths(
-            script_path=lone, environ={}, importable=lambda p: False
-        )
+        out = bp.compute_src_paths(script_path=lone, environ={}, importable=lambda p: False)
         assert out == []
 
 
@@ -133,12 +131,16 @@ class TestEnsureImportable:
     def test_idempotent(self, bp, foreign):
         paths: list[str] = []
         bp.ensure_importable(
-            script_path=foreign.script, environ={},
-            importable=lambda p: False, path_list=paths,
+            script_path=foreign.script,
+            environ={},
+            importable=lambda p: False,
+            path_list=paths,
         )
         again = bp.ensure_importable(
-            script_path=foreign.script, environ={},
-            importable=lambda p: False, path_list=paths,
+            script_path=foreign.script,
+            environ={},
+            importable=lambda p: False,
+            path_list=paths,
         )
         assert again == []
         assert len(paths) == 2
@@ -146,8 +148,10 @@ class TestEnsureImportable:
     def test_noop_when_installed(self, bp, foreign):
         paths: list[str] = []
         added = bp.ensure_importable(
-            script_path=foreign.script, environ={},
-            importable=lambda p: True, path_list=paths,
+            script_path=foreign.script,
+            environ={},
+            importable=lambda p: True,
+            path_list=paths,
         )
         assert added == [] and paths == []
 
@@ -226,9 +230,7 @@ class TestTelegramBridgeImport:
         finally:
             sys.modules.pop(modname, None)
 
-    def test_agent_home_not_machine_specific(
-        self, tmp_path, monkeypatch, stubbed_skcapstone
-    ):
+    def test_agent_home_not_machine_specific(self, tmp_path, monkeypatch, stubbed_skcapstone):
         """AGENT_HOME honors the env override (foreign-home layout)."""
         foreign_home = tmp_path / "home" / "alice" / ".skcapstone" / "agents" / "opus"
         monkeypatch.setenv("SKC_BRIDGE_TOKEN", "dummy")

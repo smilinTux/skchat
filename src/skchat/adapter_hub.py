@@ -136,9 +136,7 @@ class AdapterHub:
         if registry is None and hub is not None:
             registry = getattr(hub, "registry", None)
         if outbound_adapter is _UNSET:
-            outbound_adapter = (
-                getattr(hub, "outbound_adapter", None) if hub is not None else None
-            )
+            outbound_adapter = getattr(hub, "outbound_adapter", None) if hub is not None else None
 
         self._history = history
         self._advocacy = advocacy
@@ -325,9 +323,7 @@ class AdapterHub:
             reply_to_platform_id=getattr(channel_message, "platform_msg_id", None),
         )
 
-    async def route_reply(
-        self, channel_message: Any, reply_text: str
-    ) -> Optional[str]:
+    async def route_reply(self, channel_message: Any, reply_text: str) -> Optional[str]:
         """Send *reply_text* back to the originating platform.
 
         Delivery path (first available wins):
@@ -352,9 +348,7 @@ class AdapterHub:
         out_msg = self.build_reply_message(channel_message, reply_text)
 
         # Case 3: outbound_adapter is itself an adapter object.
-        if self._outbound_adapter is not None and hasattr(
-            self._outbound_adapter, "send"
-        ):
+        if self._outbound_adapter is not None and hasattr(self._outbound_adapter, "send"):
             return await self._outbound_adapter.send(out_msg)
 
         if self._registry is None:

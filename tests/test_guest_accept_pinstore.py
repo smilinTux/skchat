@@ -1,5 +1,6 @@
 """TOFU pin store: durable admitted-peer records with list + revoke (Mode C
 polish / Mode B foundation)."""
+
 from skchat.guest_accept import ConsumedNonces
 
 

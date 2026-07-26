@@ -79,11 +79,17 @@ def _both_agents(crypto, pk, tmp_path, *, mode=AuthMode.ANONYMOUS, identity_reso
     pk.ensure_agent_keypair("lumina")
     pk.ensure_agent_keypair("jarvis")
     lumina = DmRatchetManager.for_agent(
-        crypto, "lumina", tmp_path / "lumina", mode=mode,
+        crypto,
+        "lumina",
+        tmp_path / "lumina",
+        mode=mode,
         peer_identity_resolver=identity_resolver,
     )
     jarvis = DmRatchetManager.for_agent(
-        crypto, "jarvis", tmp_path / "jarvis", mode=AuthMode.ANONYMOUS,
+        crypto,
+        "jarvis",
+        tmp_path / "jarvis",
+        mode=AuthMode.ANONYMOUS,
     )
     assert lumina is not None and jarvis is not None
     return lumina, jarvis
@@ -169,7 +175,9 @@ def test_sovereign_accepts_signed_bundle_and_roundtrips(crypto, sk_home, tmp_pat
     jarvis_crypto = ChatCrypto(j_priv, PASSPHRASE)
 
     lumina, jarvis = _both_agents(
-        crypto, pk, tmp_path,
+        crypto,
+        pk,
+        tmp_path,
         mode=AuthMode.SOVEREIGN,
         identity_resolver=lambda p: {"jarvis": j_pub}.get(p),
     )
@@ -194,7 +202,9 @@ def test_sovereign_rejects_unsigned_fails_closed_to_classical(crypto, sk_home, t
 
     _, j_pub = _generate_test_keypair("Jarvis", "jarvis@skworld.io")
     lumina, _ = _both_agents(
-        crypto, pk, tmp_path,
+        crypto,
+        pk,
+        tmp_path,
         mode=AuthMode.SOVEREIGN,
         identity_resolver=lambda p: {"jarvis": j_pub}.get(p),
     )
@@ -216,7 +226,9 @@ def test_sovereign_rejects_tampered_prekey(crypto, sk_home, tmp_path):
     j_priv, j_pub = _generate_test_keypair("Jarvis", "jarvis@skworld.io")
     jarvis_crypto = ChatCrypto(j_priv, PASSPHRASE)
     lumina, _ = _both_agents(
-        crypto, pk, tmp_path,
+        crypto,
+        pk,
+        tmp_path,
         mode=AuthMode.SOVEREIGN,
         identity_resolver=lambda p: {"jarvis": j_pub}.get(p),
     )
@@ -238,7 +250,9 @@ def test_sovereign_rejects_wrong_identity(crypto, sk_home, tmp_path):
     _, other_pub = _generate_test_keypair("Mallory", "mallory@skworld.io")
     jarvis_crypto = ChatCrypto(j_priv, PASSPHRASE)
     lumina, _ = _both_agents(
-        crypto, pk, tmp_path,
+        crypto,
+        pk,
+        tmp_path,
         mode=AuthMode.SOVEREIGN,
         identity_resolver=lambda p: {"jarvis": other_pub}.get(p),
     )

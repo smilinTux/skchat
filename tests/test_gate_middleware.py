@@ -10,15 +10,15 @@ def test_sensitive_paths_are_gated():
 def test_exempt_paths_are_open():
     assert is_gated("GET", "/health") is False
     assert is_gated("GET", "/api/health") is False
-    assert is_gated("POST", "/api/v1/inbox") is False      # federation S2S
+    assert is_gated("POST", "/api/v1/inbox") is False  # federation S2S
     assert is_gated("GET", "/api/v1/auth/challenge") is False  # bootstrap
-    assert is_gated("POST", "/api/v1/auth/session") is False   # bootstrap
+    assert is_gated("POST", "/api/v1/auth/session") is False  # bootstrap
     assert is_gated("GET", "/app/index.html") is False
     assert is_gated("GET", "/.well-known/skfed/directory") is False
 
 
 def test_method_specific_inbox():
-    assert is_gated("GET", "/api/v1/inbox") is True    # reading YOUR inbox
+    assert is_gated("GET", "/api/v1/inbox") is True  # reading YOUR inbox
     assert is_gated("POST", "/api/v1/inbox") is False  # peers delivering to you
 
 
@@ -136,8 +136,6 @@ def test_flag_on_allows_valid_session(monkeypatch):
     tok = oa.mint_operator_session(device_fp="abc", ttl=60)
     c = TestClient(_build_app())
     assert (
-        c.get(
-            "/api/v1/conversations", headers={"Authorization": f"Bearer {tok}"}
-        ).status_code
+        c.get("/api/v1/conversations", headers={"Authorization": f"Bearer {tok}"}).status_code
         == 200
     )

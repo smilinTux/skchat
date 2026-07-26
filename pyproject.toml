@@ -74,6 +74,10 @@ dev = [
     "textual>=0.50",
     "skcomms>=0.1.0",
     "skmemory>=0.9",
+    # WebRTC call/spaces surfaces imported at module load by 17 test files;
+    # pip-installable (unlike the sibling SK* packages), so install in CI.
+    "livekit>=1.0",
+    "livekit-api>=1.0",
 ]
 
 [project.scripts]

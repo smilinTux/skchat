@@ -41,9 +41,7 @@ class TestValidateCoords:
 class TestCoarseDefault:
     def test_approximate_is_default_and_reduces_precision(self) -> None:
         """No precise flag → coarsened to ~3 decimals (the safe default)."""
-        payload = location.build_location_payload(
-            {"lat": 40.748817, "lon": -73.985428}
-        )
+        payload = location.build_location_payload({"lat": 40.748817, "lon": -73.985428})
         assert payload["precise"] is False
         # Coarsened to COARSE_DECIMALS (3) — fine-grained position is gone.
         assert payload["lat"] == 40.749
@@ -96,9 +94,7 @@ class TestBodyAndMaps:
         assert "1.235" in body  # coarsened
 
     def test_body_precise_has_no_approx(self) -> None:
-        payload = location.build_location_payload(
-            {"lat": 1.0, "lon": 2.0, "precise": True}
-        )
+        payload = location.build_location_payload({"lat": 1.0, "lon": 2.0, "precise": True})
         assert "approx" not in location.location_body(payload).lower()
 
     def test_body_includes_label(self) -> None:
@@ -108,9 +104,7 @@ class TestBodyAndMaps:
         assert "Cafe" in location.location_body(payload)
 
     def test_maps_url_points_at_osm(self) -> None:
-        payload = location.build_location_payload(
-            {"lat": 40.7, "lon": -74.0, "precise": True}
-        )
+        payload = location.build_location_payload({"lat": 40.7, "lon": -74.0, "precise": True})
         url = location.maps_url(payload)
         assert "openstreetmap.org" in url
         assert "mlat=40.7" in url
@@ -146,16 +140,17 @@ def client(tmp_path, monkeypatch):
 
 class TestLocationSend:
     def test_location_to_lumina_persists_and_round_trips(self, client) -> None:
-        r = client.post("/api/v1/send", json={
-            "recipient": "lumina",
-            "content_type": "location",
-            "rich": {"lat": 40.748817, "lon": -73.985428, "precise": True},
-        })
+        r = client.post(
+            "/api/v1/send",
+            json={
+                "recipient": "lumina",
+                "content_type": "location",
+                "rich": {"lat": 40.748817, "lon": -73.985428, "precise": True},
+            },
+        )
         assert r.status_code == 200
         # The user's location turn is stored; read it back via the conversation.
-        msgs = client.get(
-            "/api/v1/conversations/" + daemon_proxy.LUMINA_ID
-        ).json()
+        msgs = client.get("/api/v1/conversations/" + daemon_proxy.LUMINA_ID).json()
         loc = [m for m in msgs if m["content_type"] == "location"]
         assert loc, "no location message round-tripped"
         m = loc[0]
@@ -165,40 +160,50 @@ class TestLocationSend:
 
     def test_location_coarse_by_default_over_http(self, client) -> None:
         """No precise flag in the request → server coarsens before storing."""
-        client.post("/api/v1/send", json={
-            "recipient": "lumina",
-            "content_type": "location",
-            "rich": {"lat": 40.748817, "lon": -73.985428},
-        })
-        msgs = client.get(
-            "/api/v1/conversations/" + daemon_proxy.LUMINA_ID
-        ).json()
+        client.post(
+            "/api/v1/send",
+            json={
+                "recipient": "lumina",
+                "content_type": "location",
+                "rich": {"lat": 40.748817, "lon": -73.985428},
+            },
+        )
+        msgs = client.get("/api/v1/conversations/" + daemon_proxy.LUMINA_ID).json()
         m = [x for x in msgs if x["content_type"] == "location"][0]
         assert m["rich"]["precise"] is False
         assert m["rich"]["lat"] == 40.749  # coarsened
         assert "approx" in m["body"].lower()
 
     def test_location_validation_rejected_over_http(self, client) -> None:
-        r = client.post("/api/v1/send", json={
-            "recipient": "lumina",
-            "content_type": "location",
-            "rich": {"lat": 999, "lon": 0},
-        })
+        r = client.post(
+            "/api/v1/send",
+            json={
+                "recipient": "lumina",
+                "content_type": "location",
+                "rich": {"lat": 999, "lon": 0},
+            },
+        )
         assert r.status_code == 400
 
     def test_location_missing_rich_rejected(self, client) -> None:
-        r = client.post("/api/v1/send", json={
-            "recipient": "lumina",
-            "content_type": "location",
-        })
+        r = client.post(
+            "/api/v1/send",
+            json={
+                "recipient": "lumina",
+                "content_type": "location",
+            },
+        )
         assert r.status_code == 400
 
     def test_location_to_non_lumina_peer(self, client) -> None:
-        r = client.post("/api/v1/send", json={
-            "recipient": "chef@skworld.io",
-            "content_type": "location",
-            "rich": {"lat": 1.0, "lon": 2.0, "precise": True},
-        })
+        r = client.post(
+            "/api/v1/send",
+            json={
+                "recipient": "chef@skworld.io",
+                "content_type": "location",
+                "rich": {"lat": 1.0, "lon": 2.0, "precise": True},
+            },
+        )
         assert r.status_code == 200
         msg = r.json()["message"]
         assert msg["content_type"] == "location"
@@ -230,11 +235,14 @@ class TestLocationGroupSend:
         monkeypatch.setattr(G, "can_post", lambda g, who: True)
         monkeypatch.setattr(G, "save_group", lambda g: None)
 
-        r = client.post("/api/v1/send", json={
-            "group_id": "grp-1",
-            "content_type": "location",
-            "rich": {"lat": 1.0, "lon": 2.0, "precise": True},
-        })
+        r = client.post(
+            "/api/v1/send",
+            json={
+                "group_id": "grp-1",
+                "content_type": "location",
+                "rich": {"lat": 1.0, "lon": 2.0, "precise": True},
+            },
+        )
         assert r.status_code == 200
         msg = r.json()["message"]
         assert msg["content_type"] == "location"
@@ -242,8 +250,7 @@ class TestLocationGroupSend:
         # The fanned-out thread message also carries the typed payload.
         thread = client._hist.get_thread("grp-1")
         assert any(
-            getattr(m, "content_type", "") == "location"
-            and getattr(m, "rich", None)
+            getattr(m, "content_type", "") == "location" and getattr(m, "rich", None)
             for m in thread
         )
 
@@ -258,9 +265,7 @@ class TestLocationGoldenRule:
             content_type="location",
         )
         client._hist.save(m)
-        msgs = client.get(
-            "/api/v1/conversations/" + daemon_proxy.LUMINA_ID
-        ).json()
+        msgs = client.get("/api/v1/conversations/" + daemon_proxy.LUMINA_ID).json()
         loc = [x for x in msgs if x["id"] == m.id][0]
         assert loc["content_type"] == "location"
         assert loc["rich"] is None

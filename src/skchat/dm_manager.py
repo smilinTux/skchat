@@ -78,9 +78,9 @@ def _mode_from_env(default: AuthMode = AuthMode.ANONYMOUS) -> AuthMode:
 
 def _derive_store_key(agent_private: bytes) -> bytes:
     """Derive the 32-byte at-rest store-seal key from the agent's hybrid private key."""
-    return HKDF(
-        algorithm=hashes.SHA256(), length=32, salt=b"", info=_STORE_KEY_INFO
-    ).derive(agent_private)
+    return HKDF(algorithm=hashes.SHA256(), length=32, salt=b"", info=_STORE_KEY_INFO).derive(
+        agent_private
+    )
 
 
 class DmRatchetManager:

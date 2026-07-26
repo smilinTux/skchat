@@ -475,17 +475,21 @@ class ConsumedNonces:
                 "SELECT peer_fp, operator_id, join_record, sig_operator, sig_peer, admitted_at "
                 "FROM admitted_peers ORDER BY admitted_at DESC"
             ).fetchall()
-            revoked = {
-                r[0] for r in self._conn.execute("SELECT pin FROM revoked_pins")
-            }
+            revoked = {r[0] for r in self._conn.execute("SELECT pin FROM revoked_pins")}
         out = []
         for r in rows:
             if r[0] in revoked or (r[1] and r[1] in revoked):
                 continue
-            out.append({
-                "peer_fp": r[0], "operator_id": r[1], "join_record": r[2],
-                "sig_operator": r[3], "sig_peer": r[4], "admitted_at": r[5],
-            })
+            out.append(
+                {
+                    "peer_fp": r[0],
+                    "operator_id": r[1],
+                    "join_record": r[2],
+                    "sig_operator": r[3],
+                    "sig_peer": r[4],
+                    "admitted_at": r[5],
+                }
+            )
         return out
 
     def is_admitted(self, peer_fp: str) -> bool:
@@ -546,11 +550,7 @@ class ConsumedNonces:
                 "SELECT operator_id, trusted_at FROM trusted_operators ORDER BY trusted_at DESC"
             ).fetchall()
             revoked = {r[0] for r in self._conn.execute("SELECT pin FROM revoked_pins")}
-        return [
-            {"operator_id": r[0], "trusted_at": r[1]}
-            for r in rows
-            if r[0] not in revoked
-        ]
+        return [{"operator_id": r[0], "trusted_at": r[1]} for r in rows if r[0] not in revoked]
 
     def close(self) -> None:
         """Close the underlying SQLite connection."""

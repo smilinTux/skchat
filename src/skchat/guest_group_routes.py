@@ -16,8 +16,8 @@ When the flag is OFF: operator routes 404, guest routes 403 (no oracle).
 
 from __future__ import annotations
 
-import logging
 import hashlib
+import logging
 import os
 import threading
 import time
@@ -144,12 +144,12 @@ async def operator_create_invite(group_id: str, request: Request, mode: str = "g
         # A 1:1 DM invite mints its OWN 2-seat guest group; the path group_id is
         # not used. DMs default single-use (override via body).
         try:
-            result = GG.create_dm_invite(
-                single_use=bool(body.get("single_use", True)), ttl=ttl
-            )
+            result = GG.create_dm_invite(single_use=bool(body.get("single_use", True)), ttl=ttl)
         except RuntimeError as exc:  # secret unset
             raise HTTPException(503, str(exc)) from exc
-        logger.info("guest-group DM invite minted (jti=%s gid=%s)", result["jti"], result["group_id"])
+        logger.info(
+            "guest-group DM invite minted (jti=%s gid=%s)", result["jti"], result["group_id"]
+        )
         return JSONResponse(result)
 
     from skchat import daemon_proxy_groups as G
@@ -325,9 +325,7 @@ async def guest_join(request: Request):
     GG.add_untrusted_guest_member(group, guest_id, display)
     G.save_group(group)
 
-    session = GG.mint_guest_session(
-        group_id=group_id, guest_id=guest_id, name=display, fp=fp
-    )
+    session = GG.mint_guest_session(group_id=group_id, guest_id=guest_id, name=display, fp=fp)
 
     # LiveKit guest call token (publish A/V + screen + subscribe, never admin) —
     # reuse the group call room derivation so guests + members share one room.
@@ -557,7 +555,11 @@ async def guest_send(request: Request):
     # authoritative log is on (record_event above logs the canonical event once);
     # skip them then to stop the 1->N write amplification. Flag off => legacy.
     _log_on = os.getenv("SKCHAT_MESSAGE_LOG", "").strip().lower() not in (
-        "", "0", "false", "no", "off",
+        "",
+        "0",
+        "false",
+        "no",
+        "off",
     )
     for member in group.members:
         if member.identity_uri == session.guest_id or _log_on:
@@ -628,12 +630,17 @@ async def guest_react(request: Request):
     # with a guessed id.
     from skchat import daemon_proxy_groups as G
 
-    thread_ids = {getattr(m, "id", None) for m in G.group_thread_messages(hist, session.group_id, limit=2000)}
+    thread_ids = {
+        getattr(m, "id", None) for m in G.group_thread_messages(hist, session.group_id, limit=2000)
+    }
     if message_id not in thread_ids:
         raise HTTPException(403, "message is not in your room")
 
-    msg = hist.set_reaction(message_id, emoji, session.guest_id) if op == "add" else \
-        hist.clear_reaction(message_id, emoji, session.guest_id)
+    msg = (
+        hist.set_reaction(message_id, emoji, session.guest_id)
+        if op == "add"
+        else hist.clear_reaction(message_id, emoji, session.guest_id)
+    )
     if msg is None:
         raise HTTPException(404, "message not found")
     from skchat import daemon_proxy
@@ -847,8 +854,14 @@ def _mode_c_admit(pend: dict, operator_id: str = ""):
     op_fp = A.pubkey_fingerprint(str(chat_crypto._private_key.pubkey))
     ts = int(time.time())
     record = A.build_join_record(
-        pend["jti"], op_fp, pend["peer_fp"], op_fp, pend["peer_fp"],
-        pend["assertion"], pend["sig_peer"], ts,
+        pend["jti"],
+        op_fp,
+        pend["peer_fp"],
+        op_fp,
+        pend["peer_fp"],
+        pend["assertion"],
+        pend["sig_peer"],
+        ts,
     )
     sig_operator = A.sign_join_record(chat_crypto, record)
 
@@ -925,15 +938,18 @@ def _process_mode_c_accept(body: dict):
             op_pub = nonces.operator_pubkey(operator_id)  # trusted AND not revoked
         finally:
             nonces.close()
-        if op_pub and A.verify_operator_attestation(
-            op_pub, accepter_pubkey, operator_attestation
-        ):
+        if op_pub and A.verify_operator_attestation(op_pub, accepter_pubkey, operator_attestation):
             pend["operator_id"] = operator_id
             record, sig_operator = _mode_c_admit(pend, operator_id)
-            return JSONResponse({
-                "ok": True, "jti": jti, "inherited": True,
-                "join_record": record, "sig_operator": sig_operator,
-            })
+            return JSONResponse(
+                {
+                    "ok": True,
+                    "jti": jti,
+                    "inherited": True,
+                    "join_record": record,
+                    "sig_operator": sig_operator,
+                }
+            )
 
     with _mode_c_lock:
         _mode_c_pending[jti] = pend
@@ -1017,9 +1033,6 @@ async def mode_c_counter_sign(request: Request):
     from skchat.guest import _require_operator
 
     _require_operator(request)
-    from skchat import crypto as _crypto
-    from skchat import daemon_proxy_groups as G
-    from skchat import guest_accept as A
 
     try:
         body = await request.json()
@@ -1054,8 +1067,11 @@ async def mode_c_admitted(request: Request):
     nonces = A.ConsumedNonces()
     try:
         items = [
-            {"peer_fp": a["peer_fp"], "operator_id": a["operator_id"],
-             "admitted_at": a["admitted_at"]}
+            {
+                "peer_fp": a["peer_fp"],
+                "operator_id": a["operator_id"],
+                "admitted_at": a["admitted_at"],
+            }
             for a in nonces.list_admissions()
         ]
     finally:

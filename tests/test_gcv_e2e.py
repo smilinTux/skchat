@@ -31,6 +31,7 @@ _spec.loader.exec_module(gcv)
 # URL builders
 # --------------------------------------------------------------------------- #
 
+
 def test_funnel_join_url():
     u = gcv.funnel_join_url("https://host:10000/", "call-abc", "tok.en/with+chars")
     assert u.startswith("https://host:10000/join/call-abc?invite=")
@@ -146,6 +147,7 @@ def test_assert_sovereign_turn_string_urls_field():
 # Chrome flag builder -- SAFETY guards
 # --------------------------------------------------------------------------- #
 
+
 def test_build_chrome_flags_contains_required():
     flags = gcv.build_chrome_flags("/tmp/cdp-gcv-a-1", 9250, "https://x/join/r")
     assert "--headless=new" in flags
@@ -181,8 +183,12 @@ def test_cdp_role_port_unknown():
 # CDP endpoint parse
 # --------------------------------------------------------------------------- #
 
+
 def test_parse_ws_endpoint():
-    payload = {"Browser": "HeadlessChrome/1", "webSocketDebuggerUrl": "ws://127.0.0.1:9250/devtools/browser/xyz"}
+    payload = {
+        "Browser": "HeadlessChrome/1",
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9250/devtools/browser/xyz",
+    }
     assert gcv.parse_ws_endpoint(payload) == "ws://127.0.0.1:9250/devtools/browser/xyz"
 
 
@@ -194,6 +200,7 @@ def test_parse_ws_endpoint_missing():
 # --------------------------------------------------------------------------- #
 # Scenario selector
 # --------------------------------------------------------------------------- #
+
 
 def test_resolve_scenarios_all():
     assert gcv.resolve_scenarios("all") == ["a", "b", "c", "d"]
@@ -216,6 +223,7 @@ def test_resolve_scenarios_unknown():
 # --------------------------------------------------------------------------- #
 # API wrappers build the right requests (patched transport, no live host)
 # --------------------------------------------------------------------------- #
+
 
 def test_mint_guest_invite_sends_operator_bearer(monkeypatch):
     captured = {}
@@ -261,13 +269,17 @@ def test_fetch_ice_encodes_peer(monkeypatch):
 
 def test_scenario_turn_path_pass(monkeypatch):
     monkeypatch.setattr(gcv, "fetch_ice", lambda base, peer: dict(_SOVEREIGN_ICE))
-    res = gcv.scenario_turn_path("https://h", turn_host=gcv.DEFAULT_TURN_HOST, turn_port=443, peer="p")
+    res = gcv.scenario_turn_path(
+        "https://h", turn_host=gcv.DEFAULT_TURN_HOST, turn_port=443, peer="p"
+    )
     assert res.passed is True
     assert res.name == "turn-path"
 
 
 def test_scenario_turn_path_fail_openrelay(monkeypatch):
     monkeypatch.setattr(gcv, "fetch_ice", lambda base, peer: dict(_OPENRELAY_ICE))
-    res = gcv.scenario_turn_path("https://h", turn_host=gcv.DEFAULT_TURN_HOST, turn_port=443, peer="p")
+    res = gcv.scenario_turn_path(
+        "https://h", turn_host=gcv.DEFAULT_TURN_HOST, turn_port=443, peer="p"
+    )
     assert res.passed is False
     assert res.error

@@ -227,7 +227,12 @@ def _default_resolve_fqid(uri: str) -> str:
 
 
 def _default_send_group_invite(
-    *, from_fqid: str, to_fqid: str, room: str, livekit_url: str, topic: str,
+    *,
+    from_fqid: str,
+    to_fqid: str,
+    room: str,
+    livekit_url: str,
+    topic: str,
     group_id: str,
 ) -> None:
     """Send a signed group CALL_INVITE over the skcomms mailbox.

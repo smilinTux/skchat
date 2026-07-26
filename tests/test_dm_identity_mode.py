@@ -104,12 +104,8 @@ def test_mode_is_selectable(crypto, tmp_path):
 def test_anonymous_roundtrip_unchanged(crypto, tmp_path):
     """ANONYMOUS mode ratchets on the bare resolved pub — no signature needed."""
     a_kp, b_kp = hybrid_keypair(), hybrid_keypair()
-    alice = _manager(
-        crypto, tmp_path, me="alice", my_kp=a_kp, peer_pubs={"bob": b_kp.public_key}
-    )
-    bob = _manager(
-        crypto, tmp_path, me="bob", my_kp=b_kp, peer_pubs={"alice": a_kp.public_key}
-    )
+    alice = _manager(crypto, tmp_path, me="alice", my_kp=a_kp, peer_pubs={"bob": b_kp.public_key})
+    bob = _manager(crypto, tmp_path, me="bob", my_kp=b_kp, peer_pubs={"alice": a_kp.public_key})
     assert alice.can_ratchet("bob") is True
     sealed = alice.seal(ChatMessage(sender="alice", recipient="bob", content="hi anon"))
     assert sealed.encrypted

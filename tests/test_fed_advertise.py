@@ -80,9 +80,12 @@ def test_advertise_focus_no_relays_is_noop(monkeypatch):
     monkeypatch.delenv("SKCHAT_NOSTR_RELAYS", raising=False)
     monkeypatch.delenv("SKCHAT_LIVEKIT_PUBLIC_URL", raising=False)
     # no relays AND no injected nostr -> best-effort no-op, returns False, no raise
-    assert advertise_focus(
-        host_fqid="h@x", room="conf-y", title="T", mint_path="/conf/conf-y/federated-token"
-    ) is False
+    assert (
+        advertise_focus(
+            host_fqid="h@x", room="conf-y", title="T", mint_path="/conf/conf-y/federated-token"
+        )
+        is False
+    )
 
 
 def test_advertise_focus_never_raises_on_publish_error(monkeypatch):
@@ -94,9 +97,7 @@ def test_advertise_focus_never_raises_on_publish_error(monkeypatch):
 
     nostr = FederationNostr(publish=_boom, query=lambda f: [])
     # a relay failure must be swallowed (advertise is best-effort)
-    assert advertise_conf(
-        host_fqid="h@x", room="conf-z", title="T", nostr=nostr
-    ) is False
+    assert advertise_conf(host_fqid="h@x", room="conf-z", title="T", nostr=nostr) is False
 
 
 def test_advertise_uses_explicit_public_webui_base(monkeypatch):
@@ -169,9 +170,7 @@ def test_conf_create_succeeds_when_advertiser_raises(tmp_path, monkeypatch):
     client = TestClient(app)
     r = client.post("/conf/create", json={"host_fqid": "h@x", "title": "T", "slug": "s"})
     assert r.status_code == 200  # create still succeeds despite advertise blowing up
-    jwt.decode(
-        r.json()["token"], _SECRET, algorithms=["HS256"], options={"verify_aud": False}
-    )
+    jwt.decode(r.json()["token"], _SECRET, algorithms=["HS256"], options={"verify_aud": False})
 
 
 # ── peer discovery parses the published focus + elects the host ──────────────
@@ -212,9 +211,7 @@ def test_conf_candidates_lists_advertised_confs(tmp_path, monkeypatch):
     # patch FederationNostr so the route's internal construction uses our recorder
     import skchat.spaces.federation.nostr_io as nio
 
-    monkeypatch.setattr(
-        nio, "FederationNostr", lambda relays=None: rec.nostr(), raising=True
-    )
+    monkeypatch.setattr(nio, "FederationNostr", lambda relays=None: rec.nostr(), raising=True)
 
     app = FastAPI()
     register_conf_routes(app, registry=ConfRegistry(path=tmp_path / "confs.json"))

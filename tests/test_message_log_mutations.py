@@ -1,6 +1,7 @@
 """Task 5 core: a mutation (reaction/edit) updates the ONE logical message's
 payload in the authoritative log, so log-sourced readers see it (fixes the old
 "reaction reaches only one fan-out copy" and the read-cutover staleness)."""
+
 from __future__ import annotations
 
 from skchat.history import ChatHistory
@@ -12,9 +13,14 @@ def test_reaction_reflected_in_log_payload(tmp_path, monkeypatch):
     monkeypatch.setenv("SKCHAT_HOME", str(tmp_path))
     monkeypatch.setenv("SKCHAT_MESSAGE_LOG", "1")
     h = ChatHistory(history_dir=tmp_path / "history")
-    msg = ChatMessage(sender="lumina", recipient="group:g1", content="hi",
-                      thread_id="g1", metadata={"group_id": "g1"})
-    h.save(msg)          # store A copy so set_reaction can find_by_id it
+    msg = ChatMessage(
+        sender="lumina",
+        recipient="group:g1",
+        content="hi",
+        thread_id="g1",
+        metadata={"group_id": "g1"},
+    )
+    h.save(msg)  # store A copy so set_reaction can find_by_id it
     h.record_event(msg)  # authoritative log (send-time snapshot, no reaction yet)
     log = MessageLog(str(tmp_path / "message_log.db"))
     assert "thumbsup" not in (log.read("group:g1")[0]["payload"] or "")

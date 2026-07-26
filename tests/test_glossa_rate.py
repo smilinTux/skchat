@@ -12,7 +12,6 @@ from skcomms.glossa.codebook import default_codebook  # noqa: E402
 from skcomms.glossa.handshake import CapabilityDescriptor  # noqa: E402
 from skcomms.glossa.message import Message  # noqa: E402
 
-from skchat.glossa_mesh import codec_ext  # noqa: E402
 from skchat.glossa_mesh.bus import FakeBus, FakeBusMedium  # noqa: E402
 from skchat.glossa_mesh.node import GlossaMeshNode  # noqa: E402
 from skchat.glossa_mesh.rate import (  # noqa: E402
@@ -77,16 +76,19 @@ def test_observe_network_degrades_on_lossy_link():
 
 
 def _desc(fqid: str, max_level: int) -> CapabilityDescriptor:
-    return CapabilityDescriptor(fqid=fqid, model_tier="large", max_level=max_level,
-                                codebook_version=default_codebook().version)
+    return CapabilityDescriptor(
+        fqid=fqid,
+        model_tier="large",
+        max_level=max_level,
+        codebook_version=default_codebook().version,
+    )
 
 
 def test_session_rate_degrades_encoded_tier():
     cb = default_codebook()
     peer = _desc("b@x", 3)
     rc = RateController(max_tier=3)  # optimistic
-    sess = GlossaMeshSession(descriptor=_desc("a@x", 3), codebook=cb,
-                             peers=[peer], rate=rc)
+    sess = GlossaMeshSession(descriptor=_desc("a@x", 3), codebook=cb, peers=[peer], rate=rc)
     assert sess.effective_level == 3  # good link -> densest negotiated tier (L3)
     out_dense = sess.encode(Message(intent="ack"))
     assert out_dense["tier"] == 3
@@ -102,8 +104,9 @@ def test_session_rate_degrades_encoded_tier():
 def test_session_rate_recovers_upward_when_good():
     cb = default_codebook()
     rc = RateController(max_tier=3, start=0, up_patience=2)
-    sess = GlossaMeshSession(descriptor=_desc("a@x", 3), codebook=cb,
-                             peers=[_desc("b@x", 3)], rate=rc)
+    sess = GlossaMeshSession(
+        descriptor=_desc("a@x", 3), codebook=cb, peers=[_desc("b@x", 3)], rate=rc
+    )
     assert sess.effective_level == 0  # started degraded
     sess.observe(0.95)
     sess.observe(0.95)
@@ -115,10 +118,10 @@ def test_node_rate_wiring_end_to_end():
         cb = default_codebook()
         medium = FakeBusMedium()
         rc = RateController(max_tier=3)
-        a = GlossaMeshNode(descriptor=_desc("a@x", 3), bus=FakeBus("a", medium),
-                           codebook=cb, rate=rc)
-        b = GlossaMeshNode(descriptor=_desc("b@x", 3), bus=FakeBus("b", medium),
-                           codebook=cb)
+        a = GlossaMeshNode(
+            descriptor=_desc("a@x", 3), bus=FakeBus("a", medium), codebook=cb, rate=rc
+        )
+        b = GlossaMeshNode(descriptor=_desc("b@x", 3), bus=FakeBus("b", medium), codebook=cb)
         seen: list = []
         b.on_message(lambda src, m: seen.append((src, m)))
         await a.start()
@@ -133,12 +136,12 @@ def test_node_rate_wiring_end_to_end():
         await a.say(msg)
         assert seen == [("a", msg)]
         assert a.audit_log[-1].startswith("[tx L2]")
+
     asyncio.run(run())
 
 
 def test_no_rate_controller_is_backward_compatible():
     cb = default_codebook()
-    sess = GlossaMeshSession(descriptor=_desc("a@x", 2), codebook=cb,
-                             peers=[_desc("b@x", 2)])
+    sess = GlossaMeshSession(descriptor=_desc("a@x", 2), codebook=cb, peers=[_desc("b@x", 2)])
     assert sess.rate is None
     assert sess.effective_level == sess.group_level == 2

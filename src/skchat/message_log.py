@@ -143,8 +143,7 @@ class MessageLog:
             conn.execute("ALTER TABLE message_log ADD COLUMN payload TEXT")
         # Immutable server id — globally unique.
         conn.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_msglog_message_id "
-            "ON message_log(message_id)"
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_msglog_message_id ON message_log(message_id)"
         )
         # Idempotency key — unique per conversation (NULLs are exempt in SQLite,
         # so rows without a client_dedup_key never collide).
@@ -243,8 +242,16 @@ class MessageLog:
                     )
                     """,
                     (
-                        conversation_id, conversation_id, mid, client_dedup_key,
-                        sender, recipient, content, ts, kind, payload,
+                        conversation_id,
+                        conversation_id,
+                        mid,
+                        client_dedup_key,
+                        sender,
+                        recipient,
+                        content,
+                        ts,
+                        kind,
+                        payload,
                     ),
                 )
                 row = conn.execute(
