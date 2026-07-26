@@ -4,7 +4,7 @@ import json
 import pytest
 
 pytest.importorskip("livekit")          # optional WebRTC dep; not installed in CI
-from livekit import api                 # noqa: E402
+from livekit import api  # noqa: E402
 
 from skchat.spaces.moderation import Moderator  # noqa: E402
 
