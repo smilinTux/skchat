@@ -722,3 +722,21 @@ import os as _os
 
 _os.environ.setdefault("SKAGENT", "lumina")
 _os.environ.setdefault("SKCAPSTONE_AGENT", "lumina")
+
+
+# --- env isolation -------------------------------------------------------
+# Some tests mutate os.environ directly (raw assignment, not monkeypatch) and
+# leak agent/home vars (SKAGENT, SKCAPSTONE_HOME, SKCHAT_IDENTITY, ...) into
+# later tests, which then fail only in-suite (they pass alone). Snapshot and
+# restore os.environ around every test so no leak crosses a test boundary.
+import os as _os_iso
+
+import pytest as _pytest_iso
+
+
+@_pytest_iso.fixture(autouse=True)
+def _restore_environ():
+    _snap = dict(_os_iso.environ)
+    yield
+    _os_iso.environ.clear()
+    _os_iso.environ.update(_snap)
