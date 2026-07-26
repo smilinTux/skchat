@@ -683,3 +683,30 @@ def event_loop():
     loop = asyncio.new_event_loop()
     yield loop
     loop.close()
+
+
+# --- CI collection gate ---------------------------------------------------
+# A bare CI runner installs only skchat + dev. Test files that import an
+# optional third-party dep (livekit, oqs) or a sibling SK* package (capauth,
+# skcapstone, skos, skharness) cannot even be COLLECTED there, and the import
+# error crashes collection for the WHOLE suite. skchat runs standalone without
+# any of them, so skip such a file when its dependency is absent. Local dev
+# (everything installed) skips nothing.
+import importlib.util as _ilu
+import re as _re
+
+_OPTIONAL_DEPS = ("livekit", "oqs", "capauth", "skcapstone", "skos", "skharness")
+_MISSING_DEPS = tuple(m for m in _OPTIONAL_DEPS if _ilu.find_spec(m) is None)
+_DEP_RE = {m: _re.compile(rf"^\s*(?:import|from)\s+{m}(?:\b|\.)", _re.M) for m in _MISSING_DEPS}
+
+
+def pytest_ignore_collect(collection_path, config):
+    if not _MISSING_DEPS or collection_path.suffix != ".py":
+        return None
+    try:
+        src = collection_path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    if any(rx.search(src) for rx in _DEP_RE.values()):
+        return True
+    return None
