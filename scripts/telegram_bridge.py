@@ -1164,6 +1164,163 @@ def _handle_model_command(chat_id, text: str) -> str | None:
             "chat/surface, unless this chat is pinned (see /model pin).")
 
 
+# ── /code command: DORMANT autocode dispatch (Fable roadmap R8) ────────────── #
+# A flag-gated, allowlisted Telegram entry to the autocode engine
+# (skharness.autocode). It ships DORMANT and SAFE so that merging it cannot
+# affect the running bots: the whole handler is gated on SKC_BRIDGE_CODE_ENABLED
+# (default OFF) and an explicit allowlist SKC_BRIDGE_CODE_ALLOWED_IDS (comma-
+# separated telegram user/chat ids; EMPTY = nobody). With the flag off, or from a
+# non-allowlisted caller, `/code` only replies with a short refusal and NEVER
+# touches the engine. Default mode is `direct` (DirectExecutor: one sandboxed
+# run, no grade, no merge); a leading `gated` keyword selects the full loop
+# (EngineeringExecutor). The telegram binding NEVER enables automerge: it loads
+# config read-only and never adds a repo to config.automerge_repos or sets
+# repo.automerge, so even a gated finalize is PR-only here (spec section 5.4 +
+# guardrails G1/G2). Chef sets the flag + allowlist id later, a deploy step;
+# nothing here turns it on. See
+# docs/superpowers/specs/2026-07-25-autocode-toggle-and-integration.md.
+# Env flags are read at call time (not import) so a deploy toggle takes effect
+# on the next message with no restart, and so tests can set them per-case.
+def _code_enabled() -> bool:
+    """The DORMANT master switch. Off (default) => /code does nothing but refuse."""
+    return os.environ.get("SKC_BRIDGE_CODE_ENABLED", "").strip().lower() in (
+        "1", "true", "yes", "on")
+
+
+def _code_allowed_ids() -> set:
+    """Allowlisted telegram user/chat ids (SKC_BRIDGE_CODE_ALLOWED_IDS). An empty
+    or unset value is the intentional default: nobody may dispatch."""
+    raw = os.environ.get("SKC_BRIDGE_CODE_ALLOWED_IDS", "")
+    return {p.strip() for p in raw.split(",") if p.strip()}
+
+
+def _code_default_repo() -> str:
+    """The repo to target when a /code command names none (SKC_BRIDGE_CODE_DEFAULT_REPO)."""
+    return os.environ.get("SKC_BRIDGE_CODE_DEFAULT_REPO", "").strip()
+
+
+def _code_caller_allowed(user_id, chat_id) -> bool:
+    """True only when the sender's user id OR the chat id is on the allowlist.
+    Empty allowlist (the default) => always False (fail-closed)."""
+    allowed = _code_allowed_ids()
+    if not allowed:
+        return False
+    candidates = {str(c) for c in (user_id, chat_id) if c is not None}
+    return bool(candidates & allowed)
+
+
+def _parse_code_command(text: str):
+    """Parse ``/code [gated|direct] [repo=<name>] <task text>``.
+
+    Returns ``(mode, repo_or_None, task)`` where mode is the string ``"direct"``
+    (default) or ``"gated"``, or None when *text* is not a /code command. Accepts
+    the group @-mention form (``/code@seaBird_Opus_bot ...``). repo falls back to
+    SKC_BRIDGE_CODE_DEFAULT_REPO when not named with ``repo=``.
+    """
+    stripped = (text or "").strip()
+    parts = stripped.split()
+    head = parts[0].split("@", 1)[0].lower() if parts else ""
+    if head != "/code":
+        return None
+    rest = parts[1:]
+    mode = "direct"                      # per spec 5.4: telegram default is direct
+    if rest and rest[0].lower() in ("gated", "direct"):
+        mode = rest[0].lower()
+        rest = rest[1:]
+    repo = _code_default_repo() or None
+    task_words: list[str] = []
+    for w in rest:
+        if w.lower().startswith("repo=") and len(w) > len("repo="):
+            repo = w.split("=", 1)[1]
+        else:
+            task_words.append(w)
+    return mode, repo, " ".join(task_words).strip()
+
+
+def _run_autocode(repo_name: str, task: str, mode: str, *, chat_id=None) -> str:
+    """Invoke the autocode engine IN-PROCESS for one task (library binding, spec
+    5.4). Returns a summary string for the chat. Only reached from
+    ``_handle_code_command`` after the flag + allowlist gate, so a disabled bridge
+    never gets here.
+
+    DORMANT-safe by construction: config is loaded READ-ONLY and this function
+    never enables automerge (it never sets repo.automerge and never appends to
+    config.automerge_repos). The engine merges only when repo.automerge AND
+    repo.name in config.automerge_repos, so a gated finalize from telegram is
+    PR-only. `direct` routes to DirectExecutor (one run, no gate, and its own G1
+    guard forbids merge); `gated` routes to EngineeringExecutor (the full loop).
+    """
+    from skharness.autocode import config as _ac_config
+    from skharness.autocode import digest as _ac_digest
+    from skharness.autocode import journal as _ac_journal
+    from skharness.autocode.direct import DirectExecutor
+    from skharness.autocode.engineering import EngineeringExecutor
+    from skharness.autocode.harness import build_harness
+    from skharness.autocode.types import QualityMode, WorkItem
+
+    cfg = _ac_config.load()
+    repo_spec = cfg.repo(repo_name)
+    if repo_spec is None:
+        return (f"code dispatch: repo '{repo_name}' is not configured in "
+                "autopilot.yaml (repo_map); refusing.")
+
+    gated = mode == QualityMode.GATED.value
+    executor_cls = EngineeringExecutor if gated else DirectExecutor
+    kind = "engineering" if gated else "engineering-direct"
+    ref = f"telegram/{chat_id if chat_id is not None else 'code'}-{int(time.time())}"
+    item = WorkItem(
+        kind=kind, ref=ref, source="telegram", repo=repo_name,
+        payload={"title": task[:80], "description": task, "acceptance": [],
+                 "tags": [f"repo:{repo_name}"], "unblocked": True,
+                 "verdict": "valid"})
+
+    from skcapstone.coordination import Board
+    from skcapstone.mcp_tools._helpers import _shared_root
+
+    board = Board(_shared_root())
+    handle = _ac_journal.handle(ref)
+    executor = executor_cls(cfg, board, handle, _ac_digest)
+    harness = build_harness(cfg, cfg.harness)
+
+    result = executor.run(item, harness)
+    executor.finalize(item, result)      # PR + review decision; never automerges here
+
+    marker = "" if gated else " UNGATED, review before merge"
+    return (f"code dispatch [{mode}] on {repo_name}: {ref}\n"
+            f"score={result.score} passed={result.passed} mode={result.mode}"
+            f"{marker}\n{result.notes}")
+
+
+def _handle_code_command(chat_id, user_id, text: str):
+    """Handle the `/code` slash command (DORMANT). Returns the reply text to send
+    (and the caller skips the LLM), or None when *text* is not a /code command.
+
+    Order of gates, all fail-closed: (1) SKC_BRIDGE_CODE_ENABLED must be on, else
+    a short 'disabled' reply and the engine is NOT touched; (2) the caller must be
+    allowlisted, else a refusal and the engine is NOT touched; (3) a repo must
+    resolve and the task must be non-empty. Only then is ``_run_autocode`` called.
+    """
+    parsed = _parse_code_command(text)
+    if parsed is None:
+        return None
+    mode, repo, task = parsed
+    if not _code_enabled():
+        return ("code dispatch is disabled on this bridge. (it ships dormant; set "
+                "SKC_BRIDGE_CODE_ENABLED to turn it on.)")
+    if not _code_caller_allowed(user_id, chat_id):
+        return "code dispatch: you are not on the allowlist for /code. request refused."
+    if not repo:
+        return ("code dispatch: no repo. use `/code repo=<name> <task>` or set "
+                "SKC_BRIDGE_CODE_DEFAULT_REPO.")
+    if not task:
+        return "usage: /code [gated] [repo=<name>] <task description>"
+    try:
+        return _run_autocode(repo, task, mode, chat_id=chat_id)
+    except Exception:
+        log.exception("code dispatch failed")
+        return f"code dispatch: engine error running the task on {repo} (see bridge logs)."
+
+
 # Voice-reply policy: "voice" (default) = speak back only when spoken to;
 # "always" = voice every reply; "off" = never send voice.
 VOICE_REPLY = os.environ.get("SKC_BRIDGE_VOICE_REPLY", "voice").strip().lower()
@@ -1304,6 +1461,20 @@ async def main() -> None:
                         log.info("replied (/model) to %s", chat_id)
                     except Exception:
                         log.exception("send failed (/model)")
+                    continue
+
+                # Slash-command: DORMANT autocode dispatch (flag-gated + allowlisted).
+                # Off by default (SKC_BRIDGE_CODE_ENABLED unset) => a short refusal,
+                # no engine, no LLM. Additive; changes no other bridge behavior.
+                from_user = ((u.get("message") or u.get("edited_message") or {})
+                             .get("from") or {})
+                code_reply = _handle_code_command(chat_id, from_user.get("id"), incoming)
+                if code_reply is not None:
+                    try:
+                        _send_html(TOKEN, chat_id, code_reply)
+                        log.info("replied (/code) to %s", chat_id)
+                    except Exception:
+                        log.exception("send failed (/code)")
                     continue
 
                 concrete_model: str | None = None
