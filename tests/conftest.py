@@ -709,3 +709,16 @@ def pytest_ignore_collect(collection_path, config):
     if any(rx.search(src) for rx in _DEP_RE.values()):
         return True
     return None
+
+
+# --- CI agent state ------------------------------------------------------
+# Many tests resolve the active agent (get_active_agent_name) or build an
+# agent-scoped identity/transport. A bare CI runner has no SKAGENT and no
+# ~/.skcapstone/agents, so that resolution returns None and the code raises
+# "No agent configured" (616 errors in CI). Provide a deterministic default so
+# the resolver yields a name; setdefault leaves a developer's real SKAGENT
+# untouched.
+import os as _os
+
+_os.environ.setdefault("SKAGENT", "lumina")
+_os.environ.setdefault("SKCAPSTONE_AGENT", "lumina")
