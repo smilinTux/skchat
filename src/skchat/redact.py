@@ -62,3 +62,29 @@ def mask_fingerprint(value: Any) -> str:
     if len(value) <= _FINGERPRINT_VISIBLE:
         return "*" * len(value)
     return "*" * (len(value) - _FINGERPRINT_VISIBLE) + value[-_FINGERPRINT_VISIBLE:]
+
+
+def mask_ip(value: Any) -> str:
+    """Mask the host portion of an IPv4 address or ``host:port`` pair.
+
+    Only the last octet stays visible: ``192.168.0.41`` -> ``***.***.***.41``,
+    ``192.168.0.41:8080`` -> ``***.***.***.41:8080``. Anything that isn't a
+    dotted-quad IPv4 address (hostnames, IPv6, malformed octets) returns
+    :data:`REDACTED_PLACEHOLDER`.
+    """
+    if not isinstance(value, str):
+        return REDACTED_PLACEHOLDER
+    value = value.strip()
+    if not value:
+        return REDACTED_PLACEHOLDER
+
+    host, sep, port = value.partition(":")
+    if sep and (not port or not port.isdigit()):
+        return REDACTED_PLACEHOLDER
+
+    octets = host.split(".")
+    if len(octets) != 4 or not all(o.isdigit() and 0 <= int(o) <= 255 for o in octets):
+        return REDACTED_PLACEHOLDER
+
+    masked_host = f"***.***.***.{octets[-1]}"
+    return f"{masked_host}:{port}" if sep else masked_host
