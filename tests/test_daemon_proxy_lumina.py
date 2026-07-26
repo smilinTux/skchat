@@ -564,9 +564,16 @@ def test_message_log_shadow_write_when_flag_on(client, tmp_path, monkeypatch):
     assert r.status_code == 200
 
     log = daemon_proxy._get_message_log()
+    # _shadow_log records under the canonical conversation_id (dm:<a>|<b>), NOT
+    # the retired Lumina-centric LUMINA_ID key. On a fresh log this send yields
+    # exactly one conversation (the operator<->Lumina DM), so read it back by its
+    # real id instead of assuming the old key.
+    convs = log.conversations()
+    assert len(convs) == 1
+    conv_id = convs[0]["conversation_id"]
     # Sync path persists BOTH the operator turn and Lumina's reply -> seq >= 2.
-    assert log.latest_seq(daemon_proxy.LUMINA_ID) >= 2
-    rows = log.read(daemon_proxy.LUMINA_ID)
+    assert log.latest_seq(conv_id) >= 2
+    rows = log.read(conv_id)
     assert rows[0]["content"] == "log me"
     assert rows[0]["seq"] == 1 and rows[0]["message_id"]
 

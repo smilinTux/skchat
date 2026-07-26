@@ -35,7 +35,11 @@ dependencies = [
     # HTTP daemon surface (daemon_proxy, call/conf routes, webui) — imported at
     # module load by 16 modules; was undeclared, so CI's clean install failed to
     # collect ~36 test modules with ModuleNotFoundError: fastapi.
-    "fastapi>=0.110",
+    # Upper-pinned: fastapi 0.136+ wraps included routers in `_IncludedRouter`
+    # objects that lack `.path`, breaking route-introspection tests. The deployed
+    # daemon runs 0.135.x (flat routes with `.path`), so cap below 0.136 to
+    # match production and keep the route-registration tests meaningful.
+    "fastapi>=0.110,<0.136",
     "uvicorn>=0.29",
 ]
 

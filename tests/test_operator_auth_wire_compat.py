@@ -46,8 +46,9 @@ def _extract_fixture(stdout: str) -> dict:
 
 
 @pytest.mark.skipif(
-    not shutil.which("flutter", path=FLUTTER_BIN + os.pathsep + os.environ.get("PATH", "")),
-    reason="Flutter SDK not available",
+    not shutil.which("flutter", path=FLUTTER_BIN + os.pathsep + os.environ.get("PATH", ""))
+    or not os.path.isdir(APP_DIR),
+    reason="Flutter SDK or skchat-app repo not available",
 )
 def test_native_guest_identity_signature_verifies_server_side():
     env = dict(os.environ, PATH=FLUTTER_BIN + os.pathsep + os.environ.get("PATH", ""))
