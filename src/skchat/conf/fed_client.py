@@ -78,8 +78,9 @@ def _conf_token_url(remote_auth_url: str, room: str) -> str:
     return f"{base}/conf/{room}/federated-token"
 
 
-def build_signed_conf_assertion(*, fqid: str, room: str,
-                                sign: Optional[Callable[[bytes], str]] = None) -> dict:
+def build_signed_conf_assertion(
+    *, fqid: str, room: str, sign: Optional[Callable[[bytes], str]] = None
+) -> dict:
     """Build a fresh signed FQID assertion (``{claim, sig}``) for a conf room.
 
     A new nonce + current ``issued_at`` are minted per call so each redeem is

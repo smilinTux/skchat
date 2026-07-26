@@ -44,9 +44,9 @@ def derive_conf_id(host_fqid: str, slug: str | None = None) -> str:
 class PendingGuest:
     """A guest waiting in the lobby for host admission."""
 
-    identity: str           # "guest:<jti[:8]>"
-    display: str = ""       # chosen display name
-    ip: str = ""            # client IP (for tailnet auto-admit decision)
+    identity: str  # "guest:<jti[:8]>"
+    display: str = ""  # chosen display name
+    ip: str = ""  # client IP (for tailnet auto-admit decision)
     is_tailnet: bool = False  # true if _client_is_private detected tailnet
     timestamp: float = 0.0  # unix time they entered the waiting room
 

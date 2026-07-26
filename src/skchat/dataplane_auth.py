@@ -83,6 +83,7 @@ def _verify_capauth_credential(token: str) -> bool:
     # fall through to the OpenPGP assertion path for daemon/agent callers.
     try:
         from .operator_auth import OperatorAuthError, verify_operator_session
+
         verify_operator_session(token)
         return True
     except OperatorAuthError:

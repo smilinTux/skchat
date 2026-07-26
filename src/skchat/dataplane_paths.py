@@ -25,20 +25,28 @@ Per-connection websocket auth is a tracked follow-up, not addressed here.
 from __future__ import annotations
 
 _EXEMPT_EXACT = {
-    ("GET", "/health"), ("GET", "/api/health"),
+    ("GET", "/health"),
+    ("GET", "/api/health"),
     ("GET", "/favicon.ico"),
-    ("POST", "/api/v1/inbox"),                 # federation S2S inbound
+    ("POST", "/api/v1/inbox"),  # federation S2S inbound
     ("GET", "/api/v1/auth/challenge"),
     ("POST", "/api/v1/auth/session"),
     ("POST", "/api/v1/auth/enroll"),
-    ("POST", "/api/v1/auth/enroll/open"),      # itself operator-gated in-route
-    ("GET", "/api/v1/identity"),               # pre-session UI bootstrap
-    ("GET", "/api/v1/capabilities"),           # pre-session UI bootstrap
+    ("POST", "/api/v1/auth/enroll/open"),  # itself operator-gated in-route
+    ("GET", "/api/v1/identity"),  # pre-session UI bootstrap
+    ("GET", "/api/v1/capabilities"),  # pre-session UI bootstrap
 }
 _EXEMPT_PREFIX = (
-    "/app", "/static", "/.well-known/",
-    "/join", "/guest", "/pair", "/livekit", "/ws/",
-    "/api/v1/guest", "/api/v1/mode-c",
+    "/app",
+    "/static",
+    "/.well-known/",
+    "/join",
+    "/guest",
+    "/pair",
+    "/livekit",
+    "/ws/",
+    "/api/v1/guest",
+    "/api/v1/mode-c",
 )
 # Method-aware exempt prefixes: (method, prefix) pairs anchored the same way as
 # _EXEMPT_PREFIX, but scoped to one method. Used where the same path family must
@@ -52,10 +60,12 @@ _EXEMPT_METHOD_PREFIX = {
 # coord/adapter surfaces. Anchored to path-segment boundaries like the exempt
 # prefixes above, so e.g. a future /file-uploads route is not silently swept in.
 _GATED_PREFIX = (
-    "/file", "/adapters",
+    "/file",
+    "/adapters",
 )
 _GATED_EXACT = {
-    "/api/board", "/media/file",
+    "/api/board",
+    "/media/file",
 }
 
 
@@ -80,5 +90,8 @@ def is_gated(method: str, path: str) -> bool:
     for p in _GATED_PREFIX:
         if _prefix_hit(path, p):
             return True
-    return path.startswith("/api/v1") or path.startswith("/api/send") or path in (
-        "/inbox", "/send", "/messages", "/groups", "/upload", "/agent/state")
+    return (
+        path.startswith("/api/v1")
+        or path.startswith("/api/send")
+        or path in ("/inbox", "/send", "/messages", "/groups", "/upload", "/agent/state")
+    )

@@ -7,6 +7,7 @@ real local AF_UNIX datagram socket standing in for systemd's NOTIFY_SOCKET;
 sk_alert is exercised against tiny fake shell scripts instead of the real
 sk-alert binary.
 """
+
 from __future__ import annotations
 
 import importlib.util

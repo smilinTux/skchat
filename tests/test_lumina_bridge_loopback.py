@@ -19,14 +19,11 @@ from __future__ import annotations
 import importlib.util
 import json
 import pathlib
-import time
 import uuid
 
 import pytest
 
-_BRIDGE_PATH = (
-    pathlib.Path(__file__).resolve().parent.parent / "scripts" / "lumina-bridge.py"
-)
+_BRIDGE_PATH = pathlib.Path(__file__).resolve().parent.parent / "scripts" / "lumina-bridge.py"
 
 LUMINA = "capauth:lumina@skworld.io"
 OPUS = "capauth:opus@skworld.io"
@@ -104,26 +101,20 @@ class TestPollOutbox:
 
     def test_accepts_bare_and_domain_identity_variants(self, bridge):
         _write_envelope(bridge.OUTBOX_PATH, recipient="lumina", content="bare")
-        _write_envelope(
-            bridge.OUTBOX_PATH, recipient="lumina@skworld.io", content="domain"
-        )
+        _write_envelope(bridge.OUTBOX_PATH, recipient="lumina@skworld.io", content="domain")
         contents = {m["content"] for m in bridge.poll_outbox_for_lumina()}
         assert contents == {"bare", "domain"}
 
     def test_skips_control_envelope_types(self, bridge):
         for ct in ("ack", "heartbeat", "read_receipt"):
-            _write_envelope(
-                bridge.OUTBOX_PATH, recipient=LUMINA, content="x", content_type=ct
-            )
+            _write_envelope(bridge.OUTBOX_PATH, recipient=LUMINA, content="x", content_type=ct)
         assert bridge.poll_outbox_for_lumina() == []
 
     def test_extracts_content_from_serialized_chatmessage(self, bridge):
         from skchat.models import ChatMessage
 
         inner = ChatMessage(sender=OPUS, recipient=LUMINA, content="wrapped body")
-        _write_envelope(
-            bridge.OUTBOX_PATH, recipient=LUMINA, content=inner.model_dump_json()
-        )
+        _write_envelope(bridge.OUTBOX_PATH, recipient=LUMINA, content=inner.model_dump_json())
         found = bridge.poll_outbox_for_lumina()
         assert len(found) == 1
         assert found[0]["content"] == "wrapped body"
@@ -153,9 +144,7 @@ class TestPollOutbox:
 
 class TestPollFileInbox:
     def test_finds_loopback_envelope_in_transport_inbox(self, bridge):
-        _write_envelope(
-            bridge._FILE_TRANSPORT_INBOX, recipient=LUMINA, content="loopback"
-        )
+        _write_envelope(bridge._FILE_TRANSPORT_INBOX, recipient=LUMINA, content="loopback")
         found = bridge.poll_inbox_file_for_lumina()
         assert len(found) == 1
         assert found[0]["content"] == "loopback"
@@ -232,8 +221,9 @@ class TestLoopbackRoundtrip:
         monkeypatch.setattr(_hist, "ChatHistory", _FakeHistory)
 
         # Opus sends to Lumina — lands in the local outbox (no Syncthing).
-        _write_envelope(bridge.OUTBOX_PATH, recipient=LUMINA, sender=OPUS,
-                        content="are you there?")
+        _write_envelope(
+            bridge.OUTBOX_PATH, recipient=LUMINA, sender=OPUS, content="are you there?"
+        )
 
         # Bridge picks it up from the outbox.
         msgs = bridge.poll_outbox_for_lumina()

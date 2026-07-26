@@ -14,6 +14,7 @@ addressed to self (``/call/incoming`` is signature-gated). It never re-parses
 unverified bodies, and it PRESENTS the operator token on every call, never a
 network-position bypass.
 """
+
 from __future__ import annotations
 
 import logging
@@ -225,8 +226,7 @@ async def _join_and_publish(joinable: dict, hold_s: float = 0.0) -> None:
             alone_elapsed = (now - alone_since) if alone_since is not None else 0.0
             if _should_leave(remote_count, ever_saw_peer, alone_elapsed, now - start):
                 reason = (
-                    "peer hung up" if ever_saw_peer
-                    else f"no peer within {ALONE_TIMEOUT_S:.0f}s"
+                    "peer hung up" if ever_saw_peer else f"no peer within {ALONE_TIMEOUT_S:.0f}s"
                 )
                 logger.info("answerer leaving room=%s (%s)", room.name, reason)
                 break

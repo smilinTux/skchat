@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from skchat.redact import REDACTED_PLACEHOLDER, mask_fingerprint, mask_fqid, mask_ip
 
 # ---------------------------------------------------------------------------

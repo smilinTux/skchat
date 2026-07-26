@@ -870,8 +870,7 @@ class TestFileInboxXmlBeaconSkip:
         # Logged at DEBUG, never WARNING (the whole point of A3).
         assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
         assert any(
-            r.levelno == logging.DEBUG and "cot00001" in r.getMessage()
-            for r in caplog.records
+            r.levelno == logging.DEBUG and "cot00001" in r.getMessage() for r in caplog.records
         )
 
     def test_poll_file_inbox_still_wraps_plain_text(self, tmp_path):

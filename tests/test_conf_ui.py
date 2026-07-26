@@ -52,7 +52,7 @@ def test_conf_page_route_does_not_shadow_list(tmp_path, monkeypatch):
 def test_video_grid_present():
     html = _html()
     assert 'id="grid"' in html
-    assert "class=\"tile\"" in html or "'tile'" in html
+    assert 'class="tile"' in html or "'tile'" in html
 
 
 def test_screenshare_button_and_publish():

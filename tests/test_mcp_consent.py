@@ -13,6 +13,7 @@ The recipient agent is the node's own ``SKAGENT`` identity. We drive the tools b
 invoking ``call_tool(...)`` directly against a RequestQueue seeded under a temp
 ``SKCOMMS_HOME`` — exactly the inbound-gate's source of truth.
 """
+
 from __future__ import annotations
 
 import asyncio

@@ -6,6 +6,7 @@ and the 500 (skcomms _load_recipient_key same_box rejects the local key). The
 unit tests in test_call_routes.py monkeypatch _list_peers/_send_invite away, so
 they never exercise it.
 """
+
 import pytest
 
 pytestmark = pytest.mark.integration
@@ -29,6 +30,7 @@ def test_prepare_call_resolves_and_seals_for_same_box_agent():
     assert resolved == fqid
     # The recipient key must load (this is what threw the live 500).
     from skcomms.mailbox import _load_recipient_key
+
     assert _load_recipient_key(resolved), "recipient key must resolve after re-key"
 
 

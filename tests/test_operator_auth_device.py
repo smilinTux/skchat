@@ -10,7 +10,8 @@ from skchat import operator_auth as oa
 def _keypair():
     priv = ec.generate_private_key(ec.SECP256R1())
     spki = priv.public_key().public_bytes(
-        serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
+        serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
+    )
     return priv, base64.b64encode(spki).decode()
 
 
@@ -26,7 +27,9 @@ def test_verify_webcrypto_p1363_signature():
     payload = b'{"nonce":"n1"}'
     sig = _sign_p1363(priv, payload)
     assert oa.verify_device_signature(device_pubkey_b64=pub, payload=payload, sig_b64=sig) is True
-    assert oa.verify_device_signature(device_pubkey_b64=pub, payload=b"other", sig_b64=sig) is False
+    assert (
+        oa.verify_device_signature(device_pubkey_b64=pub, payload=b"other", sig_b64=sig) is False
+    )
 
 
 def test_challenge_nonce_is_single_use():

@@ -13,7 +13,6 @@ import pytest
 from skchat import pq_prekeys
 from skchat.group import GroupChat
 
-
 # --------------------------------------------------------------------------- #
 # Hybrid-default for NEW groups
 # --------------------------------------------------------------------------- #
@@ -40,7 +39,7 @@ def test_field_default_stays_classical_for_deserialization():
 
 
 def test_create_with_creator_hybrid_key_seeds_epoch():
-    pub = ("ab" * 1216)  # plausible-length hex (content unused for seeding logic)
+    pub = "ab" * 1216  # plausible-length hex (content unused for seeding logic)
     g = GroupChat.create(
         name="H",
         creator_uri="capauth:alice@skworld.io",

@@ -249,13 +249,10 @@ def unwrap_epoch_secret(payload: bytes, member_hybrid_priv: bytes) -> bytes:
     """
     if len(payload) != WRAPPED_PAYLOAD_LEN:
         raise GroupRatchetError(
-            f"wrapped epoch payload must be {WRAPPED_PAYLOAD_LEN} bytes, "
-            f"got {len(payload)}"
+            f"wrapped epoch payload must be {WRAPPED_PAYLOAD_LEN} bytes, got {len(payload)}"
         )
     ciphertext = payload[:HYBRID_CIPHERTEXT_LEN]
-    nonce = payload[
-        HYBRID_CIPHERTEXT_LEN : HYBRID_CIPHERTEXT_LEN + _WRAP_NONCE_LEN
-    ]
+    nonce = payload[HYBRID_CIPHERTEXT_LEN : HYBRID_CIPHERTEXT_LEN + _WRAP_NONCE_LEN]
     wrapped = payload[HYBRID_CIPHERTEXT_LEN + _WRAP_NONCE_LEN :]
 
     shared = hybrid_decap(ciphertext, member_hybrid_priv)

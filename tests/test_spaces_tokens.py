@@ -121,12 +121,23 @@ def test_conf_agent_token_is_mic_and_data_only():
 
 def test_conf_sovereign_admin_flag_sets_room_admin():
     tok_plain = mint_conf_token(
-        "owner@chef.skworld", "Owner", ConfRole.SOVEREIGN, "conf-1", 3600,
-        api_key=_KEY, api_secret=_SECRET,
+        "owner@chef.skworld",
+        "Owner",
+        ConfRole.SOVEREIGN,
+        "conf-1",
+        3600,
+        api_key=_KEY,
+        api_secret=_SECRET,
     )
     tok_admin = mint_conf_token(
-        "owner@chef.skworld", "Owner", ConfRole.SOVEREIGN, "conf-1", 3600,
-        sovereign_admin=True, api_key=_KEY, api_secret=_SECRET,
+        "owner@chef.skworld",
+        "Owner",
+        ConfRole.SOVEREIGN,
+        "conf-1",
+        3600,
+        sovereign_admin=True,
+        api_key=_KEY,
+        api_secret=_SECRET,
     )
     assert _claims(tok_plain)["video"].get("roomAdmin", False) is False
     assert _claims(tok_admin)["video"]["roomAdmin"] is True

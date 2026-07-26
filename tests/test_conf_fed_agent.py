@@ -124,8 +124,12 @@ def test_join_spawns_against_remote_sfu_with_env_creds():
     out = federated_agent_join(
         "standup",
         host="http://box-a:8765",
-        mint=lambda a, r, **k: {"token": "JWT", "url": "wss://box-a/lk",
-                                "identity": "lumina@chef.skworld", "role": "participant"},
+        mint=lambda a, r, **k: {
+            "token": "JWT",
+            "url": "wss://box-a/lk",
+            "identity": "lumina@chef.skworld",
+            "role": "participant",
+        },
         spawn=spawn,
         lumina_call_script="/opt/lumina/lumina-call.py",
         agent_python="/opt/venv/bin/python",
@@ -164,8 +168,11 @@ def test_join_rejects_overlong_greeting():
     spawn = _SpawnRecorder()
     with pytest.raises(FederatedAgentJoinError):
         federated_agent_join(
-            "standup", host="http://x", greet="g" * 501,
-            mint=lambda *a, **k: {"token": "J", "url": "u"}, spawn=spawn,
+            "standup",
+            host="http://x",
+            greet="g" * 501,
+            mint=lambda *a, **k: {"token": "J", "url": "u"},
+            spawn=spawn,
         )
     assert spawn.calls == []
 
@@ -204,9 +211,14 @@ def test_invite_agent_federated_route_remote_room(monkeypatch, tmp_path):
     def fake_join(room, *, host=None, fqid=None, greet=""):
         seen["room"] = room
         seen["host"] = host
-        return {"ok": True, "unit": "lumina-fedconf-remote", "room": room,
-                "url": "wss://box-a/lk", "identity": "lumina@chef.skworld",
-                "role": "participant"}
+        return {
+            "ok": True,
+            "unit": "lumina-fedconf-remote",
+            "room": room,
+            "url": "wss://box-a/lk",
+            "identity": "lumina@chef.skworld",
+            "role": "participant",
+        }
 
     client, _reg = _route_client(monkeypatch, tmp_path, fake_join=fake_join)
     r = client.post(
@@ -220,9 +232,7 @@ def test_invite_agent_federated_route_remote_room(monkeypatch, tmp_path):
 
 
 def test_invite_agent_federated_requires_requester(monkeypatch, tmp_path):
-    client, _reg = _route_client(
-        monkeypatch, tmp_path, fake_join=lambda *a, **k: {"ok": True}
-    )
+    client, _reg = _route_client(monkeypatch, tmp_path, fake_join=lambda *a, **k: {"ok": True})
     r = client.post("/conf/x/invite-agent-federated", json={})
     assert r.status_code == 400
 

@@ -229,9 +229,7 @@ class GroupChat(BaseModel):
         # receive the wrapped epoch secret (avoids a "hybrid but epoch 0, nobody
         # keyed" object). Distribution is local-only here (no transport); the
         # create paths broadcast on their own schedule.
-        if suite == HYBRID_KEM_SUITE and any(
-            m.hybrid_kem_public_hex for m in group.members
-        ):
+        if suite == HYBRID_KEM_SUITE and any(m.hybrid_kem_public_hex for m in group.members):
             group.ensure_epoch()
         return group
 
@@ -360,7 +358,10 @@ class GroupChat(BaseModel):
         self.members = [
             m
             for m in self.members
-            if not (m.identity_uri == identity_uri or self._same_principal(m.identity_uri, identity_uri))
+            if not (
+                m.identity_uri == identity_uri
+                or self._same_principal(m.identity_uri, identity_uri)
+            )
         ]
         removed = len(self.members) < before
 
@@ -401,7 +402,8 @@ class GroupChat(BaseModel):
             (
                 m
                 for m in self.members
-                if m.identity_uri == identity_uri or self._same_principal(m.identity_uri, identity_uri)
+                if m.identity_uri == identity_uri
+                or self._same_principal(m.identity_uri, identity_uri)
             ),
             None,
         )

@@ -13,7 +13,9 @@ _NON_SOVEREIGN_MARKERS = ("openrelay", "metered.ca", "twilio", "xirsys")
 def _assert_no_non_sovereign_turn(cfg: dict) -> None:
     flat = [u.lower() for s in cfg["ice_servers"] for u in s["urls"]]
     for marker in _NON_SOVEREIGN_MARKERS:
-        assert not any(marker in u for u in flat), f"non-sovereign relay marker {marker!r} found in {flat}"
+        assert not any(marker in u for u in flat), (
+            f"non-sovereign relay marker {marker!r} found in {flat}"
+        )
     for s in cfg["ice_servers"]:
         if "username" in s or "credential" in s:
             # Any credentialed entry must be TURN, and must not be the known

@@ -27,7 +27,6 @@ from __future__ import annotations
 import logging
 import os
 import time
-from typing import Optional
 from urllib.parse import urlsplit
 
 logger = logging.getLogger("skchat.spaces.federation.advertise")
@@ -162,9 +161,7 @@ def advertise_conf(*, host_fqid: str, room: str, title: str, nostr=None) -> bool
     )
 
 
-def advertise_space(
-    *, host_fqid: str, space_id: str, title: str, nostr=None
-) -> bool:
+def advertise_space(*, host_fqid: str, space_id: str, title: str, nostr=None) -> bool:
     """Advertise an audio Space's focus (auth_url = this host's ``/sfu/get``)."""
     return advertise_focus(
         host_fqid=host_fqid,

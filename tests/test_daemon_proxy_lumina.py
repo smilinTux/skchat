@@ -75,8 +75,15 @@ def test_lumina_always_present_in_peers_and_conversations(client):
         assert first["is_agent"] is True
         assert first["is_online"] is True
         # Full app conversation contract present.
-        for key in ("last_message", "last_message_time", "soul_fingerprint",
-                    "unread_count", "is_group", "member_count", "avatar_url"):
+        for key in (
+            "last_message",
+            "last_message_time",
+            "soul_fingerprint",
+            "unread_count",
+            "is_group",
+            "member_count",
+            "avatar_url",
+        ):
             assert key in first
         # Peer-contract aliases (`name`/`fingerprint`) must ALSO be present:
         # `GET /api/v1/peers` is parsed by the Flutter app's `PeerInfo.fromJson`,
@@ -139,13 +146,17 @@ def test_other_peers_reads_real_fingerprint_with_both_key_shapes(tmp_path, monke
     """
     peers_dir = tmp_path / "peers"
     peers_dir.mkdir()
-    (peers_dir / "jarvis.json").write_text(json.dumps({
-        "name": "Jarvis",
-        "identity": "capauth:jarvis@skworld.io",
-        "fingerprint": "BCF7ED87AC8117B448B7677F45BF78F335767EF8",
-        "handle": "jarvis@skworld.io",
-        "agent_type": "ai",
-    }))
+    (peers_dir / "jarvis.json").write_text(
+        json.dumps(
+            {
+                "name": "Jarvis",
+                "identity": "capauth:jarvis@skworld.io",
+                "fingerprint": "BCF7ED87AC8117B448B7677F45BF78F335767EF8",
+                "handle": "jarvis@skworld.io",
+                "agent_type": "ai",
+            }
+        )
+    )
 
     real_expanduser = os.path.expanduser
 
@@ -283,11 +294,13 @@ def test_hybrid_reply_not_sealable_fails_closed(client, monkeypatch):
     # Force the inbound `pqdm1:` token to "open" (marks the convo hybrid) but
     # make the outbound seal fail (no prekey / backend gone).
     monkeypatch.setattr(
-        daemon_proxy, "_open_hybrid_inbound",
+        daemon_proxy,
+        "_open_hybrid_inbound",
         lambda token, sender_short="chef": "decoded secret",
     )
     monkeypatch.setattr(
-        daemon_proxy, "_seal_hybrid_outbound",
+        daemon_proxy,
+        "_seal_hybrid_outbound",
         lambda text, recipient_short="chef": None,
     )
 
@@ -310,11 +323,13 @@ def test_hybrid_reply_sealed_returns_200(client, monkeypatch):
     """Companion to the fail-closed path: when the reply CAN be sealed, the
     hybrid conversation still returns 200 with the sealed wire token."""
     monkeypatch.setattr(
-        daemon_proxy, "_open_hybrid_inbound",
+        daemon_proxy,
+        "_open_hybrid_inbound",
         lambda token, sender_short="chef": "decoded secret",
     )
     monkeypatch.setattr(
-        daemon_proxy, "_seal_hybrid_outbound",
+        daemon_proxy,
+        "_seal_hybrid_outbound",
         lambda text, recipient_short="chef": "pqdm1:SEALED",
     )
 
@@ -399,10 +414,18 @@ async def test_generate_lumina_reply_returns_reply_dict(client, monkeypatch):
 
     hist = client._hist
     user_msg = daemon_proxy._persist(
-        hist, daemon_proxy.OPERATOR_ID, daemon_proxy.LUMINA_URI, "ping",
+        hist,
+        daemon_proxy.OPERATOR_ID,
+        daemon_proxy.LUMINA_URI,
+        "ping",
     )
     result = await daemon_proxy._generate_lumina_reply(
-        hist, user_msg, "ping", [], False, {},
+        hist,
+        user_msg,
+        "ping",
+        [],
+        False,
+        {},
     )
     assert result["ok"] is True
     assert result["recipient"] == daemon_proxy.LUMINA_ID
@@ -507,18 +530,21 @@ def test_async_double_send_dedupes_no_second_task(client, monkeypatch):
     202) and does NOT spawn a second background reply task (would duplicate)."""
     monkeypatch.setenv("SKCHAT_ASYNC_REPLY", "1")
     import skchat.daemon_proxy as dp
+
     calls = {"n": 0}
     real_create = dp.asyncio.create_task
+
     def _counting(coro, *a, **k):
         calls["n"] += 1
         return real_create(coro, *a, **k)
+
     monkeypatch.setattr(dp.asyncio, "create_task", _counting)
     body = {"recipient": "lumina", "message": "double send test"}
     r1 = client.post("/api/v1/send", json=body)
     r2 = client.post("/api/v1/send", json=body)
     assert r1.status_code == 202
-    assert r2.json().get("deduped") is True          # 2nd is the cached 202
-    assert calls["n"] == 1                            # only ONE reply task spawned
+    assert r2.json().get("deduped") is True  # 2nd is the cached 202
+    assert calls["n"] == 1  # only ONE reply task spawned
 
 
 # --------------------------------------------------------------------------- #

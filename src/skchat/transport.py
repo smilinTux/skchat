@@ -36,6 +36,7 @@ class ConfidentialityError(Exception):
     established confidential channel (HNDL exposure). See P0.1b.
     """
 
+
 # Local file outbox that lumina-bridge's poll_outbox_for_lumina() scans.
 _LOCAL_OUTBOX = Path("~/.skcomms/outbox").expanduser()
 
@@ -95,9 +96,7 @@ def _accepts_kwarg(fn: object, name: str) -> bool:
         params = inspect.signature(fn).parameters.values()
     except (TypeError, ValueError):
         return True
-    return any(
-        p.name == name or p.kind == inspect.Parameter.VAR_KEYWORD for p in params
-    )
+    return any(p.name == name or p.kind == inspect.Parameter.VAR_KEYWORD for p in params)
 
 
 def _write_local_loopback(message: ChatMessage) -> None:
@@ -777,9 +776,7 @@ class ChatTransport:
                     try:
                         msg = _mgr.open(msg)
                     except Exception as exc:
-                        logger.warning(
-                            "Ratchet-decrypt failed for %s: %s", msg.id[:8], exc
-                        )
+                        logger.warning("Ratchet-decrypt failed for %s: %s", msg.id[:8], exc)
                 elif self._crypto and msg.encrypted:
                     try:
                         msg = self._crypto.decrypt_message(msg)

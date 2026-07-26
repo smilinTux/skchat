@@ -853,9 +853,7 @@ class TestRootLoggingRotation:
             ChatDaemon(interval=5, log_file=log_file, quiet=True)
 
             rotating = [
-                h
-                for h in root.handlers
-                if isinstance(h, logging.handlers.RotatingFileHandler)
+                h for h in root.handlers if isinstance(h, logging.handlers.RotatingFileHandler)
             ]
             assert rotating, "expected a RotatingFileHandler on the root logger"
             handler = rotating[0]
@@ -900,9 +898,7 @@ class TestRootLoggingRotation:
         try:
             ChatDaemon(interval=5, log_file=tmp_path / "daemon.log", quiet=True)
             rotating = [
-                h
-                for h in root.handlers
-                if isinstance(h, logging.handlers.RotatingFileHandler)
+                h for h in root.handlers if isinstance(h, logging.handlers.RotatingFileHandler)
             ]
             assert rotating
             assert rotating[0].maxBytes == 1234567
@@ -924,9 +920,7 @@ class TestRootLoggingRotation:
         try:
             ChatDaemon(interval=5, quiet=True)  # no log_file
             rotating = [
-                h
-                for h in root.handlers
-                if isinstance(h, logging.handlers.RotatingFileHandler)
+                h for h in root.handlers if isinstance(h, logging.handlers.RotatingFileHandler)
             ]
             assert rotating == []
         finally:
@@ -964,9 +958,7 @@ class TestRootLoggingRotationClamp:
         try:
             ChatDaemon(interval=5, log_file=tmp_path / "daemon.log", quiet=True)
             rotating = [
-                h
-                for h in root.handlers
-                if isinstance(h, logging.handlers.RotatingFileHandler)
+                h for h in root.handlers if isinstance(h, logging.handlers.RotatingFileHandler)
             ]
             assert rotating, "expected a RotatingFileHandler even for degenerate env"
             handler = rotating[0]
@@ -1024,9 +1016,7 @@ class TestRootLoggingThirdPartyFilter:
         try:
             ChatDaemon(interval=5, log_file=tmp_path / "daemon.log", quiet=True)
             rotating = [
-                h
-                for h in root.handlers
-                if isinstance(h, logging.handlers.RotatingFileHandler)
+                h for h in root.handlers if isinstance(h, logging.handlers.RotatingFileHandler)
             ]
             assert rotating
             handler = rotating[0]
@@ -1085,9 +1075,7 @@ class TestOutboxSummaryLogLevel:
                 _outbox_summary_level(failed=failed),
             )
         matching = [
-            r
-            for r in caplog.records
-            if "Outbox:" in r.getMessage() and r.levelno == logging.INFO
+            r for r in caplog.records if "Outbox:" in r.getMessage() and r.levelno == logging.INFO
         ]
         assert matching, "expected the Outbox summary at INFO when failed>0"
 

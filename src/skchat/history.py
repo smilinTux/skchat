@@ -79,7 +79,11 @@ class ChatHistory:
         every writer routes through so all surfaces share one ordered history.
         """
         if os.getenv("SKCHAT_MESSAGE_LOG", "").strip().lower() in (
-            "", "0", "false", "no", "off",
+            "",
+            "0",
+            "false",
+            "no",
+            "off",
         ):
             return
         try:
@@ -99,7 +103,11 @@ class ChatHistory:
         serve identical history. Best-effort: ``None`` on any error.
         """
         if os.getenv("SKCHAT_MESSAGE_LOG", "").strip().lower() in (
-            "", "0", "false", "no", "off",
+            "",
+            "0",
+            "false",
+            "no",
+            "off",
         ):
             return None
         try:
@@ -120,7 +128,11 @@ class ChatHistory:
         (an inbox view) when ``SKCHAT_MESSAGE_LOG`` is on, else ``None`` so the
         caller falls back to the legacy store. Best-effort; ``None`` on error."""
         if os.getenv("SKCHAT_MESSAGE_LOG", "").strip().lower() in (
-            "", "0", "false", "no", "off",
+            "",
+            "0",
+            "false",
+            "no",
+            "off",
         ):
             return None
         try:
@@ -142,7 +154,11 @@ class ChatHistory:
         gated, best-effort, never raises.
         """
         if os.getenv("SKCHAT_MESSAGE_LOG", "").strip().lower() in (
-            "", "0", "false", "no", "off",
+            "",
+            "0",
+            "false",
+            "no",
+            "off",
         ):
             return
         try:
@@ -508,9 +524,7 @@ class ChatHistory:
         self.update_message(msg)
         return msg
 
-    def record_receipt(
-        self, message_id: str, kind: str, sender: str
-    ) -> Optional[ChatMessage]:
+    def record_receipt(self, message_id: str, kind: str, sender: str) -> Optional[ChatMessage]:
         """Record a delivered/read receipt for *sender* and persist.
 
         Idempotent. Returns None if the message is not found.

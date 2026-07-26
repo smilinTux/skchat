@@ -188,9 +188,7 @@ class TestAdapterBinder:
         binder = AdapterBinder(adapter, verifier=ok_verifier)
         plat = _platform()
         await binder.bind(plat, "/bind chef@skworld.io")
-        adapter.bind_fqid.assert_awaited_once_with(
-            plat, "chef@skworld.io", TRUST_VERIFIED
-        )
+        adapter.bind_fqid.assert_awaited_once_with(plat, "chef@skworld.io", TRUST_VERIFIED)
 
     @pytest.mark.asyncio
     async def test_challenge_failure_does_not_bind(self, adapter, fail_verifier):
@@ -257,9 +255,7 @@ class TestAdapterBinder:
     @pytest.mark.asyncio
     async def test_binding_survives_restart(self, adapter, ok_verifier, tmp_path):
         path = tmp_path / "bindings.yml"
-        binder = AdapterBinder(
-            adapter, verifier=ok_verifier, store=FqidBindingStore(path=path)
-        )
+        binder = AdapterBinder(adapter, verifier=ok_verifier, store=FqidBindingStore(path=path))
         plat = _platform()
         await binder.bind(plat, "/bind chef@skworld.io")
         # Fresh store from disk → binding is still there.

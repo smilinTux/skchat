@@ -3,14 +3,20 @@
 Security invariants: a peer can inherit trust ONLY with a valid operator-signed
 attestation over ITS key, under the operator's RECORDED pubkey; a self-declared
 or forged claim never inherits."""
+
 import pgpy
 from pgpy.constants import (
-    PubKeyAlgorithm, KeyFlags, HashAlgorithm, SymmetricKeyAlgorithm,
+    HashAlgorithm,
+    KeyFlags,
+    PubKeyAlgorithm,
+    SymmetricKeyAlgorithm,
 )
 
 from skchat.crypto import ChatCrypto
 from skchat.guest_accept import (
-    ConsumedNonces, sign_operator_attestation, verify_operator_attestation,
+    ConsumedNonces,
+    sign_operator_attestation,
+    verify_operator_attestation,
 )
 
 PASS = "p"
@@ -18,8 +24,12 @@ PASS = "p"
 
 def _gen(name):
     k = pgpy.PGPKey.new(PubKeyAlgorithm.RSAEncryptOrSign, 2048)
-    k.add_uid(pgpy.PGPUID.new(name), usage={KeyFlags.Sign, KeyFlags.Certify},
-              hashes=[HashAlgorithm.SHA256], ciphers=[SymmetricKeyAlgorithm.AES256])
+    k.add_uid(
+        pgpy.PGPUID.new(name),
+        usage={KeyFlags.Sign, KeyFlags.Certify},
+        hashes=[HashAlgorithm.SHA256],
+        ciphers=[SymmetricKeyAlgorithm.AES256],
+    )
     k.protect(PASS, SymmetricKeyAlgorithm.AES256, HashAlgorithm.SHA256)
     return str(k), str(k.pubkey)
 
@@ -41,12 +51,12 @@ def test_operator_attestation_gate():
 
 def test_trust_store_opt_in_and_revoke():
     n = ConsumedNonces(":memory:")
-    assert n.is_operator_trusted("op@x.realm") is False       # default: no trust
-    n.trust_operator("op@x.realm", "PUBKEYARMOR")             # EXPLICIT opt-in
+    assert n.is_operator_trusted("op@x.realm") is False  # default: no trust
+    n.trust_operator("op@x.realm", "PUBKEYARMOR")  # EXPLICIT opt-in
     assert n.is_operator_trusted("op@x.realm") is True
     assert n.operator_pubkey("op@x.realm") == "PUBKEYARMOR"
     assert n.list_trusted_operators()[0]["operator_id"] == "op@x.realm"
-    n.revoke_pin("op@x.realm")                                 # revoke (H5)
+    n.revoke_pin("op@x.realm")  # revoke (H5)
     assert n.is_operator_trusted("op@x.realm") is False
     assert n.operator_pubkey("op@x.realm") is None
     assert n.list_trusted_operators() == []

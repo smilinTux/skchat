@@ -208,10 +208,13 @@ def test_enter_waiting_room_and_admit(client):
     assert body["waiting"][0]["identity"] == "guest:abc123"
 
     # Host admits
-    r = client.post(f"/conf/{room}/admit", json={
-        "requester": "lumina@chef.skworld",
-        "identity": "guest:abc123",
-    })
+    r = client.post(
+        f"/conf/{room}/admit",
+        json={
+            "requester": "lumina@chef.skworld",
+            "identity": "guest:abc123",
+        },
+    )
     assert r.status_code == 200
     assert r.json()["ok"] is True
 
@@ -227,10 +230,13 @@ def test_deny_guest(client):
     room = conf["room"]
 
     client.post(f"/conf/{room}/waiting", json={"identity": "guest:denied1", "display": "Bob"})
-    r = client.post(f"/conf/{room}/deny", json={
-        "requester": "lumina@chef.skworld",
-        "identity": "guest:denied1",
-    })
+    r = client.post(
+        f"/conf/{room}/deny",
+        json={
+            "requester": "lumina@chef.skworld",
+            "identity": "guest:denied1",
+        },
+    )
     assert r.status_code == 200
 
     # Re-entry should be denied
@@ -241,19 +247,32 @@ def test_deny_guest(client):
 def test_admit_nonexistent_guest_graceful(client):
     conf = _create(client, slug="noop-admit").json()
     room = conf["room"]
-    r = client.post(f"/conf/{room}/admit", json={
-        "requester": "lumina@chef.skworld",
-        "identity": "guest:nobody",
-    })
+    r = client.post(
+        f"/conf/{room}/admit",
+        json={
+            "requester": "lumina@chef.skworld",
+            "identity": "guest:nobody",
+        },
+    )
     assert r.status_code == 200  # admit is idempotent
 
 
 def test_waiting_conf_not_found(client):
-    assert client.post("/conf/conf-nonexistent/waiting", json={"identity": "guest:x"}).status_code == 404
+    assert (
+        client.post("/conf/conf-nonexistent/waiting", json={"identity": "guest:x"}).status_code
+        == 404
+    )
     assert client.get("/conf/conf-nonexistent/waiting").status_code == 404
-    assert client.post("/conf/conf-nonexistent/admit", json={
-        "requester": "lumina@chef.skworld", "identity": "guest:x",
-    }).status_code == 404
+    assert (
+        client.post(
+            "/conf/conf-nonexistent/admit",
+            json={
+                "requester": "lumina@chef.skworld",
+                "identity": "guest:x",
+            },
+        ).status_code
+        == 404
+    )
 
 
 def test_waiting_requires_identity(client):
@@ -266,10 +285,13 @@ def test_admit_requires_host(client):
     conf = _create(client, slug="host-gate").json()
     room = conf["room"]
     client.post(f"/conf/{room}/waiting", json={"identity": "guest:x", "display": "X"})
-    r = client.post(f"/conf/{room}/admit", json={
-        "requester": "wrong@host",
-        "identity": "guest:x",
-    })
+    r = client.post(
+        f"/conf/{room}/admit",
+        json={
+            "requester": "wrong@host",
+            "identity": "guest:x",
+        },
+    )
     assert r.status_code == 403
 
 
@@ -287,19 +309,28 @@ def test_federated_token_rejects_missing_claim_or_sig(client):
 
 
 def test_federated_token_404_for_unknown_conf(client):
-    assert client.post("/conf/conf-nonexistent/federated-token", json={
-        "claim": {"fqid": "x@y", "nonce": "n"},
-        "sig": "s",
-    }).status_code == 404
+    assert (
+        client.post(
+            "/conf/conf-nonexistent/federated-token",
+            json={
+                "claim": {"fqid": "x@y", "nonce": "n"},
+                "sig": "s",
+            },
+        ).status_code
+        == 404
+    )
 
 
 def test_federated_token_rejects_bad_assertion(client):
     conf = _create(client, slug="fed-bad").json()
     room = conf["room"]
-    r = client.post(f"/conf/{room}/federated-token", json={
-        "claim": {"fqid": "x@y", "nonce": "n", "space_id": "s", "issued_at": 1000},
-        "sig": "bad",
-    })
+    r = client.post(
+        f"/conf/{room}/federated-token",
+        json={
+            "claim": {"fqid": "x@y", "nonce": "n", "space_id": "s", "issued_at": 1000},
+            "sig": "bad",
+        },
+    )
     assert r.status_code in (400, 403)  # federation module missing or assertion rejected
 
 
@@ -334,9 +365,7 @@ def test_conf_page_escapes_room_name(client):
 
 
 def _full_claims(token):
-    return jwt.decode(
-        token, _SECRET, algorithms=["HS256"], options={"verify_aud": False}
-    )
+    return jwt.decode(token, _SECRET, algorithms=["HS256"], options={"verify_aud": False})
 
 
 def test_public_conf_token_does_NOT_stamp_fingerprint(client):

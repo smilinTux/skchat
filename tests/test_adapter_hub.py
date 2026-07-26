@@ -448,9 +448,7 @@ class TestRouteReply:
     @pytest.mark.asyncio
     async def test_route_direct_adapter_object(self, history, resolver_map, fake_adapter):
         # outbound_adapter is itself a ChannelAdapter (no registry needed).
-        h = AdapterHub(
-            history=history, resolve_fqid=resolver_map, outbound_adapter=fake_adapter
-        )
+        h = AdapterHub(history=history, resolve_fqid=resolver_map, outbound_adapter=fake_adapter)
         msg_id = await h.route_reply(_chan_msg(), "direct")
         assert isinstance(msg_id, str)
         assert fake_adapter.sent[0].text == "direct"
@@ -503,7 +501,9 @@ class TestRouteReply:
 
 class TestDispatchInbound:
     @pytest.mark.asyncio
-    async def test_reply_routed_back_to_platform(self, history, advocacy, resolver_map, fake_adapter):
+    async def test_reply_routed_back_to_platform(
+        self, history, advocacy, resolver_map, fake_adapter
+    ):
         advocacy.process_message.return_value = "Hello from Opus"
         reg = FakeRegistry(fake_adapter)
         h = AdapterHub(
@@ -539,7 +539,9 @@ class TestDispatchInbound:
         history.save.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_dispatch_still_persists_and_returns_result(self, history, advocacy, resolver_map):
+    async def test_dispatch_still_persists_and_returns_result(
+        self, history, advocacy, resolver_map
+    ):
         advocacy.process_message.return_value = "reply"
         # No registry → routing is a no-op but the pipeline still completes.
         h = AdapterHub(history=history, advocacy=advocacy, resolve_fqid=resolver_map)
