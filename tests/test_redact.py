@@ -1,10 +1,10 @@
-"""Unit tests for skchat.redact -- mask_fqid() and mask_fingerprint()."""
+"""Unit tests for skchat.redact -- mask_fqid(), mask_fingerprint(), and mask_ip()."""
 
 from __future__ import annotations
 
 import pytest
 
-from skchat.redact import REDACTED_PLACEHOLDER, mask_fingerprint, mask_fqid
+from skchat.redact import REDACTED_PLACEHOLDER, mask_fingerprint, mask_fqid, mask_ip
 
 # ---------------------------------------------------------------------------
 # mask_fqid
@@ -74,3 +74,52 @@ class TestMaskFingerprint:
 
     def test_non_string_input(self):
         assert mask_fingerprint(12345) == REDACTED_PLACEHOLDER
+
+
+# ---------------------------------------------------------------------------
+# mask_ip
+# ---------------------------------------------------------------------------
+
+
+class TestMaskIp:
+    def test_typical_ipv4(self):
+        assert mask_ip("192.168.0.41") == "***.***.***.41"
+
+    def test_ipv4_with_port(self):
+        assert mask_ip("192.168.0.41:8080") == "***.***.***.41:8080"
+
+    def test_loopback(self):
+        assert mask_ip("127.0.0.1") == "***.***.***.1"
+
+    def test_none_input(self):
+        assert mask_ip(None) == REDACTED_PLACEHOLDER
+
+    def test_empty_string(self):
+        assert mask_ip("") == REDACTED_PLACEHOLDER
+
+    def test_whitespace_only(self):
+        assert mask_ip("   ") == REDACTED_PLACEHOLDER
+
+    def test_non_string_input(self):
+        assert mask_ip(12345) == REDACTED_PLACEHOLDER
+
+    def test_malformed_too_few_octets(self):
+        assert mask_ip("192.168.0") == REDACTED_PLACEHOLDER
+
+    def test_malformed_too_many_octets(self):
+        assert mask_ip("192.168.0.41.5") == REDACTED_PLACEHOLDER
+
+    def test_malformed_octet_out_of_range(self):
+        assert mask_ip("192.168.0.999") == REDACTED_PLACEHOLDER
+
+    def test_malformed_non_numeric_octet(self):
+        assert mask_ip("192.168.0.abc") == REDACTED_PLACEHOLDER
+
+    def test_hostname_not_ipv4(self):
+        assert mask_ip("example.com") == REDACTED_PLACEHOLDER
+
+    def test_hostname_with_port_not_ipv4(self):
+        assert mask_ip("example.com:8080") == REDACTED_PLACEHOLDER
+
+    def test_malformed_port(self):
+        assert mask_ip("192.168.0.41:notaport") == REDACTED_PLACEHOLDER
