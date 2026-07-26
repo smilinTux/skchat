@@ -2,7 +2,9 @@ import asyncio
 import json
 
 import pytest
-from livekit import api
+
+pytest.importorskip("livekit")  # optional WebRTC dep
+from livekit import api  # noqa: E402
 
 from skchat.spaces.moderation import Moderator
 

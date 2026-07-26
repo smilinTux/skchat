@@ -1,7 +1,7 @@
 from pathlib import Path
 
-HTML = Path(
-    "/home/cbrd21/clawd/skcapstone-repos/skchat/src/skchat/static/livekit.html"
+HTML = (
+    Path(__file__).resolve().parent.parent / "src" / "skchat" / "static" / "livekit.html"
 ).read_text()
 
 
