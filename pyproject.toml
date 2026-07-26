@@ -78,6 +78,10 @@ dev = [
     # pip-installable (unlike the sibling SK* packages), so install in CI.
     "livekit>=1.0",
     "livekit-api>=1.0",
+    # skcomms.pqkem hard-fails (by design, no classical downgrade) without the
+    # oqs (liboqs-python) PQ-KEM backend, so ~186 DM/ratchet tests error in CI.
+    # liboqs-python is pip-installable and auto-provisions liboqs on first import.
+    "liboqs-python>=0.10",
 ]
 
 [project.scripts]
