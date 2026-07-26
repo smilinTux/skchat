@@ -2,9 +2,11 @@ import asyncio
 import json
 
 import pytest
-from livekit import api
 
-from skchat.spaces.moderation import Moderator
+pytest.importorskip("livekit")          # optional WebRTC dep; not installed in CI
+from livekit import api                 # noqa: E402
+
+from skchat.spaces.moderation import Moderator  # noqa: E402
 
 
 class FakeParticipant:

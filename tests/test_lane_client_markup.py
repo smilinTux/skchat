@@ -1,8 +1,9 @@
 from pathlib import Path
 
-HTML = Path(
-    "/home/cbrd21/clawd/skcapstone-repos/skchat/src/skchat/static/livekit.html"
-).read_text()
+# Resolve relative to the repo, not a hardcoded absolute path (which broke CI,
+# where the checkout lives under /home/runner/work, not a dev home dir).
+HTML = (Path(__file__).resolve().parent.parent
+        / "src" / "skchat" / "static" / "livekit.html").read_text()
 
 
 def test_publishlane_mirrors_to_server_endpoint():
