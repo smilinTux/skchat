@@ -1,8 +1,8 @@
-"""Unit tests for skchat.redact -- mask_fqid(), mask_fingerprint(), and mask_ip()."""
+"""Unit tests for skchat.redact -- mask_fqid(), mask_fingerprint(), mask_ip(), and mask_email()."""
 
 from __future__ import annotations
 
-from skchat.redact import REDACTED_PLACEHOLDER, mask_fingerprint, mask_fqid, mask_ip
+from skchat.redact import REDACTED_PLACEHOLDER, mask_email, mask_fingerprint, mask_fqid, mask_ip
 
 # ---------------------------------------------------------------------------
 # mask_fqid
@@ -121,3 +121,47 @@ class TestMaskIp:
 
     def test_malformed_port(self):
         assert mask_ip("192.168.0.41:notaport") == REDACTED_PLACEHOLDER
+
+
+# ---------------------------------------------------------------------------
+# mask_email
+# ---------------------------------------------------------------------------
+
+
+class TestMaskEmail:
+    def test_typical_email(self):
+        assert mask_email("alice@x.com") == "a***e@x.com"
+
+    def test_longer_local_part(self):
+        assert mask_email("chef@skworld.io") == "c**f@skworld.io"
+
+    def test_short_local_part_two_chars(self):
+        # Can't show first+last distinctly without revealing everything -> fully mask.
+        assert mask_email("ab@x.com") == "**@x.com"
+
+    def test_single_char_local_part(self):
+        assert mask_email("a@x.com") == "*@x.com"
+
+    def test_none_input(self):
+        assert mask_email(None) == REDACTED_PLACEHOLDER
+
+    def test_empty_string(self):
+        assert mask_email("") == REDACTED_PLACEHOLDER
+
+    def test_whitespace_only(self):
+        assert mask_email("   ") == REDACTED_PLACEHOLDER
+
+    def test_malformed_no_at_sign(self):
+        assert mask_email("not-an-email") == REDACTED_PLACEHOLDER
+
+    def test_malformed_multiple_at_signs(self):
+        assert mask_email("a@b@c") == REDACTED_PLACEHOLDER
+
+    def test_malformed_no_domain(self):
+        assert mask_email("alice@") == REDACTED_PLACEHOLDER
+
+    def test_malformed_no_local_part(self):
+        assert mask_email("@x.com") == REDACTED_PLACEHOLDER
+
+    def test_non_string_input(self):
+        assert mask_email(12345) == REDACTED_PLACEHOLDER

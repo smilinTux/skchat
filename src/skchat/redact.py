@@ -1,9 +1,9 @@
-"""Log-safe redaction helpers for sovereign identifiers and PGP fingerprints.
+"""Log-safe redaction helpers for sovereign identifiers, emails, and PGP fingerprints.
 
-Full fqids (``lumina@skworld.io``) and PGP fingerprints leak identity and key
-material when logged in the clear. These helpers are pure, dependency-free,
-and never raise -- callers pass whatever they have (including ``None`` or
-garbage) straight from a log call site.
+Full fqids (``lumina@skworld.io``), email addresses, and PGP fingerprints leak
+identity and key material when logged in the clear. These helpers are pure,
+dependency-free, and never raise -- callers pass whatever they have (including
+``None`` or garbage) straight from a log call site.
 """
 
 from __future__ import annotations
@@ -44,6 +44,30 @@ def mask_fqid(value: Any) -> str:
         masked_local = local[0] + "*" * (len(local) - 2) + local[-1]
 
     return f"{prefix}{masked_local}@{domain}"
+
+
+def mask_email(value: Any) -> str:
+    """Mask the local-part of an email address, keeping the domain.
+
+    ``alice@x.com`` -> ``a***e@x.com``. Local-parts of length <= 2 are masked
+    entirely, since partial masking would reveal most or all of the value.
+    """
+    if not isinstance(value, str):
+        return REDACTED_PLACEHOLDER
+    value = value.strip()
+    if not value:
+        return REDACTED_PLACEHOLDER
+
+    local, sep, domain = value.partition("@")
+    if not sep or not local or not domain or "@" in domain:
+        return REDACTED_PLACEHOLDER
+
+    if len(local) <= 2:
+        masked_local = "*" * len(local)
+    else:
+        masked_local = local[0] + "*" * (len(local) - 2) + local[-1]
+
+    return f"{masked_local}@{domain}"
 
 
 def mask_fingerprint(value: Any) -> str:
