@@ -22,11 +22,19 @@ private key, so it inherits the keypair's lifecycle and needs no new persisted s
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 from enum import Enum
 from pathlib import Path
 from typing import Callable, Optional, Union
+
+try:
+    import fcntl  # POSIX advisory locks (cross-process + cross-thread)
+
+    _HAVE_FCNTL = True
+except ImportError:  # pragma: no cover - non-POSIX fallback
+    _HAVE_FCNTL = False
 
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
@@ -171,6 +179,34 @@ class DmRatchetManager:
         existing = self._store.load(peer, self._store_key)
         return existing if existing is not None else DmSession(peer=peer)
 
+    @contextlib.contextmanager
+    def _store_lock(self):
+        """Serialize the load-mutate-save of the session store across processes.
+
+        The store is now written from more than one process (daemon, CLI ``skchat
+        send``, webui, skseal, group fan-out all seal against the same
+        ``dm_sessions_<agent>.db``). ``seal``/``open`` are load-mutate-save with no
+        SQLite-level transaction spanning the two, so a concurrent writer to the
+        same peer would fork the send chain (message-key reuse) and clobber a
+        chain advance. An exclusive advisory lock on ``<db>.lock``, held across the
+        whole load-mutate-save, makes those writers serialize. fcntl locks are held
+        per open file description, so two threads (separate fds) contend too.
+        Best-effort: if fcntl is unavailable the block still runs (prior behavior).
+        """
+        db_path = getattr(self._store, "db_path", None)
+        if not (_HAVE_FCNTL and db_path):
+            yield
+            return
+        lock_path = f"{db_path}.lock"
+        fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            yield
+        finally:
+            with contextlib.suppress(OSError):
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
+
     # -- outbound / inbound ---------------------------------------------------
 
     def seal(self, message: ChatMessage) -> ChatMessage:
@@ -179,9 +215,10 @@ class DmRatchetManager:
         peer_pub = self._resolve_peer_pub(peer) if self._priv is not None else None
         if peer_pub is None:
             return message  # no ratchet — caller takes the classical/hybrid path
-        session = self._session(peer)
-        sealed = self._crypto.encrypt_message_ratchet(message, session, peer_pub)
-        self._store.save(session, self._store_key)
+        with self._store_lock():
+            session = self._session(peer)
+            sealed = self._crypto.encrypt_message_ratchet(message, session, peer_pub)
+            self._store.save(session, self._store_key)
         return sealed
 
     def open(self, message: ChatMessage) -> ChatMessage:
@@ -189,9 +226,10 @@ class DmRatchetManager:
         if not self.can_open(message):
             return message
         peer = message.sender
-        session = self._session(peer)
-        opened = self._crypto.decrypt_message_ratchet(message, session, self._priv)
-        self._store.save(session, self._store_key)
+        with self._store_lock():
+            session = self._session(peer)
+            opened = self._crypto.decrypt_message_ratchet(message, session, self._priv)
+            self._store.save(session, self._store_key)
         return opened
 
     # -- factory --------------------------------------------------------------

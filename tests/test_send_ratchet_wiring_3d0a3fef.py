@@ -1,4 +1,4 @@
-"""Card 3d0a3fef — CLI/webui/agent plaintext-downgrade regression.
+"""Card 3d0a3fef: CLI/webui/agent plaintext-downgrade regression.
 
 The daemon builds its transport via ``ChatTransport.from_config`` (which wires the
 agent's ChatCrypto so the RFC-0001 P1 DM ratchet can seal ``pqdr1`` frames), but the
@@ -12,8 +12,8 @@ a live-ratchet peer, and assert the bytes handed to skcomms carry a ``pqdr1`` fr
 and NOT the plaintext. Against the old raw-constructor code every one of them fails
 (plaintext on the wire); with the ``from_config`` routing they pass.
 
-Pure unit tests: SKComms, DmRatchetManager and ChatCrypto are all injected — no
-network, no PQ backend, no real key material.
+Pure unit tests: SKComms, DmRatchetManager and ChatCrypto are all injected, so
+there is no network, no PQ backend, and no real key material.
 """
 
 from __future__ import annotations

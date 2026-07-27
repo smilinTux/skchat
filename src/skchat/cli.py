@@ -1988,7 +1988,23 @@ def chat(peer: str, interval: float, thread: Optional[str], group: bool) -> None
             _prev_buf[0] = ""  # reset buffer tracker so next typed char fires
             _transport = _get_chat_transport()
             if _transport is not None:
-                result = _transport.send_and_store(peer_uri, text, thread_id=thread)
+                # send_and_store can now raise ConfidentialityError (card 3d0a3fef):
+                # with crypto wired the DM ratchet fails closed instead of sending
+                # plaintext. Keep the REPL alive on a transient seal failure: store
+                # the turn as PENDING and report it, don't crash the session.
+                try:
+                    result = _transport.send_and_store(peer_uri, text, thread_id=thread)
+                except Exception as exc:  # noqa: BLE001
+                    history.save(
+                        ChatMessage(
+                            sender=identity,
+                            recipient=peer_uri,
+                            content=text,
+                            thread_id=thread,
+                            delivery_status=DeliveryStatus.PENDING,
+                        )
+                    )
+                    result = {"delivered": False, "error": str(exc)}
             else:
                 _msg = ChatMessage(
                     sender=identity,

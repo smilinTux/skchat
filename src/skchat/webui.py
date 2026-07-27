@@ -1052,11 +1052,31 @@ async def send(recipient: str = Form(...), content: str = Form(...)) -> HTMLResp
         identity = _get_identity()
         transport = _get_transport(identity)
         if transport:
-            transport.send_and_store(recipient=recipient, content=content)
-        else:
-            from .models import ChatMessage
+            # send_and_store can now raise ConfidentialityError: with crypto wired
+            # (card 3d0a3fef) the DM ratchet fails closed rather than downgrading to
+            # plaintext for a live-ratchet peer whose seal fails. Do NOT let that
+            # 500 the route; persist locally as PENDING so the message is not lost.
+            try:
+                transport.send_and_store(recipient=recipient, content=content)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("webui /send: delivery to %s failed: %s", recipient, exc)
+                from .models import ChatMessage, DeliveryStatus
 
-            msg = ChatMessage(sender=identity, recipient=recipient, content=content)
+                # Mark PENDING so the un-sent message is not indistinguishable from a
+                # delivered one in the rendered thread (card 3d0a3fef follow-up).
+                _get_history().save(
+                    ChatMessage(
+                        sender=identity, recipient=recipient, content=content,
+                        delivery_status=DeliveryStatus.PENDING,
+                    )
+                )
+        else:
+            from .models import ChatMessage, DeliveryStatus
+
+            msg = ChatMessage(
+                sender=identity, recipient=recipient, content=content,
+                delivery_status=DeliveryStatus.PENDING,
+            )
             _get_history().save(msg)
         # Notify WS clients so they refresh
         asyncio.create_task(_ws_broadcast({"type": "new"}))
@@ -1146,12 +1166,28 @@ async def api_send(
         )
 
     if transport:
-        # Same transport path as the HTML /send route.
-        transport.send_and_store(recipient=recipient, content=content)
+        # Same transport path as the HTML /send route. Fail-closed ConfidentialityError
+        # (card 3d0a3fef) must not 500 /api/send: persist locally as PENDING so the
+        # native client sees the message queued (not delivered) on its next refresh
+        # rather than a bare server error. The JSON contract is kept exactly (the
+        # Flutter app decodes it strictly); delivery state is surfaced via the
+        # persisted delivery_status the client reads back from history, not a new
+        # response field.
+        try:
+            transport.send_and_store(recipient=recipient, content=content)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("webui /api/send: delivery to %s failed: %s", recipient, exc)
+            from .models import DeliveryStatus
+
+            msg.delivery_status = DeliveryStatus.PENDING
+            _get_history().save(msg)
     else:
+        from .models import DeliveryStatus
+
+        msg.delivery_status = DeliveryStatus.PENDING
         _get_history().save(msg)
 
-    # Notify WS clients so they refresh — identical signal to the HTML /send route.
+    # Notify WS clients so they refresh (identical signal to the HTML /send route).
     asyncio.create_task(_ws_broadcast({"type": "new"}))
 
     return JSONResponse(

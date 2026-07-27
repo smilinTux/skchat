@@ -68,6 +68,25 @@ def _short(uri: str) -> str:
     return s.split("@")[0]
 
 
+def _safe_agent(agent: str) -> str:
+    """Reduce an agent name to a filesystem-safe token for keypair paths.
+
+    Keypair/session filenames are built as ``<agent>_hybrid.key`` etc. under the
+    pqc dir, so an agent name derived from an untrusted identity (e.g. a skseal
+    ``context['sender']`` of ``capauth:../x@y`` → ``../x``) must never carry a path
+    separator or traversal component, or the key would be written outside the pqc
+    dir. Keep only ``[A-Za-z0-9._-]`` and strip leading dots, so ``..``/``/`` can
+    never escape. Raises on an empty result rather than silently defaulting.
+    """
+    import re
+
+    token = re.sub(r"[^A-Za-z0-9._-]", "", (agent or "").split("@")[0])
+    token = token.lstrip(".")
+    if not token:
+        raise ValueError(f"unsafe/empty agent name: {agent!r}")
+    return token
+
+
 def _current_agent() -> str:
     """The local resident agent short name (SKAGENT, fallbacks, default lumina)."""
     return (
@@ -199,7 +218,7 @@ def ensure_agent_keypair(agent: Optional[str] = None) -> Optional[tuple[bytes, b
     Returns ``(public, private)`` or ``None`` if no PQ backend is available
     (honest classical fallback — never a silent failure).
     """
-    agent = (agent or _current_agent()).split("@")[0]
+    agent = _safe_agent(agent or _current_agent())
     if not available():
         return None
     d = _pqc_dir()
@@ -241,7 +260,7 @@ def agent_public(agent: Optional[str] = None) -> Optional[bytes]:
 
 def agent_bundle(agent: Optional[str] = None) -> dict:
     """The resident agent's published prekey bundle (hybrid if available)."""
-    agent = (agent or _current_agent()).split("@")[0]
+    agent = _safe_agent(agent or _current_agent())
     kp = ensure_agent_keypair(agent)
     if not kp:
         return {"suite": CLASSICAL_SUITE, "hybrid_public_hex": ""}
@@ -267,7 +286,7 @@ def publish_self_prekey(agent: Optional[str] = None) -> dict:
     published bundle (``suite``/``hybrid_public_hex``/…). When liboqs is absent
     the bundle is classical-only — honest, never raised.
     """
-    agent = (agent or _current_agent()).split("@")[0]
+    agent = _safe_agent(agent or _current_agent())
     bundle = agent_bundle(agent)
     # Register the agent in the SHARED peer store so co-resident agents resolve it
     # via load_peer_bundle() (RFC-0001 P1: the local-fleet prekey "exchange").

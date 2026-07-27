@@ -844,6 +844,17 @@ def load_agent_crypto(identity: Optional[str] = None) -> Optional["ChatCrypto"]:
         agent = (identity or "").split(":")[-1].split("@")[0].strip()
         if not agent:
             agent = (os.environ.get("SKAGENT") or "lumina").strip()
+        # `agent` is interpolated into a private-key read path, and `identity` may
+        # be an untrusted from-address in the skseal/group paths. Strip any path
+        # component so a name like "../x" cannot redirect the read outside the
+        # agents dir (card 3d0a3fef follow-up); fall back to lumina on an empty
+        # sanitized result rather than raising in this best-effort loader.
+        from .pq_prekeys import _safe_agent
+
+        try:
+            agent = _safe_agent(agent)
+        except ValueError:
+            agent = "lumina"
         key_path = os.path.expanduser(
             f"~/.skcapstone/agents/{agent}/capauth/identity/private.asc"
         )

@@ -359,8 +359,26 @@ class ChatTransport:
                 from pathlib import Path
 
                 from .dm_manager import DmRatchetManager
+                from .pq_prekeys import _safe_agent
 
-                agent = (self._identity or "").split(":")[-1].split("@")[0] or "lumina"
+                # The ratchet keypair + session store belong to the LOCAL resident
+                # agent, NOT the message from-identity. In the skseal and group-fan-
+                # out paths self._identity is a remote/untrusted sender (card
+                # 3d0a3fef follow-up): deriving the agent from it let
+                # ensure_agent_keypair mint a keypair under a foreign or attacker-
+                # shaped name ("../x" → path traversal) and ratchet as an impostor.
+                # Prefer the resident-agent env (always set in the daemon units that
+                # run those relay paths); fall back to the identity ONLY for a bare
+                # CLI/interactive process, whose identity is the local user itself
+                # (never a relayed sender). _safe_agent strips any path component.
+                resident = (
+                    os.environ.get("SKAGENT")
+                    or os.environ.get("SKCAPSTONE_AGENT")
+                    or os.environ.get("SKMEMORY_AGENT")
+                )
+                agent = _safe_agent(
+                    resident or (self._identity or "").split(":")[-1] or "lumina"
+                )
                 # Co-locate the DM-session store with the prekey store: both honor
                 # SKCHAT_HOME (pq_prekeys uses it for ~/.skchat/pqc). Identical to
                 # the previous hard-coded path in production (SKCHAT_HOME unset →

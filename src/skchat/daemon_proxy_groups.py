@@ -920,9 +920,25 @@ def fan_out_send(group, hist, sender_uri: str, content: str,
 
         try:
             distributed = distribute_group_epoch(group, sender_uri, _deliver_key)
+            # Marked distributed even on partial delivery: this is the deliberate
+            # "attempt once, never re-loop the send" contract (see
+            # test_fan_out_key_delivery_count_is_honest_on_failure). Re-keying an
+            # undelivered member is the epoch-bump path's job, not a per-message
+            # re-send storm. We log the shortfall for observability rather than
+            # gate the marker on it.
             group.metadata["epoch_distributed"] = group.epoch
-            logger.info("fan_out_send: distributed epoch %d key for group %s to %d member(s)",
-                        group.epoch, group.id, len(distributed))
+            expected = sum(
+                1 for m in group.members
+                if m.identity_uri != sender_uri and _member_has_group_key(group, m)
+            )
+            if len(distributed) < expected:
+                logger.warning(
+                    "fan_out_send: epoch %d PARTIAL key delivery for group %s (%d/%d); "
+                    "undelivered members will re-key on the next epoch bump",
+                    group.epoch, group.id, len(distributed), expected)
+            else:
+                logger.info("fan_out_send: distributed epoch %d key for group %s to %d member(s)",
+                            group.epoch, group.id, len(distributed))
         except Exception as exc:  # never let key distribution block the send
             logger.warning("fan_out_send: epoch key distribution failed for %s: %s",
                            group.id, exc)
