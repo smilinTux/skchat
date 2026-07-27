@@ -8,6 +8,8 @@ at a glance.
 
 from __future__ import annotations
 
+from datetime import datetime
+
 
 def truncate_middle(value: str, max_len: int = 40) -> str:
     """Shorten `value` to `max_len` chars, eliding the middle.
@@ -58,3 +60,32 @@ def humanize_bytes(n: float | None) -> str:
     if unit == "B":
         return f"{int(size)} B"
     return f"{size:.1f} {unit}"
+
+
+def format_relative_time(iso_ts: str | None, now_iso: str | None) -> str:
+    """Format `iso_ts` relative to `now_iso` as a compact label.
+
+    Both args are ISO-8601 strings. Buckets by delta = now - ts in seconds:
+    under a minute is ``"now"``, under an hour is minutes (``"5m"``), under a
+    day is hours (``"3h"``), under a week is days (``"2d"``), otherwise the
+    date as ``"Mon DD"``. Future timestamps (negative delta) are masked to
+    ``"now"``. Unparseable or ``None`` input never raises, it returns ``""``.
+    """
+    if not iso_ts or not now_iso:
+        return ""
+    try:
+        ts = datetime.fromisoformat(iso_ts)
+        now = datetime.fromisoformat(now_iso)
+    except (TypeError, ValueError):
+        return ""
+
+    delta = (now - ts).total_seconds()
+    if delta < 60:
+        return "now"
+    if delta < 3600:
+        return f"{int(delta // 60)}m"
+    if delta < 86400:
+        return f"{int(delta // 3600)}h"
+    if delta < 604800:
+        return f"{int(delta // 86400)}d"
+    return ts.strftime("%b %d")
