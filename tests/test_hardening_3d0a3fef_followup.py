@@ -24,6 +24,7 @@ import pytest
 # Fix 2: identity sanitization / no foreign-keypair minting
 # --------------------------------------------------------------------------- #
 
+
 def test_safe_agent_strips_path_traversal():
     from skchat.pq_prekeys import _safe_agent
 
@@ -129,6 +130,7 @@ def test_ratchet_agent_falls_back_to_identity_when_no_resident_env(monkeypatch, 
 # --------------------------------------------------------------------------- #
 # Fix 1: cross-process lock serializes concurrent seals (no lost update)
 # --------------------------------------------------------------------------- #
+
 
 def _minimal_manager(store):
     """A DmRatchetManager wired with stub crypto/keys, real store (has db_path)."""
