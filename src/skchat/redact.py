@@ -168,3 +168,39 @@ def mask_token(value: Any) -> str:
         return f"{stripped[:_TOKEN_VISIBLE_PREFIX]}{REDACTED_PLACEHOLDER}"
 
     return value
+
+
+#: Matches, in priority order, a capauth fqid, a bare email, an IPv4 (optionally
+#: ``:port``), or a bare high-entropy hex run (a capauth fingerprint). The fqid
+#: alternative is tried first so ``capauth:`` addresses aren't also picked up by
+#: the plain email alternative.
+_SCRUB_RE = re.compile(
+    r"(?P<fqid>capauth:[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})"
+    r"|(?P<email>[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})"
+    r"|(?P<ip>\b(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?\b)"
+    r"|(?P<fingerprint>\b[0-9a-fA-F]{16,}\b)"
+)
+
+
+def _scrub_replace(match: re.Match[str]) -> str:
+    if match.group("fqid") is not None:
+        return mask_fqid(match.group("fqid"))
+    if match.group("email") is not None:
+        return mask_email(match.group("email"))
+    if match.group("ip") is not None:
+        return mask_ip(match.group("ip"))
+    return mask_fingerprint(match.group("fingerprint"))
+
+
+def scrub(text: Any) -> str:
+    """Redact every email, IPv4 address, fqid, and fingerprint found in a free-text line.
+
+    Runs the existing per-value maskers over each match found anywhere in
+    *text*, e.g. ``"peer 192.168.0.41 is lumina@skworld.io"`` ->
+    ``"peer ***.***.***.41 is l****a@skworld.io"``. A line with no sensitive
+    data is returned unchanged. Never raises: non-string/empty/``None`` input
+    returns ``""``.
+    """
+    if not isinstance(text, str) or not text:
+        return ""
+    return _SCRUB_RE.sub(_scrub_replace, text)
