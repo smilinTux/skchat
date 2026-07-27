@@ -1,8 +1,8 @@
-"""Tests for the truncate_middle and humanize_bytes text helpers."""
+"""Tests for the truncate_middle, humanize_bytes, and format_relative_time text helpers."""
 
 from __future__ import annotations
 
-from skchat.textutil import humanize_bytes, truncate_middle
+from skchat.textutil import format_relative_time, humanize_bytes, truncate_middle
 
 
 class TestTruncateMiddle:
@@ -116,3 +116,89 @@ class TestHumanizeBytes:
     def test_float_input_does_not_raise(self) -> None:
         """Non-integer numeric input is accepted and formatted."""
         assert humanize_bytes(1536.0) == "1.5 KB"
+
+
+class TestFormatRelativeTime:
+    """Tests for format_relative_time."""
+
+    NOW = "2026-07-27T12:00:00"
+
+    def test_under_a_minute_is_now(self) -> None:
+        """Deltas under 60s format as 'now'."""
+        assert format_relative_time("2026-07-27T11:59:30", self.NOW) == "now"
+
+    def test_zero_delta_is_now(self) -> None:
+        """A timestamp equal to now formats as 'now'."""
+        assert format_relative_time(self.NOW, self.NOW) == "now"
+
+    def test_minute_boundary_just_under_returns_now(self) -> None:
+        """59 seconds ago is still 'now'."""
+        assert format_relative_time("2026-07-27T11:59:01", self.NOW) == "now"
+
+    def test_minute_boundary_at_60s_returns_minutes(self) -> None:
+        """Exactly 60 seconds ago crosses into minutes."""
+        assert format_relative_time("2026-07-27T11:59:00", self.NOW) == "1m"
+
+    def test_minutes(self) -> None:
+        """Deltas under an hour format as whole minutes."""
+        assert format_relative_time("2026-07-27T11:55:00", self.NOW) == "5m"
+
+    def test_hour_boundary_just_under_returns_minutes(self) -> None:
+        """59m59s ago is still minutes."""
+        assert format_relative_time("2026-07-27T11:00:01", self.NOW) == "59m"
+
+    def test_hour_boundary_at_3600s_returns_hours(self) -> None:
+        """Exactly 3600 seconds ago crosses into hours."""
+        assert format_relative_time("2026-07-27T11:00:00", self.NOW) == "1h"
+
+    def test_hours(self) -> None:
+        """Deltas under a day format as whole hours."""
+        assert format_relative_time("2026-07-27T09:00:00", self.NOW) == "3h"
+
+    def test_day_boundary_just_under_returns_hours(self) -> None:
+        """23h59m59s ago is still hours."""
+        assert format_relative_time("2026-07-26T12:00:01", self.NOW) == "23h"
+
+    def test_day_boundary_at_86400s_returns_days(self) -> None:
+        """Exactly 86400 seconds ago crosses into days."""
+        assert format_relative_time("2026-07-26T12:00:00", self.NOW) == "1d"
+
+    def test_days(self) -> None:
+        """Deltas under a week format as whole days."""
+        assert format_relative_time("2026-07-25T12:00:00", self.NOW) == "2d"
+
+    def test_week_boundary_just_under_returns_days(self) -> None:
+        """6d23h59m59s ago is still days."""
+        assert format_relative_time("2026-07-20T12:00:01", self.NOW) == "6d"
+
+    def test_week_boundary_at_604800s_returns_date(self) -> None:
+        """Exactly 604800 seconds ago crosses into a date label."""
+        assert format_relative_time("2026-07-20T12:00:00", self.NOW) == "Jul 20"
+
+    def test_date_label_format(self) -> None:
+        """Timestamps beyond a week format as 'Mon DD'."""
+        assert format_relative_time("2026-06-15T12:00:00", self.NOW) == "Jun 15"
+
+    def test_future_timestamp_returns_now(self) -> None:
+        """A future ts (negative delta) is masked to 'now'."""
+        assert format_relative_time("2026-07-27T13:00:00", self.NOW) == "now"
+
+    def test_none_ts_returns_empty(self) -> None:
+        """None iso_ts never raises and returns ''."""
+        assert format_relative_time(None, self.NOW) == ""
+
+    def test_none_now_returns_empty(self) -> None:
+        """None now_iso never raises and returns ''."""
+        assert format_relative_time(self.NOW, None) == ""
+
+    def test_unparseable_ts_returns_empty(self) -> None:
+        """An unparseable iso_ts never raises and returns ''."""
+        assert format_relative_time("not-a-date", self.NOW) == ""
+
+    def test_unparseable_now_returns_empty(self) -> None:
+        """An unparseable now_iso never raises and returns ''."""
+        assert format_relative_time(self.NOW, "not-a-date") == ""
+
+    def test_empty_string_ts_returns_empty(self) -> None:
+        """An empty-string iso_ts never raises and returns ''."""
+        assert format_relative_time("", self.NOW) == ""
