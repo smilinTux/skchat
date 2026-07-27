@@ -10,6 +10,7 @@ from skchat.redact import (
     mask_fqid,
     mask_ip,
     mask_token,
+    scrub,
 )
 
 # ---------------------------------------------------------------------------
@@ -243,3 +244,38 @@ class TestMaskToken:
 
     def test_non_string_input(self):
         assert mask_token(12345) == REDACTED_PLACEHOLDER
+
+
+# ---------------------------------------------------------------------------
+# scrub
+# ---------------------------------------------------------------------------
+
+
+class TestScrub:
+    def test_line_with_multiple_mixed_secrets(self):
+        line = (
+            "peer 192.168.0.41:8080 (capauth:lumina@skworld.io, alice@x.com) "
+            "key AABB1122CCDD3344EEFF5566AABB1122CCDD3344 connected"
+        )
+        scrubbed = scrub(line)
+        assert scrubbed == (
+            "peer ***.***.***.41:8080 (capauth:l****a@skworld.io, a***e@x.com) "
+            "key ********************************CCDD3344 connected"
+        )
+        assert "192.168.0.41" not in scrubbed
+        assert "lumina@skworld.io" not in scrubbed
+        assert "alice@x.com" not in scrubbed
+        assert "AABB1122CCDD3344EEFF5566AABB1122CCDD3344" not in scrubbed
+
+    def test_clean_line_unchanged(self):
+        line = "daemon started, polling inbox every 5 seconds"
+        assert scrub(line) == line
+
+    def test_empty_string(self):
+        assert scrub("") == ""
+
+    def test_none_input(self):
+        assert scrub(None) == ""
+
+    def test_non_string_input(self):
+        assert scrub(12345) == ""
