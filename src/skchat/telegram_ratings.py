@@ -35,6 +35,7 @@ Design mirrors ``rating.py`` (RenderRecord/record_score) and
 
 stdlib-only (json) — no third-party deps.
 """
+
 from __future__ import annotations
 
 import json
@@ -191,9 +192,7 @@ def aggregate(
 
     # Keep rated rows that carry a model, ordered by ts (most recent last).
     rated = [
-        r
-        for r in merged.values()
-        if r.get("score") is not None and r.get("model") is not None
+        r for r in merged.values() if r.get("score") is not None and r.get("model") is not None
     ]
     rated.sort(key=lambda r: r.get("ts") or 0.0)
     if window and window > 0:

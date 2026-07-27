@@ -21,7 +21,6 @@ from __future__ import annotations
 from typing import Iterable, Iterator
 
 import cbor2
-
 from skcomms.glossa.codebook import Codebook
 from skcomms.glossa.message import Message
 
@@ -30,11 +29,11 @@ from skcomms.glossa.message import Message
 L3_TOKENSTREAM = 3
 
 # Token tags (the token-stream vocabulary).
-T_INTENT = 0   # value: int codebook code, or str intent
-T_ARG = 1      # value: [key, val]
-T_REF = 2      # value: ref
-T_TEXT = 3     # value: str chunk (the text slot, possibly streamed in pieces)
-T_END = 4      # value: None — terminates a well-formed stream
+T_INTENT = 0  # value: int codebook code, or str intent
+T_ARG = 1  # value: [key, val]
+T_REF = 2  # value: ref
+T_TEXT = 3  # value: str chunk (the text slot, possibly streamed in pieces)
+T_END = 4  # value: None — terminates a well-formed stream
 
 Token = list  # [tag, value]
 
@@ -91,15 +90,9 @@ class TokenStreamDecoder:
         tag, value = token
         if tag == T_INTENT:
             if isinstance(value, int):
-                concept = (
-                    self._codebook.concept_for(value)
-                    if self._codebook is not None
-                    else None
-                )
+                concept = self._codebook.concept_for(value) if self._codebook is not None else None
                 if concept is None:
-                    raise ValueError(
-                        f"unknown codebook code {value} — codebook version skew"
-                    )
+                    raise ValueError(f"unknown codebook code {value} — codebook version skew")
                 self._intent = concept
             else:
                 self._intent = value or ""
@@ -153,9 +146,7 @@ def decode_l3(raw: bytes, codebook: Codebook | None = None) -> Message:
     return dec.message
 
 
-def decode_stream(
-    tokens: Iterable[Token], codebook: Codebook | None = None
-) -> TokenStreamDecoder:
+def decode_stream(tokens: Iterable[Token], codebook: Codebook | None = None) -> TokenStreamDecoder:
     """Drive a decoder from an iterable of tokens (the streaming entry point).
     Returns the decoder so callers can inspect partial state / ``complete``."""
     dec = TokenStreamDecoder(codebook)

@@ -39,7 +39,7 @@ router = APIRouter(prefix="/api")
 _SKCOMMS_API = "http://127.0.0.1:9384"
 
 # ── Lumina identity (the always-present companion) ─────────────────────────── #
-LUMINA_ID = "lumina@chef.skworld"
+LUMINA_ID = "lumina@chef.skworld.io"
 LUMINA_URI = "capauth:lumina@skworld.io"
 LUMINA_NAME = "Lumina"
 LUMINA_FINGERPRINT = "02BC0EB3CAD31DB691A753C70C5629AB893F9746"
@@ -403,8 +403,18 @@ def _group_msg_to_app(m, *, group_id: str) -> dict:
 def _participant_is_agent(uri: str) -> bool:
     short = (uri or "").split(":")[-1].split("@")[0].lower()
     return short in {
-        "lumina", "jarvis", "opus", "ava", "ara", "artisan", "herald",
-        "sentinel", "architect", "scholar", "steward", "coder",
+        "lumina",
+        "jarvis",
+        "opus",
+        "ava",
+        "ara",
+        "artisan",
+        "herald",
+        "sentinel",
+        "architect",
+        "scholar",
+        "steward",
+        "coder",
     }
 
 
@@ -471,15 +481,30 @@ def _lumina_messages(limit: int = 200) -> list[dict]:
 
 
 def _lumina_conversation() -> dict:
-    """The pinned Lumina conversation entry (app conversation shape)."""
+    """The pinned Lumina conversation entry (app conversation shape).
+
+    Carries BOTH the conversation-contract keys (``peer_id``/``display_name``/
+    ``soul_fingerprint``, read by the Flutter app's ``Conversation.fromJson``)
+    and aliased peer-contract keys (``name``/``fingerprint``). This same dict
+    also backs ``GET /api/v1/peers`` (see ``api_peers``), which the app reads
+    with ``PeerInfo.fromJson`` -- a DIFFERENT model that only ever looked at
+    ``name``/``fingerprint``. Without the aliases, every peer discovered only
+    through ``/api/v1/peers`` (no conversation thread yet) parsed to an empty
+    name and a null fingerprint, and the app's fallback then substituted the
+    peerId itself for the fingerprint -- which the peer-trust tier resolver
+    treats as "no real key", permanently showing the peer as unverifiable
+    instead of their true keyed/red tier.
+    """
     msgs = _lumina_messages(limit=50)
     last = msgs[-1] if msgs else None
     return {
         "peer_id": LUMINA_ID,
         "display_name": LUMINA_NAME,
+        "name": LUMINA_NAME,
         "last_message": (last or {}).get("content", "") if last else "",
         "last_message_time": (last or {}).get("timestamp", _now_iso()),
         "soul_fingerprint": LUMINA_FINGERPRINT,
+        "fingerprint": LUMINA_FINGERPRINT,
         "is_online": _operator_online(),
         "is_agent": True,
         "unread_count": 0,
@@ -494,6 +519,10 @@ def _other_peers() -> list[dict]:
     """Best-effort: known peers from ~/.skcapstone/peers/*.json (Lumina excluded).
 
     Lumina is added separately and pinned first; this just enriches the list.
+
+    See the ``name``/``fingerprint`` note on :func:`_lumina_conversation` --
+    this dict shape backs both ``/api/v1/conversations`` and ``/api/v1/peers``,
+    so it carries both key sets for the same reason.
     """
     import json
 
@@ -509,13 +538,17 @@ def _other_peers() -> list[dict]:
         handle = (data.get("handle") or data.get("identity") or p.stem).strip()
         if _is_lumina(handle) or _is_lumina(data.get("identity", "")) or p.stem == "lumina":
             continue
+        display_name = data.get("name") or p.stem.title()
+        fingerprint = data.get("fingerprint", "")
         out.append(
             {
                 "peer_id": data.get("handle") or data.get("identity") or p.stem,
-                "display_name": data.get("name") or p.stem.title(),
+                "display_name": display_name,
+                "name": display_name,
                 "last_message": "",
                 "last_message_time": _now_iso(),
-                "soul_fingerprint": data.get("fingerprint", ""),
+                "soul_fingerprint": fingerprint,
+                "fingerprint": fingerprint,
                 "is_online": False,
                 "is_agent": (data.get("agent_type") == "ai")
                 or (data.get("entity_type") == "ai-agent"),
@@ -527,6 +560,81 @@ def _other_peers() -> list[dict]:
             }
         )
     return out
+
+
+def _peers_dir() -> Path:
+    """The capauth peer store directory (patchable in tests)."""
+    return Path(os.path.expanduser("~/.skcapstone/peers"))
+
+
+def _peer_fingerprint_index() -> dict[str, str]:
+    """Build a ``{key -> fingerprint}`` map from ``~/.skcapstone/peers/*.json``.
+
+    Each peer is indexed ONLY under its fully-qualified addresses (``identity``
+    URI, ``handle``, ``fqid``), all lower-cased. Bare short names / file stems
+    are DELIBERATELY excluded: the swarm reuses identical agent short-names
+    (``artisan``, ``steward``, ``lumina`` ...) across realms, so a short-name
+    key would let a cross-realm ``artisan@opB.skworld.io`` collide onto the
+    LOCAL ``artisan``'s fingerprint (cross-realm key misattribution). Only a
+    full, realm-qualified match is trustworthy. Read fresh (no cache) so a
+    newly-added peer is picked up without a restart, same as :func:`_other_peers`.
+    """
+    import json
+
+    idx: dict[str, str] = {}
+    peers_dir = _peers_dir()
+    if not peers_dir.is_dir():
+        return idx
+    for p in sorted(peers_dir.glob("*.json")):
+        try:
+            data = json.loads(p.read_text())
+        except Exception:
+            continue
+        fp = (data.get("fingerprint") or "").strip()
+        if not fp:
+            continue
+        # Full, realm-qualified keys ONLY (no bare short name / stem).
+        keys = [data.get("identity"), data.get("handle"), data.get("fqid")]
+        for k in keys:
+            if k:
+                idx[k.strip().lower()] = fp
+    return idx
+
+
+def fingerprint_for_identity(identity: str, index: dict[str, str] | None = None) -> str:
+    """Real capauth fingerprint for a FULLY-QUALIFIED *identity*.
+
+    Matches only a full ``identity`` URI (``capauth:steward@skworld.io``),
+    ``handle`` (``steward@skworld.io``), or ``fqid`` against the peer store, plus
+    the Lumina special-case. A bare short name or a cross-realm fqid that isn't a
+    known local peer returns ``""`` (keyless -> no badge), never a fabricated or
+    misattributed key. Pass a prebuilt [index] to avoid re-reading the store.
+    """
+    if not identity:
+        return ""
+    if _is_lumina(identity):
+        return LUMINA_FINGERPRINT
+    idx = index if index is not None else _peer_fingerprint_index()
+    ident = identity.strip().lower()
+    for key in (
+        ident,
+        ident[len("capauth:") :] if ident.startswith("capauth:") else ident,
+    ):
+        fp = idx.get(key)
+        if fp:
+            return fp
+    return ""
+
+
+def soul_metadata_for(identity: str) -> str:
+    """JSON participant metadata carrying *identity*'s capauth soul_fingerprint
+    (M1b trust badges). Empty fingerprint for an unknown identity (keyless -> no
+    badge). MUST only be stamped from a PROVEN or operator-gated identity: a
+    fingerprint minted from an unauthenticated caller-chosen identity is a
+    trust-badge SPOOF (see the participant-badge security review)."""
+    import json
+
+    return json.dumps({"soul_fingerprint": fingerprint_for_identity(identity)})
 
 
 # --------------------------------------------------------------------------- #
@@ -548,7 +656,7 @@ async def api_health():
 
 
 def _short_name(uri: str) -> str:
-    s = uri[len("capauth:"):] if uri.startswith("capauth:") else uri
+    s = uri[len("capauth:") :] if uri.startswith("capauth:") else uri
     return s.split("@")[0]
 
 
@@ -571,19 +679,24 @@ def _resolve_signer_pubkey(peer: str) -> str | None:
 def _open_hybrid_inbound(token: str, *, sender_short: str) -> str | None:
     """Open a `pqdm1:` token addressed to Lumina. Returns plaintext or None."""
     try:
-        from skchat import pq_prekeys as PQ
-        from skcomms.pqdm import open_sealed
         import base64 as _b64
+
+        from skcomms.pqdm import open_sealed
+
+        from skchat import pq_prekeys as PQ
 
         priv = PQ.lumina_private()
         if priv is None:
             return None
-        rest = token[len("pqdm1:"):]
+        rest = token[len("pqdm1:") :]
         suite, _, b64 = rest.partition(":")
         sealed = _b64.b64decode(b64)
         clear = open_sealed(
-            sealed, priv,
-            sender=sender_short, recipient="lumina", expected_suite=suite,
+            sealed,
+            priv,
+            sender=sender_short,
+            recipient="lumina",
+            expected_suite=suite,
         )
         return clear.decode("utf-8")
     except Exception:
@@ -595,9 +708,11 @@ def _seal_hybrid_outbound(plaintext: str, *, recipient_short: str) -> str | None
     """Seal `plaintext` to the operator's stored prekey. Returns a `pqdm1:`
     token or None (no prekey / no backend → caller keeps the plaintext)."""
     try:
-        from skchat import pq_prekeys as PQ
-        from skcomms.pqdm import HYBRID_SUITE, PrekeyBundle, seal
         import base64 as _b64
+
+        from skcomms.pqdm import HYBRID_SUITE, PrekeyBundle, seal
+
+        from skchat import pq_prekeys as PQ
 
         peer = PQ.load_peer_bundle(recipient_short)
         if not peer:
@@ -606,8 +721,10 @@ def _seal_hybrid_outbound(plaintext: str, *, recipient_short: str) -> str | None
         if not bundle.is_hybrid:
             return None
         sealed = seal(
-            plaintext.encode("utf-8"), bundle,
-            sender="lumina", recipient=recipient_short,
+            plaintext.encode("utf-8"),
+            bundle,
+            sender="lumina",
+            recipient=recipient_short,
         )
         return f"pqdm1:{HYBRID_SUITE}:" + _b64.b64encode(sealed).decode("ascii")
     except Exception:
@@ -641,9 +758,7 @@ async def api_publish_prekey(
     signer = _resolve_signer_pubkey(owner) if PQ.require_signed_prekeys() else None
     if not PQ.store_app_prekey_bundle(owner, body, signer_public_armor=signer):
         raise HTTPException(400, "prekey bundle rejected: unsigned or invalid signature")
-    return JSONResponse(
-        {"ok": True, "stored": owner, "hybrid": PQ.peer_is_hybrid(owner)}
-    )
+    return JSONResponse({"ok": True, "stored": owner, "hybrid": PQ.peer_is_hybrid(owner)})
 
 
 @router.get("/v1/prekey/{peer:path}")
@@ -724,13 +839,22 @@ async def api_conversations():
 
 
 def _group_conversations() -> list[dict]:
-    """All persisted groups in the app conversation shape (``is_group:true``)."""
+    """All persisted groups in the app conversation shape (``is_group:true``),
+    each carrying per-member ``participants`` with server-resolved
+    ``soul_fingerprint`` so the unified list can fold an aggregate group badge.
+    """
     from skchat import daemon_proxy_groups as G
 
     out: list[dict] = []
     try:
+        idx = _peer_fingerprint_index()
         for grp in G.list_groups():
-            out.append(G.group_to_conversation(grp))
+            out.append(
+                G.group_to_conversation(
+                    grp,
+                    fingerprint_for=lambda i: fingerprint_for_identity(i, idx),
+                )
+            )
     except Exception:
         logger.exception("group conversation list failed")
     return out
@@ -776,7 +900,8 @@ async def api_inbox_federation_proxy(request: Request):
                 timeout=20.0,
             )
         resp_headers = {
-            k: v for k, v in r.headers.items()
+            k: v
+            for k, v in r.headers.items()
             if k.lower() not in ("content-length", "transfer-encoding", "connection")
         }
         return Response(content=r.content, status_code=r.status_code, headers=resp_headers)
@@ -879,7 +1004,15 @@ async def api_group_members(group_id: str):
     group = G.load_group(group_id)
     if group is None:
         raise HTTPException(404, "group not found")
-    return JSONResponse([G.member_to_app(m) for m in group.members])
+    # Resolve every member's capauth fingerprint from the peer store once, so
+    # each member row carries a real key for the per-member trust badge.
+    idx = _peer_fingerprint_index()
+    return JSONResponse(
+        [
+            G.member_to_app(m, fingerprint=fingerprint_for_identity(m.identity_uri, idx))
+            for m in group.members
+        ]
+    )
 
 
 @router.post("/v1/groups/{group_id}/members")
@@ -908,16 +1041,29 @@ async def api_group_add_member(group_id: str, request: Request):
             hist, peer_id=group_id, new_member=identity, operator_uri=OPERATOR_ID
         )
         return JSONResponse(
-            {"ok": True, "promoted": True, "group": G.group_to_conversation(group),
-             "members": [G.member_to_app(m) for m in group.members]}
+            {
+                "ok": True,
+                "promoted": True,
+                "group": G.group_to_conversation(group),
+                "members": [
+                    G.member_to_app(m, fingerprint=fingerprint_for_identity(m.identity_uri))
+                    for m in group.members
+                ],
+            }
         )
 
     if not G.can_add_members(group, OPERATOR_ID):
         raise HTTPException(403, "not allowed to add members")
     added = G.add_member(group, identity, role=role)
     return JSONResponse(
-        {"ok": True, "added": added,
-         "members": [G.member_to_app(m) for m in group.members]}
+        {
+            "ok": True,
+            "added": added,
+            "members": [
+                G.member_to_app(m, fingerprint=fingerprint_for_identity(m.identity_uri))
+                for m in group.members
+            ],
+        }
     )
 
 
@@ -949,8 +1095,14 @@ async def api_group_remove_member(group_id: str, identity: str):
     if not removed:
         raise HTTPException(404, "member not found")
     return JSONResponse(
-        {"ok": True, "removed": identity,
-         "members": [G.member_to_app(m) for m in group.members]}
+        {
+            "ok": True,
+            "removed": identity,
+            "members": [
+                G.member_to_app(m, fingerprint=fingerprint_for_identity(m.identity_uri))
+                for m in group.members
+            ],
+        }
     )
 
 
@@ -1080,7 +1232,10 @@ async def api_group_call_participants(group_id: str):
             "room": room,
             "active": len(participants),
             "participants": participants,
-            "members": [G.member_to_app(m) for m in group.members],
+            "members": [
+                G.member_to_app(m, fingerprint=fingerprint_for_identity(m.identity_uri))
+                for m in group.members
+            ],
         }
     )
 
@@ -1093,7 +1248,13 @@ async def _livekit_list_participants(room: str) -> list[dict]:
         from livekit import api  # soft dep
     except ImportError:
         return []
-    url = _os.getenv("SKCHAT_LIVEKIT_URL", "ws://skworld-100:7880")
+    # Server-side RoomService/Twirp call: prefer the dedicated API URL over the
+    # browser-facing SKCHAT_LIVEKIT_URL, which may carry a Funnel path prefix
+    # (e.g. wss://host/livekit-ws) that mangles into a malformed double-slash
+    # Twirp URL. Falls back to SKCHAT_LIVEKIT_URL for backward compat.
+    url = _os.getenv("SKCHAT_LIVEKIT_API_URL", "").strip() or _os.getenv(
+        "SKCHAT_LIVEKIT_URL", "ws://skworld-100:7880"
+    )
     http_url = url.replace("ws://", "http://").replace("wss://", "https://")
     key = _os.getenv("SKCHAT_LIVEKIT_API_KEY", "")
     secret = _os.getenv("SKCHAT_LIVEKIT_API_SECRET", "")
@@ -1315,14 +1476,18 @@ async def _generate_lumina_reply(
     # 3. Invoke her brain. Never 500: persist a graceful fallback on failure.
     brain = _get_brain()
     if brain is None:
-        reply_text = "…(I'm here, but my language backend is offline right now — try again in a moment.)"
+        reply_text = (
+            "…(I'm here, but my language backend is offline right now — try again in a moment.)"
+        )
     else:
         try:
             # Run the (up to ~180s) blocking LLM call in a thread so the async
             # event loop stays responsive; serialize brain calls with the lock.
             async with _BRAIN_LOCK:
-                reply_text = await asyncio.to_thread(
-                    brain.reply, content, history=convo, sender="chef") or ""
+                reply_text = (
+                    await asyncio.to_thread(brain.reply, content, history=convo, sender="chef")
+                    or ""
+                )
         except Exception:
             logger.exception("Lumina brain reply failed")
             reply_text = "…(thinking failed — my backend hiccuped. Say that again?)"
@@ -1341,9 +1506,7 @@ async def _generate_lumina_reply(
             # the reply cannot be sealed (no prekey / KEM backend gone).
             # Refuse rather than fall back to plaintext — never persist or
             # return Lumina's cleartext reply onto a hybrid channel.
-            logger.error(
-                "api_send: hybrid reply not sealable — refusing plaintext leak"
-            )
+            logger.error("api_send: hybrid reply not sealable — refusing plaintext leak")
             return {"ok": False, "error": "reply_not_sealable"}
         reply_wire = sealed
     reply_msg = _persist(
@@ -1508,9 +1671,14 @@ async def api_send(request: Request):
                 raise HTTPException(403, "this group is read-only (admins only)")
             try:
                 msg = G.fan_out_send(
-                    group, hist, OPERATOR_ID, content,
-                    reply_to_id=reply_to_id, thread_id=group.id,
-                    content_type=content_type, rich=rich,
+                    group,
+                    hist,
+                    OPERATOR_ID,
+                    content,
+                    reply_to_id=reply_to_id,
+                    thread_id=group.id,
+                    content_type=content_type,
+                    rich=rich,
                 )
             except G.GroupSealNotReadyError as exc:
                 # encryption_required group can't seal to every member: refuse
@@ -1540,8 +1708,14 @@ async def api_send(request: Request):
     if not _is_lumina(recipient):
         # Non-Lumina peers: persist only (no brain). Keeps the route honest.
         msg = _persist(
-            hist, OPERATOR_ID, recipient or "unknown", content, reply_to_id, thread_id,
-            content_type=content_type, rich=rich,
+            hist,
+            OPERATOR_ID,
+            recipient or "unknown",
+            content,
+            reply_to_id,
+            thread_id,
+            content_type=content_type,
+            rich=rich,
         )
         return JSONResponse(
             _apply_contract(
@@ -1573,8 +1747,14 @@ async def api_send(request: Request):
 
         # 1. Persist the operator's message to Lumina (with reply/thread linkage).
         user_msg = _persist(
-            hist, OPERATOR_ID, LUMINA_URI, content, reply_to_id, thread_id,
-            content_type=content_type, rich=rich,
+            hist,
+            OPERATOR_ID,
+            LUMINA_URI,
+            content,
+            reply_to_id,
+            thread_id,
+            content_type=content_type,
+            rich=rich,
         )
 
         # 2. Build the prior-turn history for context (oldest-first role/content).
@@ -1603,9 +1783,7 @@ async def api_send(request: Request):
             # actual message.
             if _is_context_noise(_pc):
                 continue
-            convo.append(
-                {"role": "assistant" if pm["is_agent"] else "user", "content": _pc}
-            )
+            convo.append({"role": "assistant" if pm["is_agent"] else "user", "content": _pc})
 
         # 3./4. Generate + persist Lumina's reply (brain → fail-closed hybrid
         #        seal → persist → ws "new"). Extracted so BOTH the synchronous
@@ -1637,8 +1815,9 @@ async def api_send(request: Request):
             # which would duplicate the reply. Prune stale keys.
             _now = time.monotonic()
             _SEND_RECENT[_dk] = (_now, _async_payload)
-            for _k in [k for k, (t, _) in list(_SEND_RECENT.items())
-                       if _now - t > _SEND_DEDUP_WINDOW]:
+            for _k in [
+                k for k, (t, _) in list(_SEND_RECENT.items()) if _now - t > _SEND_DEDUP_WINDOW
+            ]:
                 _SEND_RECENT.pop(_k, None)
                 _SEND_LOCKS.pop(_k, None)
             return JSONResponse(_apply_contract(_async_payload, caps), status_code=202)

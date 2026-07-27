@@ -13,6 +13,8 @@ The qwen3.6 HTTP backend is never touched — a stub ``LuminaBrain`` is injected
 
 from __future__ import annotations
 
+import json
+import os
 import time as _time
 
 import pytest
@@ -73,9 +75,106 @@ def test_lumina_always_present_in_peers_and_conversations(client):
         assert first["is_agent"] is True
         assert first["is_online"] is True
         # Full app conversation contract present.
-        for key in ("last_message", "last_message_time", "soul_fingerprint",
-                    "unread_count", "is_group", "member_count", "avatar_url"):
+        for key in (
+            "last_message",
+            "last_message_time",
+            "soul_fingerprint",
+            "unread_count",
+            "is_group",
+            "member_count",
+            "avatar_url",
+        ):
             assert key in first
+        # Peer-contract aliases (`name`/`fingerprint`) must ALSO be present:
+        # `GET /api/v1/peers` is parsed by the Flutter app's `PeerInfo.fromJson`,
+        # which only reads `name`/`fingerprint`, not `display_name`/
+        # `soul_fingerprint`. Missing aliases here previously meant every peer
+        # discovered only through `/api/v1/peers` (no conversation thread yet)
+        # parsed to an empty name and a null fingerprint app-side, and the
+        # app's fallback then substituted the peerId itself for the
+        # fingerprint -- treated as "no real key" by the peer-trust tier
+        # resolver, permanently rendering the peer unverifiable.
+        assert first["name"] == "Lumina"
+        assert first["fingerprint"] == daemon_proxy.LUMINA_FINGERPRINT
+
+
+def test_other_peers_carry_name_and_fingerprint_aliases(client, monkeypatch):
+    """A real (non-Lumina) peer's ``/api/v1/peers`` entry must carry both the
+    conversation-shape keys (``display_name``/``soul_fingerprint``) AND the
+    peer-shape aliases (``name``/``fingerprint``) the app's ``PeerInfo``
+    model reads, so a peer with no conversation thread yet still resolves to
+    their real capauth fingerprint via the app's peers-only fallback.
+    """
+    jarvis_fp = "BCF7ED87AC8117B448B7677F45BF78F335767EF8"
+    monkeypatch.setattr(
+        daemon_proxy,
+        "_other_peers",
+        lambda: [
+            {
+                "peer_id": "jarvis@skworld.io",
+                "display_name": "Jarvis",
+                "name": "Jarvis",
+                "last_message": "",
+                "last_message_time": "2026-01-01T00:00:00+00:00",
+                "soul_fingerprint": jarvis_fp,
+                "fingerprint": jarvis_fp,
+                "is_online": False,
+                "is_agent": True,
+                "unread_count": 0,
+                "last_delivery_status": "sent",
+                "is_group": False,
+                "member_count": 0,
+                "avatar_url": "",
+            }
+        ],
+    )
+    r = client.get("/api/v1/peers")
+    assert r.status_code == 200
+    body = r.json()
+    jarvis = next(p for p in body if p["peer_id"] == "jarvis@skworld.io")
+    assert jarvis["name"] == "Jarvis"
+    assert jarvis["fingerprint"] == jarvis_fp
+    assert jarvis["fingerprint"] != jarvis["peer_id"]
+
+
+def test_other_peers_reads_real_fingerprint_with_both_key_shapes(tmp_path, monkeypatch):
+    """Unit-test ``_other_peers()`` itself (not monkeypatched away here) against
+    a real ``~/.skcapstone/peers/*.json`` fixture, the same schema the live
+    peer store on disk uses. Each entry must carry the real fingerprint under
+    BOTH ``soul_fingerprint`` (conversation contract) and ``fingerprint``
+    (peer contract) so it survives whichever model the app parses it with.
+    """
+    peers_dir = tmp_path / "peers"
+    peers_dir.mkdir()
+    (peers_dir / "jarvis.json").write_text(
+        json.dumps(
+            {
+                "name": "Jarvis",
+                "identity": "capauth:jarvis@skworld.io",
+                "fingerprint": "BCF7ED87AC8117B448B7677F45BF78F335767EF8",
+                "handle": "jarvis@skworld.io",
+                "agent_type": "ai",
+            }
+        )
+    )
+
+    real_expanduser = os.path.expanduser
+
+    def _fake_expanduser(p):
+        if p == "~/.skcapstone/peers":
+            return str(peers_dir)
+        return real_expanduser(p)
+
+    monkeypatch.setattr(daemon_proxy.os.path, "expanduser", _fake_expanduser)
+
+    peers = daemon_proxy._other_peers()
+    assert len(peers) == 1
+    jarvis = peers[0]
+    assert jarvis["peer_id"] == "jarvis@skworld.io"
+    assert jarvis["display_name"] == "Jarvis"
+    assert jarvis["name"] == "Jarvis"
+    assert jarvis["soul_fingerprint"] == "BCF7ED87AC8117B448B7677F45BF78F335767EF8"
+    assert jarvis["fingerprint"] == "BCF7ED87AC8117B448B7677F45BF78F335767EF8"
 
 
 def test_send_to_lumina_persists_pair_and_returns_reply(client):
@@ -195,11 +294,13 @@ def test_hybrid_reply_not_sealable_fails_closed(client, monkeypatch):
     # Force the inbound `pqdm1:` token to "open" (marks the convo hybrid) but
     # make the outbound seal fail (no prekey / backend gone).
     monkeypatch.setattr(
-        daemon_proxy, "_open_hybrid_inbound",
+        daemon_proxy,
+        "_open_hybrid_inbound",
         lambda token, sender_short="chef": "decoded secret",
     )
     monkeypatch.setattr(
-        daemon_proxy, "_seal_hybrid_outbound",
+        daemon_proxy,
+        "_seal_hybrid_outbound",
         lambda text, recipient_short="chef": None,
     )
 
@@ -222,11 +323,13 @@ def test_hybrid_reply_sealed_returns_200(client, monkeypatch):
     """Companion to the fail-closed path: when the reply CAN be sealed, the
     hybrid conversation still returns 200 with the sealed wire token."""
     monkeypatch.setattr(
-        daemon_proxy, "_open_hybrid_inbound",
+        daemon_proxy,
+        "_open_hybrid_inbound",
         lambda token, sender_short="chef": "decoded secret",
     )
     monkeypatch.setattr(
-        daemon_proxy, "_seal_hybrid_outbound",
+        daemon_proxy,
+        "_seal_hybrid_outbound",
         lambda text, recipient_short="chef": "pqdm1:SEALED",
     )
 
@@ -311,10 +414,18 @@ async def test_generate_lumina_reply_returns_reply_dict(client, monkeypatch):
 
     hist = client._hist
     user_msg = daemon_proxy._persist(
-        hist, daemon_proxy.OPERATOR_ID, daemon_proxy.LUMINA_URI, "ping",
+        hist,
+        daemon_proxy.OPERATOR_ID,
+        daemon_proxy.LUMINA_URI,
+        "ping",
     )
     result = await daemon_proxy._generate_lumina_reply(
-        hist, user_msg, "ping", [], False, {},
+        hist,
+        user_msg,
+        "ping",
+        [],
+        False,
+        {},
     )
     assert result["ok"] is True
     assert result["recipient"] == daemon_proxy.LUMINA_ID
@@ -419,18 +530,21 @@ def test_async_double_send_dedupes_no_second_task(client, monkeypatch):
     202) and does NOT spawn a second background reply task (would duplicate)."""
     monkeypatch.setenv("SKCHAT_ASYNC_REPLY", "1")
     import skchat.daemon_proxy as dp
+
     calls = {"n": 0}
     real_create = dp.asyncio.create_task
+
     def _counting(coro, *a, **k):
         calls["n"] += 1
         return real_create(coro, *a, **k)
+
     monkeypatch.setattr(dp.asyncio, "create_task", _counting)
     body = {"recipient": "lumina", "message": "double send test"}
     r1 = client.post("/api/v1/send", json=body)
     r2 = client.post("/api/v1/send", json=body)
     assert r1.status_code == 202
-    assert r2.json().get("deduped") is True          # 2nd is the cached 202
-    assert calls["n"] == 1                            # only ONE reply task spawned
+    assert r2.json().get("deduped") is True  # 2nd is the cached 202
+    assert calls["n"] == 1  # only ONE reply task spawned
 
 
 # --------------------------------------------------------------------------- #
@@ -450,9 +564,16 @@ def test_message_log_shadow_write_when_flag_on(client, tmp_path, monkeypatch):
     assert r.status_code == 200
 
     log = daemon_proxy._get_message_log()
+    # _shadow_log records under the canonical conversation_id (dm:<a>|<b>), NOT
+    # the retired Lumina-centric LUMINA_ID key. On a fresh log this send yields
+    # exactly one conversation (the operator<->Lumina DM), so read it back by its
+    # real id instead of assuming the old key.
+    convs = log.conversations()
+    assert len(convs) == 1
+    conv_id = convs[0]["conversation_id"]
     # Sync path persists BOTH the operator turn and Lumina's reply -> seq >= 2.
-    assert log.latest_seq(daemon_proxy.LUMINA_ID) >= 2
-    rows = log.read(daemon_proxy.LUMINA_ID)
+    assert log.latest_seq(conv_id) >= 2
+    rows = log.read(conv_id)
     assert rows[0]["content"] == "log me"
     assert rows[0]["seq"] == 1 and rows[0]["message_id"]
 

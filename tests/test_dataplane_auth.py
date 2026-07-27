@@ -75,10 +75,7 @@ def test_flag_non_truthy_values_stay_off(monkeypatch, val):
 # Unit: enforce_dataplane_auth on a bare Request
 # --------------------------------------------------------------------------- #
 def _fake_request(headers: dict[str, str] | None = None) -> Request:
-    raw = [
-        (k.lower().encode(), v.encode())
-        for k, v in (headers or {}).items()
-    ]
+    raw = [(k.lower().encode(), v.encode()) for k, v in (headers or {}).items()]
     return Request({"type": "http", "headers": raw})
 
 
@@ -105,26 +102,20 @@ def test_enforce_401_when_flag_on_and_invalid_credential(monkeypatch):
     from fastapi import HTTPException
 
     with pytest.raises(HTTPException) as exc:
-        dataplane_auth.enforce_dataplane_auth(
-            _fake_request({"authorization": "CapAuth deadbeef"})
-        )
+        dataplane_auth.enforce_dataplane_auth(_fake_request({"authorization": "CapAuth deadbeef"}))
     assert exc.value.status_code == 401
     assert stub.seen == ["deadbeef"]
 
 
 def test_enforce_passes_when_flag_on_and_valid_credential(monkeypatch):
     stub = _enable(monkeypatch, ok=True)
-    dataplane_auth.enforce_dataplane_auth(
-        _fake_request({"authorization": "CapAuth good-token"})
-    )
+    dataplane_auth.enforce_dataplane_auth(_fake_request({"authorization": "CapAuth good-token"}))
     assert stub.seen == ["good-token"]
 
 
 def test_extract_credential_supports_bearer_and_header(monkeypatch):
     stub = _enable(monkeypatch, ok=True)
-    dataplane_auth.enforce_dataplane_auth(
-        _fake_request({"authorization": "Bearer bt"})
-    )
+    dataplane_auth.enforce_dataplane_auth(_fake_request({"authorization": "Bearer bt"}))
     dataplane_auth.enforce_dataplane_auth(_fake_request({"x-capauth-token": "ht"}))
     assert stub.seen == ["bt", "ht"]
 

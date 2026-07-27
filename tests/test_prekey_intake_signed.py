@@ -70,9 +70,7 @@ def test_flag_on_null_signature_rejected(PQ, monkeypatch, alice_keys, unsigned_b
     _, alice_pub = alice_keys
     monkeypatch.setenv("SKCHAT_REQUIRE_SIGNED_PREKEYS", "1")
 
-    stored = PQ.store_app_prekey_bundle(
-        "chef", unsigned_bundle, signer_public_armor=alice_pub
-    )
+    stored = PQ.store_app_prekey_bundle("chef", unsigned_bundle, signer_public_armor=alice_pub)
     assert stored is False
     assert PQ.load_peer_bundle("chef") is None
 
@@ -83,14 +81,14 @@ def test_flag_on_missing_signature_key_rejected(PQ, monkeypatch, alice_keys, uns
     monkeypatch.setenv("SKCHAT_REQUIRE_SIGNED_PREKEYS", "1")
     unsigned_bundle.pop("signature", None)
 
-    stored = PQ.store_app_prekey_bundle(
-        "chef", unsigned_bundle, signer_public_armor=alice_pub
-    )
+    stored = PQ.store_app_prekey_bundle("chef", unsigned_bundle, signer_public_armor=alice_pub)
     assert stored is False
     assert PQ.load_peer_bundle("chef") is None
 
 
-def test_flag_on_invalid_signature_rejected(PQ, monkeypatch, alice_crypto, alice_keys, unsigned_bundle):
+def test_flag_on_invalid_signature_rejected(
+    PQ, monkeypatch, alice_crypto, alice_keys, unsigned_bundle
+):
     """flag on + a bundle failing verify_prekey_bundle is rejected (tamper)."""
     _, alice_pub = alice_keys
     monkeypatch.setenv("SKCHAT_REQUIRE_SIGNED_PREKEYS", "1")
@@ -124,7 +122,9 @@ def test_flag_on_no_signer_key_rejected(PQ, monkeypatch, alice_crypto, unsigned_
     assert PQ.load_peer_bundle("chef") is None
 
 
-def test_flag_on_valid_signature_accepted(PQ, monkeypatch, alice_crypto, alice_keys, unsigned_bundle):
+def test_flag_on_valid_signature_accepted(
+    PQ, monkeypatch, alice_crypto, alice_keys, unsigned_bundle
+):
     """flag on + a validly-signed bundle is accepted and stored."""
     _, alice_pub = alice_keys
     monkeypatch.setenv("SKCHAT_REQUIRE_SIGNED_PREKEYS", "1")

@@ -204,8 +204,7 @@ def unwrap_dm_epoch_secret(payload: bytes, peer_hybrid_priv: bytes) -> bytes:
     """
     if len(payload) != WRAPPED_PAYLOAD_LEN:
         raise DmRatchetError(
-            f"wrapped epoch payload must be {WRAPPED_PAYLOAD_LEN} bytes, "
-            f"got {len(payload)}"
+            f"wrapped epoch payload must be {WRAPPED_PAYLOAD_LEN} bytes, got {len(payload)}"
         )
     ciphertext = payload[:HYBRID_CIPHERTEXT_LEN]
     nonce = payload[HYBRID_CIPHERTEXT_LEN : HYBRID_CIPHERTEXT_LEN + _WRAP_NONCE_LEN]

@@ -150,9 +150,7 @@ class TestBackCompatAndMigration:
         assert result["migrated"] == len(plaintexts)
 
         # After migration: content decrypts under the NEW DEK alone (no legacy).
-        new_only = EncryptedChatHistory(
-            history=history, storage_key=new_dek, legacy_key=None
-        )
+        new_only = EncryptedChatHistory(history=history, storage_key=new_dek, legacy_key=None)
         after = sorted(m["content"] for m in new_only.get_thread_messages("t1"))
         assert after == sorted(plaintexts)  # identical plaintext, no data loss
 
@@ -175,7 +173,9 @@ class TestBackCompatAndMigration:
         legacy_key = StorageKeyDeriver.derive_key(fp, salt=salt)
         dek = DekManager(base_dir=tmp_path).load_or_create_dek()
         store = EncryptedChatHistory(
-            history=history, storage_key=dek, legacy_key=legacy_key,
+            history=history,
+            storage_key=dek,
+            legacy_key=legacy_key,
             wrap_suite="x25519-mlkem768",
         )
         store.migrate_store()

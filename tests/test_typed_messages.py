@@ -23,16 +23,15 @@ from skchat.models import ChatMessage, ContentType
 # ---------------------------------------------------------------------------
 class TestContentTypeExtensible:
     def test_known_enum_normalises_to_canonical(self) -> None:
-        m = ChatMessage(sender="a@x", recipient="b@x", content="hi",
-                         content_type=ContentType.PLAIN)
+        m = ChatMessage(
+            sender="a@x", recipient="b@x", content="hi", content_type=ContentType.PLAIN
+        )
         assert m.content_type == "text/plain"
 
     def test_short_wire_form_normalises_inbound(self) -> None:
-        m = ChatMessage(sender="a@x", recipient="b@x", content="hi",
-                        content_type="text")
+        m = ChatMessage(sender="a@x", recipient="b@x", content="hi", content_type="text")
         assert m.content_type == "text/plain"
-        m2 = ChatMessage(sender="a@x", recipient="b@x", content="hi",
-                         content_type="markdown")
+        m2 = ChatMessage(sender="a@x", recipient="b@x", content="hi", content_type="markdown")
         assert m2.content_type == "text/markdown"
 
     def test_unknown_content_type_deserializes_and_keeps_body(self) -> None:
@@ -51,9 +50,13 @@ class TestContentTypeExtensible:
         assert m.rich == {"lat": 1.0, "lon": 2.0}
 
     def test_unknown_type_round_trips_to_wire_unchanged(self) -> None:
-        m = ChatMessage(sender="a@x", recipient="b@x", content="poll body",
-                        content_type="application/skchat.poll+json",
-                        rich={"options": ["yes", "no"]})
+        m = ChatMessage(
+            sender="a@x",
+            recipient="b@x",
+            content="poll body",
+            content_type="application/skchat.poll+json",
+            rich={"options": ["yes", "no"]},
+        )
         wire = ContentType.to_wire(m.content_type)
         assert wire == "application/skchat.poll+json"
 
@@ -63,9 +66,7 @@ class TestContentTypeExtensible:
 
     def test_legacy_json_without_new_fields_loads(self) -> None:
         """Back-compat: old serialized messages have none of the new fields."""
-        m = ChatMessage.model_validate_json(
-            '{"sender":"a@x","recipient":"b@x","content":"old"}'
-        )
+        m = ChatMessage.model_validate_json('{"sender":"a@x","recipient":"b@x","content":"old"}')
         assert m.rich is None
         assert m.edited_at is None
         assert m.edit_history is None
@@ -115,9 +116,12 @@ class TestMessageMutators:
         assert m.receipts.read == ["b@x"]
 
     def test_full_contract_round_trip(self) -> None:
-        m = self._msg(thread_id="t1", reply_to_id="r1",
-                      content_type="application/skchat.poll+json",
-                      rich={"q": "?"})
+        m = self._msg(
+            thread_id="t1",
+            reply_to_id="r1",
+            content_type="application/skchat.poll+json",
+            rich={"q": "?"},
+        )
         m.set_reaction("🔥", "b@x")
         m.record_receipt("read", "b@x")
         m.apply_edit("hello v2")
@@ -196,11 +200,15 @@ class TestHistoryMutation:
 
     def test_thread_linkage_via_get_thread(self, hist) -> None:
         root = hist.add_message("a@x", "b@x", "root")
-        reply = ChatMessage(sender="b@x", recipient="a@x", content="reply",
-                            thread_id="thread-1", reply_to_id=root.id)
+        reply = ChatMessage(
+            sender="b@x",
+            recipient="a@x",
+            content="reply",
+            thread_id="thread-1",
+            reply_to_id=root.id,
+        )
         hist.save(reply)
-        also = ChatMessage(sender="a@x", recipient="b@x", content="follow",
-                           thread_id="thread-1")
+        also = ChatMessage(sender="a@x", recipient="b@x", content="follow", thread_id="thread-1")
         hist.save(also)
         msgs = hist.get_thread("thread-1")
         assert [m.content for m in msgs] == ["reply", "follow"]
@@ -234,21 +242,39 @@ class TestProxyContract:
         msgs = client.get("/api/v1/conversations/" + daemon_proxy.LUMINA_ID).json()
         assert msgs
         m = msgs[0]
-        for key in ("id", "conversation_id", "sender", "content_type", "body",
-                    "rich", "ts", "reply_to_id", "thread_id", "edited_at",
-                    "edit_history", "reactions", "receipts"):
+        for key in (
+            "id",
+            "conversation_id",
+            "sender",
+            "content_type",
+            "body",
+            "rich",
+            "ts",
+            "reply_to_id",
+            "thread_id",
+            "edited_at",
+            "edit_history",
+            "reactions",
+            "receipts",
+        ):
             assert key in m, f"missing {key}"
         assert m["content_type"] == "markdown"  # short wire form
         assert m["body"] == "hi"
 
     def test_send_with_reply_and_thread_links(self, client) -> None:
-        first = client.post("/api/v1/send",
-                            json={"recipient": "lumina", "message": "parent"}).json()
+        first = client.post(
+            "/api/v1/send", json={"recipient": "lumina", "message": "parent"}
+        ).json()
         parent_id = first["id"]
-        second = client.post("/api/v1/send", json={
-            "recipient": "lumina", "message": "child",
-            "reply_to_id": parent_id, "thread_id": "thread-X",
-        }).json()
+        second = client.post(
+            "/api/v1/send",
+            json={
+                "recipient": "lumina",
+                "message": "child",
+                "reply_to_id": parent_id,
+                "thread_id": "thread-X",
+            },
+        ).json()
         # Lumina's reply links back to the user turn + inherits the thread.
         assert second["reply"]["reply_to_id"] == second["id"]
         assert second["reply"]["thread_id"] == "thread-X"
@@ -258,21 +284,24 @@ class TestProxyContract:
         assert "child" in bodies
 
     def test_react_add_remove_round_trip(self, client) -> None:
-        sent = client.post("/api/v1/send",
-                           json={"recipient": "lumina", "message": "react"}).json()
+        sent = client.post("/api/v1/send", json={"recipient": "lumina", "message": "react"}).json()
         mid = sent["id"]
-        r = client.post("/api/v1/react", json={
-            "conversation_id": daemon_proxy.LUMINA_ID, "message_id": mid,
-            "emoji": "👍", "op": "add"})
+        r = client.post(
+            "/api/v1/react",
+            json={
+                "conversation_id": daemon_proxy.LUMINA_ID,
+                "message_id": mid,
+                "emoji": "👍",
+                "op": "add",
+            },
+        )
         assert r.status_code == 200
         assert r.json()["message"]["reactions"] == {"👍": [daemon_proxy.OPERATOR_ID]}
-        r2 = client.post("/api/v1/react", json={
-            "message_id": mid, "emoji": "👍", "op": "remove"})
+        r2 = client.post("/api/v1/react", json={"message_id": mid, "emoji": "👍", "op": "remove"})
         assert r2.json()["message"]["reactions"] is None
 
     def test_edit_endpoint_appends_history(self, client) -> None:
-        sent = client.post("/api/v1/send",
-                           json={"recipient": "lumina", "message": "v1"}).json()
+        sent = client.post("/api/v1/send", json={"recipient": "lumina", "message": "v1"}).json()
         mid = sent["id"]
         r = client.post("/api/v1/edit", json={"message_id": mid, "body": "v2"})
         assert r.status_code == 200
@@ -283,34 +312,46 @@ class TestProxyContract:
 
     def test_edit_out_of_window_is_403(self, client) -> None:
         old = datetime.now(timezone.utc) - timedelta(hours=25)
-        m = ChatMessage(sender=daemon_proxy.OPERATOR_ID,
-                        recipient=daemon_proxy.LUMINA_URI, content="old", timestamp=old)
+        m = ChatMessage(
+            sender=daemon_proxy.OPERATOR_ID,
+            recipient=daemon_proxy.LUMINA_URI,
+            content="old",
+            timestamp=old,
+        )
         client._hist.save(m)
         r = client.post("/api/v1/edit", json={"message_id": m.id, "body": "late"})
         assert r.status_code == 403
 
     def test_receipt_endpoint_records(self, client) -> None:
-        sent = client.post("/api/v1/send",
-                           json={"recipient": "lumina", "message": "deliver"}).json()
+        sent = client.post(
+            "/api/v1/send", json={"recipient": "lumina", "message": "deliver"}
+        ).json()
         mid = sent["id"]
-        r = client.post("/api/v1/receipt", json={
-            "conversation_id": daemon_proxy.LUMINA_ID, "message_id": mid,
-            "kind": "read", "sender": "chef@skworld.io"})
+        r = client.post(
+            "/api/v1/receipt",
+            json={
+                "conversation_id": daemon_proxy.LUMINA_ID,
+                "message_id": mid,
+                "kind": "read",
+                "sender": "chef@skworld.io",
+            },
+        )
         assert r.status_code == 200
         assert r.json()["message"]["receipts"]["read"] == ["chef@skworld.io"]
 
     def test_react_missing_message_404(self, client) -> None:
-        r = client.post("/api/v1/react",
-                        json={"message_id": "nope", "emoji": "👍", "op": "add"})
+        r = client.post("/api/v1/react", json={"message_id": "nope", "emoji": "👍", "op": "add"})
         assert r.status_code == 404
 
     def test_unknown_content_type_renders_body_through_proxy(self, client) -> None:
         """End-to-end Golden rule: a typed message surfaces its body via the API."""
         m = ChatMessage(
-            sender=daemon_proxy.LUMINA_URI, recipient=daemon_proxy.OPERATOR_ID,
+            sender=daemon_proxy.LUMINA_URI,
+            recipient=daemon_proxy.OPERATOR_ID,
             content="📍 Shared a location",
             content_type="application/skchat.location+json",
-            rich={"lat": 1.0, "lon": 2.0})
+            rich={"lat": 1.0, "lon": 2.0},
+        )
         client._hist.save(m)
         msgs = client.get("/api/v1/conversations/" + daemon_proxy.LUMINA_ID).json()
         loc = [x for x in msgs if x["id"] == m.id][0]

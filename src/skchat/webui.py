@@ -36,11 +36,34 @@ from fastapi.responses import (
 )
 
 from . import __version__
-from .dataplane_auth import require_dataplane_auth
+from .dataplane_auth import dataplane_auth_enabled, enforce_dataplane_auth, require_dataplane_auth
+from .dataplane_paths import is_gated
 
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="SKChat Web UI")
+
+
+@app.middleware("http")
+async def _operator_auth_gate(request, call_next):
+    """Method+path-aware operator-auth gate (dark, flag OFF by default).
+
+    Flag OFF -> `dataplane_auth_enabled()` is False, this is a pure passthrough
+    (zero behavior change to the live daemon). Flag ON -> gated requests
+    (per `is_gated`) must carry a valid operator-session JWT or capauth
+    assertion, or the request is refused with a 401 before reaching the route.
+
+    WEBSOCKET BOUNDARY: this is an ``@app.middleware("http")`` gate, it does
+    NOT cover websocket routes (``/ws/*``, e.g. ``/ws/chat`` below). See the
+    module docstring in ``dataplane_paths.py`` for the full boundary note and
+    why that is currently low-risk (refresh-signal metadata only, no content).
+    """
+    if dataplane_auth_enabled() and is_gated(request.method, request.url.path):
+        try:
+            enforce_dataplane_auth(request)
+        except Exception:
+            return JSONResponse({"detail": "capauth authentication required"}, status_code=401)
+    return await call_next(request)
 
 
 @app.middleware("http")
@@ -190,9 +213,26 @@ except ImportError as _e:
 # Daemon API proxy for the Flutter app
 try:
     from .daemon_proxy import router as daemon_api_router
+
     app.include_router(daemon_api_router)
 except ImportError as _e:
     logger.warning("daemon API proxy not registered: %s", _e)
+
+# Operator device-key auth handshake (/api/v1/auth/*). Ships dark: routes are
+# live but nothing is gated on their output until the enforcement middleware
+# is added in a later task.
+try:
+    from .operator_auth import DeviceStore as _DeviceStore
+    from .operator_auth_routes import (
+        register_operator_auth_routes as _register_operator_auth_routes,
+    )
+
+    _operator_device_store = _DeviceStore(
+        os.path.expanduser("~/.skchat/state/operator_devices.json")
+    )
+    _register_operator_auth_routes(app, device_store=_operator_device_store)
+except ImportError as _e:
+    logger.warning("operator auth routes not registered: %s", _e)
 
 
 @app.get("/")
@@ -228,8 +268,10 @@ async def media_file(path: str, node: str = ".158"):
     """
     from fastapi import HTTPException
     from fastapi.responses import FileResponse
+
     try:
         from skcomms.access.files import get_default_access
+
         resolved = get_default_access()._resolve_checked(path, must_exist=True)
     except Exception as exc:  # PathDenied / traversal / hard-denied secret
         raise HTTPException(status_code=403, detail=f"denied: {exc}")
@@ -255,9 +297,10 @@ async def access_tool_proxy(request: Request):
     capauth-signed token, so the access gate authorizes it exactly as before.
     Body: ``{node, token, tool, arguments}``.
     """
-    from fastapi import HTTPException
     import urllib.error
     import urllib.request
+
+    from fastapi import HTTPException
 
     body = await request.json()
     node = body.get("node", ".158")
@@ -1138,8 +1181,10 @@ async def api_send(
     if _grp is not None:
         history = _get_history()
         own = ChatMessage(
-            sender=identity, recipient=f"group:{_grp.id}",
-            content=content, thread_id=_grp.id,
+            sender=identity,
+            recipient=f"group:{_grp.id}",
+            content=content,
+            thread_id=_grp.id,
         )
         history.save(own)
         for member in _grp.members:
@@ -1149,8 +1194,10 @@ async def api_send(
                 if transport:
                     transport.send_message(
                         ChatMessage(
-                            sender=identity, recipient=member.identity_uri,
-                            content=content, thread_id=_grp.id,
+                            sender=identity,
+                            recipient=member.identity_uri,
+                            content=content,
+                            thread_id=_grp.id,
                         )
                     )
             except Exception as exc:  # noqa: BLE001

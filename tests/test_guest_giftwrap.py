@@ -87,9 +87,8 @@ class TestRoundTrip:
         assert e1["ciphertext"] != e2["ciphertext"]
         # Fresh throwaway key each time (unlinkable across sends).
         assert e1["throwaway_pub"] != e2["throwaway_pub"]
-        assert (
-            giftwrap.open_giftwrap(e1, recipient.private_key.hex())
-            == giftwrap.open_giftwrap(e2, recipient.private_key.hex())
+        assert giftwrap.open_giftwrap(e1, recipient.private_key.hex()) == giftwrap.open_giftwrap(
+            e2, recipient.private_key.hex()
         )
 
 

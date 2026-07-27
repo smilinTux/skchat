@@ -5,6 +5,7 @@ build its soul+FEB prompt (skcapstone), recall memory (skmemory), generate via
 skgateway (role sk-default — registry-routed; see registry.yaml roles.sk-default),
 and return the reply. Talk-first (no tool-loop).
 """
+
 from __future__ import annotations
 
 import logging
@@ -26,8 +27,17 @@ _BROADCAST_MENTIONS = ["@all", "@both", "@everyone"]
 # out of the box, one agent never auto-responds to another agent's message —
 # the loop breaker (see should_respond). Humans (e.g. chef) are NOT in this set.
 _KNOWN_AGENTS = [
-    "lumina", "opus", "jarvis", "ava", "artisan", "herald",
-    "sentinel", "architect", "scholar", "steward", "coder",
+    "lumina",
+    "opus",
+    "jarvis",
+    "ava",
+    "artisan",
+    "herald",
+    "sentinel",
+    "architect",
+    "scholar",
+    "steward",
+    "coder",
 ]
 
 
@@ -43,9 +53,7 @@ class GroupResponderConfig:
     max_reply_tokens: int = 800
 
 
-def load_group_config(
-    agent: str, env: Optional[Mapping[str, str]] = None
-) -> GroupResponderConfig:
+def load_group_config(agent: str, env: Optional[Mapping[str, str]] = None) -> GroupResponderConfig:
     """Build a config for *agent* from env (SKCHAT_GROUP_*) with SKWorld defaults."""
     if env is None:
         env = os.environ
@@ -103,12 +111,11 @@ def should_respond(content: str, sender: str, cfg: GroupResponderConfig) -> bool
     return any(_token_match(low, m) for m in cfg.mentions)
 
 
-def generate(
-    messages: list[dict], cfg: GroupResponderConfig, http=None
-) -> Optional[str]:
+def generate(messages: list[dict], cfg: GroupResponderConfig, http=None) -> Optional[str]:
     """POST an OpenAI-shaped chat completion to skgateway; return the reply text."""
     if http is None:  # pragma: no cover - real client, exercised live
         import httpx
+
         http = httpx.Client()
     payload = {
         "model": cfg.model,
@@ -130,6 +137,7 @@ def generate(
 
 def _default_store():  # pragma: no cover - live skmemory
     from skmemory import MemoryStore
+
     return MemoryStore()
 
 
@@ -158,8 +166,11 @@ def store_turn(user_text: str, reply: str, gid: str, store=None) -> None:
         title = (user_text or reply or "group turn").strip()[:60]
         content = f"User: {user_text}\n\nReply: {reply}".strip()[:4000]
         store.snapshot(
-            title=title, content=content,
-            tags=["skchat", f"{gid}"], source="skchat", source_ref=gid,
+            title=title,
+            content=content,
+            tags=["skchat", f"{gid}"],
+            source="skchat",
+            source_ref=gid,
         )
     except Exception as exc:
         logger.debug("group store_turn failed: %s", exc)
@@ -258,7 +269,7 @@ class GroupResponder:
             sender_short = _sender_handle(sender)
             role = "assistant" if sender_short == self.cfg.agent else "user"
             turns.append({"role": role, "content": f"{sender_short}: {content}"})
-        return turns[-self.cfg.history_turns:]
+        return turns[-self.cfg.history_turns :]
 
     def respond_direct(self, msg: ChatMessage) -> Optional[str]:
         """Reply to a 1:1 DM addressed to this agent from a HUMAN.

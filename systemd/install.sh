@@ -18,7 +18,9 @@
 #   Discovery: skchat-nostr-relay (:7447)
 #   Web:       skchat-app-web (:8088)
 #   Agents:    jarvis-heartbeat
-#   Timers:    telegram-catchup.timer + telegram-catchup.service
+#   Timers:    telegram-catchup.timer + telegram-catchup.service,
+#              skchat-backup.timer + skchat-backup.service,
+#              skchat-health-probe.timer + skchat-health-probe.service
 #   Drop-ins:  skchat-daemon.d/{guest,group,dm-ratchet}, skchat-daemon-opus.d/group,
 #              skchat-telegram-{opus,lumina}.d/override,
 #              skchat-lumina-call.d/{fixes,musetalk,tts,vad,webui},
@@ -77,6 +79,7 @@ UNITS=(
     skchat-telegram-lumina.service
     skchat-telegram@.service
     skchat-lumina-call.service
+    skchat-call-answerer@.service
     skchat-nostr-relay.service
     skchat-piper-tts.service
     skchat-webui@.service
@@ -85,25 +88,37 @@ UNITS=(
     skchat-coturn.service
     telegram-catchup.service
     telegram-catchup.timer
+    skchat-backup.service
+    skchat-backup.timer
+    skchat-health-probe.service
+    skchat-health-probe.timer
 )
 
 # Units to enable by default (matches the .158 live-enabled set). Excludes
 # skchat-daemon-chef (disabled on .158), telegram-catchup.service (static;
 # enable the .timer instead), and the skchat-telegram@ template.
+# skchat-lumina-call is NOT enabled: it is a Space agent hardwired to the
+# lumina-and-chef room and 401-crash-looped on /livekit/token under the auth
+# gate. The 1:1 call answerer (skchat-call-answerer@opus) replaces it for real
+# calls; it polls the opus webui (skchat-webui@opus, enabled below) which is the
+# callee-identity surface for Lumina->Opus calls.
 ENABLE_UNITS=(
     skchat-daemon.service
     skchat-daemon-opus.service
     skchat-app-web.service
     skchat-telegram-opus.service
     skchat-telegram-lumina.service
-    skchat-lumina-call.service
     skchat-nostr-relay.service
     skchat-piper-tts.service
     skchat-webui@lumina.service
+    skchat-webui@opus.service
+    skchat-call-answerer@opus.service
     livekit-server.service
     jarvis-heartbeat.service
     skchat-coturn.service
     telegram-catchup.timer
+    skchat-backup.timer
+    skchat-health-probe.timer
 )
 
 # Required secret-bearing EnvironmentFiles (name -> description). Referenced with
@@ -115,6 +130,7 @@ REQUIRED_ENV=(
     "${SKCHAT_CFG}/telegram-opus.env|Opus bot token"
     "${SKCHAT_CFG}/telegram-lumina.env|Lumina bot token"
     "${SKCHAT_CFG}/webui-lumina.env|lumina webui config + LiveKit secret (SKCHAT_PORT required)"
+    "${SKCHAT_CFG}/webui-opus.env|opus webui + answerer config (SKCHAT_PORT + SKCHAT_GUEST_OPERATOR_TOKEN required)"
     "${HOME}/.config/livekit/livekit.yaml|LiveKit API keys"
     "${COTURN_DIR}/coturn.secret|coturn shared secret"
 )

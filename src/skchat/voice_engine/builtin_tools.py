@@ -387,7 +387,6 @@ def build_default_registry(cfg: VoiceConfig, agent: str) -> ToolRegistry:  # noq
 
         register_voice_tools(reg)
     except Exception as exc:
-        log.debug("lumina_creative voice tools unavailable (%s: %s)",
-                  type(exc).__name__, exc)
+        log.debug("lumina_creative voice tools unavailable (%s: %s)", type(exc).__name__, exc)
 
     return reg

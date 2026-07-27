@@ -2,9 +2,13 @@ from skchat.spaces.registry import SpaceRegistry
 from skchat.spaces.space import Space, SpaceStatus
 
 
-def _space(sid="space-aaaa1111aaaa1111"):
+def _space(sid="space-aaaa1111aaaa1111", created_at=0.0):
     return Space(
-        space_id=sid, host_fqid="lumina@chef.skworld", title="Town Hall", slug="town-hall"
+        space_id=sid,
+        host_fqid="lumina@chef.skworld",
+        title="Town Hall",
+        slug="town-hall",
+        created_at=created_at,
     )
 
 
@@ -34,6 +38,27 @@ def test_persists_across_instances(tmp_path):
 
 def test_get_unknown_returns_none(tmp_path):
     assert SpaceRegistry(path=tmp_path / "spaces.json").get("nope") is None
+
+
+def test_live_orders_newest_created_first(tmp_path):
+    """Spaces listing should show the newest Space on top, sorted at the source."""
+    reg = SpaceRegistry(path=tmp_path / "spaces.json")
+    reg.add(_space(sid="space-oldest0000000", created_at=100.0))
+    reg.add(_space(sid="space-middle0000000", created_at=200.0))
+    reg.add(_space(sid="space-newest0000000", created_at=300.0))
+    ids = [s.space_id for s in reg.live()]
+    assert ids == ["space-newest0000000", "space-middle0000000", "space-oldest0000000"]
+
+
+def test_live_sorts_missing_created_at_last(tmp_path):
+    """Backward compat: pre-existing spaces without created_at (default 0.0)
+    sort after any space with a real timestamp, not just wherever insertion
+    order happened to put them."""
+    reg = SpaceRegistry(path=tmp_path / "spaces.json")
+    reg.add(_space(sid="space-newer0000000000", created_at=500.0))
+    reg.add(_space(sid="space-legacy00000000", created_at=0.0))
+    ids = [s.space_id for s in reg.live()]
+    assert ids == ["space-newer0000000000", "space-legacy00000000"]
 
 
 def test_add_remove_speaker_authoritative_and_idempotent(tmp_path):

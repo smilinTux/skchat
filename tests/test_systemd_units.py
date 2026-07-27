@@ -20,6 +20,10 @@ from pathlib import Path
 
 import pytest
 
+# systemd-analyze verify checks ExecStart binaries exist on THIS host;
+# a bare CI runner has no installed skchat -> integration-gated.
+pytestmark = pytest.mark.integration
+
 SYSTEMD_DIR = Path(__file__).resolve().parent.parent / "systemd"
 # Phase 1 reconcile (6ba43ea) moved the shipped unit files out of the top level
 # of systemd/ into systemd/units/ (top level now holds install.sh, README.md,
@@ -28,9 +32,7 @@ SYSTEMD_DIR = Path(__file__).resolve().parent.parent / "systemd"
 UNITS_DIR = SYSTEMD_DIR / "units"
 
 UNIT_FILES = sorted(
-    p
-    for p in UNITS_DIR.iterdir()
-    if p.suffix in (".service", ".target", ".timer", ".socket")
+    p for p in UNITS_DIR.iterdir() if p.suffix in (".service", ".target", ".timer", ".socket")
 )
 
 # The full reconciled .158 skchat plane installed by systemd/install.sh.
@@ -51,6 +53,10 @@ EXPECTED_UNITS = {
     "skchat-coturn.service",
     "telegram-catchup.service",
     "telegram-catchup.timer",
+    "skchat-backup.service",
+    "skchat-backup.timer",
+    "skchat-health-probe.service",
+    "skchat-health-probe.timer",
 }
 
 # Old bridge units replaced by the skchat-telegram-*/skchat-telegram@ template.
@@ -136,9 +142,7 @@ def test_bridge_template_runs_current_bridge() -> None:
     # The template is the go-forward replacement for the retired bridge units,
     # and records that retirement in its header so the migration is traceable.
     for retired in RETIRED_BRIDGE_UNITS:
-        assert retired in text, (
-            f"telegram@ template should document that it retires {retired}"
-        )
+        assert retired in text, f"telegram@ template should document that it retires {retired}"
 
 
 def test_bridge_script_exists() -> None:
@@ -201,8 +205,6 @@ def test_systemd_analyze_verify(unit: Path, tmp_path: Path) -> None:
     out = (proc.stderr or "") + (proc.stdout or "")
     problems = [ln.strip() for ln in out.splitlines() if ln.strip()]
     unresolved = [
-        ln
-        for ln in problems
-        if not (_BENIGN_VERIFY.search(ln) and _PROVISIONED_HELPER in ln)
+        ln for ln in problems if not (_BENIGN_VERIFY.search(ln) and _PROVISIONED_HELPER in ln)
     ]
     assert not unresolved, out

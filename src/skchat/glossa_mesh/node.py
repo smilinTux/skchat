@@ -15,7 +15,8 @@ from skcomms.glossa.codebook import Codebook
 from skcomms.glossa.handshake import CapabilityDescriptor, negotiate
 from skcomms.glossa.message import Message
 
-from skchat.glossa_mesh import codec_ext as codec, protocol
+from skchat.glossa_mesh import codec_ext as codec
+from skchat.glossa_mesh import protocol
 from skchat.glossa_mesh.bus import MeshBus
 from skchat.glossa_mesh.rate import RateController
 

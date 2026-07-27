@@ -108,6 +108,12 @@ class _InMemoryHistory:
         self._messages.append(message)
         return message.id
 
+    def record_event(self, message: ChatMessage) -> None:
+        """No-op matching ChatHistory.record_event: the authoritative MessageLog
+        append is default-off and best-effort, and the transport calls it at every
+        send/receive site, so the stub must accept it without doing anything."""
+        return None
+
     def all_messages(self) -> list[ChatMessage]:
         return list(self._messages)
 

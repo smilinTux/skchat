@@ -49,19 +49,26 @@ def _hybrid_group_with_member(pub_hex):
 
 # ── Regression: a typed control message carries NO body (routes by metadata) ───
 
+
 def test_key_message_with_empty_content_is_constructible():
     """A control-plane key message routes by ``metadata['group_key_package']`` and
     carries NO chat body — the model must accept an empty ``content`` when the
     typed package is present (else ``distribute_group_epoch`` raises on build and
     the whole delivery layer silently fails). See models._require_content_or_...."""
     from skchat.models import ChatMessage
-    m = ChatMessage(sender="capauth:s@skworld.io", recipient="capauth:recv@skworld.io",
-                    content="", thread_id="gid",
-                    metadata={"group_key_package": {"type": "group_epoch_advance"}})
+
+    m = ChatMessage(
+        sender="capauth:s@skworld.io",
+        recipient="capauth:recv@skworld.io",
+        content="",
+        thread_id="gid",
+        metadata={"group_key_package": {"type": "group_epoch_advance"}},
+    )
     assert m.content == "" and m.metadata["group_key_package"]["type"] == "group_epoch_advance"
 
 
 # ── Task 1: build + distribute the epoch package ───────────────────────────────
+
 
 def test_build_package_shape():
     g = _hybrid_group_with_member("aa" * 32)
@@ -81,7 +88,7 @@ def test_distribute_delivers_typed_message_to_keyed_members_only():
         return True
 
     delivered = G.distribute_group_epoch(g, "capauth:sender@skworld.io", deliver)
-    assert delivered == ["capauth:recv@skworld.io"]        # sender excluded, keyless excluded
+    assert delivered == ["capauth:recv@skworld.io"]  # sender excluded, keyless excluded
     m = sent[0]
     assert m.recipient == "capauth:recv@skworld.io"
     assert m.metadata.get("group_key_package", {}).get("type") == "group_epoch_advance"
@@ -104,33 +111,32 @@ def test_distribute_deliver_failure_is_fail_closed_readable():
 
 # ── Task 2: fire distribution from the send path, once per epoch ───────────────
 
+
 def test_fan_out_distributes_epoch_once_when_sealing(isolated_groupstore, monkeypatch):
     monkeypatch.setenv("SKCHAT_SEAL_GROUPS", "1")
     delivered = []
-    monkeypatch.setattr(G, "local_deliver_to_agent",
-                        lambda m: (delivered.append(m) or True))
+    monkeypatch.setattr(G, "local_deliver_to_agent", lambda m: delivered.append(m) or True)
     monkeypatch.setattr(G, "_delivery_transport", lambda uri: None)
     g = _hybrid_group_with_member("cc" * 32)
     G.save_group(g)
     G.fan_out_send(g, _hist(), "capauth:sender@skworld.io", "one")
     key_msgs = [m for m in delivered if m.metadata.get("group_key_package")]
-    assert len(key_msgs) == 1                                  # distributed once
+    assert len(key_msgs) == 1  # distributed once
     G.fan_out_send(G.load_group(g.id), _hist(), "capauth:sender@skworld.io", "two")
     key_msgs = [m for m in delivered if m.metadata.get("group_key_package")]
-    assert len(key_msgs) == 1                                  # NOT re-distributed
+    assert len(key_msgs) == 1  # NOT re-distributed
 
 
 def test_fan_out_does_not_distribute_when_flag_off(isolated_groupstore, monkeypatch):
     monkeypatch.delenv("SKCHAT_SEAL_GROUPS", raising=False)
     delivered = []
-    monkeypatch.setattr(G, "local_deliver_to_agent",
-                        lambda m: (delivered.append(m) or True))
+    monkeypatch.setattr(G, "local_deliver_to_agent", lambda m: delivered.append(m) or True)
     monkeypatch.setattr(G, "_delivery_transport", lambda uri: None)
     g = _hybrid_group_with_member("ce" * 32)
     G.save_group(g)
     G.fan_out_send(g, _hist(), "capauth:sender@skworld.io", "one")
     key_msgs = [m for m in delivered if m.metadata.get("group_key_package")]
-    assert key_msgs == []                                      # nothing distributed
+    assert key_msgs == []  # nothing distributed
 
 
 def test_fan_out_key_delivery_count_is_honest_on_failure(isolated_groupstore, monkeypatch):
@@ -140,8 +146,8 @@ def test_fan_out_key_delivery_count_is_honest_on_failure(isolated_groupstore, mo
     send still proceeds and the epoch is marked distributed (attempt once, never
     re-loop the send). Locks in the fail-closed-readable delivery-count contract."""
     monkeypatch.setenv("SKCHAT_SEAL_GROUPS", "1")
-    monkeypatch.setattr(G, "local_deliver_to_agent", lambda m: False)   # local delivery fails
-    monkeypatch.setattr(G, "_delivery_transport", lambda uri: None)      # no network transport
+    monkeypatch.setattr(G, "local_deliver_to_agent", lambda m: False)  # local delivery fails
+    monkeypatch.setattr(G, "_delivery_transport", lambda uri: None)  # no network transport
     recorded = {}
     real_distribute = G.distribute_group_epoch
 
@@ -154,20 +160,23 @@ def test_fan_out_key_delivery_count_is_honest_on_failure(isolated_groupstore, mo
     g = _hybrid_group_with_member("cf" * 32)
     G.save_group(g)
     gmsg = G.fan_out_send(g, _hist(), "capauth:sender@skworld.io", "hi")
-    assert recorded["delivered"] == []                          # honest: nothing delivered
-    assert gmsg.content == "hi"                                 # send still proceeds
+    assert recorded["delivered"] == []  # honest: nothing delivered
+    assert gmsg.content == "hi"  # send still proceeds
     assert G.load_group(g.id).metadata.get("epoch_distributed") == g.epoch  # attempted once
 
 
 # ── Task 3: receiver daemon consumes the key message ───────────────────────────
 
+
 def test_consume_group_key_message_keys_local_group(tmp_path, monkeypatch):
     from skchat import pq_prekeys as PQ
+
     if not PQ.available():
         pytest.skip("no PQ")
     monkeypatch.setenv("SKCHAT_HOME", str(tmp_path))
     monkeypatch.setenv("SKAGENT", "recv")
     from skchat.models import ChatMessage
+
     pub, _ = PQ.ensure_agent_keypair("recv")
     recv_uri = "capauth:recv@skworld.io"
     sender = GroupChat(name="S", kem_suite="x25519-mlkem768")
@@ -179,13 +188,22 @@ def test_consume_group_key_message_keys_local_group(tmp_path, monkeypatch):
     recv.id = sender.id
     recv.add_member(identity_uri=recv_uri, role=MemberRole.ADMIN)
     G.save_group(recv)
-    msg = ChatMessage(sender="capauth:s@skworld.io", recipient=recv_uri, content="",
-                      thread_id=sender.id, metadata={"group_key_package": pkg})
+    msg = ChatMessage(
+        sender="capauth:s@skworld.io",
+        recipient=recv_uri,
+        content="",
+        thread_id=sender.id,
+        metadata={"group_key_package": pkg},
+    )
     assert G.consume_group_key_message(msg, agent="recv") is True
     assert G.load_group(sender.id).epoch_secret_hex == sender.epoch_secret_hex
     # a normal message is not consumed
-    assert G.consume_group_key_message(
-        ChatMessage(sender="x", recipient=recv_uri, content="hi"), agent="recv") is False
+    assert (
+        G.consume_group_key_message(
+            ChatMessage(sender="x", recipient=recv_uri, content="hi"), agent="recv"
+        )
+        is False
+    )
 
 
 def test_consume_routes_by_typed_metadata_without_pq(tmp_path, monkeypatch):
@@ -197,28 +215,51 @@ def test_consume_routes_by_typed_metadata_without_pq(tmp_path, monkeypatch):
     live PQ KEM (the PQ round-trip tests self-skip when liboqs is absent)."""
     monkeypatch.setenv("SKCHAT_HOME", str(tmp_path))
     from skchat.models import ChatMessage
+
     # Typed control message: apply fails closed (empty distributions), yet the
     # message is still consumed so it never becomes a chat turn.
     key_msg = ChatMessage(
-        sender="capauth:s@skworld.io", recipient="capauth:recv@skworld.io",
-        content="", thread_id="gid",
-        metadata={"group_key_package": {"type": "group_epoch_advance",
-                                        "group_id": "gid", "distributions": {}}})
+        sender="capauth:s@skworld.io",
+        recipient="capauth:recv@skworld.io",
+        content="",
+        thread_id="gid",
+        metadata={
+            "group_key_package": {
+                "type": "group_epoch_advance",
+                "group_id": "gid",
+                "distributions": {},
+            }
+        },
+    )
     assert G.consume_group_key_message(key_msg, agent="recv") is True
     # A normal chat message is not consumed (routes onward to chat handling).
-    assert G.consume_group_key_message(
-        ChatMessage(sender="a", recipient="capauth:recv@skworld.io", content="hi"),
-        agent="recv") is False
+    assert (
+        G.consume_group_key_message(
+            ChatMessage(sender="a", recipient="capauth:recv@skworld.io", content="hi"),
+            agent="recv",
+        )
+        is False
+    )
     # A message with a non-dict package is likewise not consumed.
-    assert G.consume_group_key_message(
-        ChatMessage(sender="a", recipient="capauth:recv@skworld.io", content="yo",
-                    metadata={"group_key_package": "not-a-dict"})) is False
+    assert (
+        G.consume_group_key_message(
+            ChatMessage(
+                sender="a",
+                recipient="capauth:recv@skworld.io",
+                content="yo",
+                metadata={"group_key_package": "not-a-dict"},
+            )
+        )
+        is False
+    )
 
 
 # ── Task 4: end-to-end delivery integration ────────────────────────────────────
 
+
 def test_send_distribute_consume_unseal_end_to_end(tmp_path, monkeypatch):
     from skchat import pq_prekeys as PQ
+
     if not PQ.available():
         pytest.skip("no PQ")
     monkeypatch.setenv("SKCHAT_HOME", str(tmp_path))
@@ -227,7 +268,7 @@ def test_send_distribute_consume_unseal_end_to_end(tmp_path, monkeypatch):
     recv_uri = "capauth:recv@skworld.io"
     inbox = []
     monkeypatch.setenv("SKCHAT_SEAL_GROUPS", "1")
-    monkeypatch.setattr(G, "local_deliver_to_agent", lambda m: (inbox.append(m) or True))
+    monkeypatch.setattr(G, "local_deliver_to_agent", lambda m: inbox.append(m) or True)
     monkeypatch.setattr(G, "_delivery_transport", lambda uri: None)
     g = GroupChat(name="S", kem_suite="x25519-mlkem768")
     g.add_member(identity_uri="capauth:s@skworld.io", role=MemberRole.ADMIN)
@@ -244,7 +285,7 @@ def test_send_distribute_consume_unseal_end_to_end(tmp_path, monkeypatch):
     key_msgs = [m for m in inbox if m.metadata.get("group_key_package")]
     sealed_msgs = [m for m in inbox if G.is_sealed_group_content(getattr(m, "content", ""))]
     assert key_msgs and sealed_msgs
-    for m in key_msgs:                      # receiver consumes the key
+    for m in key_msgs:  # receiver consumes the key
         G.consume_group_key_message(m, agent="recv")
     opened = G.unseal_group_content(G.load_group(g.id), sealed_msgs[0].content)
     assert opened == "e2e secret"

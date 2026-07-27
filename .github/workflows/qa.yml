@@ -21,7 +21,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12"]
+        # 3.10 removed: the package sets requires-python >=3.11, so the 3.10 leg
+        # fails at install ("requires a different Python"). Matches ci/pytest.
+        python-version: ["3.11", "3.12"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -30,12 +32,13 @@ jobs:
       - name: Install package + dev deps
         run: |
           pip install -e ".[dev]" || { pip install -e . && pip install pytest pytest-asyncio; }
-      # Run the bulk of the suite. The default pyproject addopts already excludes
-      # the `live` marker (hits live model endpoints). We additionally deselect
-      # the markers that need a running stack / network / daemon and so cannot
-      # run headless in GitHub CI:
+      # Run the bulk of the suite. NOTE: a command-line `-m` OVERRIDES (does not
+      # combine with) pyproject's `addopts = -m 'not live'`, so we must re-state
+      # `not live` here or the live model-endpoint tests would run. On top of that
+      # we deselect the markers that need a running stack / network / daemon and
+      # so cannot run headless in GitHub CI:
       #   - integration : requires live external services
       #   - e2e_live    : end-to-end file-transport flows (need running daemon)
       #   - e2e_3way    : 3-way group chat E2E (need multiple live agents)
       - name: Run QA pytest suite
-        run: python -m pytest tests/ -q -m "not integration and not e2e_live and not e2e_3way"
+        run: python -m pytest tests/ -q -m "not live and not integration and not e2e_live and not e2e_3way"

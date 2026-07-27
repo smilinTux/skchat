@@ -34,7 +34,7 @@ import logging
 import os
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 logger = logging.getLogger("skchat.daemon_proxy.groups")
 
@@ -47,6 +47,7 @@ _GROUPS_DIR = Path("~/.skchat/groups").expanduser()
 
 def _skchat_home() -> Path:
     return Path(os.environ.get("SKCHAT_HOME", str(Path.home() / ".skchat"))).expanduser()
+
 
 # Default ACL for a new group (creator = admin).
 _DEFAULT_ACL: dict[str, Any] = {
@@ -125,8 +126,11 @@ def _group_has_key(group) -> bool:
 
 def _group_unkeyed_members(group) -> list[str]:
     """URIs of members that hold NO group key (would be dropped by a sealed send)."""
-    return [m.identity_uri for m in getattr(group, "members", [])
-            if not _member_has_group_key(group, m)]
+    return [
+        m.identity_uri
+        for m in getattr(group, "members", [])
+        if not _member_has_group_key(group, m)
+    ]
 
 
 def group_requires_encryption(group) -> bool:
@@ -165,7 +169,7 @@ def group_encryption_status(group) -> dict:
         "enabled": enabled,
         "required": required,
         "state": state,
-        "sealing": enabled and state != "blocked",   # wire copies are ciphertext
+        "sealing": enabled and state != "blocked",  # wire copies are ciphertext
         "all_members_keyed": all_keyed,
         "suite": getattr(group, "kem_suite", ""),
         "hybrid": bool(getattr(group, "is_hybrid", False)),
@@ -205,12 +209,11 @@ def unseal_group_content(group, content: str) -> str:
 
     if not is_sealed_group_content(content):
         return content
-    envelope = json.loads(base64.b64decode(content[len(GROUP_SEAL_SCHEME):]))
+    envelope = json.loads(base64.b64decode(content[len(GROUP_SEAL_SCHEME) :]))
     return group.decrypt_message(envelope)
 
 
-def apply_group_key_package(package: dict, *, self_uri: str,
-                            agent: Optional[str] = None) -> bool:
+def apply_group_key_package(package: dict, *, self_uri: str, agent: Optional[str] = None) -> bool:
     """Receiver side of group key distribution (the missing half of SEAM 9).
 
     The sender's ``rotate_key``/``_advance_epoch`` wraps the epoch secret to each
@@ -232,7 +235,7 @@ def apply_group_key_package(package: dict, *, self_uri: str,
         gid = package.get("group_id")
         wrapped = (package.get("distributions") or {}).get(self_uri)
         if not gid or not wrapped:
-            return False   # not addressed to us / no key for us in this package
+            return False  # not addressed to us / no key for us in this package
         group = load_group(gid)
         if group is None:
             logger.warning("apply_group_key_package: no local group %s to key", gid)
@@ -253,7 +256,7 @@ def apply_group_key_package(package: dict, *, self_uri: str,
         group.epoch_secret_hex = secret_hex
         group.epoch = int(package.get("epoch", group.epoch))
         group.key_version = int(package.get("key_version", group.key_version))
-        group.group_key = secret_hex          # compat shim, matches the sender
+        group.group_key = secret_hex  # compat shim, matches the sender
         group.message_index = 0
         save_group(group)
         logger.info("apply_group_key_package: group %s keyed at epoch %d", gid, group.epoch)
@@ -307,17 +310,19 @@ def distribute_group_epoch(group, sender_uri, deliver) -> list:
         if member.identity_uri == sender_uri or not _member_has_group_key(group, member):
             continue
         msg = ChatMessage(
-            sender=sender_uri, recipient=member.identity_uri, content="",
+            sender=sender_uri,
+            recipient=member.identity_uri,
+            content="",
             thread_id=group.id,
-            metadata={"group_key_package": pkg, "group_id": group.id,
-                      "kind": "group_key"},
+            metadata={"group_key_package": pkg, "group_id": group.id, "kind": "group_key"},
         )
         try:
             if deliver(msg):
                 out.append(member.identity_uri)
         except Exception as exc:
-            logger.warning("distribute_group_epoch: deliver to %s failed: %s",
-                           member.identity_uri, exc)
+            logger.warning(
+                "distribute_group_epoch: deliver to %s failed: %s", member.identity_uri, exc
+            )
     return out
 
 
@@ -357,7 +362,7 @@ def unseal_incoming_group_message(msg):
     content = getattr(msg, "content", "") or ""
     if not is_sealed_group_content(content):
         return msg
-    gid = (getattr(msg, "thread_id", "") or getattr(msg, "recipient", "") or "")
+    gid = getattr(msg, "thread_id", "") or getattr(msg, "recipient", "") or ""
     gid = gid.replace("group:", "")
     group = load_group(gid) if gid else None
     if group is None:
@@ -366,8 +371,7 @@ def unseal_incoming_group_message(msg):
     try:
         opened = unseal_group_content(group, content)
     except Exception as exc:
-        logger.warning("unseal_incoming_group_message: unseal failed for %s: %s",
-                       gid, exc)
+        logger.warning("unseal_incoming_group_message: unseal failed for %s: %s", gid, exc)
         return msg
     return msg.model_copy(update={"content": opened})
 
@@ -451,13 +455,13 @@ def refresh_group_member_keys(group) -> dict:
     """
     from . import pq_prekeys as PQ
 
-    unkeyed = [m for m in getattr(group, "members", [])
-               if not _member_has_group_key(group, m)]
+    unkeyed = [m for m in getattr(group, "members", []) if not _member_has_group_key(group, m)]
     keyed: list[str] = []
     still_unkeyed: list[str] = []
     changed = False
-    hybrid_keys = PQ.collect_member_hybrid_keys([m.identity_uri for m in unkeyed]) \
-        if unkeyed else {}
+    hybrid_keys = (
+        PQ.collect_member_hybrid_keys([m.identity_uri for m in unkeyed]) if unkeyed else {}
+    )
     for member in unkeyed:
         pub_hex = hybrid_keys.get(member.identity_uri, "")
         if pub_hex:
@@ -553,18 +557,36 @@ def can_add_members(group, by_uri: str) -> bool:
 # --------------------------------------------------------------------------- #
 # Serialization (Flutter contract)
 # --------------------------------------------------------------------------- #
-def group_to_conversation(group, *, online_uris: Optional[set[str]] = None) -> dict:
+def group_to_conversation(
+    group,
+    *,
+    online_uris: Optional[set[str]] = None,
+    fingerprint_for: Optional[Callable[[str], str]] = None,
+) -> dict:
     """Map a ``GroupChat`` to the app conversation shape (``is_group:true``).
 
     Matches ``Conversation.fromJson`` + ``GroupsNotifier`` expectations:
     ``peer_id`` (== group id), ``display_name``, ``is_group``, ``member_count``,
-    ``last_message``, ``last_message_time``.
+    ``last_message``, ``last_message_time``. When [fingerprint_for] is given,
+    each participant carries the member's real capauth ``soul_fingerprint`` so
+    the unified list can fold an aggregate group trust badge (empty string ->
+    keyless -> no badge; never a fabricated key).
     """
+    participants = [
+        member_to_app(
+            m,
+            online_uris=online_uris,
+            fingerprint=(fingerprint_for(m.identity_uri) if fingerprint_for else ""),
+        )
+        for m in group.members
+    ]
     return {
         "peer_id": group.id,
         "display_name": group.name,
         "last_message": (group.metadata.get("last_message") or ""),
-        "last_message_time": (group.metadata.get("last_message_time") or group.updated_at.isoformat()),
+        "last_message_time": (
+            group.metadata.get("last_message_time") or group.updated_at.isoformat()
+        ),
         "soul_fingerprint": group.id,
         "is_online": False,
         "is_agent": False,
@@ -575,6 +597,7 @@ def group_to_conversation(group, *, online_uris: Optional[set[str]] = None) -> d
         "avatar_url": "",
         "description": group.description,
         "acl": _acl(group),
+        "participants": participants,
         # Observable encryption posture: the app can render a lock/warning and the
         # operator can always tell sealed vs cleartext vs degraded (flag on, not
         # sealing) — no silent state.
@@ -582,11 +605,22 @@ def group_to_conversation(group, *, online_uris: Optional[set[str]] = None) -> d
     }
 
 
-def member_to_app(member, *, online_uris: Optional[set[str]] = None) -> dict:
+def member_to_app(
+    member,
+    *,
+    online_uris: Optional[set[str]] = None,
+    fingerprint: str = "",
+) -> dict:
     """Map a ``GroupMember`` to the app member shape (``GroupMemberInfo.fromJson``).
 
     The Flutter parser reads ``identity_uri``, ``display_name``, ``role``,
-    ``participant_type``, ``is_online``.
+    ``participant_type``, ``is_online``. [fingerprint] is this member's real
+    capauth fingerprint (resolved by the caller via
+    ``daemon_proxy.fingerprint_for_identity``); it is emitted under BOTH the
+    conversation-contract key (``soul_fingerprint``) and the peer alias
+    (``fingerprint``) so the app can anchor a per-member trust badge exactly as
+    it does for a 1:1 peer. Empty when the member has no known key (keyless ->
+    no badge, never a fabricated key).
     """
     online = bool(online_uris and member.identity_uri in online_uris)
     display = member.display_name or member.identity_uri.split(":")[-1].split("@")[0]
@@ -596,6 +630,8 @@ def member_to_app(member, *, online_uris: Optional[set[str]] = None) -> dict:
         "role": member.role.value,
         "participant_type": member.participant_type.value,
         "is_online": online,
+        "soul_fingerprint": fingerprint,
+        "fingerprint": fingerprint,
     }
 
 
@@ -641,8 +677,20 @@ def _participant_type_for(uri: str):
     from .group import ParticipantType
 
     short = uri.split(":")[-1].split("@")[0].lower()
-    if short in {"lumina", "jarvis", "opus", "ava", "ara", "artisan", "herald",
-                 "sentinel", "architect", "scholar", "steward", "coder"}:
+    if short in {
+        "lumina",
+        "jarvis",
+        "opus",
+        "ava",
+        "ara",
+        "artisan",
+        "herald",
+        "sentinel",
+        "architect",
+        "scholar",
+        "steward",
+        "coder",
+    }:
         return ParticipantType.AGENT
     return ParticipantType.HUMAN
 
@@ -793,8 +841,13 @@ def delete_group(group_id: str) -> bool:
     return existed
 
 
-def update_group(group, *, name: Optional[str] = None, description: Optional[str] = None,
-                 acl: Optional[dict[str, Any]] = None):
+def update_group(
+    group,
+    *,
+    name: Optional[str] = None,
+    description: Optional[str] = None,
+    acl: Optional[dict[str, Any]] = None,
+):
     """Update name/description/acl and persist."""
     if name is not None and name.strip():
         group.name = name.strip()
@@ -837,9 +890,16 @@ def _delivery_transport(identity: str):
         return None
 
 
-def fan_out_send(group, hist, sender_uri: str, content: str,
-                 reply_to_id: Optional[str] = None, thread_id: Optional[str] = None,
-                 content_type: Optional[str] = None, rich: Optional[dict] = None):
+def fan_out_send(
+    group,
+    hist,
+    sender_uri: str,
+    content: str,
+    reply_to_id: Optional[str] = None,
+    thread_id: Optional[str] = None,
+    content_type: Optional[str] = None,
+    rich: Optional[dict] = None,
+):
     """Persist a group message keyed by the group id + per-member copies.
 
     Returns the canonical group-thread :class:`ChatMessage` (the one whose
@@ -877,13 +937,18 @@ def fan_out_send(group, hist, sender_uri: str, content: str,
         # member would be excluded — never a partial/silent delivery.
         raise GroupSealNotReadyError(
             f"group {group.id} ({group.name!r}) requires encryption but has unkeyed "
-            f"member(s) that would be excluded: {unkeyed}")
-    seal = enabled   # per-member skip below keeps keyless members off the cleartext path
+            f"member(s) that would be excluded: {unkeyed}"
+        )
+    seal = enabled  # per-member skip below keeps keyless members off the cleartext path
     if enabled and unkeyed:
         logger.warning(
             "fan_out_send: group %s (%r) SEALED but %d member(s) UNKEYED and SKIPPED "
             "(receive nothing): %s. Encryption PARTIAL — not all members covered.",
-            group.id, group.name, len(unkeyed), unkeyed)
+            group.id,
+            group.name,
+            len(unkeyed),
+            unkeyed,
+        )
     enc_state = ("sealed" if all_keyed else "partial") if enabled else "off"
     sealed_content = _seal_group_content(group, content) if seal else None
     skipped: list[str] = []
@@ -894,8 +959,11 @@ def fan_out_send(group, hist, sender_uri: str, content: str,
     # it is not re-sent on every message. Hybrid-only (classical wraps a static key
     # already delivered on membership); fail-closed-readable — a delivery failure
     # never blocks the message (``save_group`` at the end persists the marker).
-    if seal and getattr(group, "is_hybrid", False) and \
-            group.metadata.get("epoch_distributed") != group.epoch:
+    if (
+        seal
+        and getattr(group, "is_hybrid", False)
+        and group.metadata.get("epoch_distributed") != group.epoch
+    ):
         _t = _delivery_transport(sender_uri)
 
         def _deliver_key(m):
@@ -911,8 +979,9 @@ def fan_out_send(group, hist, sender_uri: str, content: str,
             try:
                 report = _t.send_message(m)
             except Exception as exc:
-                logger.warning("fan_out_send: epoch key delivery to %s failed: %s",
-                               m.recipient, exc)
+                logger.warning(
+                    "fan_out_send: epoch key delivery to %s failed: %s", m.recipient, exc
+                )
                 return False
             # ``send_message`` returns a delivery report dict; honour its verdict,
             # defaulting to delivered when the shape is unexpected (no raise = sent).
@@ -940,8 +1009,7 @@ def fan_out_send(group, hist, sender_uri: str, content: str,
                 logger.info("fan_out_send: distributed epoch %d key for group %s to %d member(s)",
                             group.epoch, group.id, len(distributed))
         except Exception as exc:  # never let key distribution block the send
-            logger.warning("fan_out_send: epoch key distribution failed for %s: %s",
-                           group.id, exc)
+            logger.warning("fan_out_send: epoch key distribution failed for %s: %s", group.id, exc)
 
     group_msg = _typed(
         sender=sender_uri,
@@ -949,9 +1017,13 @@ def fan_out_send(group, hist, sender_uri: str, content: str,
         content=content,
         thread_id=group.id,
         reply_to_id=reply_to_id or None,
-        metadata={"group_id": group.id, "group_name": group.name,
-                  "key_version": group.key_version, "sealed": bool(seal),
-                  "encryption_state": enc_state},
+        metadata={
+            "group_id": group.id,
+            "group_name": group.name,
+            "key_version": group.key_version,
+            "sealed": bool(seal),
+            "encryption_state": enc_state,
+        },
     )
     hist.save(group_msg)
     # Authoritative log: record the ONE canonical group event (recipient
@@ -972,8 +1044,7 @@ def fan_out_send(group, hist, sender_uri: str, content: str,
         # group key — skip it entirely (and flag) rather than downgrade to clear.
         if seal and not _member_has_group_key(group, member):
             logger.warning(
-                "fan_out_send: skipping %s — no group key "
-                "(SKCHAT_SEAL_GROUPS, fail closed)",
+                "fan_out_send: skipping %s — no group key (SKCHAT_SEAL_GROUPS, fail closed)",
                 member.identity_uri,
             )
             skipped.append(member.identity_uri)
@@ -984,30 +1055,38 @@ def fan_out_send(group, hist, sender_uri: str, content: str,
             content=sealed_content if seal else content,
             thread_id=group.id,
             reply_to_id=reply_to_id or None,
-            metadata={"group_id": group.id, "group_name": group.name,
-                      "key_version": group.key_version, "sealed": bool(seal),
-                  "encryption_state": enc_state},
+            metadata={
+                "group_id": group.id,
+                "group_name": group.name,
+                "key_version": group.key_version,
+                "sealed": bool(seal),
+                "encryption_state": enc_state,
+            },
         )
         # The per-member HISTORY copy is redundant once the authoritative log is
         # on (the canonical group event is recorded ONCE via record_event; the
         # member copies only amplify writes 1->N and diverge ids). Skip the copy
         # when the log is on; ALWAYS keep the delivery below. Flag off => legacy.
         if os.getenv("SKCHAT_MESSAGE_LOG", "").strip().lower() in (
-            "", "0", "false", "no", "off",
+            "",
+            "0",
+            "false",
+            "no",
+            "off",
         ):
             try:
                 hist.save(member_msg)
             except Exception as exc:
-                logger.warning("fan_out_send: member copy for %s failed: %s",
-                               member.identity_uri, exc)
+                logger.warning(
+                    "fan_out_send: member copy for %s failed: %s", member.identity_uri, exc
+                )
         # Prefer a direct same-box inbox write (reliable); fall back to the
         # network transport only when the recipient isn't a local agent.
         if not local_deliver_to_agent(member_msg) and _transport is not None:
             try:
                 _transport.send_message(member_msg)
             except Exception as exc:
-                logger.warning("fan_out_send: delivery to %s failed: %s",
-                               member.identity_uri, exc)
+                logger.warning("fan_out_send: delivery to %s failed: %s", member.identity_uri, exc)
 
     if skipped:
         # Surface the fail-closed skips on the returned group-thread message so
@@ -1125,22 +1204,24 @@ def promote_one_to_one(
         created_by=operator_uri,
     )
     group.metadata["acl"] = dict(_DEFAULT_ACL)
-    group.add_member(identity_uri=operator_uri, role=MemberRole.ADMIN,
-                     participant_type=_participant_type_for(operator_uri))
+    group.add_member(
+        identity_uri=operator_uri,
+        role=MemberRole.ADMIN,
+        participant_type=_participant_type_for(operator_uri),
+    )
     # The existing 1:1 peer.
     peer_uri = resolve_identity(peer_id)
-    group.add_member(identity_uri=peer_uri,
-                     participant_type=_participant_type_for(peer_uri))
+    group.add_member(identity_uri=peer_uri, participant_type=_participant_type_for(peer_uri))
     # The newly-added member.
     nm_uri = resolve_identity(new_member)
     if nm_uri and nm_uri != peer_uri:
-        group.add_member(identity_uri=nm_uri,
-                         participant_type=_participant_type_for(nm_uri))
+        group.add_member(identity_uri=nm_uri, participant_type=_participant_type_for(nm_uri))
 
     _migrate_history_to_group(hist, peer_id, group.id, peer_uri, operator_uri)
     save_group(group)
-    logger.info("Promoted 1:1 %s → group %s (%d members)",
-                peer_id, group.id[:8], group.member_count)
+    logger.info(
+        "Promoted 1:1 %s → group %s (%d members)", peer_id, group.id[:8], group.member_count
+    )
     return group
 
 
@@ -1150,8 +1231,9 @@ def _derive_group_name(peer_id: str, new_member: str) -> str:
     return f"{a}, {b}"
 
 
-def _migrate_history_to_group(hist, peer_id: str, group_id: str,
-                              peer_uri: str, operator_uri: str) -> int:
+def _migrate_history_to_group(
+    hist, peer_id: str, group_id: str, peer_uri: str, operator_uri: str
+) -> int:
     """Rewrite the existing 1:1 rows so they read as the group thread.
 
     Each message of the old 1:1 (between operator and the peer) is stamped with
@@ -1188,15 +1270,17 @@ def _migrate_history_to_group(hist, peer_id: str, group_id: str,
                 pass
         # Add a canonical group-thread copy so it shows in group_thread_messages.
         try:
-            hist.save(ChatMessage(
-                id=f"{m.id}-grp",
-                sender=s,
-                recipient=f"group:{group_id}",
-                content=m.content,
-                thread_id=group_id,
-                timestamp=m.timestamp,
-                metadata={"group_id": group_id, "migrated_from": m.id},
-            ))
+            hist.save(
+                ChatMessage(
+                    id=f"{m.id}-grp",
+                    sender=s,
+                    recipient=f"group:{group_id}",
+                    content=m.content,
+                    thread_id=group_id,
+                    timestamp=m.timestamp,
+                    metadata={"group_id": group_id, "migrated_from": m.id},
+                )
+            )
             migrated += 1
         except Exception as exc:
             logger.warning("_migrate_history_to_group: copy of %s failed: %s", m.id, exc)

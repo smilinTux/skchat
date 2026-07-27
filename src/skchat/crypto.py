@@ -24,6 +24,7 @@ from pgpy.constants import (
 )
 
 from .models import ChatMessage
+from .redact import mask_fingerprint
 
 logger = logging.getLogger(__name__)
 
@@ -413,9 +414,7 @@ class ChatCrypto:
                 sender=message.sender,
                 recipient=message.recipient,
             )
-            token = f"{PQDM_SCHEME}{HYBRID_SUITE}:" + base64.b64encode(sealed).decode(
-                "ascii"
-            )
+            token = f"{PQDM_SCHEME}{HYBRID_SUITE}:" + base64.b64encode(sealed).decode("ascii")
             # Sign the plaintext (classical, Phase-2 will go hybrid).
             pgp_message = pgpy.PGPMessage.new(message.content.encode("utf-8"))
             with self._private_key.unlock(self._passphrase):
@@ -873,7 +872,11 @@ def load_agent_crypto(identity: Optional[str] = None) -> Optional["ChatCrypto"]:
         with open(key_path) as fh:
             armor = fh.read()
         crypto = ChatCrypto(armor, "")
-        logger.info("load_agent_crypto: live crypto wired for %r (fp %s)", agent, crypto.fingerprint)
+        logger.info(
+            "load_agent_crypto: live crypto wired for %r (fp %s)",
+            agent,
+            mask_fingerprint(crypto.fingerprint),
+        )
         return crypto
     except Exception as exc:  # noqa: BLE001 — best-effort, never break transport init
         # Even on an unexpected load failure, keep confidentiality: hand back a

@@ -58,7 +58,11 @@ PQDR_SCHEME = "pqdr1:"
 
 def _frame_aad(epoch: int, index: int) -> bytes:
     """Bind (epoch, index) into the AEAD AAD so a frame can't move slots."""
-    return _AAD_PREFIX + b"|" + struct.pack(">QQ", epoch & 0xFFFFFFFFFFFFFFFF, index & 0xFFFFFFFFFFFFFFFF)
+    return (
+        _AAD_PREFIX
+        + b"|"
+        + struct.pack(">QQ", epoch & 0xFFFFFFFFFFFFFFFF, index & 0xFFFFFFFFFFFFFFFF)
+    )
 
 
 @dataclass
@@ -256,12 +260,8 @@ class DmSession:
             "peer": self.peer,
             "rekey_msg_bound": self.rekey_msg_bound,
             "rekey_age_seconds": self.rekey_age_seconds,
-            "send_epoch_secrets": {
-                str(e): s.hex() for e, s in self._send_epoch_secrets.items()
-            },
-            "recv_epoch_secrets": {
-                str(e): s.hex() for e, s in self._recv_epoch_secrets.items()
-            },
+            "send_epoch_secrets": {str(e): s.hex() for e, s in self._send_epoch_secrets.items()},
+            "recv_epoch_secrets": {str(e): s.hex() for e, s in self._recv_epoch_secrets.items()},
             "current_kam": self._current_kam.hex() if self._current_kam else None,
             "ratchet": None
             if r is None
@@ -283,12 +283,10 @@ class DmSession:
         if "send_epoch_secrets" in snap or "recv_epoch_secrets" in snap:
             # v2: independent send/recv namespaces.
             s._send_epoch_secrets = {
-                int(e): bytes.fromhex(h)
-                for e, h in snap.get("send_epoch_secrets", {}).items()
+                int(e): bytes.fromhex(h) for e, h in snap.get("send_epoch_secrets", {}).items()
             }
             s._recv_epoch_secrets = {
-                int(e): bytes.fromhex(h)
-                for e, h in snap.get("recv_epoch_secrets", {}).items()
+                int(e): bytes.fromhex(h) for e, h in snap.get("recv_epoch_secrets", {}).items()
             }
         else:
             # Legacy v1: a single ``epoch_secrets`` namespace that the old code
@@ -296,9 +294,7 @@ class DmSession:
             # send vs recv, so seed BOTH namespaces from it: the send ratchet
             # (rebuilt below) finds its current secret, and any previously-learned
             # recv epoch still opens. Going forward, new epochs key independently.
-            legacy = {
-                int(e): bytes.fromhex(h) for e, h in snap.get("epoch_secrets", {}).items()
-            }
+            legacy = {int(e): bytes.fromhex(h) for e, h in snap.get("epoch_secrets", {}).items()}
             s._send_epoch_secrets = dict(legacy)
             s._recv_epoch_secrets = dict(legacy)
         ck = snap.get("current_kam")

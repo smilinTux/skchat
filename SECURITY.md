@@ -42,6 +42,18 @@ Supported version: the latest tagged release on `main`. Fixes land there first.
 - **Downgrade safety.** A peer lacking hybrid/`pqdr1` capability stays on the prior
   classical path — never an undecryptable frame — and the gap is surfaced by the
   self-report (`skchat pqc report`), never silently claimed as secure.
+- **Trust-badge integrity (M1b).** The per-member / per-participant capauth
+  `soul_fingerprint` that drives the client trust badge is stamped into the
+  peers/members payload and LiveKit participant metadata ONLY from a
+  cryptographically-proven identity: after `verify_signed` of the fqid
+  (`join_routes` `/join/sovereign`, Space/conf federation authd, conf
+  `federated-token`). The unauthenticated join routes (`/conf/{room}/token`,
+  `/spaces/{id}/join`) and the operator-gated-but-caller-chosen `/livekit/token`
+  stamp NO fingerprint, so a caller cannot claim a keyed agent's identity and
+  wear its badge. `daemon_proxy.fingerprint_for_identity` matches only full,
+  realm-qualified identifiers (no bare short-name), preventing a remote
+  same-short-name agent from inheriting a local peer's key. Regression tests
+  assert the public routes do not stamp.
 
 **Out of scope / documented residual risk (NOT defended, do not claim otherwise):**
 

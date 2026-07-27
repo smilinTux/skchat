@@ -487,7 +487,10 @@ class ChatDaemon:
                 # None engine simply means "don't advocate" — messages still land
                 # in ChatHistory for the external responder to pick up.
                 if os.environ.get("SKCHAT_ADVOCACY_DISABLED", "").strip().lower() in (
-                    "1", "true", "yes", "on",
+                    "1",
+                    "true",
+                    "yes",
+                    "on",
                 ):
                     engine = None
                     self._log(
@@ -505,9 +508,7 @@ class ChatDaemon:
                 group_cfg = load_group_config(os.environ.get("SKAGENT", "lumina"))
                 if group_cfg.groups:
                     group_responder = GroupResponder(group_cfg)
-                    self._log(
-                        f"GroupResponder ready for groups: {', '.join(group_cfg.groups)}"
-                    )
+                    self._log(f"GroupResponder ready for groups: {', '.join(group_cfg.groups)}")
                 # else: SKCHAT_GROUPS unset/empty — group_responder stays None and
                 # the receive loop's guard (`if group_responder is not None`) is a
                 # complete no-op, so DM advocacy behaviour is unchanged.
@@ -555,6 +556,7 @@ class ChatDaemon:
             # raises into the poll loop. No-op for a normal message.
             try:
                 from .daemon_proxy_groups import consume_group_key_message
+
                 if consume_group_key_message(msg, agent=getattr(group_cfg, "agent", None)):
                     return  # control-plane key delivery; not a chat turn
             except Exception as exc:
@@ -582,6 +584,7 @@ class ChatDaemon:
                 # Fail-closed-readable: unseal failure leaves the body sealed, no
                 # crash. No-op when SKCHAT_SEAL_GROUPS is off (bodies are cleartext).
                 from .daemon_proxy_groups import unseal_incoming_group_message
+
                 msg = unseal_incoming_group_message(msg)
                 # Persist a canonical group-thread copy of the INCOMING message
                 # (recipient == "group:<gid>") so the shared thread — what the
@@ -600,29 +603,33 @@ class ChatDaemon:
                     try:
                         history.save(msg.model_copy(update={"recipient": canonical_recipient}))
                     except Exception as exc:
-                        logger.warning(
-                            "group message persist failed for %s: %s", gid, exc
-                        )
+                        logger.warning("group message persist failed for %s: %s", gid, exc)
                 try:
                     reply = group_responder.respond(msg)
                     if reply:
                         _who = group_cfg.agent.capitalize()
-                        if not reply.lstrip().lower().startswith(
-                            (_who.lower(), f"**{_who.lower()}")
+                        if (
+                            not reply.lstrip()
+                            .lower()
+                            .startswith((_who.lower(), f"**{_who.lower()}"))
                         ):
                             reply = f"{_who}: {reply}"
                         from .daemon_proxy_groups import load_group
+
                         grp = load_group(gid)
                         if grp is not None:
                             grp.send(reply, sender=identity, transport=None, history=history)
                             from .daemon_proxy_groups import local_deliver_to_agent
                             from .models import ChatMessage
+
                             for member in grp.members:
                                 if member.identity_uri == identity:
                                     continue
                                 fanout_msg = ChatMessage(
-                                    sender=identity, recipient=member.identity_uri,
-                                    content=reply, thread_id=gid,
+                                    sender=identity,
+                                    recipient=member.identity_uri,
+                                    content=reply,
+                                    thread_id=gid,
                                 )
                                 if local_deliver_to_agent(fanout_msg):
                                     continue
@@ -632,13 +639,12 @@ class ChatDaemon:
                                 except Exception as fanout_exc:
                                     logger.warning(
                                         "group fan-out to %s failed: %s",
-                                        member.identity_uri, fanout_exc,
+                                        member.identity_uri,
+                                        fanout_exc,
                                     )
                             self.advocacy_responses += 1
                         else:
-                            logger.warning(
-                                "group responder: group %s not found for reply", gid
-                            )
+                            logger.warning("group responder: group %s not found for reply", gid)
                 except Exception as exc:
                     logger.warning("group responder failed: %s", exc)
                     self._log(f"Group responder error: {exc}", "warning")
@@ -650,6 +656,7 @@ class ChatDaemon:
                     dm_reply = group_responder.respond_direct(msg)
                     if dm_reply:
                         from .models import ChatMessage
+
                         with self._send_lock:
                             transport.send_message(
                                 ChatMessage(
@@ -765,9 +772,7 @@ class ChatDaemon:
                             # not drain this for ~10s. DEBUG so a busy inbox does not
                             # flood the log (A1).
                             sender_short = msg.sender.split("@")[0].replace("capauth:", "")
-                            preview = msg.content[:60] + (
-                                "..." if len(msg.content) > 60 else ""
-                            )
+                            preview = msg.content[:60] + ("..." if len(msg.content) > 60 else "")
                             self._log(f"  [{sender_short}] {preview}", "debug")
                             self._genqueue.put(msg)
                     else:
@@ -1206,7 +1211,9 @@ class ChatDaemon:
             minutes = (uptime_seconds % 3600) // 60
             return f"{hours}h {minutes}m"
 
-    def _start_health_server(self, port: int = int(os.environ.get("SKCHAT_HEALTH_PORT") or 9385)) -> None:
+    def _start_health_server(
+        self, port: int = int(os.environ.get("SKCHAT_HEALTH_PORT") or 9385)
+    ) -> None:
         """Start a tiny HTTP healthcheck server in a daemon thread.
 
         Serves GET /health → JSON with live daemon metrics.

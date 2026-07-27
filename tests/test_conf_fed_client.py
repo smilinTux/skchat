@@ -42,16 +42,18 @@ class _FakeResp:
 def test_build_signed_conf_assertion_carries_room_and_fresh_nonce():
     import json
 
-    s1 = build_signed_conf_assertion(fqid="lumina@chef.skworld", room="standup",
-                                     sign=lambda p: "SIG")
+    s1 = build_signed_conf_assertion(
+        fqid="lumina@chef.skworld", room="standup", sign=lambda p: "SIG"
+    )
     assert s1["sig"] == "SIG"
     claim = json.loads(s1["claim"])
     assert claim["fqid"] == "lumina@chef.skworld"
     assert claim["space_id"] == "standup"  # room carried in the shared space_id slot
     assert claim["nonce"]
 
-    s2 = build_signed_conf_assertion(fqid="lumina@chef.skworld", room="standup",
-                                     sign=lambda p: "SIG")
+    s2 = build_signed_conf_assertion(
+        fqid="lumina@chef.skworld", room="standup", sign=lambda p: "SIG"
+    )
     n1 = json.loads(s1["claim"])["nonce"]
     n2 = json.loads(s2["claim"])["nonce"]
     assert n1 != n2  # fresh nonce per call -> replay-distinct
@@ -63,14 +65,24 @@ def test_mint_remote_conf_token_happy_path():
     def fake_post(url, body):
         posted["url"] = url
         posted["body"] = body
-        return _FakeResp(200, {
-            "token": "JWT", "url": "ws://box-a:7880", "role": "participant",
-            "identity": "lumina@chef.skworld", "conf_id": "conf-abc", "room": "standup",
-        })
+        return _FakeResp(
+            200,
+            {
+                "token": "JWT",
+                "url": "ws://box-a:7880",
+                "role": "participant",
+                "identity": "lumina@chef.skworld",
+                "conf_id": "conf-abc",
+                "room": "standup",
+            },
+        )
 
     out = mint_remote_conf_token(
-        "http://box-a:8765", "standup",
-        fqid="lumina@chef.skworld", post=fake_post, sign=lambda p: "SIG",
+        "http://box-a:8765",
+        "standup",
+        fqid="lumina@chef.skworld",
+        post=fake_post,
+        sign=lambda p: "SIG",
     )
     assert out["token"] == "JWT"
     assert out["url"] == "ws://box-a:7880"
@@ -88,8 +100,11 @@ def test_mint_url_accepts_full_federated_token_url():
         return _FakeResp(200, {"token": "JWT", "url": "ws://h"})
 
     mint_remote_conf_token(
-        "http://box-a:8765/conf/demo/federated-token", "demo",
-        fqid="a@chef.skworld", post=fake_post, sign=lambda p: "SIG",
+        "http://box-a:8765/conf/demo/federated-token",
+        "demo",
+        fqid="a@chef.skworld",
+        post=fake_post,
+        sign=lambda p: "SIG",
     )
     assert posted["url"] == "http://box-a:8765/conf/demo/federated-token"
 
@@ -97,7 +112,9 @@ def test_mint_url_accepts_full_federated_token_url():
 def test_mint_403_raises_auth_denied():
     with pytest.raises(ConfAuthDenied):
         mint_remote_conf_token(
-            "http://box-a:8765", "standup", fqid="evil@attacker",
+            "http://box-a:8765",
+            "standup",
+            fqid="evil@attacker",
             post=lambda url, body: _FakeResp(403, {"detail": "not permitted"}),
             sign=lambda p: "SIG",
         )
@@ -106,7 +123,9 @@ def test_mint_403_raises_auth_denied():
 def test_mint_404_raises_federation_error():
     with pytest.raises(ConfFederationError):
         mint_remote_conf_token(
-            "http://box-a:8765", "ghost", fqid="a@chef.skworld",
+            "http://box-a:8765",
+            "ghost",
+            fqid="a@chef.skworld",
             post=lambda url, body: _FakeResp(404),
             sign=lambda p: "SIG",
         )
@@ -115,7 +134,9 @@ def test_mint_404_raises_federation_error():
 def test_mint_non_2xx_raises_federation_error():
     with pytest.raises(ConfFederationError):
         mint_remote_conf_token(
-            "http://box-a:8765", "standup", fqid="a@chef.skworld",
+            "http://box-a:8765",
+            "standup",
+            fqid="a@chef.skworld",
             post=lambda url, body: _FakeResp(500),
             sign=lambda p: "SIG",
         )
@@ -141,15 +162,16 @@ def server(tmp_path, monkeypatch):
     def post(url, body):
         # url is http://server<path> — strip scheme+host, keep the path
         path = url.split("://", 1)[-1]
-        path = path[path.index("/"):]
+        path = path[path.index("/") :]
         return tc.post(path, json=body)
 
     return tc, post
 
 
 def _create_conf(tc, slug="standup"):
-    r = tc.post("/conf/create", json={"host_fqid": "lumina@chef.skworld",
-                                      "title": "Standup", "slug": slug})
+    r = tc.post(
+        "/conf/create", json={"host_fqid": "lumina@chef.skworld", "title": "Standup", "slug": slug}
+    )
     assert r.status_code == 200, r.text
     return r.json()["room"]
 
@@ -164,16 +186,15 @@ def test_roundtrip_untrusted_fqid_rejected(server, tmp_path, monkeypatch):
     tc, post = server
     room = _create_conf(tc)
     # point keystore + trust at empty tmp dirs (no pins, no grants)
-    monkeypatch.setattr(
-        "skchat.spaces.federation.keystore._DEFAULT_BASE", tmp_path / "no-peers"
-    )
-    monkeypatch.setattr(
-        "skchat.spaces.federation.trust._DEFAULT_PATH", tmp_path / "no-trust.json"
-    )
+    monkeypatch.setattr("skchat.spaces.federation.keystore._DEFAULT_BASE", tmp_path / "no-peers")
+    monkeypatch.setattr("skchat.spaces.federation.trust._DEFAULT_PATH", tmp_path / "no-trust.json")
     with pytest.raises(ConfAuthDenied):
         mint_remote_conf_token(
-            "http://server", room, fqid="evil@attacker.realm",
-            post=post, sign=lambda p: "BOGUS-SIG",
+            "http://server",
+            room,
+            fqid="evil@attacker.realm",
+            post=post,
+            sign=lambda p: "BOGUS-SIG",
         )
 
 
@@ -210,12 +231,17 @@ def test_roundtrip_trusted_fqid_mints_token(server, tmp_path, monkeypatch):
     monkeypatch.setattr("capauth.crypto.get_backend", lambda: _StubBackend())
 
     out = mint_remote_conf_token(
-        "http://server", room, fqid=fqid, post=post, sign=lambda p: "GOOD-SIG",
+        "http://server",
+        room,
+        fqid=fqid,
+        post=post,
+        sign=lambda p: "GOOD-SIG",
     )
     assert out["identity"] == fqid
     assert out["room"] == room
     assert out["role"] in ("participant", "guest-conf")
     # the token is a genuine LiveKit JWT signed with the server's secret
-    decoded = jwt.decode(out["token"], _SECRET, algorithms=["HS256"],
-                         options={"verify_aud": False})
+    decoded = jwt.decode(
+        out["token"], _SECRET, algorithms=["HS256"], options={"verify_aud": False}
+    )
     assert decoded["sub"] == fqid

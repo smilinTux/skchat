@@ -23,9 +23,14 @@ def client(monkeypatch):
     sent = []
     monkeypatch.setattr(cr, "_send_invite", lambda **kw: sent.append(kw))
     monkeypatch.setattr(cr, "_alert_operator", lambda **kw: None)
+    monkeypatch.delenv("SKCHAT_GUEST_OPERATOR_TOKEN", raising=False)
     app = FastAPI()
     cr.register_call_routes(app)
-    c = TestClient(app)
+    # /call/start, /call/answer and /call/incoming are gated the same as
+    # /livekit/token (loopback/tailnet or an operator token; see
+    # test_livekit_token_gate.py). Use a loopback client host so the fixture
+    # exercises the routes' own logic, not the gate itself.
+    c = TestClient(app, client=("127.0.0.1", 12345))
     c._sent = sent
     return c
 
@@ -184,7 +189,9 @@ def test_connectivity_ice_offtailnet_caller_gets_relay_servers(client, monkeypat
     data = r.json()
     assert data["on_tailnet"] is False
     assert data["preferred_tier"] == 3
-    assert data["ice_servers"], "expected non-empty iceServers (STUN/TURN) for a non-tailnet caller"
+    assert data["ice_servers"], (
+        "expected non-empty iceServers (STUN/TURN) for a non-tailnet caller"
+    )
 
 
 def test_connectivity_ice_tailnet_caller_gets_tailnet_path(monkeypatch):
@@ -228,7 +235,9 @@ def test_connectivity_ice_funnel_loopback_caller_gets_relay(monkeypatch):
     data = r.json()
     assert data["on_tailnet"] is False
     assert data["preferred_tier"] == 3
-    assert data["ice_servers"], "expected STUN/TURN servers for a Funnel-proxied off-tailnet caller"
+    assert data["ice_servers"], (
+        "expected STUN/TURN servers for a Funnel-proxied off-tailnet caller"
+    )
 
 
 def test_connectivity_ice_forwarded_tailnet_client_stays_direct(monkeypatch):
@@ -420,3 +429,102 @@ def test_call_start_threads_topic_and_alerts(client, monkeypatch):
     assert r.status_code == 200
     assert client._sent[0]["topic"] == "ingest debugging"  # invite carried the topic
     assert len(alerts) == 1 and alerts[0]["topic"] == "ingest debugging"
+
+
+# ── Task 7: /call/start, /call/answer, /call/incoming must not be MORE open
+# than /livekit/token (both mint the same full-publish LiveKit JWT). Mirrors
+# tests/test_livekit_token_gate.py: a public/non-tailnet caller with no
+# SKCHAT_GUEST_OPERATOR_TOKEN is refused before any route logic runs; a
+# loopback/tailnet caller, or a public caller presenting a valid operator
+# token, is let through. ──────────────────────────────────────────────────────
+
+
+def _gated_app(monkeypatch):
+    monkeypatch.setattr(cr, "_list_peers", lambda: {"lumina@chef.skworld": {"fingerprint": "FP"}})
+    monkeypatch.setattr(cr, "_self_fqid", lambda: "opus@chef.skworld")
+    monkeypatch.setattr(cr, "_have_creds", lambda: True)
+    monkeypatch.setattr(
+        cr, "_mint_token", lambda identity, name, room, ttl: f"tok::{identity}::{room}"
+    )
+    monkeypatch.setattr(cr, "_send_invite", lambda **kw: None)
+    monkeypatch.setattr(cr, "_alert_operator", lambda **kw: None)
+    monkeypatch.setattr(cr, "_read_inbox", lambda: [])
+    app = FastAPI()
+    cr.register_call_routes(app)
+    return app
+
+
+def _gated_client(app: FastAPI, *, host: str) -> TestClient:
+    return TestClient(app, client=(host, 12345))
+
+
+def test_call_start_public_caller_without_token_rejected(monkeypatch):
+    monkeypatch.delenv("SKCHAT_GUEST_OPERATOR_TOKEN", raising=False)
+    c = _gated_client(_gated_app(monkeypatch), host="8.8.8.8")
+    r = c.post("/call/start", json={"peer": "lumina@chef.skworld"})
+    assert r.status_code in (401, 403), r.text
+
+
+def test_call_answer_public_caller_without_token_rejected(monkeypatch):
+    monkeypatch.delenv("SKCHAT_GUEST_OPERATOR_TOKEN", raising=False)
+    c = _gated_client(_gated_app(monkeypatch), host="8.8.8.8")
+    r = c.post("/call/answer", json={"peer": "lumina@chef.skworld"})
+    assert r.status_code in (401, 403), r.text
+
+
+def test_call_incoming_public_caller_without_token_rejected(monkeypatch):
+    monkeypatch.delenv("SKCHAT_GUEST_OPERATOR_TOKEN", raising=False)
+    c = _gated_client(_gated_app(monkeypatch), host="8.8.8.8")
+    r = c.get("/call/incoming")
+    assert r.status_code in (401, 403), r.text
+
+
+def test_call_peers_public_caller_without_token_rejected(monkeypatch):
+    # /call/peers discloses the paired-peer roster + fingerprints; a public
+    # Funnel caller with no operator token must be refused, same as the other
+    # /call/* routes (card 750ae88b: it was the one ungated /call/* surface).
+    monkeypatch.delenv("SKCHAT_GUEST_OPERATOR_TOKEN", raising=False)
+    c = _gated_client(_gated_app(monkeypatch), host="8.8.8.8")
+    r = c.get("/call/peers")
+    assert r.status_code in (401, 403), r.text
+
+
+def test_call_peers_tailnet_caller_passes_gate(monkeypatch):
+    monkeypatch.delenv("SKCHAT_GUEST_OPERATOR_TOKEN", raising=False)
+    c = _gated_client(_gated_app(monkeypatch), host="100.101.102.103")
+    r = c.get("/call/peers")
+    assert r.status_code == 200, r.text
+    assert any(p["fqid"] == "lumina@chef.skworld" for p in r.json()["peers"])
+
+
+def test_call_start_tailnet_caller_passes_gate(monkeypatch):
+    monkeypatch.delenv("SKCHAT_GUEST_OPERATOR_TOKEN", raising=False)
+    c = _gated_client(_gated_app(monkeypatch), host="100.101.102.103")
+    r = c.post("/call/start", json={"peer": "lumina@chef.skworld"})
+    assert r.status_code == 200, r.text
+
+
+def test_call_start_public_caller_with_valid_operator_token_allowed(monkeypatch):
+    monkeypatch.setenv("SKCHAT_GUEST_OPERATOR_TOKEN", "op-token-xyz")
+    c = _gated_client(_gated_app(monkeypatch), host="8.8.8.8")
+    # Wrong/missing token -> 401.
+    assert c.post("/call/start", json={"peer": "lumina@chef.skworld"}).status_code == 401
+    # Correct token -> passes the gate.
+    r = c.post(
+        "/call/start",
+        json={"peer": "lumina@chef.skworld"},
+        headers={"Authorization": "Bearer op-token-xyz"},
+    )
+    assert r.status_code == 200, r.text
+
+
+def test_resolve_peer_accepts_capauth_and_drifted_realm(monkeypatch):
+    """_resolve_peer accepts the exact fqid, a bare name, the capauth: wire URI
+    the Flutter client sends, and a differently-realmed fqid, all -> paired."""
+    from skchat import call_routes as CR
+
+    monkeypatch.setattr(CR, "_list_peers", lambda: {"opus@chef.skworld.io": {}})
+    assert CR._resolve_peer("opus@chef.skworld.io") == "opus@chef.skworld.io"
+    assert CR._resolve_peer("opus") == "opus@chef.skworld.io"
+    assert CR._resolve_peer("capauth:opus@skworld.io") == "opus@chef.skworld.io"
+    assert CR._resolve_peer("opus@chef.skworld") == "opus@chef.skworld.io"

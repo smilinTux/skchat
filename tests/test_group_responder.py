@@ -1,7 +1,6 @@
 from skchat.group_responder import (
-    GroupResponderConfig,
-    load_group_config,
     GroupResponder,
+    load_group_config,
 )
 from skchat.models import ChatMessage
 
@@ -17,18 +16,21 @@ def test_config_defaults_for_lumina():
 
 
 def test_config_env_overrides():
-    cfg = load_group_config("opus", env={
-        "SKCHAT_GROUP_BACKEND_URL": "http://localhost:8082/v1/chat/completions",
-        "SKCHAT_GROUP_MODEL": "qwen3.6-27b-abliterated",
-        "SKCHAT_GROUPS": "group:abc,group:def",
-    })
+    cfg = load_group_config(
+        "opus",
+        env={
+            "SKCHAT_GROUP_BACKEND_URL": "http://localhost:8082/v1/chat/completions",
+            "SKCHAT_GROUP_MODEL": "qwen3.6-27b-abliterated",
+            "SKCHAT_GROUPS": "group:abc,group:def",
+        },
+    )
     assert cfg.agent == "opus"
     assert "@opus" in cfg.mentions
     assert cfg.model == "qwen3.6-27b-abliterated"
     assert cfg.groups == ["group:abc", "group:def"]
 
 
-from skchat.group_responder import should_respond, generate
+from skchat.group_responder import generate, should_respond
 
 _LUM = load_group_config("lumina", env={})
 
@@ -78,14 +80,20 @@ def test_should_respond_real_mention_after_punctuation_still_matches():
 
 
 class _Resp:
-    def __init__(self, code, data): self.status_code, self._d = code, data
-    def json(self): return self._d
+    def __init__(self, code, data):
+        self.status_code, self._d = code, data
+
+    def json(self):
+        return self._d
 
 
 class _Http:
-    def __init__(self, resp): self._resp, self.calls = resp, []
+    def __init__(self, resp):
+        self._resp, self.calls = resp, []
+
     def post(self, url, json=None, timeout=None):
-        self.calls.append((url, json)); return self._resp
+        self.calls.append((url, json))
+        return self._resp
 
 
 def test_generate_ok():
@@ -107,14 +115,19 @@ from skchat.group_responder import recall, store_turn
 
 
 class _Mem:
-    def __init__(self, hits=()): self._hits, self.snaps = list(hits), []
+    def __init__(self, hits=()):
+        self._hits, self.snaps = list(hits), []
+
     def search(self, q, limit=5, **kw):
         return self._hits
-    def snapshot(self, title, content, **kw): self.snaps.append((title, content, kw))
+
+    def snapshot(self, title, content, **kw):
+        self.snaps.append((title, content, kw))
 
 
 class _Hit:
-    def __init__(self, c): self.content, self.title = c, "t"
+    def __init__(self, c):
+        self.content, self.title = c, "t"
 
 
 def test_recall_formats_hits():
@@ -125,7 +138,9 @@ def test_recall_formats_hits():
 
 def test_recall_empty_on_error():
     class Boom:
-        def search(self, *a, **k): raise RuntimeError("db down")
+        def search(self, *a, **k):
+            raise RuntimeError("db down")
+
     assert recall("x", store=Boom()) == ""
 
 
@@ -146,14 +161,14 @@ class _Builder:
 
 
 def _mk(content, sender="chef@skworld.io", recipient="group:room1"):
-    return ChatMessage(sender=sender, recipient=recipient, content=content,
-                       thread_id="room1")
+    return ChatMessage(sender=sender, recipient=recipient, content=content, thread_id="room1")
 
 
 def test_respond_when_mentioned():
     http = _Http(_Resp(200, {"choices": [{"message": {"content": "teal, Chef."}}]}))
-    r = GroupResponder(_LUM, prompt_builder=_Builder(), http=http,
-                       store=_Mem([_Hit("likes teal")]))
+    r = GroupResponder(
+        _LUM, prompt_builder=_Builder(), http=http, store=_Mem([_Hit("likes teal")])
+    )
     out = r.respond(_mk("@lumina fav color?"))
     assert out == "teal, Chef."
     # system prompt + recall must be in the outbound messages

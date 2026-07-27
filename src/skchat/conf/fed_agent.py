@@ -112,9 +112,7 @@ def _default_spawn(cmd: list, env: dict):
     ``conf.routes._agent_runner``. The pre-minted token + SFU url ride in on the
     child's environment (``env``) so they never appear in ``ps``/the unit args.
     """
-    proc = subprocess.Popen(
-        cmd, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-    )
+    proc = subprocess.Popen(cmd, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
         proc.wait(timeout=5)
     except subprocess.TimeoutExpired:
@@ -154,15 +152,11 @@ def mint_federated_agent_token(
         try:
             elected = _discover(room)
         except Exception as exc:  # noqa: BLE001 - surface discovery failure cleanly
-            raise FederatedAgentJoinError(
-                f"discovery failed for room {room!r}: {exc}"
-            ) from exc
+            raise FederatedAgentJoinError(f"discovery failed for room {room!r}: {exc}") from exc
         auth_url = (getattr(elected, "auth_url", "") or "").strip()
         discovered_sfu = (getattr(elected, "sfu_ws_url", "") or "").strip()
         if not auth_url:
-            raise FederatedAgentJoinError(
-                f"no auth_url discovered for room {room!r}"
-            )
+            raise FederatedAgentJoinError(f"no auth_url discovered for room {room!r}")
         logger.info(
             "federated agent-join: elected host for %s → %s (sfu=%s)",
             room,
@@ -209,15 +203,11 @@ def federated_agent_join(
     if len(greet) > 500:
         raise FederatedAgentJoinError("greeting too long (max 500 chars)")
 
-    payload = mint_federated_agent_token(
-        room, host=host, fqid=fqid, discover=discover, mint=mint
-    )
+    payload = mint_federated_agent_token(room, host=host, fqid=fqid, discover=discover, mint=mint)
     token = (payload.get("token") or "").strip()
     url = (payload.get("url") or "").strip()
     if not (token and url):
-        raise FederatedAgentJoinError(
-            f"mint returned an incomplete token/url for room {room!r}"
-        )
+        raise FederatedAgentJoinError(f"mint returned an incomplete token/url for room {room!r}")
 
     _spawn = spawn or _default_spawn
     script = lumina_call_script or _default_lumina_call_script()

@@ -142,9 +142,7 @@ class TestGroupChatCreation:
         """Removing unknown member returns False."""
         assert group.remove_member("capauth:nobody@test") is False
 
-    def test_remove_member_equivalent_form_is_actually_removed(
-        self, group: GroupChat
-    ) -> None:
+    def test_remove_member_equivalent_form_is_actually_removed(self, group: GroupChat) -> None:
         """A member added under one identity form IS removed via an equivalent form.
 
         Regression test: ``remove_member`` used to do raw string equality
@@ -166,9 +164,7 @@ class TestGroupChatCreation:
         assert group.group_key != old_key
         assert group.key_version == old_version + 1
 
-    def test_remove_member_cross_realm_same_handle_does_not_remove(
-        self, group: GroupChat
-    ) -> None:
+    def test_remove_member_cross_realm_same_handle_does_not_remove(self, group: GroupChat) -> None:
         """Removal must respect the same realm-scoping as get_member.
 
         A different operator's agent sharing only the bare handle must not
@@ -186,9 +182,7 @@ class TestGroupChatCreation:
         assert member is not None
         assert member.role == MemberRole.ADMIN
 
-    def test_get_member_same_principal_different_form_matches(
-        self, group: GroupChat
-    ) -> None:
+    def test_get_member_same_principal_different_form_matches(self, group: GroupChat) -> None:
         """Same principal, different string form, SAME realm — should match.
 
         This is the legitimate case the bare-handle match exists for: the
@@ -199,9 +193,7 @@ class TestGroupChatCreation:
         assert member is not None
         assert member.role == MemberRole.ADMIN
 
-    def test_get_member_cross_realm_same_handle_does_not_collide(
-        self, group: GroupChat
-    ) -> None:
+    def test_get_member_cross_realm_same_handle_does_not_collide(self, group: GroupChat) -> None:
         """Different operators/realms sharing a bare handle must NOT collide.
 
         Regression test for the cross-tenant bypass: a group has

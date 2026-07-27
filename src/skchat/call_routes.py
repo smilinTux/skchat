@@ -22,6 +22,7 @@ from .connectivity import ice_config
 from .livekit_routes import (
     _ONTAILNET_NETS,
     LIVEKIT_URL,
+    _gate_token_mint,
     _have_creds,
     _mint_token,
     _real_client_ip,
@@ -106,17 +107,27 @@ def _client_on_tailnet(request: Request) -> bool:
 
 
 def _resolve_peer(peer: str) -> str:
-    """Resolve a peer arg (FQID or bare name) to a paired FQID, or 404."""
+    """Resolve a peer arg to a paired FQID, or raise 404/409.
+
+    Accepted (in priority): an exact paired FQID; otherwise reduce to the bare
+    agent name and match, so a bare name, a ``capauth:<agent>@<domain>`` wire
+    URI (what the Flutter client sends), and a differently-realmed FQID all
+    resolve to the same paired agent. This keeps resolution working across the
+    realm-string drift the peer store carried (see the calling-backend design
+    doc). Bare-name ambiguity across operators raises 409.
+    """
     peers = _list_peers()
     if peer in peers:
         return peer
-    matches = [fqid for fqid in peers if fqid.split("@", 1)[0] == peer]
+    probe = peer[len("capauth:") :] if peer.startswith("capauth:") else peer
+    bare = probe.split("@", 1)[0]
+    matches = [fqid for fqid in peers if fqid.split("@", 1)[0] == bare]
     if len(matches) == 1:
         return matches[0]
     if len(matches) > 1:
         raise HTTPException(
             status_code=409,
-            detail=f"ambiguous bare name {peer!r}: matches {matches}; use full FQID",
+            detail=f"ambiguous peer {peer!r}: matches {matches}; use full FQID",
         )
     raise HTTPException(status_code=404, detail=f"peer not paired: {peer}")
 
@@ -151,6 +162,14 @@ async def _peer_arg(request: Request) -> str:
 def register_call_routes(app: FastAPI) -> None:
     @app.post("/call/start")
     async def call_start(request: Request) -> JSONResponse:
+        # /call/start mints a full-publish LiveKit JWT exactly like
+        # /livekit/token (via _prepare_call -> _mint_token below), plus rings
+        # the peer and alerts the operator. It must therefore never be MORE
+        # open than /livekit/token: gate it with the identical, always-on
+        # check (loopback/tailnet OR a valid SKCHAT_GUEST_OPERATOR_TOKEN)
+        # rather than relying on the flag-gated dataplane-auth middleware,
+        # which exempts the /livekit prefix entirely.
+        _gate_token_mint(request)
         peer = await _peer_arg(request)
         try:
             body = await request.json()
@@ -172,13 +191,19 @@ def register_call_routes(app: FastAPI) -> None:
 
     @app.post("/call/answer")
     async def call_answer(request: Request) -> JSONResponse:
+        # Same token-minting exposure as /call/start above -> same gate.
+        _gate_token_mint(request)
         peer = await _peer_arg(request)
         ctx = _prepare_call(peer)  # no _send_invite — answering never rings
         return _call_response(ctx)
 
     @app.get("/call/incoming")
-    async def call_incoming() -> JSONResponse:
+    async def call_incoming(request: Request) -> JSONResponse:
         """Surface CALL_INVITE envelopes addressed to us, newest first."""
+        # Read-only, but it discloses who is calling whom; gate it the same
+        # as the token-minting call routes rather than leaving it the one
+        # unauthenticated /call/* surface.
+        _gate_token_mint(request)
         me = _self_fqid()
         invites = []
         for env, _verify in _read_inbox():
@@ -210,8 +235,12 @@ def register_call_routes(app: FastAPI) -> None:
         return JSONResponse({"invites": invites})
 
     @app.get("/call/peers")
-    async def call_peers() -> JSONResponse:
+    async def call_peers(request: Request) -> JSONResponse:
         """List paired peers (FQID + fingerprint) for the call UI."""
+        # Discloses the paired-peer roster + fingerprints; gate it the same as
+        # the other /call/* routes so it is not the one unauthenticated surface
+        # a public Funnel caller can enumerate (card 750ae88b).
+        _gate_token_mint(request)
         peers = [
             {"fqid": fqid, "fingerprint": (meta or {}).get("fingerprint")}
             for fqid, meta in _list_peers().items()

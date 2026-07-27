@@ -23,6 +23,7 @@ from fastapi.testclient import TestClient
 
 from skchat import daemon_proxy
 from skchat import daemon_proxy_groups as G
+from skchat.group import GroupChat, MemberRole
 
 
 @pytest.fixture
@@ -63,8 +64,7 @@ def _create(client, name="Penguins", members=None, description="", acl=None):
 # Create + list + persist
 # --------------------------------------------------------------------------- #
 def test_create_group_persists_and_lists(client):
-    res = _create(client, name="Penguins", members=["lumina", "jarvis"],
-                  description="the kingdom")
+    res = _create(client, name="Penguins", members=["lumina", "jarvis"], description="the kingdom")
     gid = res["group_id"]
     assert gid
     assert res["name"] == "Penguins"
@@ -76,8 +76,7 @@ def test_create_group_persists_and_lists(client):
 
     # GET /groups lists it with is_group:true + member_count.
     groups = client.get("/api/v1/groups").json()
-    assert any(g["peer_id"] == gid and g["is_group"] and g["member_count"] == 3
-               for g in groups)
+    assert any(g["peer_id"] == gid and g["is_group"] and g["member_count"] == 3 for g in groups)
 
     # It also shows up in the unified conversations list.
     convos = client.get("/api/v1/conversations").json()
@@ -98,8 +97,9 @@ def test_members_endpoint_shape(client):
     assert "lumina" in by_uri
     # Contract fields the Flutter GroupMemberInfo.fromJson reads.
     for m in members:
-        assert set(["identity_uri", "display_name", "role", "participant_type",
-                    "is_online"]).issubset(m.keys())
+        assert set(
+            ["identity_uri", "display_name", "role", "participant_type", "is_online"]
+        ).issubset(m.keys())
     # Creator is admin; lumina is an agent participant.
     assert by_uri[daemon_proxy.OPERATOR_ID]["role"] == "admin"
     assert by_uri["lumina"]["participant_type"] == "agent"
@@ -166,8 +166,16 @@ def test_group_send_fans_out_and_history_returns_contract(client):
     hist = client.get(f"/api/v1/conversations/{gid}").json()
     assert [m["content"] for m in hist] == ["standup time"]
     assert hist[0]["conversation_id"] == gid
-    for key in ("id", "sender", "content_type", "body", "ts", "is_outbound",
-                "is_agent", "sender_name"):
+    for key in (
+        "id",
+        "sender",
+        "content_type",
+        "body",
+        "ts",
+        "is_outbound",
+        "is_agent",
+        "sender_name",
+    ):
         assert key in hist[0]
 
     # Sending via `recipient` (no group_id) also routes to the group.
@@ -201,10 +209,10 @@ def test_promote_one_to_one_keeps_room_id_and_history(client):
     hist = daemon_proxy._get_history()
     from skchat.models import ChatMessage
 
-    hist.save(ChatMessage(sender=daemon_proxy.OPERATOR_ID, recipient="jarvis",
-                          content="hey jarvis"))
-    hist.save(ChatMessage(sender="jarvis", recipient=daemon_proxy.OPERATOR_ID,
-                          content="hey chef"))
+    hist.save(
+        ChatMessage(sender=daemon_proxy.OPERATOR_ID, recipient="jarvis", content="hey jarvis")
+    )
+    hist.save(ChatMessage(sender="jarvis", recipient=daemon_proxy.OPERATOR_ID, content="hey chef"))
 
     # Add a member to the 1:1 — promotes it to a group of the SAME id.
     r = client.post("/api/v1/groups/jarvis/members", json={"identity": "lumina"})
@@ -256,8 +264,9 @@ def test_read_only_announcement_group_blocks_member_posts(client):
 
 def test_update_group_name_and_acl(client):
     gid = _create(client, members=["lumina"])["group_id"]
-    r = client.put(f"/api/v1/groups/{gid}",
-                   json={"name": "Renamed", "acl": {"announcement": True}})
+    r = client.put(
+        f"/api/v1/groups/{gid}", json={"name": "Renamed", "acl": {"announcement": True}}
+    )
     assert r.status_code == 200
     grp = G.load_group(gid)
     assert grp.name == "Renamed"
@@ -373,9 +382,7 @@ def test_local_deliver_to_agent_false_for_non_local_recipient(tmp_path, monkeypa
 def test_fan_out_send_prefers_local_delivery_over_network(client, monkeypatch, tmp_path):
     """A member with a local comms/inbox never hits the flaky network transport."""
     monkeypatch.setenv("HOME", str(tmp_path))
-    (tmp_path / ".skcapstone" / "agents" / "lumina" / "comms" / "inbox").mkdir(
-        parents=True
-    )
+    (tmp_path / ".skcapstone" / "agents" / "lumina" / "comms" / "inbox").mkdir(parents=True)
 
     class _BoomTransport:
         def send_message(self, msg):
@@ -389,3 +396,111 @@ def test_fan_out_send_prefers_local_delivery_over_network(client, monkeypatch, t
 
     inbox = tmp_path / ".skcapstone" / "agents" / "lumina" / "comms" / "inbox"
     assert list(inbox.glob("*.skc.json"))
+
+
+# --------------------------------------------------------------------------- #
+# Per-member trust fingerprint (M1b group trust badges)
+# --------------------------------------------------------------------------- #
+def test_member_to_app_emits_soul_fingerprint():
+    """member_to_app carries the per-member capauth fingerprint under BOTH the
+    conversation-contract key (soul_fingerprint) and the peer alias (fingerprint),
+    so the Flutter GroupMemberInfo parser + peer-trust tier resolver can anchor a
+    per-member trust badge (same shape as the 1:1 conversation)."""
+    from types import SimpleNamespace
+
+    from skchat import daemon_proxy_groups as G
+
+    fp = "4E06A71935D1DF1FB9848112D8634AB3E7B55236"
+    m = SimpleNamespace(
+        identity_uri="capauth:steward@skworld.io",
+        display_name="Steward",
+        role=SimpleNamespace(value="member"),
+        participant_type=SimpleNamespace(value="human"),
+    )
+    d = G.member_to_app(m, fingerprint=fp)
+    assert d["soul_fingerprint"] == fp
+    assert d["fingerprint"] == fp
+    # a member with no known key stays keyless (no fake key -> no badge app-side)
+    d0 = G.member_to_app(m)
+    assert d0["soul_fingerprint"] == ""
+    assert d0["fingerprint"] == ""
+
+
+def test_members_endpoint_carries_fingerprint(client, monkeypatch):
+    """GET /members enriches each member with its capauth fingerprint from the
+    peer store (via fingerprint_for_identity)."""
+    monkeypatch.setattr(
+        daemon_proxy,
+        "fingerprint_for_identity",
+        lambda ident, index=None: "AABBCC112233" if "lumina" in ident else "",
+    )
+    gid = _create(client, members=["lumina"])["group_id"]
+    members = client.get(f"/api/v1/groups/{gid}/members").json()
+    by_uri = {m["identity_uri"]: m for m in members}
+    assert by_uri["lumina"]["soul_fingerprint"] == "AABBCC112233"
+    assert by_uri["lumina"]["fingerprint"] == "AABBCC112233"
+    # the human operator has no peer-store key here -> keyless
+    assert by_uri[daemon_proxy.OPERATOR_ID]["soul_fingerprint"] == ""
+
+
+def test_fingerprint_for_identity_matches_peer_store(tmp_path, monkeypatch):
+    """fingerprint_for_identity matches ONLY fully-qualified identity_uri / handle
+    / fqid, special-cases Lumina, and returns '' for unknowns and BARE short
+    names (never a fabricated or cross-realm-misattributed key)."""
+    import json as _json
+
+    peers = tmp_path / "peers"
+    peers.mkdir()
+    (peers / "steward.json").write_text(
+        _json.dumps(
+            {
+                "identity": "capauth:steward@skworld.io",
+                "handle": "steward@skworld.io",
+                "fqid": "steward@chef.skworld",
+                "fingerprint": "4E06A71935D1DF1FB9848112D8634AB3E7B55236",
+            }
+        )
+    )
+    monkeypatch.setattr(daemon_proxy, "_peers_dir", lambda: peers)
+
+    fpi = daemon_proxy.fingerprint_for_identity
+    expect = "4E06A71935D1DF1FB9848112D8634AB3E7B55236"
+    # Full, realm-qualified forms match.
+    assert fpi("capauth:steward@skworld.io") == expect
+    assert fpi("steward@skworld.io") == expect
+    assert fpi("steward@chef.skworld") == expect
+    assert fpi("capauth:lumina@skworld.io") == daemon_proxy.LUMINA_FINGERPRINT
+    # A BARE short name does NOT match (would cross-realm-collide in the swarm).
+    assert fpi("steward") == ""
+    # A cross-realm agent sharing the local short name resolves keyless, NOT the
+    # local steward's key (the security-review collision guard).
+    assert fpi("steward@otheroperator.skworld.io") == ""
+    assert fpi("capauth:steward@otheroperator.skworld.io") == ""
+    assert fpi("nobody@nowhere") == ""
+    assert fpi("") == ""
+
+
+def test_group_to_conversation_embeds_participants_with_fingerprints():
+    group = GroupChat(name="Ops", kem_suite="rsa-pgp-wrap-v1")
+    group.add_member("capauth:lumina@skworld.io", role=MemberRole.ADMIN)
+    group.add_member("steward@skworld.io", role=MemberRole.MEMBER)
+
+    fps = {
+        "capauth:lumina@skworld.io": "AAAA1111",
+        "steward@skworld.io": "BBBB2222",
+    }
+    conv = G.group_to_conversation(group, fingerprint_for=lambda i: fps.get(i, ""))
+
+    assert conv["is_group"] is True
+    parts = conv["participants"]
+    assert {p["identity_uri"] for p in parts} == set(fps)
+    by_id = {p["identity_uri"]: p for p in parts}
+    assert by_id["capauth:lumina@skworld.io"]["soul_fingerprint"] == "AAAA1111"
+    assert by_id["steward@skworld.io"]["soul_fingerprint"] == "BBBB2222"
+
+
+def test_group_to_conversation_participants_default_empty_fingerprint():
+    group = GroupChat(name="Ops", kem_suite="rsa-pgp-wrap-v1")
+    group.add_member("capauth:chef@skworld.io", role=MemberRole.ADMIN)
+    conv = G.group_to_conversation(group)  # no resolver passed
+    assert conv["participants"][0]["soul_fingerprint"] == ""

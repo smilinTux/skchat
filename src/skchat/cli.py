@@ -3645,8 +3645,10 @@ def pqc_prekey(agent: "Optional[str]") -> None:
     _print("")
     _print(f"  Agent prekey suite : {suite}" + (" (hybrid PQ)" if hybrid else " (classical)"))
     if hybrid:
-        _print(f"  Public key (hex)   : {bundle.get('hybrid_public_hex', '')[:32]}… "
-               f"({len(bundle.get('hybrid_public_hex',''))//2} bytes)")
+        _print(
+            f"  Public key (hex)   : {bundle.get('hybrid_public_hex', '')[:32]}… "
+            f"({len(bundle.get('hybrid_public_hex', '')) // 2} bytes)"
+        )
         _print(f"  Key id             : {bundle.get('key_id')}")
     else:
         _print("  No hybrid backend (liboqs) available — DMs to this agent stay classical.")
@@ -3654,12 +3656,21 @@ def pqc_prekey(agent: "Optional[str]") -> None:
 
 
 @pqc.command(name="migrate-fleet")
-@click.option("--dry-run", is_flag=True, default=False,
-              help="List what WOULD migrate; write nothing.")
-@click.option("--no-backup", is_flag=True, default=False,
-              help="Skip the pre-migration backup (NOT recommended).")
-@click.option("--yes", is_flag=True, default=False,
-              help="Proceed with live migration without the confirmation prompt.")
+@click.option(
+    "--dry-run", is_flag=True, default=False, help="List what WOULD migrate; write nothing."
+)
+@click.option(
+    "--no-backup",
+    is_flag=True,
+    default=False,
+    help="Skip the pre-migration backup (NOT recommended).",
+)
+@click.option(
+    "--yes",
+    is_flag=True,
+    default=False,
+    help="Proceed with live migration without the confirmation prompt.",
+)
 def pqc_migrate_fleet(dry_run: bool, no_backup: bool, yes: bool) -> None:
     """Migrate EXISTING groups + at-rest stores to hybrid PQ (safe).
 
@@ -3678,11 +3689,15 @@ def pqc_migrate_fleet(dry_run: bool, no_backup: bool, yes: bool) -> None:
         skip = [p for p in plans if p.action == "skip"]
         _print("")
         _print("  PQC migrate-fleet — DRY RUN (no writes)")
-        _print(f"  groups: {len(plans)} total · {len(migrate)} would migrate · "
-               f"{len(already)} already hybrid · {len(skip)} skipped")
+        _print(
+            f"  groups: {len(plans)} total · {len(migrate)} would migrate · "
+            f"{len(already)} already hybrid · {len(skip)} skipped"
+        )
         for p in migrate:
-            _print(f"    MIGRATE  {p.group_id[:8]} {p.name!r} "
-                   f"({p.members_with_key}/{p.members_total} keyed)")
+            _print(
+                f"    MIGRATE  {p.group_id[:8]} {p.name!r} "
+                f"({p.members_with_key}/{p.members_total} keyed)"
+            )
         for p in skip:
             _print(f"    skip     {p.group_id[:8]} {p.name!r} — {p.reason}")
         _print(f"  at-rest store: {store_plan.get('action')} — {store_plan.get('reason')}")
@@ -3713,15 +3728,17 @@ def pqc_migrate_fleet(dry_run: bool, no_backup: bool, yes: bool) -> None:
             _print(f"    ! {fl['group_id'][:8]} — {fl['reason']}")
     store = res.store.get("result")
     if store is not None:
-        _print(f"  At-rest store   : {store} (suite={res.store.get('wrap_suite')}, "
-               f"qr={res.store.get('quantum_resistant')})")
+        _print(
+            f"  At-rest store   : {store} (suite={res.store.get('wrap_suite')}, "
+            f"qr={res.store.get('quantum_resistant')})"
+        )
     else:
         _print("  At-rest store   : none present")
     _print("")
 
 
 @pqc.command(name="report")
-def pqc_report_cmd() -> None:
+def pqc_report_subcmd() -> None:
     """Show the honest per-surface PQC self-report (delegates to sksecurity)."""
     try:
         from sksecurity.pqc_report import build_live_report, format_report
@@ -5083,11 +5100,18 @@ def conf() -> None:
 
 
 @conf.command("join-federated")
-@click.option("--host", "remote_host", required=True,
-              help="Remote host base URL (http://box-a:8765) or full federated-token URL.")
+@click.option(
+    "--host",
+    "remote_host",
+    required=True,
+    help="Remote host base URL (http://box-a:8765) or full federated-token URL.",
+)
 @click.option("--room", required=True, help="Remote conf room id to join.")
-@click.option("--fqid", default=None,
-              help="Override signing identity (default: this agent's canonical fqid).")
+@click.option(
+    "--fqid",
+    default=None,
+    help="Override signing identity (default: this agent's canonical fqid).",
+)
 @click.option("--json", "as_json", is_flag=True, help="Output raw JSON for scripting.")
 def conf_join_federated(remote_host: str, room: str, fqid: str | None, as_json: bool) -> None:
     """Mint a cross-instance conf token from a remote host and print it.
@@ -5154,10 +5178,16 @@ def conf_join_federated(remote_host: str, room: str, fqid: str | None, as_json: 
     default=None,
     help="Remote host auth_url (skip discovery). Omit to discover via the relay.",
 )
-@click.option("--fqid", default=None,
-              help="Override signing identity (default: this agent's canonical fqid).")
-@click.option("--greet", default="Lumina here — joining the federated conference.",
-              help="Greeting the agent speaks on join (max 500 chars).")
+@click.option(
+    "--fqid",
+    default=None,
+    help="Override signing identity (default: this agent's canonical fqid).",
+)
+@click.option(
+    "--greet",
+    default="Lumina here — joining the federated conference.",
+    help="Greeting the agent speaks on join (max 500 chars).",
+)
 @click.option("--json", "as_json", is_flag=True, help="Output raw JSON for scripting.")
 def conf_agent_join_federated(
     room: str, remote_host: str | None, fqid: str | None, greet: str, as_json: bool
@@ -5179,9 +5209,7 @@ def conf_agent_join_federated(
     from skchat.conf.fed_client import ConfAuthDenied, ConfFederationError
 
     try:
-        result = federated_agent_join(
-            room, host=remote_host, fqid=fqid, greet=greet
-        )
+        result = federated_agent_join(room, host=remote_host, fqid=fqid, greet=greet)
     except ConfAuthDenied as exc:
         if as_json:
             click.echo(_json.dumps({"error": "denied", "detail": str(exc)}))
@@ -5239,11 +5267,15 @@ def webui(port: int, no_browser: bool) -> None:
         raise SystemExit(1)
     webui_run(port=port, open_browser=not no_browser)
 
+
 @main.command(name="pqc-report")
-@click.option("--format", "output_format", default="text",
-              type=click.Choice(["text", "json"]))
-@click.option("--static", is_flag=True, default=False,
-              help="Show the model-DEFAULT posture instead of the live fleet.")
+@click.option("--format", "output_format", default="text", type=click.Choice(["text", "json"]))
+@click.option(
+    "--static",
+    is_flag=True,
+    default=False,
+    help="Show the model-DEFAULT posture instead of the live fleet.",
+)
 def pqc_report_cmd(output_format, static):
     """Show skchat's OWN PQC (quantum-resistance) posture.
 
@@ -5254,9 +5286,11 @@ def pqc_report_cmd(output_format, static):
     global / end-to-end / "quantum-proof" claim is ever made.
     """
     import json as _json
+
     try:
         from sksecurity.pqc_report import (
-            build_project_report, format_project_report,
+            build_project_report,
+            format_project_report,
         )
     except Exception:
         _print(
@@ -5345,10 +5379,7 @@ def requests_cmd() -> None:
         )
     else:
         for req in pending:
-            _print(
-                f"  {req.get('sender', '?')}"
-                f"  ({_ts_ago(req.get('received_at', ''))})"
-            )
+            _print(f"  {req.get('sender', '?')}  ({_ts_ago(req.get('received_at', ''))})")
     _print("")
 
 

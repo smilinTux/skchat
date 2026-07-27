@@ -368,7 +368,14 @@ def public_aware_livekit_url(request: object) -> str:
 
 
 def _mint_token(identity: str, name: str, room: str, ttl: int) -> str:
-    """Build a participant JWT. Raises if livekit-api isn't installed."""
+    """Build a participant JWT. Raises if livekit-api isn't installed.
+
+    Deliberately does NOT stamp a trust-badge soul_fingerprint: this route is
+    gated (loopback/tailnet/operator-token) but the identity is still
+    caller-supplied and not cryptographically proven, so a badge minted here
+    would be spoofable by any trusted-network caller claiming a keyed identity
+    (see the participant-badge security review). Trust badges are stamped only on
+    capauth-PROVEN joins (/join/sovereign, conf/Space federation authd)."""
     from datetime import timedelta
 
     from livekit import api  # local import — soft dep
@@ -736,8 +743,7 @@ def register_livekit_routes(app: FastAPI) -> None:
 
         try:
             segment_duration = int(
-                body.get("segment_duration")
-                or os.getenv("SKCHAT_HLS_SEGMENT_DURATION", "6")
+                body.get("segment_duration") or os.getenv("SKCHAT_HLS_SEGMENT_DURATION", "6")
             )
         except (TypeError, ValueError):
             segment_duration = 6
@@ -805,9 +811,7 @@ def register_livekit_routes(app: FastAPI) -> None:
             except Exception:
                 authorized = True
         if not authorized:
-            raise HTTPException(
-                status_code=403, detail="not authorized to stop this egress"
-            )
+            raise HTTPException(status_code=403, detail="not authorized to stop this egress")
         try:
             result = await _egress_stop(egress_id)
         except ImportError:

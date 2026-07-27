@@ -173,7 +173,9 @@ def fetch_peer_prekey(
                 )
                 return None
         except Exception:
-            logger.warning("prekey_exchange: signature verify error for %s", peer_fqid, exc_info=True)
+            logger.warning(
+                "prekey_exchange: signature verify error for %s", peer_fqid, exc_info=True
+            )
             return None
 
     # Persist (store_peer_bundle normalises + preserves the capability + signature).

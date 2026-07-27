@@ -11,7 +11,6 @@ import pytest
 pytest.importorskip("skcomms.glossa", reason="skcomms not installed")
 
 import cbor2  # noqa: E402
-
 from skcomms.glossa.codebook import default_codebook  # noqa: E402
 from skcomms.glossa.handshake import CapabilityDescriptor  # noqa: E402
 from skcomms.glossa.message import Message  # noqa: E402
@@ -106,16 +105,21 @@ def test_malformed_token_raises():
 def test_codec_ext_dispatches_l3_and_delegates_l0_l2():
     cb = default_codebook()
     m = _msg()
-    for level in (codec_ext.L0_ENGLISH, codec_ext.L1_SCHEMA, codec_ext.L2_CODEBOOK,
-                  codec_ext.L3_TOKENSTREAM):
+    for level in (
+        codec_ext.L0_ENGLISH,
+        codec_ext.L1_SCHEMA,
+        codec_ext.L2_CODEBOOK,
+        codec_ext.L3_TOKENSTREAM,
+    ):
         raw = codec_ext.encode(m, level, cb)
         assert codec_ext.decode(raw, level, cb) == m
 
 
 def _desc(fqid: str, max_level: int) -> CapabilityDescriptor:
     cb_v = default_codebook().version
-    return CapabilityDescriptor(fqid=fqid, model_tier="large",
-                                max_level=max_level, codebook_version=cb_v)
+    return CapabilityDescriptor(
+        fqid=fqid, model_tier="large", max_level=max_level, codebook_version=cb_v
+    )
 
 
 def test_mesh_session_roundtrips_l3_when_negotiated():
@@ -134,10 +138,8 @@ def test_mesh_node_broadcasts_l3_roundtrip():
     async def run():
         cb = default_codebook()
         medium = FakeBusMedium()
-        a = GlossaMeshNode(descriptor=_desc("a@x", 3),
-                           bus=FakeBus("a", medium), codebook=cb)
-        b = GlossaMeshNode(descriptor=_desc("b@x", 3),
-                           bus=FakeBus("b", medium), codebook=cb)
+        a = GlossaMeshNode(descriptor=_desc("a@x", 3), bus=FakeBus("a", medium), codebook=cb)
+        b = GlossaMeshNode(descriptor=_desc("b@x", 3), bus=FakeBus("b", medium), codebook=cb)
         got: list = []
         b.on_message(lambda src, m: got.append((src, m)))
         await a.start()
@@ -148,4 +150,5 @@ def test_mesh_node_broadcasts_l3_roundtrip():
         m = _msg()
         await a.say(m)
         assert got == [("a", m)]
+
     asyncio.run(run())

@@ -53,10 +53,14 @@ class JoinDenied(Exception):
 
 
 def _default_mint(identity: str, space_id: str, *, sovereign_admin: bool) -> str:
+    from skchat.daemon_proxy import soul_metadata_for
     from skchat.spaces.tokens import mint_conf_token
 
     ttl = int(os.getenv("SKCHAT_LIVEKIT_TOKEN_TTL", "21600"))
-    # identity == the PROVEN fqid; display name is the bare agent part.
+    # identity == the PROVEN fqid (verify_signed in authorize_sovereign); display
+    # name is the bare agent part. Because the fqid is cryptographically proven,
+    # stamping its capauth fingerprint as participant metadata is a real,
+    # unspoofable M1b trust badge.
     return mint_conf_token(
         identity,
         identity.split("@")[0],
@@ -64,6 +68,7 @@ def _default_mint(identity: str, space_id: str, *, sovereign_admin: bool) -> str
         space_id,
         ttl,
         sovereign_admin=sovereign_admin,
+        metadata=soul_metadata_for(identity),
     )
 
 

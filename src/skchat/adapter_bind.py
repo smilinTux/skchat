@@ -40,6 +40,8 @@ from typing import Any, Optional, Protocol, runtime_checkable
 
 import yaml
 
+from .redact import mask_fqid
+
 logger = logging.getLogger("skchat.adapter_bind")
 
 # The slash command that triggers a bind.  Case-insensitive on the verb.
@@ -233,7 +235,7 @@ class AdapterBinder:
             if key:
                 self._store.put(key, fqid)
 
-        logger.info("adapter_bind: bound %s → %s", _key(platform), fqid)
+        logger.info("adapter_bind: bound %s → %s", _key(platform), mask_fqid(fqid))
         return BindResult(ok=True, fqid=fqid)
 
 
