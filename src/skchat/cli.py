@@ -104,7 +104,10 @@ def _get_chat_transport():
             return None
 
         history = _get_history()
-        return ChatTransport(
+        # from_config (NOT the bare constructor) wires the agent's ChatCrypto so a
+        # federated DM to a live-ratchet peer seals pqdr1 instead of silently
+        # downgrading to plaintext (card 3d0a3fef).
+        return ChatTransport.from_config(
             skcomms=comm,
             history=history,
             identity=_get_identity(),
@@ -205,7 +208,9 @@ def _get_transport() -> "Optional[ChatTransport]":
         comm = SKComms.from_config()
         history = _get_history()
         identity = _get_identity()
-        return ChatTransport(
+        # from_config wires ChatCrypto → DM ratchet can seal (card 3d0a3fef); the
+        # bare constructor left crypto=None and sent plaintext to ratchet peers.
+        return ChatTransport.from_config(
             skcomms=comm,
             history=history,
             identity=identity,
@@ -1983,7 +1988,23 @@ def chat(peer: str, interval: float, thread: Optional[str], group: bool) -> None
             _prev_buf[0] = ""  # reset buffer tracker so next typed char fires
             _transport = _get_chat_transport()
             if _transport is not None:
-                result = _transport.send_and_store(peer_uri, text, thread_id=thread)
+                # send_and_store can now raise ConfidentialityError (card 3d0a3fef):
+                # with crypto wired the DM ratchet fails closed instead of sending
+                # plaintext. Keep the REPL alive on a transient seal failure: store
+                # the turn as PENDING and report it, don't crash the session.
+                try:
+                    result = _transport.send_and_store(peer_uri, text, thread_id=thread)
+                except Exception as exc:  # noqa: BLE001
+                    history.save(
+                        ChatMessage(
+                            sender=identity,
+                            recipient=peer_uri,
+                            content=text,
+                            thread_id=thread,
+                            delivery_status=DeliveryStatus.PENDING,
+                        )
+                    )
+                    result = {"delivered": False, "error": str(exc)}
             else:
                 _msg = ChatMessage(
                     sender=identity,
