@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from skchat.textutil import format_relative_time, humanize_bytes, truncate_middle
+from skchat.textutil import humanize_duration, truncate_middle
 
 
 class TestTruncateMiddle:
@@ -202,3 +203,41 @@ class TestFormatRelativeTime:
     def test_empty_string_ts_returns_empty(self) -> None:
         """An empty-string iso_ts never raises and returns ''."""
         assert format_relative_time("", self.NOW) == ""
+class TestHumanizeDuration:
+    """Tests for humanize_duration."""
+
+    def test_zero_seconds(self) -> None:
+        """Zero seconds formats as '0s'."""
+        assert humanize_duration(0) == "0s"
+
+    def test_seconds_only(self) -> None:
+        """Sub-minute durations show only seconds."""
+        assert humanize_duration(45) == "45s"
+
+    def test_minutes_and_seconds(self) -> None:
+        """Durations under an hour show minutes and seconds."""
+        assert humanize_duration(90) == "1m 30s"
+
+    def test_hours_and_minutes_drops_seconds(self) -> None:
+        """Durations with hours drop the seconds unit."""
+        assert humanize_duration(3661) == "1h 1m"
+
+    def test_days_and_hours_drops_minutes_and_seconds(self) -> None:
+        """Durations with days drop minutes and seconds."""
+        assert humanize_duration(90000) == "1d 1h"
+
+    def test_exact_minute_drops_seconds(self) -> None:
+        """A duration that is an exact number of minutes has no seconds unit."""
+        assert humanize_duration(120) == "2m"
+
+    def test_none_returns_zero(self) -> None:
+        """None input never raises and returns '0s'."""
+        assert humanize_duration(None) == "0s"  # type: ignore[arg-type]
+
+    def test_negative_returns_zero(self) -> None:
+        """Negative input never raises and returns '0s'."""
+        assert humanize_duration(-5) == "0s"
+
+    def test_non_numeric_returns_zero(self) -> None:
+        """Non-numeric input never raises and returns '0s'."""
+        assert humanize_duration("abc") == "0s"  # type: ignore[arg-type]
