@@ -375,9 +375,7 @@ class ChatTransport:
                     or os.environ.get("SKCAPSTONE_AGENT")
                     or os.environ.get("SKMEMORY_AGENT")
                 )
-                agent = _safe_agent(
-                    resident or (self._identity or "").split(":")[-1] or "lumina"
-                )
+                agent = _safe_agent(resident or (self._identity or "").split(":")[-1] or "lumina")
                 # Co-locate the DM-session store with the prekey store: both honor
                 # SKCHAT_HOME (pq_prekeys uses it for ~/.skchat/pqc). Identical to
                 # the previous hard-coded path in production (SKCHAT_HOME unset →
