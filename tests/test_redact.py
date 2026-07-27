@@ -380,9 +380,7 @@ class TestMaskQueryParams:
             "auth",
         ):
             url = f"https://x.example.com/path?{name}=verysecretvalue"
-            assert (
-                mask_query_params(url) == f"https://x.example.com/path?{name}=<redacted>"
-            ), name
+            assert mask_query_params(url) == f"https://x.example.com/path?{name}=<redacted>", name
 
     def test_case_insensitive_param_name_preserves_original_case(self):
         url = "https://x.example.com/path?Token=abc123&API_KEY=xyz"
