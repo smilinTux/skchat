@@ -27,3 +27,34 @@ def truncate_middle(value: str, max_len: int = 40) -> str:
     tail_len = available - head_len
     tail = value[len(value) - tail_len :] if tail_len else ""
     return f"{value[:head_len]}…{tail}"
+
+
+_BYTE_UNITS = ("B", "KB", "MB", "GB")
+
+
+def humanize_bytes(n: float | None) -> str:
+    """Format a byte count as a human-readable string (base 1024).
+
+    Whole numbers are used for the ``B`` unit; ``KB`` and above show one
+    decimal place. ``None`` and non-numeric input never raise, they return
+    ``"0 B"``. Negative input is masked to ``"0 B"`` rather than raising or
+    displaying a sign, since a negative size is never meaningful here.
+    """
+    try:
+        size = float(n)
+    except (TypeError, ValueError):
+        return "0 B"
+    if size < 0:
+        return "0 B"
+
+    unit = "B"
+    for unit in _BYTE_UNITS:
+        if size < 1024:
+            break
+        size /= 1024
+    else:
+        unit = "TB"
+
+    if unit == "B":
+        return f"{int(size)} B"
+    return f"{size:.1f} {unit}"
