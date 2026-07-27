@@ -10,9 +10,28 @@ from __future__ import annotations
 
 import re
 from typing import Any
+from urllib.parse import unquote, urlsplit, urlunsplit
 
 #: Returned for input that can't be safely partially masked.
 REDACTED_PLACEHOLDER = "<redacted>"
+
+#: Query-param names (case-insensitive) whose values are always secrets.
+_SENSITIVE_QUERY_PARAMS = frozenset(
+    {
+        "token",
+        "key",
+        "apikey",
+        "api_key",
+        "password",
+        "passwd",
+        "pwd",
+        "secret",
+        "sig",
+        "signature",
+        "access_token",
+        "auth",
+    }
+)
 
 #: Number of trailing characters of a fingerprint left unmasked.
 _FINGERPRINT_VISIBLE = 8
@@ -168,6 +187,42 @@ def mask_token(value: Any) -> str:
         return f"{stripped[:_TOKEN_VISIBLE_PREFIX]}{REDACTED_PLACEHOLDER}"
 
     return value
+
+
+def mask_query_params(url: Any) -> str:
+    """Redact the values of sensitive query parameters in a URL, keeping structure intact.
+
+    Any query parameter whose name (case-insensitive) is one of ``token``,
+    ``key``, ``apikey``, ``api_key``, ``password``, ``passwd``, ``pwd``,
+    ``secret``, ``sig``, ``signature``, ``access_token``, or ``auth`` has its
+    value replaced with :data:`REDACTED_PLACEHOLDER`, e.g.
+    ``https://x.example.com/p?token=abc&q=hi`` ->
+    ``https://x.example.com/p?token=<redacted>&q=hi``. Parameter names, order,
+    and the rest of the URL (scheme, host, path, other params, fragment) are
+    left untouched. A URL with no query string or no sensitive params is
+    returned unchanged.
+    """
+    if not isinstance(url, str) or not url:
+        return REDACTED_PLACEHOLDER
+
+    parts = urlsplit(url)
+    if not parts.query:
+        return url
+
+    changed = False
+    segments = []
+    for segment in parts.query.split("&"):
+        name, sep, _value = segment.partition("=")
+        if sep and unquote(name).lower() in _SENSITIVE_QUERY_PARAMS:
+            segments.append(f"{name}={REDACTED_PLACEHOLDER}")
+            changed = True
+        else:
+            segments.append(segment)
+
+    if not changed:
+        return url
+
+    return urlunsplit(parts._replace(query="&".join(segments)))
 
 
 #: Matches, in priority order, a capauth fqid, a bare email, an IPv4 (optionally

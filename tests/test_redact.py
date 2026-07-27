@@ -1,5 +1,5 @@
 """Unit tests for skchat.redact -- mask_fqid(), mask_fingerprint(), mask_ip(), mask_email(),
-mask_token(), scrub(), and redact_dict()."""
+mask_token(), mask_query_params(), scrub(), and redact_dict()."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from skchat.redact import (
     mask_fingerprint,
     mask_fqid,
     mask_ip,
+    mask_query_params,
     mask_token,
     redact_dict,
     scrub,
@@ -351,3 +352,70 @@ class TestRedactDict:
         result = redact_dict(mapping)
         assert result is not mapping
         assert result["a"] == "clean text"
+
+
+# ---------------------------------------------------------------------------
+# mask_query_params
+# ---------------------------------------------------------------------------
+
+
+class TestMaskQueryParams:
+    def test_single_sensitive_param(self):
+        url = "https://api.example.com/v1/status?token=abc123"
+        assert mask_query_params(url) == "https://api.example.com/v1/status?token=<redacted>"
+
+    def test_each_recognized_param_name(self):
+        for name in (
+            "token",
+            "key",
+            "apikey",
+            "api_key",
+            "password",
+            "passwd",
+            "pwd",
+            "secret",
+            "sig",
+            "signature",
+            "access_token",
+            "auth",
+        ):
+            url = f"https://x.example.com/path?{name}=verysecretvalue"
+            assert (
+                mask_query_params(url) == f"https://x.example.com/path?{name}=<redacted>"
+            ), name
+
+    def test_case_insensitive_param_name_preserves_original_case(self):
+        url = "https://x.example.com/path?Token=abc123&API_KEY=xyz"
+        expected = "https://x.example.com/path?Token=<redacted>&API_KEY=<redacted>"
+        assert mask_query_params(url) == expected
+
+    def test_mixed_sensitive_and_non_sensitive_params(self):
+        url = "https://x.example.com/search?q=hello&token=abc123&limit=10&sig=deadbeef"
+        assert mask_query_params(url) == (
+            "https://x.example.com/search?q=hello&token=<redacted>&limit=10&sig=<redacted>"
+        )
+
+    def test_preserves_param_order(self):
+        url = "https://x.example.com/p?b=2&password=secret&a=1"
+        assert mask_query_params(url) == "https://x.example.com/p?b=2&password=<redacted>&a=1"
+
+    def test_preserves_fragment(self):
+        url = "https://x.example.com/p?token=abc123#section"
+        assert mask_query_params(url) == "https://x.example.com/p?token=<redacted>#section"
+
+    def test_no_query_string_unchanged(self):
+        url = "https://x.example.com/path"
+        assert mask_query_params(url) == url
+
+    def test_no_sensitive_params_unchanged(self):
+        url = "https://x.example.com/search?q=hello&limit=10"
+        assert mask_query_params(url) == url
+
+    def test_empty_string(self):
+        assert mask_query_params("") == REDACTED_PLACEHOLDER
+
+    def test_none_input(self):
+        assert mask_query_params(None) == REDACTED_PLACEHOLDER
+
+    def test_non_string_input(self):
+        assert mask_query_params(12345) == REDACTED_PLACEHOLDER
