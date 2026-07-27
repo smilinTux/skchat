@@ -1109,7 +1109,9 @@ async def send(recipient: str = Form(...), content: str = Form(...)) -> HTMLResp
                 # delivered one in the rendered thread (card 3d0a3fef follow-up).
                 _get_history().save(
                     ChatMessage(
-                        sender=identity, recipient=recipient, content=content,
+                        sender=identity,
+                        recipient=recipient,
+                        content=content,
                         delivery_status=DeliveryStatus.PENDING,
                     )
                 )
@@ -1117,7 +1119,9 @@ async def send(recipient: str = Form(...), content: str = Form(...)) -> HTMLResp
             from .models import ChatMessage, DeliveryStatus
 
             msg = ChatMessage(
-                sender=identity, recipient=recipient, content=content,
+                sender=identity,
+                recipient=recipient,
+                content=content,
                 delivery_status=DeliveryStatus.PENDING,
             )
             _get_history().save(msg)

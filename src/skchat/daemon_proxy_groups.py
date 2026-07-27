@@ -997,17 +997,26 @@ def fan_out_send(
             # gate the marker on it.
             group.metadata["epoch_distributed"] = group.epoch
             expected = sum(
-                1 for m in group.members
+                1
+                for m in group.members
                 if m.identity_uri != sender_uri and _member_has_group_key(group, m)
             )
             if len(distributed) < expected:
                 logger.warning(
                     "fan_out_send: epoch %d PARTIAL key delivery for group %s (%d/%d); "
                     "undelivered members will re-key on the next epoch bump",
-                    group.epoch, group.id, len(distributed), expected)
+                    group.epoch,
+                    group.id,
+                    len(distributed),
+                    expected,
+                )
             else:
-                logger.info("fan_out_send: distributed epoch %d key for group %s to %d member(s)",
-                            group.epoch, group.id, len(distributed))
+                logger.info(
+                    "fan_out_send: distributed epoch %d key for group %s to %d member(s)",
+                    group.epoch,
+                    group.id,
+                    len(distributed),
+                )
         except Exception as exc:  # never let key distribution block the send
             logger.warning("fan_out_send: epoch key distribution failed for %s: %s", group.id, exc)
 
