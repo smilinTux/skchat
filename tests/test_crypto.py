@@ -194,9 +194,16 @@ class TestChatCrypto:
         )
         sender = ChatCrypto(alice_priv, PASSPHRASE)
         encrypted = sender.encrypt_message(msg, bob_pub)
-        # corrupt the armored ciphertext in the middle
+        # Corrupt a RUN of the armored ciphertext body, flipping each character to a
+        # guaranteed-different value. A single-char flip was flaky: it is a no-op
+        # when it lands on an identical char or on lenient armor whitespace, so
+        # decryption occasionally still succeeded. Mutating a 24-char window changes
+        # enough base64 payload that the OpenPGP integrity check always fails.
         body = encrypted.content
-        corrupted = body[: len(body) // 2] + "X" + body[len(body) // 2 + 1 :]
+        i = len(body) // 2
+        window = body[i : i + 24]
+        flipped = "".join("A" if c != "A" else "B" for c in window)
+        corrupted = body[:i] + flipped + body[i + 24 :]
         broken = encrypted.model_copy(update={"content": corrupted})
         receiver = ChatCrypto(bob_priv, PASSPHRASE)
         with pytest.raises(DecryptionError):
