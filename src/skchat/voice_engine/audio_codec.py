@@ -24,3 +24,23 @@ def rms(pcm_bytes: bytes) -> int:
         return audioop.rms(pcm_bytes, 2)
     except Exception:
         return 0
+
+
+def detect_audio_format(data: bytes | None) -> str:
+    """Sniff an audio container format from its leading magic bytes.
+
+    Returns one of "wav", "webm", "ogg", "mp3", "m4a", or "" if unknown/too short.
+    """
+    if not data or len(data) < 4:
+        return ""
+    if data[:4] == b"RIFF" and data[8:12] == b"WAVE":
+        return "wav"
+    if data[:4] == b"\x1aE\xdf\xa3":
+        return "webm"
+    if data[:4] == b"OggS":
+        return "ogg"
+    if data[:3] == b"ID3" or data[:2] == b"\xff\xfb":
+        return "mp3"
+    if data[4:8] == b"ftyp":
+        return "m4a"
+    return ""
