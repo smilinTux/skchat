@@ -58,9 +58,9 @@ def wire(monkeypatch, tmp_path):
 
     crypto = MagicMock()
     crypto.can_sign = True
-    crypto.is_ratchet_message.side_effect = lambda m: str(
-        getattr(m, "content", "")
-    ).startswith("pqdr1:")
+    crypto.is_ratchet_message.side_effect = lambda m: str(getattr(m, "content", "")).startswith(
+        "pqdr1:"
+    )
     monkeypatch.setattr("skchat.crypto.load_agent_crypto", lambda identity=None: crypto)
 
     mgr = MagicMock()
@@ -71,9 +71,7 @@ def wire(monkeypatch, tmp_path):
 
     from skchat.dm_manager import DmRatchetManager
 
-    monkeypatch.setattr(
-        DmRatchetManager, "for_agent", staticmethod(lambda *a, **k: mgr)
-    )
+    monkeypatch.setattr(DmRatchetManager, "for_agent", staticmethod(lambda *a, **k: mgr))
     return comm
 
 
