@@ -96,7 +96,10 @@ class STTClient:
             return (r.json().get("text") or "").strip()
 
     async def transcribe_upload(
-        self, audio: bytes, *, filename: str = "speech.wav",
+        self,
+        audio: bytes,
+        *,
+        filename: str = "speech.wav",
         content_type: str = "audio/wav",
     ) -> str:
         """Transcribe an ALREADY-ENCODED audio file (wav/webm/mp3/m4a) by posting

@@ -854,9 +854,7 @@ def load_agent_crypto(identity: Optional[str] = None) -> Optional["ChatCrypto"]:
             agent = _safe_agent(agent)
         except ValueError:
             agent = "lumina"
-        key_path = os.path.expanduser(
-            f"~/.skcapstone/agents/{agent}/capauth/identity/private.asc"
-        )
+        key_path = os.path.expanduser(f"~/.skcapstone/agents/{agent}/capauth/identity/private.asc")
         if not os.path.isfile(key_path):
             # P0.2: a missing PGP *signing* key must NOT disable ratchet
             # confidentiality. Return a ratchet-only engine so the DM ratchet

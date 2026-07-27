@@ -30,10 +30,11 @@ async def test_transcribe_upload_posts_encoded_file_verbatim():
 
     cfg = VoiceConfig.from_env()
     stt = STTClient(cfg, _post_file=fake_post_file)
-    out = await stt.transcribe_upload(b"WEBMDATA", filename="speech.webm",
-                                      content_type="audio/webm")
-    assert out == "  transcribed text  "          # returns the poster's result as-is
-    assert captured["audio"] == b"WEBMDATA"        # encoded bytes posted unchanged
+    out = await stt.transcribe_upload(
+        b"WEBMDATA", filename="speech.webm", content_type="audio/webm"
+    )
+    assert out == "  transcribed text  "  # returns the poster's result as-is
+    assert captured["audio"] == b"WEBMDATA"  # encoded bytes posted unchanged
     assert captured["content_type"] == "audio/webm"
     assert captured["filename"] == "speech.webm"
     assert captured["url"] == cfg.stt_url
@@ -45,7 +46,7 @@ async def test_transcribe_upload_propagates_transport_error():
 
     stt = STTClient(VoiceConfig.from_env(), _post_file=boom)
     with pytest.raises(ConnectionError):
-        await stt.transcribe_upload(b"A")          # caller graceful-degrades, not swallowed
+        await stt.transcribe_upload(b"A")  # caller graceful-degrades, not swallowed
 
 
 # -- POST /api/v1/transcribe -----------------------------------------------
@@ -56,26 +57,25 @@ def _patch_upload(monkeypatch, fn):
 def test_transcribe_route_returns_transcript(client, monkeypatch):
     async def fake(self, audio, *, filename="speech.wav", content_type="audio/wav"):
         assert audio == b"FAKEAUDIO" and content_type == "audio/webm"
-        assert filename == "speech.webm"           # ext derived from content-type
+        assert filename == "speech.webm"  # ext derived from content-type
         return "hello world"
 
     _patch_upload(monkeypatch, fake)
-    r = client.post("/api/v1/transcribe", content=b"FAKEAUDIO",
-                    headers={"content-type": "audio/webm"})
+    r = client.post(
+        "/api/v1/transcribe", content=b"FAKEAUDIO", headers={"content-type": "audio/webm"}
+    )
     assert r.status_code == 200
     assert r.json() == {"transcript": "hello world"}
 
 
 def test_transcribe_route_400_on_empty_body(client):
-    r = client.post("/api/v1/transcribe", content=b"",
-                    headers={"content-type": "audio/webm"})
+    r = client.post("/api/v1/transcribe", content=b"", headers={"content-type": "audio/webm"})
     assert r.status_code == 400
 
 
 def test_transcribe_route_413_on_oversized(client):
     big = b"x" * (daemon_proxy._MAX_STT_BYTES + 1)
-    r = client.post("/api/v1/transcribe", content=big,
-                    headers={"content-type": "audio/wav"})
+    r = client.post("/api/v1/transcribe", content=big, headers={"content-type": "audio/wav"})
     assert r.status_code == 413
 
 
@@ -84,8 +84,7 @@ def test_transcribe_route_503_when_stt_unreachable(client, monkeypatch):
         raise ConnectionError("whisper down")
 
     _patch_upload(monkeypatch, boom)
-    r = client.post("/api/v1/transcribe", content=b"AUDIO",
-                    headers={"content-type": "audio/wav"})
+    r = client.post("/api/v1/transcribe", content=b"AUDIO", headers={"content-type": "audio/wav"})
     assert r.status_code == 503
 
 
@@ -95,6 +94,7 @@ def test_transcribe_route_empty_transcript_is_ok(client, monkeypatch):
         return ""
 
     _patch_upload(monkeypatch, silent)
-    r = client.post("/api/v1/transcribe", content=b"SILENCE",
-                    headers={"content-type": "audio/wav"})
+    r = client.post(
+        "/api/v1/transcribe", content=b"SILENCE", headers={"content-type": "audio/wav"}
+    )
     assert r.status_code == 200 and r.json() == {"transcript": ""}

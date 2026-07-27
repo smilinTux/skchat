@@ -787,9 +787,15 @@ async def api_status():
 _MAX_STT_BYTES = 25 * 1024 * 1024
 # Content-Type -> filename extension the whisper endpoint recognizes.
 _STT_EXT = {
-    "audio/webm": "webm", "audio/ogg": "ogg", "audio/wav": "wav",
-    "audio/x-wav": "wav", "audio/wave": "wav", "audio/mpeg": "mp3",
-    "audio/mp4": "m4a", "audio/x-m4a": "m4a", "audio/flac": "flac",
+    "audio/webm": "webm",
+    "audio/ogg": "ogg",
+    "audio/wav": "wav",
+    "audio/x-wav": "wav",
+    "audio/wave": "wav",
+    "audio/mpeg": "mp3",
+    "audio/mp4": "m4a",
+    "audio/x-m4a": "m4a",
+    "audio/flac": "flac",
 }
 
 
@@ -818,8 +824,7 @@ async def api_transcribe(request: Request):
 
     client = STTClient(VoiceConfig.from_env())
     try:
-        text = await client.transcribe_upload(
-            audio, filename=f"speech.{ext}", content_type=ctype)
+        text = await client.transcribe_upload(audio, filename=f"speech.{ext}", content_type=ctype)
     except Exception as exc:  # transport/HTTP error -> STT unreachable
         raise HTTPException(status_code=503, detail=f"STT backend unavailable: {exc}")
     return {"transcript": text}
