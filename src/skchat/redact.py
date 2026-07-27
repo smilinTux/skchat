@@ -204,3 +204,25 @@ def scrub(text: Any) -> str:
     if not isinstance(text, str) or not text:
         return ""
     return _SCRUB_RE.sub(_scrub_replace, text)
+
+
+def redact_dict(mapping: Any) -> dict:
+    """Return a new dict with every string value scrubbed via :func:`scrub`.
+
+    Nested dicts are redacted recursively; non-string values (including
+    lists, numbers, and ``None``) are copied unchanged. Never raises and
+    never mutates *mapping*: non-mapping input (including ``None``) returns
+    ``{}``.
+    """
+    if not isinstance(mapping, dict):
+        return {}
+
+    redacted: dict = {}
+    for key, value in mapping.items():
+        if isinstance(value, str):
+            redacted[key] = scrub(value)
+        elif isinstance(value, dict):
+            redacted[key] = redact_dict(value)
+        else:
+            redacted[key] = value
+    return redacted

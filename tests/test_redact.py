@@ -1,5 +1,5 @@
 """Unit tests for skchat.redact -- mask_fqid(), mask_fingerprint(), mask_ip(), mask_email(),
-and mask_token()."""
+mask_token(), scrub(), and redact_dict()."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from skchat.redact import (
     mask_fqid,
     mask_ip,
     mask_token,
+    redact_dict,
     scrub,
 )
 
@@ -279,3 +280,74 @@ class TestScrub:
 
     def test_non_string_input(self):
         assert scrub(12345) == ""
+
+
+# ---------------------------------------------------------------------------
+# redact_dict
+# ---------------------------------------------------------------------------
+
+
+class TestRedactDict:
+    def test_mixed_value_dict(self):
+        mapping = {
+            "peer": "lumina@skworld.io",
+            "ip": "192.168.0.41",
+            "count": 3,
+            "ok": True,
+            "note": None,
+        }
+        assert redact_dict(mapping) == {
+            "peer": "l****a@skworld.io",
+            "ip": "***.***.***.41",
+            "count": 3,
+            "ok": True,
+            "note": None,
+        }
+
+    def test_nested_dict(self):
+        mapping = {
+            "sender": "chef@skworld.io",
+            "meta": {
+                "remote": "192.168.0.41:8080",
+                "inner": {"fqid": "capauth:lumina@skworld.io"},
+            },
+        }
+        assert redact_dict(mapping) == {
+            "sender": "c**f@skworld.io",
+            "meta": {
+                "remote": "***.***.***.41:8080",
+                "inner": {"fqid": "capauth:l****a@skworld.io"},
+            },
+        }
+
+    def test_non_string_values_copied_unchanged(self):
+        mapping = {"n": 42, "f": 1.5, "lst": ["chef@skworld.io"], "none": None, "flag": False}
+        result = redact_dict(mapping)
+        assert result == mapping
+        assert result["lst"] is mapping["lst"]
+
+    def test_clean_string_value_unchanged(self):
+        assert redact_dict({"msg": "daemon started"}) == {"msg": "daemon started"}
+
+    def test_empty_dict(self):
+        assert redact_dict({}) == {}
+
+    def test_none_input(self):
+        assert redact_dict(None) == {}
+
+    def test_non_mapping_input(self):
+        assert redact_dict("not-a-dict") == {}
+        assert redact_dict(12345) == {}
+        assert redact_dict(["a", "b"]) == {}
+
+    def test_does_not_mutate_input(self):
+        mapping = {"peer": "lumina@skworld.io", "nested": {"ip": "192.168.0.41"}}
+        original = {"peer": "lumina@skworld.io", "nested": {"ip": "192.168.0.41"}}
+        redact_dict(mapping)
+        assert mapping == original
+
+    def test_returns_new_dict_not_same_object(self):
+        mapping = {"a": "clean text"}
+        result = redact_dict(mapping)
+        assert result is not mapping
+        assert result["a"] == "clean text"
