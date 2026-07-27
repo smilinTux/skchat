@@ -1,8 +1,16 @@
-"""Unit tests for skchat.redact -- mask_fqid(), mask_fingerprint(), mask_ip(), and mask_email()."""
+"""Unit tests for skchat.redact -- mask_fqid(), mask_fingerprint(), mask_ip(), mask_email(),
+and mask_token()."""
 
 from __future__ import annotations
 
-from skchat.redact import REDACTED_PLACEHOLDER, mask_email, mask_fingerprint, mask_fqid, mask_ip
+from skchat.redact import (
+    REDACTED_PLACEHOLDER,
+    mask_email,
+    mask_fingerprint,
+    mask_fqid,
+    mask_ip,
+    mask_token,
+)
 
 # ---------------------------------------------------------------------------
 # mask_fqid
@@ -165,3 +173,73 @@ class TestMaskEmail:
 
     def test_non_string_input(self):
         assert mask_email(12345) == REDACTED_PLACEHOLDER
+
+
+# ---------------------------------------------------------------------------
+# mask_token
+# ---------------------------------------------------------------------------
+
+
+class TestMaskToken:
+    def test_anthropic_key(self):
+        key = "sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG"
+        assert mask_token(key) == "sk-ant-<redacted>"
+
+    def test_npm_token(self):
+        token = "npm_1234567890abcdefghijklmnopqrstuvwxyz"
+        assert mask_token(token) == "npm_<redacted>"
+
+    def test_github_personal_access_token(self):
+        token = "ghp_1234567890abcdefghijklmnopqrstuvwx"
+        assert mask_token(token) == "ghp_<redacted>"
+
+    def test_github_oauth_token(self):
+        token = "gho_1234567890abcdefghijklmnopqrstuvwx"
+        assert mask_token(token) == "gho_<redacted>"
+
+    def test_github_server_token(self):
+        token = "ghs_1234567890abcdefghijklmnopqrstuvwx"
+        assert mask_token(token) == "ghs_<redacted>"
+
+    def test_aws_access_key_id(self):
+        assert mask_token("AKIAIOSFODNN7EXAMPLE") == "AKIA<redacted>"
+
+    def test_standalone_hex_run(self):
+        run = "deadbeefcafebabe0123456789abcdef"
+        assert mask_token(run) == "deadbe<redacted>"
+
+    def test_standalone_hex_run_below_min_length_unchanged(self):
+        # Below the 24-char floor, don't guess -- too likely to be a plain id.
+        run = "deadbeefca"
+        assert mask_token(run) == run
+
+    def test_standalone_base64_like_run(self):
+        run = "QwErTy1234ZxCvBnM7890LkJh"
+        assert mask_token(run) == "QwErTy<redacted>"
+
+    def test_plain_lowercase_word_unchanged(self):
+        # Same length class as a token but no digit/case mix -> not flagged.
+        word = "abcdefghijklmnopqrstuvwxyz"
+        assert mask_token(word) == word
+
+    def test_pure_digit_run_is_valid_hex(self):
+        # Decimal digits are a subset of hex chars, so a long digit run
+        # (e.g. a numeric secret) is still caught by the hex-run check.
+        run = "123456789012345678901234"
+        assert mask_token(run) == "123456<redacted>"
+
+    def test_plain_sentence_unchanged(self):
+        text = "the quick brown fox jumps over the lazy dog and eats"
+        assert mask_token(text) == text
+
+    def test_none_input(self):
+        assert mask_token(None) == REDACTED_PLACEHOLDER
+
+    def test_empty_string(self):
+        assert mask_token("") == REDACTED_PLACEHOLDER
+
+    def test_whitespace_only(self):
+        assert mask_token("   ") == REDACTED_PLACEHOLDER
+
+    def test_non_string_input(self):
+        assert mask_token(12345) == REDACTED_PLACEHOLDER
