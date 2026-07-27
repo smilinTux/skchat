@@ -74,9 +74,10 @@ PostFn = Callable[[str, bytes], Awaitable[str]]
 
 
 class STTClient:
-    def __init__(self, cfg: VoiceConfig, _post: PostFn | None = None):
+    def __init__(self, cfg: VoiceConfig, _post: PostFn | None = None, _post_file=None):
         self.cfg = cfg
         self._post = _post or self._http_post
+        self._post_file = _post_file or self._http_post_file
 
     async def _http_post(self, url: str, wav_bytes: bytes) -> str:
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -84,6 +85,32 @@ class STTClient:
             r = await client.post(url, files=files, data={"model": "whisper-1"})
             r.raise_for_status()
             return (r.json().get("text") or "").strip()
+
+    async def _http_post_file(
+        self, url: str, audio: bytes, *, filename: str, content_type: str
+    ) -> str:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            files = {"file": (filename, audio, content_type)}
+            r = await client.post(url, files=files, data={"model": "whisper-1"})
+            r.raise_for_status()
+            return (r.json().get("text") or "").strip()
+
+    async def transcribe_upload(
+        self, audio: bytes, *, filename: str = "speech.wav",
+        content_type: str = "audio/wav",
+    ) -> str:
+        """Transcribe an ALREADY-ENCODED audio file (wav/webm/mp3/m4a) by posting
+        it straight to the whisper endpoint.
+
+        The app's mic records webm/opus (browser) or wav (native); faster-whisper
+        accepts those directly, so unlike ``transcribe`` this does NOT expect raw
+        16 kHz PCM. RAISES on a transport/HTTP error so the caller can graceful-
+        degrade (the /api/v1/transcribe route maps that to 503 -> the app disables
+        the mic). An empty transcript (genuine silence) returns "".
+        """
+        return await self._post_file(
+            self.cfg.stt_url, audio, filename=filename, content_type=content_type
+        )
 
     async def transcribe(self, pcm16k_mono: bytes, *, vad: bool = False) -> str:
         """16 kHz mono PCM → transcript. vad=True applies the energy gate +

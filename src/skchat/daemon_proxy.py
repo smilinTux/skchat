@@ -782,6 +782,49 @@ async def api_status():
     return _proxy("http://127.0.0.1:9383/api/v1/household/agents")
 
 
+# Voice input is short (dictation / a voice note), so cap the upload well under
+# whisper's own limit to bound memory + reject stray large bodies.
+_MAX_STT_BYTES = 25 * 1024 * 1024
+# Content-Type -> filename extension the whisper endpoint recognizes.
+_STT_EXT = {
+    "audio/webm": "webm", "audio/ogg": "ogg", "audio/wav": "wav",
+    "audio/x-wav": "wav", "audio/wave": "wav", "audio/mpeg": "mp3",
+    "audio/mp4": "m4a", "audio/x-m4a": "m4a", "audio/flac": "flac",
+}
+
+
+@router.post("/v1/transcribe")
+async def api_transcribe(request: Request):
+    """Transcribe uploaded audio for the app's mic input (unified-conversations
+    Phase 4 voice input): tap = dictate-to-text, hold = voice message with an
+    auto-transcript. The client POSTs the recorded audio as the RAW request body
+    with an ``audio/*`` Content-Type (browser records webm/opus, native records
+    wav); faster-whisper accepts those directly.
+
+    Returns ``{"transcript": "<text>"}`` (empty string for silence). Answers
+    **503** when the STT backend is unreachable so the app can graceful-degrade
+    (disable the mic + show a tooltip), and **400** on an empty/oversized body.
+    """
+    audio = await request.body()
+    if not audio:
+        raise HTTPException(status_code=400, detail="empty audio body")
+    if len(audio) > _MAX_STT_BYTES:
+        raise HTTPException(status_code=413, detail="audio too large")
+    ctype = (request.headers.get("content-type") or "audio/wav").split(";")[0].strip().lower()
+    ext = _STT_EXT.get(ctype, "wav")
+
+    from skchat.voice_engine.config import VoiceConfig
+    from skchat.voice_engine.stt import STTClient
+
+    client = STTClient(VoiceConfig.from_env())
+    try:
+        text = await client.transcribe_upload(
+            audio, filename=f"speech.{ext}", content_type=ctype)
+    except Exception as exc:  # transport/HTTP error -> STT unreachable
+        raise HTTPException(status_code=503, detail=f"STT backend unavailable: {exc}")
+    return {"transcript": text}
+
+
 @router.get("/board")
 async def api_board():
     """Same-origin proxy to the skcapstone dashboard (:7778) so the coord/Team
