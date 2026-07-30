@@ -45,6 +45,13 @@ ACCEPT_AUDIENCE_ENV_FLAG = "SKCHAT_ACCEPT_AUDIENCE_TOKENS"
 #: via the audience path.
 SKCHAT_AUDIENCE = "skchat"
 
+#: Opt-in flag for the backend audience-token MINT endpoint (POST
+#: /api/v1/audience-token). Default OFF so the route is inert (404) and the app
+#: is byte-identical to before this endpoint existed. When on, an AUTHENTICATED
+#: caller can obtain a fresh audience-scoped token minted for THIS daemon's own
+#: resolved identity (never a subject taken from request input).
+AUDIENCE_MINT_ENV_FLAG = "SKCHAT_AUDIENCE_MINT"
+
 #: The authz PDP staging flag (spec 3.5). off = authentication only, exactly as
 #: today. shadow = also compute capauth.authz.decide(), log any divergence from
 #: the legacy outcome, but RETURN THE LEGACY OUTCOME (no behavior change). enforce
@@ -90,6 +97,16 @@ def accept_audience_tokens() -> bool:
     this path existed.
     """
     return os.getenv(ACCEPT_AUDIENCE_ENV_FLAG, "").strip().lower() in _TRUTHY
+
+
+def audience_mint_enabled() -> bool:
+    """Return True iff the backend audience-token mint endpoint is switched on.
+
+    Reads ``SKCHAT_AUDIENCE_MINT`` at call time (like :func:`dataplane_auth_enabled`),
+    default OFF. When off, ``POST /api/v1/audience-token`` is inert (404) and never
+    mints, so the app is byte-identical to before this endpoint existed.
+    """
+    return os.getenv(AUDIENCE_MINT_ENV_FLAG, "").strip().lower() in _TRUTHY
 
 
 class CapAuthValidator:
@@ -274,6 +291,21 @@ def _redact(subject: Optional[str]) -> str:
     if not subject:
         return "?"
     return subject if len(subject) <= 8 else subject[:6] + "..."
+
+
+def request_is_authenticated(request: Request) -> bool:
+    """Return True iff the request carries a capauth credential the validator affirms.
+
+    Unlike :func:`enforce_dataplane_auth` (a no-op when ``SKCHAT_DATAPLANE_AUTH`` is
+    off), this ALWAYS consults the validator: it is for routes that must require
+    authentication on their own terms regardless of the plane-wide gate flag (e.g.
+    the audience-token mint endpoint, which must never mint for an anonymous caller
+    even when the dataplane gate is off). Reuses :func:`_extract_credential` and the
+    injectable :func:`get_validator`, so it fails closed on a missing/invalid
+    credential and tests can stub the validator.
+    """
+    token = _extract_credential(request)
+    return bool(token) and get_validator().validate(token)
 
 
 def enforce_dataplane_auth(request: Request) -> None:
