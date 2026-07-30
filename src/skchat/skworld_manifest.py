@@ -13,8 +13,10 @@ request, so health resolves against wherever the webui actually answers.
 
 The operator block mirrors operator_seat/skchat_adapter.py in skcapstone; the
 shared sk-standards manifest schema is the source of truth. (The adapter emits
-four conditions today; a fifth, CallingReady, is planned once a calling-health
-probe lands, and is intentionally not declared here until it is real.)
+five conditions: the fifth, CallingReady, landed once the daemon's WebRTC
+signaling-health probe made a real calling-health signal available, per spec
+2.3. The order here MUST match the adapter's CONDITIONS exactly, the
+manifest-adapter drift-guard test asserts it.)
 """
 
 from __future__ import annotations
@@ -63,6 +65,7 @@ def skchat_module_manifest(base_url: str) -> dict:
                 "BridgeAlive",
                 "OutboxBounded",
                 "AuthEnforced",
+                "CallingReady",
             ],
             "proposedStandardActions": ["restart-daemon", "restart-telegram-bridge"],
         },
