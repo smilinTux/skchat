@@ -35,6 +35,16 @@ logger = logging.getLogger("skchat.dataplane_auth")
 ENV_FLAG = "SKCHAT_DATAPLANE_AUTH"
 _TRUTHY = {"1", "true", "yes", "on"}
 
+#: Opt-in flag for the third credential path: accepting a capauth audience-scoped
+#: token minted for the skchat audience. Default OFF so the plane behaves exactly
+#: as before (byte-identical) unless an operator explicitly enables it.
+ACCEPT_AUDIENCE_ENV_FLAG = "SKCHAT_ACCEPT_AUDIENCE_TOKENS"
+
+#: The capauth audience this dataplane accepts audience-scoped tokens for. A token
+#: scoped to any other audience (or an unscoped legacy token) is never accepted
+#: via the audience path.
+SKCHAT_AUDIENCE = "skchat"
+
 #: The authz PDP staging flag (spec 3.5). off = authentication only, exactly as
 #: today. shadow = also compute capauth.authz.decide(), log any divergence from
 #: the legacy outcome, but RETURN THE LEGACY OUTCOME (no behavior change). enforce
@@ -71,6 +81,17 @@ def dataplane_auth_enabled() -> bool:
     return os.getenv(ENV_FLAG, "").strip().lower() in _TRUTHY
 
 
+def accept_audience_tokens() -> bool:
+    """Return True iff the audience-scoped-token credential path is switched on.
+
+    Reads ``SKCHAT_ACCEPT_AUDIENCE_TOKENS`` at call time (like
+    :func:`dataplane_auth_enabled`), default OFF. When off, the third credential
+    path is never consulted and the validator behaves byte-identically to before
+    this path existed.
+    """
+    return os.getenv(ACCEPT_AUDIENCE_ENV_FLAG, "").strip().lower() in _TRUTHY
+
+
 class CapAuthValidator:
     """Verify a capauth credential presented on a data-plane request.
 
@@ -80,9 +101,11 @@ class CapAuthValidator:
     credential capauth affirms; it **fails closed** (returns False) on a missing
     credential, a verification failure, or any error resolving the backend.
 
-    Accepts an operator-session JWT (Bearer) or base64url-encoded {"claim", "sig"}
-    OpenPGP FQID assertion, tried in that order. The OpenPGP form is verified
-    through :func:`assertion.verify_signed`.
+    Accepts an operator-session JWT (Bearer), a base64url-encoded {"claim", "sig"}
+    OpenPGP FQID assertion, or (only when ``SKCHAT_ACCEPT_AUDIENCE_TOKENS`` is on) a
+    capauth audience-scoped token minted for the ``skchat`` audience, tried in that
+    order. The OpenPGP form is verified through :func:`assertion.verify_signed`; the
+    audience token through :func:`capauth.verify_audience_token`.
     """
 
     def validate(self, token: str) -> bool:
@@ -122,10 +145,39 @@ def _verify_capauth_credential(token: str) -> bool:
 
     padded = token + "=" * (-len(token) % 4)
     signed = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")))
-    if not isinstance(signed, dict) or "claim" not in signed or "sig" not in signed:
-        return False
-    verify_signed(signed)  # raises on bad signature / stale / unknown key
-    return True
+    if isinstance(signed, dict) and "claim" in signed and "sig" in signed:
+        verify_signed(signed)  # raises on bad signature / stale / unknown key
+        return True
+
+    # Third credential path (flag-gated, default OFF): a capauth audience-scoped
+    # token minted for the skchat audience. Inert unless SKCHAT_ACCEPT_AUDIENCE_TOKENS
+    # is on, so when off this is byte-identical to the prior `return False`.
+    if accept_audience_tokens() and _verify_skchat_audience_token(token):
+        return True
+
+    return False
+
+
+def _verify_skchat_audience_token(token: str) -> bool:
+    """Verify a capauth audience-scoped token for the ``skchat`` audience.
+
+    Wire form: the base64url of ``capauth.export_token(token)`` JSON (whitespace-
+    free so it rides in an ``Authorization`` / ``X-CapAuth-Token`` header). We
+    reconstruct the ``SignedToken`` via :func:`capauth.import_token` and accept it
+    ONLY when :func:`capauth.verify_audience_token` affirms it for the ``skchat``
+    audience: a valid signature, a live (unexpired) token, AND ``audience ==
+    "skchat"``. An unscoped (``audience=None``) or wrong-audience token is never
+    accepted here. Fails closed on any parse/verify error (returns False; the
+    caller's try/except also backstops).
+    """
+    import base64
+
+    from capauth import import_token, verify_audience_token
+
+    padded = token + "=" * (-len(token) % 4)
+    token_json = base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8")
+    signed = import_token(token_json)  # raises ValueError if not a capauth token
+    return bool(verify_audience_token(signed, SKCHAT_AUDIENCE))
 
 
 # --------------------------------------------------------------------------- #
