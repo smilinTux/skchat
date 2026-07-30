@@ -37,7 +37,14 @@ def test_operator_facet_matches_the_skchat_adapter_contract():
     assert op["cli"] == "skchat operator"
     assert op["repos"] == ["skchat"]
     # Mirrors operator_seat/skchat_adapter.py CONDITIONS and its standard actions.
-    assert op["conditions"] == ["DaemonReady", "BridgeAlive", "OutboxBounded", "AuthEnforced"]
+    # CallingReady (spec 2.3) is the fifth condition; order matches the adapter.
+    assert op["conditions"] == [
+        "DaemonReady",
+        "BridgeAlive",
+        "OutboxBounded",
+        "AuthEnforced",
+        "CallingReady",
+    ]
     assert op["proposedStandardActions"] == ["restart-daemon", "restart-telegram-bridge"]
 
 

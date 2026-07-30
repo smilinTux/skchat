@@ -20,12 +20,13 @@ from skchat.cli import main
 
 def test_explain_shape_matches_contract():
     spec = op.explain()
-    assert spec["kinds"] == ["daemon", "bridge", "outbox", "dataplane-auth"]
+    assert spec["kinds"] == ["daemon", "bridge", "outbox", "dataplane-auth", "calling"]
     assert spec["conditions"] == [
         "DaemonReady",
         "BridgeAlive",
         "OutboxBounded",
         "AuthEnforced",
+        "CallingReady",
     ]
     names = {a["name"]: a for a in spec["actions"]}
     assert set(names) == {"restart-daemon", "restart-telegram-bridge", "purge-outbox"}
@@ -65,6 +66,7 @@ def test_observe_all_healthy():
         "outbox_depth": 3,
         "outbox_limit": 1000,
         "auth_enforced": True,
+        "calling_ready": True,
     }
     conds = _conditions(op.observe(probe))
     assert conds == {
@@ -72,7 +74,30 @@ def test_observe_all_healthy():
         "BridgeAlive": "True",
         "OutboxBounded": "True",
         "AuthEnforced": "True",
+        "CallingReady": "True",
     }
+
+
+def test_observe_calling_down_fires():
+    # CallingReady is health-type: it fires (False) when the calling backend is down.
+    probe = lambda: {  # noqa: E731
+        "daemon_ready": True,
+        "bridge_alive": True,
+        "outbox_depth": 0,
+        "outbox_limit": 1000,
+        "auth_enforced": True,
+        "calling_ready": False,
+    }
+    assert _conditions(op.observe(probe))["CallingReady"] == "False"
+
+
+def test_calling_ready_rule():
+    # "down" is the only value that reads not-ready; ok/degraded/None fail safe.
+    assert op._calling_ready("down") is False
+    assert op._calling_ready("DOWN") is False
+    assert op._calling_ready("ok") is True
+    assert op._calling_ready("degraded") is True
+    assert op._calling_ready(None) is True
 
 
 def test_observe_daemon_down_fires():
@@ -167,6 +192,7 @@ def test_observe_cli_healthy_when_unreachable(monkeypatch, tmp_path):
         "BridgeAlive": "True",
         "OutboxBounded": "True",
         "AuthEnforced": "True",
+        "CallingReady": "True",
     }
 
 

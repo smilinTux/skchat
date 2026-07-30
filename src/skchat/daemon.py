@@ -1304,6 +1304,12 @@ class ChatDaemon:
                         "signing_degraded": bool(
                             getattr(daemon_ref._transport, "signing_degraded", False)
                         ),
+                        # The calling backend's WebRTC signaling health
+                        # ("ok"|"degraded"|"down", or None before the first stats
+                        # cycle). The operator CallingReady condition reads this:
+                        # "down" means the WebRTC transport is not wired so a call
+                        # cannot be placed. None/absent reads ready (fail safe).
+                        "webrtc_signaling": daemon_ref._last_signaling_health,
                     }
 
                 if self.path.split("?", 1)[0] == "/api/v1/status":

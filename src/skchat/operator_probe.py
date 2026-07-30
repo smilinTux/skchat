@@ -14,6 +14,11 @@ The observe probes are REAL and injectable (tests never touch a live skchat):
   * ``OutboxBounded`` the real file count under ``~/.skcomms/outbox`` (the flood
     detector that would have caught the 1.5M-tombstone incident).
   * ``AuthEnforced``  the ``SKCHAT_DATAPLANE_AUTH`` state.
+  * ``CallingReady``  the daemon's WebRTC signaling health (``webrtc_signaling``
+    in the ``/health`` body): the calling backend reads DOWN only when the
+    WebRTC transport is not wired, so a call cannot be placed. ``ok`` and the
+    TURN-fallback ``degraded`` both read ready (spec 2.3, the deferred fifth
+    condition, now that a calling-health signal lands).
 
 Every probe fails SAFE (reports healthy) rather than raising a false alarm when
 skchat is unreachable, matching the operator facet's fail-safe posture (spec
@@ -31,12 +36,19 @@ import os
 from pathlib import Path
 from typing import Callable, Optional
 
-#: The four operator conditions, matching the manifest's operator block and the
-#: names Atlas's skchat_adapter observes.
-CONDITIONS = ["DaemonReady", "BridgeAlive", "OutboxBounded", "AuthEnforced"]
+#: The five operator conditions, matching the manifest's operator block and the
+#: names Atlas's skchat_adapter observes. CallingReady is appended last so the
+#: order stays stable for the drift-guard across both repos.
+CONDITIONS = [
+    "DaemonReady",
+    "BridgeAlive",
+    "OutboxBounded",
+    "AuthEnforced",
+    "CallingReady",
+]
 
 #: The kinds skchat exposes to the operator plane.
-KINDS = ["daemon", "bridge", "outbox", "dataplane-auth"]
+KINDS = ["daemon", "bridge", "outbox", "dataplane-auth", "calling"]
 
 #: skchat conditions are health-type (they fire when status is False), so they
 #: are NOT problem-when-true.
@@ -73,6 +85,10 @@ _OUTBOX_LIMIT = 1000
 _BRIDGE_POLL_MAX_AGE_S = 600
 _DAEMON_HEALTH_URL = "http://localhost:9385/health"
 _UNIT_RESTART_DAEMON = "skchat-daemon.service"
+#: The only WebRTC signaling-health value that means calling cannot be placed
+#: (the transport is not wired). ``ok`` and the TURN-fallback ``degraded`` still
+#: connect, so they read ready. See daemon.webrtc_signaling_health.
+_CALLING_DOWN = "down"
 
 #: The dataplane-auth flag, the canonical source-of-truth (see dataplane_auth.py).
 _AUTH_FLAG = "SKCHAT_DATAPLANE_AUTH"
@@ -112,6 +128,16 @@ def _count_outbox(outbox_dir) -> int:
     return sum(1 for f in p.iterdir() if f.is_file())
 
 
+def _calling_ready(webrtc_signaling) -> bool:
+    """CallingReady rule: the calling backend is down ONLY when the daemon's
+    WebRTC signaling health reads ``down`` (the transport is not wired). ``ok``,
+    the TURN-fallback ``degraded``, and an unknown/absent value (None) all fail
+    SAFE to ready (True), so a missing signal never raises a false 'calling down'."""
+    if webrtc_signaling is None:
+        return True
+    return str(webrtc_signaling).strip().lower() != _CALLING_DOWN
+
+
 # --- real signal readers (each fails safe = healthy) -------------------------
 
 
@@ -120,13 +146,16 @@ def _outbox_dir() -> str:
 
 
 def _probe_daemon_health() -> tuple:
-    """Read the daemon health endpoint. Returns (daemon_ready, auth_enforced).
+    """Read the daemon health endpoint. Returns (daemon_ready, auth_enforced,
+    calling_ready).
 
-    The live daemon reports ``{"status": "ok" | "stopping", ...}`` and does not
-    carry the auth flag, so we accept either an ``ok`` boolean or a ``status``
-    of ``ok`` and leave auth to the env probe. Fails SAFE: an unreachable daemon
-    reports (ready, auth-unknown) so a probe failure never raises a false
-    'daemon down' or 'auth off' alarm.
+    The live daemon reports ``{"status": "ok" | "stopping", ...,
+    "webrtc_signaling": "ok"|"degraded"|"down"}`` and does not carry the auth
+    flag, so we accept either an ``ok`` boolean or a ``status`` of ``ok`` and
+    leave auth to the env probe. ``calling_ready`` is derived from
+    ``webrtc_signaling`` (absent on an older daemon -> ready). Fails SAFE: an
+    unreachable daemon reports (ready, auth-unknown, calling-ready) so a probe
+    failure never raises a false 'daemon down' / 'auth off' / 'calling down'.
     """
     try:
         import json
@@ -141,11 +170,12 @@ def _probe_daemon_health() -> tuple:
             else:
                 ready = str(body.get("status", "ok")).lower() == "ok"
             auth = body.get("dataplane_auth")
+            calling = _calling_ready(body.get("webrtc_signaling"))
         else:
-            ready, auth = True, None
-        return ready, (bool(auth) if auth is not None else None)
+            ready, auth, calling = True, None, True
+        return ready, (bool(auth) if auth is not None else None), calling
     except Exception:
-        return True, None
+        return True, None, True
 
 
 def _probe_bridge_poll_age() -> Optional[float]:
@@ -187,7 +217,7 @@ def _probe_auth_enforced() -> Optional[bool]:
 def _default_probe() -> dict:
     """Best-effort skchat health from real signals. Fails SAFE (healthy) when
     skchat is unreachable, so an inability to probe never raises a false alarm."""
-    daemon_ready, auth_from_daemon = _probe_daemon_health()
+    daemon_ready, auth_from_daemon, calling_ready = _probe_daemon_health()
     poll_age = _probe_bridge_poll_age()
     auth = auth_from_daemon
     if auth is None:
@@ -199,6 +229,8 @@ def _default_probe() -> dict:
         "outbox_limit": _OUTBOX_LIMIT,
         # Unknown auth fails safe to enforced (True): never cry a false 'auth off'.
         "auth_enforced": True if auth is None else bool(auth),
+        # Unknown calling health fails safe to ready (True).
+        "calling_ready": calling_ready,
     }
 
 
@@ -240,6 +272,11 @@ def observe(probe: Optional[Callable[[], dict]] = None) -> dict:
                 "type": "AuthEnforced",
                 "status": _b(bool(st.get("auth_enforced", True))),
                 "object": "dataplane-auth",
+            },
+            {
+                "type": "CallingReady",
+                "status": _b(bool(st.get("calling_ready", True))),
+                "object": "calling",
             },
         ]
     }
