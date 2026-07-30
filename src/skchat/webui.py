@@ -326,6 +326,18 @@ async def access_tool_proxy(request: Request):
         raise HTTPException(status_code=502, detail=f"access node unreachable: {exc}")
 
 
+@app.get("/.well-known/skworld-module.json")
+async def skworld_module_manifest(request: Request) -> JSONResponse:
+    """skchat's SKWorld module manifest (public discovery metadata, no bearer).
+
+    The shell reads this to learn skchat's entry, nav, and required auth
+    audience/scopes before it has a token. URLs are origin-relative to the request.
+    """
+    from .skworld_manifest import skchat_module_manifest
+
+    return JSONResponse(skchat_module_manifest(str(request.base_url)))
+
+
 @app.get("/health")
 async def health() -> JSONResponse:
     """Health check endpoint for container orchestration.
