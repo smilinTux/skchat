@@ -36,7 +36,13 @@ from fastapi.responses import (
 )
 
 from . import __version__
-from .dataplane_auth import dataplane_auth_enabled, enforce_dataplane_auth, require_dataplane_auth
+from .dataplane_auth import (
+    audience_mint_enabled,
+    dataplane_auth_enabled,
+    enforce_dataplane_auth,
+    request_is_authenticated,
+    require_dataplane_auth,
+)
 from .dataplane_paths import is_gated
 
 logger = logging.getLogger(__name__)
@@ -336,6 +342,99 @@ async def skworld_module_manifest(request: Request) -> JSONResponse:
     from .skworld_manifest import skchat_module_manifest
 
     return JSONResponse(skchat_module_manifest(str(request.base_url)))
+
+
+@app.post("/api/v1/audience-token")
+async def audience_token_mint(request: Request) -> JSONResponse:
+    """Mint a fresh audience-scoped capauth token for THIS daemon's own identity.
+
+    Closes the shell->token gap: the Flutter shell's ``AuthContext.token()`` is
+    stubbed because there was no backend to mint from. The shell calls this to get
+    a real, short-lived (default 1h) token scoped to the ``skchat`` audience, in
+    the exact wire form skchat's own dataplane accepts (base64url of
+    ``capauth.export_token``), which the shell then presents on data-plane calls.
+
+    Two gates, both required:
+
+    * GATE 1 (flag): ``SKCHAT_AUDIENCE_MINT`` (read at call time), default OFF. When
+      off the route is INERT (404, never mints), so the app is byte-identical to
+      before this endpoint existed.
+    * GATE 2 (auth): the request MUST carry a valid capauth credential
+      (operator-session JWT or signed FQID assertion), validated via
+      :func:`request_is_authenticated`. An unauthenticated caller gets 401 and no
+      token is ever minted, even with the flag on.
+
+    Body (optional JSON): ``{"audience": "skchat", "scopes": [...]}``. ``audience``
+    defaults to ``skchat``; ``scopes`` defaults to the audience's standard scope set.
+
+    Anti-forgery: the token SUBJECT is resolved server-side from
+    :func:`capauth.resolve_agent_identity` (this daemon's own identity). No subject
+    or agent is ever read from request input, so an authenticated caller cannot mint
+    a token for any identity other than the daemon it is talking to. Fails closed
+    (500, no token, logged) on any mint error.
+    """
+    # GATE 1: flag. Inert (looks like the route does not exist) when off.
+    if not audience_mint_enabled():
+        raise HTTPException(status_code=404, detail="not found")
+
+    # GATE 2: authentication. Always enforced when minting, independent of the
+    # plane-wide SKCHAT_DATAPLANE_AUTH gate, so we never mint for an anon caller.
+    if not request_is_authenticated(request):
+        raise HTTPException(status_code=401, detail="capauth authentication required")
+
+    # Parse optional body: audience + scopes only. Never a subject/agent.
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    audience = body.get("audience") or "skchat"
+    if not isinstance(audience, str):
+        raise HTTPException(status_code=400, detail="audience must be a string")
+    scopes = body.get("scopes")
+    if scopes is not None and not isinstance(scopes, list):
+        raise HTTPException(status_code=400, detail="scopes must be a list")
+
+    try:
+        from capauth import (
+            export_token,
+            mint_agent_audience_token,
+            resolve_agent_identity,
+        )
+
+        # Anchor the subject to THIS daemon's resolved identity (never request
+        # input). mint_agent_audience_token(agent=None) resolves the same active
+        # identity internally; resolving here first surfaces identity errors and
+        # documents that the subject is server-derived, not caller-supplied.
+        identity = resolve_agent_identity()
+        token = mint_agent_audience_token(agent=None, audience=audience, scopes=scopes)
+        import base64
+
+        wire = (
+            base64.urlsafe_b64encode(export_token(token).encode("utf-8"))
+            .decode("ascii")
+            .rstrip("=")
+        )
+    except Exception as exc:  # fail closed: no token leaves on any mint error.
+        logger.warning("audience-token mint failed: %s", exc)
+        raise HTTPException(status_code=500, detail="audience token mint failed")
+
+    expires_at = token.payload.expires_at
+    logger.info(
+        "audience-token minted subject=%s audience=%s",
+        getattr(identity, "fqid", None) or getattr(identity, "uri", None),
+        token.payload.audience,
+    )
+    return JSONResponse(
+        {
+            "token": wire,
+            "audience": token.payload.audience,
+            "expires_at": expires_at.isoformat()
+            if hasattr(expires_at, "isoformat")
+            else expires_at,
+        }
+    )
 
 
 @app.get("/health")
