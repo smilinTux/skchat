@@ -346,6 +346,9 @@ class ConsumedNonces:
     def __init__(self, db_path: Optional[str] = None) -> None:
         if db_path is None:
             db_path = _nonces_db_path()
+        # Remember whether this is a durable store: an in-memory store is
+        # ephemeral (tests), so it never mirrors into the capauth pairing kernel.
+        self._db_path = db_path
         if db_path != ":memory:":
             Path(db_path).expanduser().parent.mkdir(parents=True, exist_ok=True)
         # check_same_thread=False + an explicit lock: safe for the daemon's mix of
@@ -431,6 +434,29 @@ class ConsumedNonces:
                 (pin, time.time()),
             )
             self._conn.commit()
+        self._mirror_revocation(pin)
+
+    # -- capauth.pairing mirror (M2 fold; best-effort, never breaks admission) --
+    def _mirror_admission(self, peer_fp: str, operator_id: Optional[str]) -> None:
+        if self._db_path == ":memory:":
+            return
+        from .pairing_mirror import mirror_admission
+
+        mirror_admission(peer_fp, operator_id)
+
+    def _mirror_trusted_operator(self, operator_id: str, operator_pubkey: str) -> None:
+        if self._db_path == ":memory:":
+            return
+        from .pairing_mirror import mirror_trusted_operator
+
+        mirror_trusted_operator(operator_id, operator_pubkey)
+
+    def _mirror_revocation(self, pin: str) -> None:
+        if self._db_path == ":memory:":
+            return
+        from .pairing_mirror import mirror_revocation
+
+        mirror_revocation(pin)
 
     def is_pin_revoked(self, pin: str) -> bool:
         """True iff *pin* has been revoked (its join records no longer count)."""
@@ -467,6 +493,7 @@ class ConsumedNonces:
                 (peer_fp, operator_id or "", join_record, sig_operator, sig_peer, time.time()),
             )
             self._conn.commit()
+        self._mirror_admission(peer_fp, operator_id)
 
     def list_admissions(self) -> list[dict]:
         """All admitted peers whose pin (peer_fp or operator_id) is NOT revoked."""
@@ -526,6 +553,7 @@ class ConsumedNonces:
                 (operator_id, operator_pubkey, time.time()),
             )
             self._conn.commit()
+        self._mirror_trusted_operator(operator_id, operator_pubkey)
 
     def operator_pubkey(self, operator_id: str) -> Optional[str]:
         """The trusted operator's recorded PGP pubkey, or None if not trusted /
