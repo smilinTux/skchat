@@ -35,6 +35,30 @@ logger = logging.getLogger("skchat.dataplane_auth")
 ENV_FLAG = "SKCHAT_DATAPLANE_AUTH"
 _TRUTHY = {"1", "true", "yes", "on"}
 
+#: The authz PDP staging flag (spec 3.5). off = authentication only, exactly as
+#: today. shadow = also compute capauth.authz.decide(), log any divergence from
+#: the legacy outcome, but RETURN THE LEGACY OUTCOME (no behavior change). enforce
+#: = the PDP decision governs (authentication must still pass first). The flip to
+#: enforce is Chef-gated on zero divergence over a 7-day window plus fixture replay.
+AUTHZ_PDP_FLAG = "SKCHAT_AUTHZ_PDP"
+
+#: Which capauth capability each protected data-plane endpoint maps to.
+_CAP_BY_PATH = {
+    "/api/send": "skchat.send",
+    "/api/v1/prekey": "skchat.prekey",
+    "/api/v1/inbox": "skchat.inbox",
+}
+
+
+def authz_pdp_mode() -> str:
+    """Return the authz PDP mode: 'off' (default), 'shadow', or 'enforce'.
+
+    Read at call time so an operator can stage the rollout without a reimport.
+    Anything unrecognized reads as 'off'.
+    """
+    mode = os.getenv(AUTHZ_PDP_FLAG, "").strip().lower()
+    return mode if mode in ("shadow", "enforce") else "off"
+
 
 def dataplane_auth_enabled() -> bool:
     """Return True iff the fail-closed data-plane CapAuth gate is switched on.
@@ -140,18 +164,112 @@ def _extract_credential(request: Request) -> Optional[str]:
     return (request.headers.get("x-capauth-token") or "").strip() or None
 
 
+def _capability_for_path(path: str) -> Optional[str]:
+    """Map a request path to the capauth capability it exercises, or None."""
+    for suffix, cap in _CAP_BY_PATH.items():
+        if path.endswith(suffix):
+            return cap
+    return None
+
+
+def _extract_subject(token: str) -> Optional[str]:
+    """Best-effort authenticated subject for the PDP call.
+
+    The FQID assertion carries the subject in its ``claim.fqid``; an operator
+    session carries a ``device_fp``. Returns None when neither can be read. Never
+    raises (a missing subject just means the PDP denies, which shadow only logs).
+    """
+    try:
+        from .operator_auth import verify_operator_session
+
+        session = verify_operator_session(token)
+        return f"operator:{session.device_fp}"
+    except Exception:
+        pass
+    try:
+        import base64
+        import json
+
+        padded = token + "=" * (-len(token) % 4)
+        signed = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")))
+        claim = signed.get("claim") if isinstance(signed, dict) else None
+        if isinstance(claim, dict):
+            return claim.get("fqid")
+    except Exception:
+        pass
+    return None
+
+
+def _pdp_allows(subject: Optional[str], capability: str, request: Request) -> Optional[bool]:
+    """Run capauth.authz.decide for this request. None on any error (fail-safe).
+
+    Deliberately does no authentication (that already happened): it decides from
+    the stored enrollment/token facts about the already-authenticated subject.
+    """
+    if not subject:
+        return False
+    try:
+        from capauth.authz import decide
+
+        decision = decide(subject, capability, resource={"path": request.url.path})
+        return bool(decision.allow)
+    except Exception:
+        logger.debug("authz PDP decide errored", exc_info=True)
+        return None
+
+
+def _redact(subject: Optional[str]) -> str:
+    if not subject:
+        return "?"
+    return subject if len(subject) <= 8 else subject[:6] + "..."
+
+
 def enforce_dataplane_auth(request: Request) -> None:
     """Fail-closed CapAuth gate for a single data-plane request.
 
-    No-op when the flag is off. When on, a missing **or** invalid capauth
-    credential raises ``HTTPException(401)``; a valid one returns (the request
-    proceeds unchanged).
+    No-op when the gate flag is off. When on, authentication runs exactly as
+    before (a missing or invalid credential raises 401). The authz PDP then layers
+    on per ``SKCHAT_AUTHZ_PDP``: 'off' authenticates only; 'shadow' also computes
+    the PDP decision, logs any divergence from the legacy allow, and returns the
+    legacy outcome (no behavior change); 'enforce' additionally requires the PDP
+    to allow (403 on deny).
     """
     if not dataplane_auth_enabled():
         return
     token = _extract_credential(request)
-    if not token or not get_validator().validate(token):
+    legacy_ok = bool(token) and get_validator().validate(token)
+    mode = authz_pdp_mode()
+
+    if mode == "off":
+        if not legacy_ok:
+            raise HTTPException(status_code=401, detail="capauth authentication required")
+        return
+
+    # Shadow / enforce: authentication must still pass first.
+    if not legacy_ok:
         raise HTTPException(status_code=401, detail="capauth authentication required")
+
+    capability = _capability_for_path(request.url.path)
+    pdp_allow: Optional[bool] = None
+    if capability is not None:
+        pdp_allow = _pdp_allows(_extract_subject(token), capability, request)
+
+    if mode == "shadow":
+        # Measure only: log divergence, return the legacy outcome unchanged.
+        if capability is not None and pdp_allow is not None and pdp_allow != legacy_ok:
+            logger.warning(
+                "authz PDP divergence path=%s cap=%s subject=%s legacy=%s pdp=%s",
+                request.url.path,
+                capability,
+                _redact(_extract_subject(token)),
+                legacy_ok,
+                pdp_allow,
+            )
+        return
+
+    # enforce: the PDP governs. Unknown capability or a decide() error fails closed.
+    if capability is None or not pdp_allow:
+        raise HTTPException(status_code=403, detail="capauth authorization denied")
 
 
 async def require_dataplane_auth(request: Request) -> None:
