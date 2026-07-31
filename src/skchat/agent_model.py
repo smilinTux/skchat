@@ -13,6 +13,15 @@ agree without a database:
 Override the path with ``SKCHAT_AGENT_MODEL_PATH``.  The default model (used
 when no selection has been made) comes from ``SKCHAT_LLM_MODEL`` or falls back
 to ``claude-opus-4-8``.
+
+In addition to the curated ``AVAILABLE_MODELS`` above, ``list_models()`` merges
+in the FREE models that SKGateway discovers and serves at
+``$SKGATEWAY_URL/v1/models`` (default ``http://localhost:18780``).  This lets the
+in-app picker surface the full free NIM/OpenRouter catalog without hard-coding
+it here.  The gateway fetch is best-effort: it is wrapped in a short-timeout
+try/except and cached for ~60s, so the picker (and the daemon GET/POST paths)
+NEVER break when SKGateway is unreachable — they degrade to exactly the curated
+models below.
 """
 
 from __future__ import annotations
@@ -20,6 +29,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+import time
 from pathlib import Path
 
 # Curated, user-selectable models.  Each MUST be routable by the configured
@@ -52,9 +62,86 @@ AVAILABLE_MODELS: list[dict] = [
     },
 ]
 
-_VALID_IDS = {m["id"] for m in AVAILABLE_MODELS}
-
 _lock = threading.Lock()
+
+# --- SKGateway free-model discovery (best-effort, cached) --------------------
+
+# How long a successful gateway fetch stays cached before we re-query.
+_GATEWAY_CACHE_TTL_S = 60.0
+# Short timeout so a slow/hung gateway never stalls the picker or the daemon.
+_GATEWAY_TIMEOUT_S = 2.5
+
+_gateway_lock = threading.Lock()
+_gateway_cache: dict = {"at": 0.0, "models": []}
+
+
+def _gateway_base() -> str:
+    return os.environ.get("SKGATEWAY_URL", "http://localhost:18780").rstrip("/")
+
+
+def _label_for(model_id: str) -> str:
+    """Human-ish label for a gateway model id (last path segment, spaced)."""
+    tail = model_id.rsplit("/", 1)[-1]
+    return tail.replace("-", " ").replace("_", " ").strip() or model_id
+
+
+def _fetch_gateway_free_models() -> list[dict]:
+    """Fetch SKGateway's FREE models, mapped to the picker shape.
+
+    Returns ``[]`` on ANY failure (network, timeout, bad JSON, non-200).  The
+    discovery marks free models with ``"free": true``; each is mapped to
+    ``{"id","label","provider","local": False}`` with ``provider`` taken from the
+    gateway entry (e.g. ``"nvidia"``/``"openrouter"``).
+    """
+    import urllib.request
+
+    url = f"{_gateway_base()}/v1/models"
+    try:
+        req = urllib.request.Request(url, headers={"Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=_GATEWAY_TIMEOUT_S) as resp:
+            if getattr(resp, "status", 200) != 200:
+                return []
+            payload = json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        # Unreachable / timeout / malformed — degrade to curated-only.
+        return []
+
+    out: list[dict] = []
+    for entry in payload.get("data", []) or []:
+        if not isinstance(entry, dict) or not entry.get("free"):
+            continue
+        mid = entry.get("id")
+        if not mid:
+            continue
+        provider = entry.get("provider") or entry.get("owned_by") or "gateway"
+        out.append(
+            {
+                "id": mid,
+                "label": _label_for(mid),
+                "provider": provider,
+                "local": False,
+            }
+        )
+    return out
+
+
+def _gateway_free_models() -> list[dict]:
+    """Cached wrapper around :func:`_fetch_gateway_free_models` (~60s TTL)."""
+    now = time.monotonic()
+    with _gateway_lock:
+        if now - _gateway_cache["at"] < _GATEWAY_CACHE_TTL_S and _gateway_cache["models"]:
+            return [dict(m) for m in _gateway_cache["models"]]
+    models = _fetch_gateway_free_models()
+    with _gateway_lock:
+        # Only overwrite the cache timestamp/models on a real result; on failure
+        # keep any previously-good list until its TTL lapses, but still refresh
+        # the timestamp so we don't hammer a down gateway every call.
+        _gateway_cache["at"] = now
+        if models:
+            _gateway_cache["models"] = models
+        elif not _gateway_cache["models"]:
+            _gateway_cache["models"] = []
+        return [dict(m) for m in _gateway_cache["models"]]
 
 
 def _state_path() -> Path:
@@ -69,8 +156,26 @@ def default_model() -> str:
 
 
 def list_models() -> list[dict]:
-    """Return the curated list of selectable models (copy)."""
-    return [dict(m) for m in AVAILABLE_MODELS]
+    """Return the selectable models: curated first, then SKGateway free models.
+
+    The 5 curated ``AVAILABLE_MODELS`` always come first and always win on id
+    collisions.  SKGateway's discovered FREE models are appended after them,
+    deduped by id.  If SKGateway is unreachable this returns exactly the curated
+    list (best-effort, never raises).
+    """
+    merged = [dict(m) for m in AVAILABLE_MODELS]
+    seen = {m["id"] for m in merged}
+    for m in _gateway_free_models():
+        if m["id"] in seen:
+            continue
+        seen.add(m["id"])
+        merged.append(dict(m))
+    return merged
+
+
+def _valid_ids() -> set[str]:
+    """Set of ids selectable right now (curated + live gateway free models)."""
+    return {m["id"] for m in list_models()}
 
 
 def _read() -> dict:
@@ -82,9 +187,16 @@ def _read() -> dict:
 
 
 def get_model(agent: str) -> str:
-    """Return the selected model for *agent*, or the default if unset/invalid."""
+    """Return the selected model for *agent*, or the default if unset/invalid.
+
+    Validates against the merged list (curated + gateway free models), so a
+    previously-selected free model keeps routing to itself.  The ~60s last-good
+    gateway cache keeps a fetched free id valid for the process; if the id ever
+    resolves as unknown (gateway never reachable this run) we fall back to the
+    curated default rather than route to a model the gateway can't serve.
+    """
     selected = _read().get(agent)
-    if selected in _VALID_IDS:
+    if selected and selected in _valid_ids():
         return selected
     return default_model()
 
@@ -93,10 +205,12 @@ def set_model(agent: str, model: str) -> str:
     """Persist *model* as *agent*'s selection.
 
     Raises:
-        ValueError: if *model* is not one of AVAILABLE_MODELS.
+        ValueError: if *model* is not one of the selectable models (curated
+            ``AVAILABLE_MODELS`` or a live SKGateway free model).
     """
-    if model not in _VALID_IDS:
-        raise ValueError(f"unknown model {model!r}; valid: {sorted(_VALID_IDS)}")
+    valid = _valid_ids()
+    if model not in valid:
+        raise ValueError(f"unknown model {model!r}; valid: {sorted(valid)}")
     with _lock:
         path = _state_path()
         data = _read()
