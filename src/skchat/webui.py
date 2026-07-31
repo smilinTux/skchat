@@ -391,7 +391,15 @@ async def skcode_proxy(path: str, request: Request):
 @app.api_route("/skdashboard/{path:path}", methods=["GET", "POST"])
 async def skdashboard_proxy(path: str, request: Request):
     """/skdashboard/* -> the skcapstone coordination dashboard (SKDASHBOARD_URL,
-    default :7778) so the shell's "Board" pane loads over the 443 funnel."""
+    default :7778) so the shell's "Board" pane loads over the 443 funnel.
+
+    GATED: unlike skcode (which runs its own deny-all gate), the coord dashboard
+    has NO auth of its own, so proxying it unauthenticated over the PUBLIC funnel
+    would expose the whole coordination board (task list, agent status). Require
+    operator/dataplane auth here so only the authenticated app can reach it. The
+    proper same-origin embed-auth for the pane is tracked separately; until then
+    this fails closed rather than leaking."""
+    enforce_dataplane_auth(request)
     upstream = os.environ.get("SKDASHBOARD_URL", "http://127.0.0.1:7778")
     return await _reverse_proxy(request, upstream, path, label="skdashboard")
 
@@ -399,7 +407,10 @@ async def skdashboard_proxy(path: str, request: Request):
 @app.api_route("/skos/{path:path}", methods=["GET", "POST"])
 async def skos_proxy(path: str, request: Request):
     """/skos/* -> the skos read-only web surface (SKOS_URL, default :7781) so the
-    shell's "OS" pane loads over the 443 funnel."""
+    shell's "OS" pane loads over the 443 funnel. GATED for the same reason as
+    skdashboard: skos's surface has no auth of its own, so it must not be public
+    over the funnel."""
+    enforce_dataplane_auth(request)
     upstream = os.environ.get("SKOS_URL", "http://127.0.0.1:7781")
     return await _reverse_proxy(request, upstream, path, label="skos")
 
