@@ -1,18 +1,28 @@
 """Tests for skchat.agent_model — per-agent chat-model selection."""
 
 import importlib
+import json
 
 import pytest
 
 
 @pytest.fixture()
 def am(tmp_path, monkeypatch):
-    """agent_model module pointed at a temp state file, default model reset."""
+    """agent_model module pointed at a temp state file, default model reset.
+
+    The SKGateway free-model fetch is stubbed to ``[]`` by default so tests are
+    deterministic and offline (no dependency on a live gateway).  Tests that
+    exercise the merge re-``setattr`` the fetcher to supply fake free models.
+    """
     monkeypatch.setenv("SKCHAT_AGENT_MODEL_PATH", str(tmp_path / "agent_model.json"))
     monkeypatch.delenv("SKCHAT_LLM_MODEL", raising=False)
     import skchat.agent_model as module
 
-    return importlib.reload(module)
+    module = importlib.reload(module)
+    monkeypatch.setattr(module, "_fetch_gateway_free_models", lambda: [])
+    module._gateway_cache["at"] = 0.0
+    module._gateway_cache["models"] = []
+    return module
 
 
 def test_default_when_unset(am):
@@ -56,3 +66,151 @@ def test_get_falls_back_when_stored_value_invalid(am):
 def test_list_models_includes_required(am):
     ids = {m["id"] for m in am.list_models()}
     assert {"claude-opus-4-8", "qwen3.6-27b-abliterated"} <= ids
+
+
+# --- SKGateway free-model merge ---------------------------------------------
+
+
+def _fake_free(*ids_providers):
+    """Build a picker-shaped free-model list for monkeypatching the fetcher."""
+    return [
+        {"id": mid, "label": mid, "provider": prov, "local": False}
+        for mid, prov in ids_providers
+    ]
+
+
+def test_list_models_merges_gateway_free_after_curated(am, monkeypatch):
+    monkeypatch.setattr(
+        am,
+        "_fetch_gateway_free_models",
+        lambda: _fake_free(("openai/gpt-oss-20b", "nvidia"), ("x-ai/grok-free", "openrouter")),
+    )
+    models = am.list_models()
+    ids = [m["id"] for m in models]
+    # Curated 5 come first, in order, then the gateway free models.
+    assert ids[:5] == [m["id"] for m in am.AVAILABLE_MODELS]
+    assert "openai/gpt-oss-20b" in ids
+    assert "x-ai/grok-free" in ids
+    # Provider is carried through from the gateway entry.
+    by_id = {m["id"]: m for m in models}
+    assert by_id["openai/gpt-oss-20b"]["provider"] == "nvidia"
+    assert by_id["x-ai/grok-free"]["provider"] == "openrouter"
+    assert by_id["openai/gpt-oss-20b"]["local"] is False
+
+
+def test_list_models_dedupes_curated_wins(am, monkeypatch):
+    # Gateway also advertises a curated id — the curated entry must win.
+    monkeypatch.setattr(
+        am,
+        "_fetch_gateway_free_models",
+        lambda: _fake_free(("claude-opus-4-8", "nvidia"), ("openai/gpt-oss-20b", "nvidia")),
+    )
+    models = am.list_models()
+    opus = [m for m in models if m["id"] == "claude-opus-4-8"]
+    assert len(opus) == 1
+    assert opus[0]["provider"] == "anthropic"  # curated, not the gateway's "nvidia"
+
+
+def test_list_models_falls_back_to_curated_when_gateway_down(am, monkeypatch):
+    # Gateway unreachable -> fetch yields nothing -> exactly the curated 5.
+    monkeypatch.setattr(am, "_fetch_gateway_free_models", lambda: [])
+    am._gateway_cache["at"] = 0.0
+    am._gateway_cache["models"] = []
+    models = am.list_models()
+    assert [m["id"] for m in models] == [m["id"] for m in am.AVAILABLE_MODELS]
+    assert len(models) == 5
+
+
+def test_set_model_accepts_gateway_free_id(am, monkeypatch):
+    monkeypatch.setattr(
+        am, "_fetch_gateway_free_models", lambda: _fake_free(("openai/gpt-oss-20b", "nvidia"))
+    )
+    am.set_model("lumina", "openai/gpt-oss-20b")
+    # Persisted and honoured by get_model (routing reads this).
+    assert am.get_model("lumina") == "openai/gpt-oss-20b"
+
+
+def test_set_model_still_rejects_truly_unknown(am, monkeypatch):
+    monkeypatch.setattr(
+        am, "_fetch_gateway_free_models", lambda: _fake_free(("openai/gpt-oss-20b", "nvidia"))
+    )
+    with pytest.raises(ValueError):
+        am.set_model("lumina", "totally/made-up-model")
+
+
+def test_get_model_falls_back_when_gateway_id_no_longer_valid(am, monkeypatch):
+    # Selected a free model while the gateway offered it...
+    monkeypatch.setattr(
+        am, "_fetch_gateway_free_models", lambda: _fake_free(("openai/gpt-oss-20b", "nvidia"))
+    )
+    am.set_model("lumina", "openai/gpt-oss-20b")
+    # ...then the gateway stops offering it (and its cache is gone).
+    monkeypatch.setattr(am, "_fetch_gateway_free_models", lambda: [])
+    am._gateway_cache["at"] = 0.0
+    am._gateway_cache["models"] = []
+    assert am.get_model("lumina") == am.default_model()
+
+
+def test_gateway_result_is_cached(am, monkeypatch):
+    calls = {"n": 0}
+
+    def _counting():
+        calls["n"] += 1
+        return _fake_free(("openai/gpt-oss-20b", "nvidia"))
+
+    monkeypatch.setattr(am, "_fetch_gateway_free_models", _counting)
+    am._gateway_cache["at"] = 0.0
+    am._gateway_cache["models"] = []
+    am.list_models()
+    am.list_models()
+    am.list_models()
+    # Within the TTL the underlying fetch runs at most once.
+    assert calls["n"] == 1
+
+
+def test_fetch_filters_free_and_maps_shape(am, monkeypatch):
+    payload = {
+        "object": "list",
+        "data": [
+            # free -> included, provider carried through
+            {"id": "openai/gpt-oss-20b", "provider": "nvidia", "free": True},
+            # not free -> excluded
+            {"id": "qwen/qwen3.5-122b-a10b", "owned_by": "nvidia", "advertised": True},
+            # free but missing provider -> falls back to owned_by
+            {"id": "some/other-free", "owned_by": "openrouter", "free": True},
+            # free with no id -> skipped
+            {"provider": "nvidia", "free": True},
+        ],
+    }
+
+    class _Resp:
+        status = 200
+
+        def read(self):
+            return json.dumps(payload).encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: _Resp())
+    # Restore the real fetcher (the `am` fixture stubs it to []) to exercise the
+    # actual parse/filter/map path against the faked HTTP response.
+    real_fetch = importlib.reload(am)._fetch_gateway_free_models
+    out = real_fetch()
+    ids = {m["id"] for m in out}
+    assert ids == {"openai/gpt-oss-20b", "some/other-free"}
+    by_id = {m["id"]: m for m in out}
+    assert by_id["some/other-free"]["provider"] == "openrouter"
+    assert all(m["local"] is False for m in out)
+
+
+def test_fetch_returns_empty_on_network_error(am, monkeypatch):
+    def _boom(*a, **k):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr("urllib.request.urlopen", _boom)
+    real_fetch = importlib.reload(am)._fetch_gateway_free_models
+    assert real_fetch() == []
