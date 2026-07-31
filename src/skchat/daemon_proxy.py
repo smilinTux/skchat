@@ -128,6 +128,18 @@ def _get_brain():
                 logger.info("DM brain: skmemory recall disabled (SKCHAT_DM_MEMORY=0)")
             except Exception:
                 logger.debug("could not disable DM brain memory", exc_info=True)
+        # In-app 1:1 chat wants a FAST, reliable conversational reply, not the
+        # full MCP tool-calling loop (each tool round can block up to 120s and a
+        # single hung MCP server stalls the whole reply to the 180s timeout, the
+        # "Lumina doesn't respond" bug). Drop the exposed tools on the DM brain
+        # so reply() takes the plain soul+model path; re-enable with
+        # SKCHAT_DM_TOOLS=1 once every agent MCP server is known-healthy.
+        if os.getenv("SKCHAT_DM_TOOLS", "0").strip().lower() not in ("1", "true", "yes", "on"):
+            try:
+                _BRAIN._openai_tools = []
+                logger.info("DM brain: MCP tool-calling loop disabled (SKCHAT_DM_TOOLS=0)")
+            except Exception:
+                logger.debug("could not disable DM brain tools", exc_info=True)
     except Exception:
         logger.exception("LuminaBrain unavailable — Lumina will use a fallback reply")
         _BRAIN = None
