@@ -167,3 +167,147 @@ def test_route_exempt_from_dataplane_gate():
     from skchat.dataplane_paths import is_gated
 
     assert is_gated("GET", "/api/v1/shell/modules") is False
+
+
+# ---------------------------------------------------------------------------
+# A5: operator-facet strip (always on, independent of signature enforcement)
+# ---------------------------------------------------------------------------
+
+
+def test_operator_block_stripped_from_public_aggregate(monkeypatch, tmp_path):
+    # skchat's own manifest carries an operator facet; a sibling manifest too.
+    # Neither may leak on the PUBLIC aggregate.
+    skcode = {
+        "id": "skcode",
+        "name": "Code",
+        "grade": "B",
+        "entry": {"url": "http://100.108.59.57:9394/app"},
+        "operator": {"cli": "skcode-hostd operator", "port": 9394},
+    }
+    monkeypatch.setattr(
+        shell_modules,
+        "_fetch_json",
+        _fake_fetch(
+            {"http://100.108.59.57:9394/.well-known/skworld-module.json": skcode}
+        ),
+    )
+    monkeypatch.setattr(shell_modules, "_shell_modules_dir", lambda: tmp_path)
+
+    mods = shell_modules.aggregate_shell_modules("http://host:8765/")
+    assert mods, "expected at least skchat + skcode"
+    for m in mods:
+        assert "operator" not in m, f"operator facet leaked on {m['id']!r}"
+    # The UI facet survives the strip.
+    by_id = {m["id"]: m for m in mods}
+    assert by_id["skcode"]["entry"]["url"] == "http://host:8765/skcode/app"
+
+
+# ---------------------------------------------------------------------------
+# A2/A9: signature enforcement gated by SKCHAT_SHELL_REQUIRE_SIGNED
+# ---------------------------------------------------------------------------
+
+
+def _fake_registry(entries):
+    """Return a list_registered stand-in that ignores kwargs and yields ``entries``."""
+
+    def _list_registered(*args, **kwargs):
+        return list(entries)
+
+    return _list_registered
+
+
+def test_enforce_off_is_default_and_unchanged(monkeypatch, tmp_path):
+    # Flag unset: behavior is exactly the pre-enforcement aggregate (minus the
+    # always-on operator strip), and NO verified marker is added.
+    monkeypatch.delenv(shell_modules.REQUIRE_SIGNED_ENV, raising=False)
+    monkeypatch.setattr(shell_modules, "_fetch_json", _fake_fetch({}))
+    (tmp_path / "skos.skworld-module.json").write_text(
+        json.dumps({"id": "skos", "name": "OS", "grade": "B"})
+    )
+    monkeypatch.setattr(shell_modules, "_shell_modules_dir", lambda: tmp_path)
+
+    mods = shell_modules.aggregate_shell_modules("http://host/")
+    ids = {m["id"] for m in mods}
+    assert ids == {"skchat", "skos"}
+    for m in mods:
+        assert "verified" not in m
+
+
+def test_enforce_on_keeps_only_signed_and_tags_verified(monkeypatch, tmp_path):
+    # skchat (own) + skos (static) present in the aggregate. Registry marks skchat
+    # signed+enabled ("ok"); skos is NOT registered. Only skchat survives, tagged.
+    monkeypatch.setenv(shell_modules.REQUIRE_SIGNED_ENV, "1")
+    monkeypatch.setattr(shell_modules, "_fetch_json", _fake_fetch({}))
+    (tmp_path / "skos.skworld-module.json").write_text(
+        json.dumps({"id": "skos", "name": "OS", "grade": "B"})
+    )
+    monkeypatch.setattr(shell_modules, "_shell_modules_dir", lambda: tmp_path)
+
+    import capauth.manifest as capmanifest
+
+    monkeypatch.setattr(
+        capmanifest,
+        "list_registered",
+        _fake_registry(
+            [
+                {"id": "skchat", "signature": "ok", "enabled": True},
+                # skos absent from the registry entirely -> unsigned -> dropped.
+            ]
+        ),
+    )
+
+    mods = shell_modules.aggregate_shell_modules("http://host/")
+    by_id = {m["id"]: m for m in mods}
+    assert set(by_id) == {"skchat"}
+    assert by_id["skchat"]["verified"] is True
+
+
+def test_enforce_on_drops_failed_and_disabled(monkeypatch, tmp_path):
+    # A bad-signature ("failed") entry and a signed-but-disabled entry are BOTH
+    # dropped even though they are registered.
+    monkeypatch.setenv(shell_modules.REQUIRE_SIGNED_ENV, "1")
+    dashboard = {"id": "skdashboard", "name": "Dashboard", "grade": "B"}
+    monkeypatch.setattr(
+        shell_modules,
+        "_fetch_json",
+        _fake_fetch(
+            {"http://127.0.0.1:7778/.well-known/skworld-module.json": dashboard}
+        ),
+    )
+    (tmp_path / "skos.skworld-module.json").write_text(
+        json.dumps({"id": "skos", "name": "OS", "grade": "B"})
+    )
+    monkeypatch.setattr(shell_modules, "_shell_modules_dir", lambda: tmp_path)
+
+    import capauth.manifest as capmanifest
+
+    monkeypatch.setattr(
+        capmanifest,
+        "list_registered",
+        _fake_registry(
+            [
+                {"id": "skchat", "signature": "ok", "enabled": True},
+                {"id": "skdashboard", "signature": "failed", "enabled": True},
+                {"id": "skos", "signature": "ok", "enabled": False},
+            ]
+        ),
+    )
+
+    ids = {m["id"] for m in shell_modules.aggregate_shell_modules("http://host/")}
+    assert ids == {"skchat"}
+
+
+def test_enforce_on_fails_closed_when_capauth_unavailable(monkeypatch, tmp_path):
+    # Enforcement ON but the registry read raises: emit NOTHING (fail closed),
+    # never fall back to trusting the unsigned aggregate.
+    monkeypatch.setenv(shell_modules.REQUIRE_SIGNED_ENV, "1")
+    monkeypatch.setattr(shell_modules, "_fetch_json", _fake_fetch({}))
+    monkeypatch.setattr(shell_modules, "_shell_modules_dir", lambda: tmp_path)
+
+    def _boom():
+        return None
+
+    monkeypatch.setattr(shell_modules, "_verified_module_ids", _boom)
+
+    mods = shell_modules.aggregate_shell_modules("http://host/")
+    assert mods == []
