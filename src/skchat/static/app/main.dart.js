@@ -165657,7 +165657,7 @@ var $async$LR=A.j(function(c,d){if(c===1){o.push(d)
 s=p}for(;;)switch(s){case 0:p=4
 j=t.N
 s=7
-return A.c(n.b.it(n.a+"/api/v1/agent/model",A.O(["agent",a,"selection",b],j,j),t.P),$async$LR)
+return A.c(n.b.it(n.a+"/api/v1/agent/model",A.O(["agent",a,"model",b,"selection",b],j,j),t.P),$async$LR)
 case 7:m=d
 l=m.a
 if(l==null){q=null
