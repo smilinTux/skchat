@@ -31,6 +31,25 @@ and skipped, it never fails the whole response):
 Dedupe is by manifest ``id``: a live-served manifest wins over a static file for
 the same id (live sources are merged first, static files only fill in ids not
 already present).
+
+Two security passes run on the aggregate before it is returned (Fable review
+A5/A2/A9, 2026-07-31):
+
+* **Operator-facet strip (always on).** The PUBLIC aggregate is served
+  unauthenticated, so the ``operator`` block of every manifest (CLI verb names,
+  internal ports, condition names, repo names) is stripped before emit. That
+  facet is reconnaissance-grade detail for Atlas, not for public discovery. The
+  gated full-manifest path (later card) keeps it.
+* **Signature enforcement (opt-in, default OFF).** When
+  ``SKCHAT_SHELL_REQUIRE_SIGNED`` is truthy the aggregate emits ONLY modules the
+  operator-approved capauth registry (``~/.skcapstone/shell/modules.json`` via
+  ``capauth.manifest.list_registered``) marks signed-and-enabled, tagging each
+  kept manifest ``verified: true`` so the Flutter loader can require the marker
+  too (suspenders to the aggregator's belt). It fails CLOSED: if capauth or the
+  registry is unavailable, or a module is not registered/verified, that module
+  is dropped and logged. Default OFF keeps today's live behavior byte-identical
+  except for the operator strip, so nothing enables until Chef signs + registers
+  the manifests on the key-holding box and flips the flag.
 """
 
 from __future__ import annotations
@@ -50,6 +69,88 @@ DEFAULT_SKCODE_HOSTD_URL = "http://100.108.59.57:9394"
 DEFAULT_SKDASHBOARD_URL = "http://127.0.0.1:7778"
 #: Short per-source fetch timeout (seconds), so one dead source can't stall the aggregate.
 FETCH_TIMEOUT = 2.5
+
+#: Env flag that turns capauth signature enforcement ON. Default OFF (unset) so the
+#: live app is unchanged except for the always-on operator-facet strip. Truthy set:
+#: ``1``/``true``/``yes``/``on`` (case-insensitive).
+REQUIRE_SIGNED_ENV = "SKCHAT_SHELL_REQUIRE_SIGNED"
+
+#: Optional env to PIN the manifest signer to a specific fingerprint/uid. Unset =
+#: accept any cryptographically valid signature the operator registered.
+SIGNER_FPR_ENV = "SKCHAT_SHELL_SIGNER_FPR"
+
+
+def _require_signed() -> bool:
+    """Whether ``SKCHAT_SHELL_REQUIRE_SIGNED`` is set to a truthy value (default OFF)."""
+    return os.environ.get(REQUIRE_SIGNED_ENV, "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _verified_module_ids() -> set[str] | None:
+    """Return the set of module ids the operator registry marks signed + enabled.
+
+    Consults the operator-approved capauth registry
+    (``~/.skcapstone/shell/modules.json``) via ``capauth.manifest.list_registered``,
+    which re-verifies each entry's detached signature over the manifest's current
+    canonical bytes. Only entries whose live verdict is ``ok`` AND whose operator
+    ``enabled`` flag is true are returned.
+
+    Returns:
+        A set of verified+enabled module ids, or ``None`` when capauth is
+        unavailable or the registry cannot be read. ``None`` signals the caller to
+        FAIL CLOSED (emit nothing), never to fall back to trusting everything.
+    """
+    try:
+        from capauth.manifest import list_registered
+    except Exception as exc:  # noqa: BLE001 - capauth optional; enforcement fails closed
+        logger.warning(
+            "shell_modules: %s is ON but capauth is unavailable (%s); "
+            "failing closed (no modules emitted)",
+            REQUIRE_SIGNED_ENV,
+            exc,
+        )
+        return None
+
+    signer = os.environ.get(SIGNER_FPR_ENV, "").strip() or None
+    try:
+        entries = list_registered(expected_signer=signer)
+    except Exception as exc:  # noqa: BLE001 - a bad registry must not crash discovery
+        logger.warning(
+            "shell_modules: %s is ON but the shell registry could not be read (%s); "
+            "failing closed",
+            REQUIRE_SIGNED_ENV,
+            exc,
+        )
+        return None
+
+    verified: set[str] = set()
+    for entry in entries:
+        mid = entry.get("id")
+        if not mid:
+            continue
+        if entry.get("signature") == "ok" and entry.get("enabled", True):
+            verified.add(mid)
+        else:
+            logger.info(
+                "shell_modules: registry entry %r not accepted (signature=%s enabled=%s)",
+                mid,
+                entry.get("signature"),
+                entry.get("enabled"),
+            )
+    return verified
+
+
+def _strip_operator_facet(manifest: dict) -> None:
+    """Remove the ``operator`` block from a PUBLIC manifest, in place (Fable A5).
+
+    The operator facet leaks CLI verbs, internal ports, and condition names. It is
+    for the Atlas operator plane on the GATED path, never the public aggregate.
+    """
+    manifest.pop("operator", None)
 
 
 def _shell_modules_dir() -> Path:
@@ -112,7 +213,11 @@ def aggregate_shell_modules(base_url: str) -> list[dict]:
             same-origin proxy paths under it where sensible.
 
     Returns:
-        A list of manifest dicts, deduped by ``id`` (live-served wins over static).
+        A list of manifest dicts, deduped by ``id`` (live-served wins over static),
+        with the ``operator`` facet stripped from each (A5). When
+        ``SKCHAT_SHELL_REQUIRE_SIGNED`` is on, only registry-verified,
+        operator-enabled modules are returned, each tagged ``verified: true``;
+        enforcement fails CLOSED (empty list) if capauth/registry is unavailable.
     """
     base = base_url.rstrip("/")
     by_id: dict[str, dict] = {}
@@ -167,6 +272,31 @@ def aggregate_shell_modules(base_url: str) -> list[dict]:
                 manifest["entry"] = {"url": f"{base}/skos/app"}
                 manifest["health"] = f"{base}/skos/health"
             by_id[mid] = manifest
+
+    # A5: strip the operator facet from EVERY manifest before it leaves on the
+    # PUBLIC aggregate. Always on, independent of signature enforcement.
+    for manifest in by_id.values():
+        _strip_operator_facet(manifest)
+
+    # A2/A9: optional capauth signature enforcement (default OFF). When ON, emit
+    # only registry-verified, operator-enabled modules and tag them verified.
+    if _require_signed():
+        verified_ids = _verified_module_ids()
+        if verified_ids is None:
+            # capauth/registry unavailable while enforcement is ON: fail closed.
+            return []
+        kept: list[dict] = []
+        for mid, manifest in by_id.items():
+            if mid in verified_ids:
+                manifest["verified"] = True
+                kept.append(manifest)
+            else:
+                logger.info(
+                    "shell_modules: dropping unverified module %r (%s is ON)",
+                    mid,
+                    REQUIRE_SIGNED_ENV,
+                )
+        return kept
 
     return list(by_id.values())
 
