@@ -332,6 +332,58 @@ async def access_tool_proxy(request: Request):
         raise HTTPException(status_code=502, detail=f"access node unreachable: {exc}")
 
 
+@app.api_route("/skcode/{path:path}", methods=["GET", "POST"])
+async def skcode_proxy(path: str, request: Request):
+    """Same-origin reverse proxy to skcode-hostd (the tailnet-only skcode host,
+    default :9394) so the SKWorld shell's "Code" pane reaches skcode over the
+    443 funnel like every other call, never a direct daemon port. This is a raw
+    passthrough (preserves method, body, status, content-type) so the skcode web
+    client and its assets load. It adds NO auth of its own: skcode-hostd stays
+    deny-all, so its public client shell proxies through fine while its /api/v1
+    stays 401 until this device is paired. Upstream is overridable per node via
+    SKCODE_HOSTD_URL."""
+    import urllib.error
+    import urllib.request
+
+    from fastapi.responses import Response
+
+    upstream = os.environ.get("SKCODE_HOSTD_URL", "http://100.108.59.57:9394")
+    url = f"{upstream.rstrip('/')}/{path}"
+    if request.url.query:
+        url = f"{url}?{request.url.query}"
+    body = await request.body()
+    fwd = {
+        k: v
+        for k, v in request.headers.items()
+        if k.lower() not in ("host", "content-length", "connection")
+    }
+    req = urllib.request.Request(
+        url,
+        data=body if request.method == "POST" else None,
+        method=request.method,
+        headers=fwd,
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return Response(
+                content=r.read(),
+                status_code=r.status,
+                media_type=r.headers.get("content-type", "application/octet-stream"),
+            )
+    except urllib.error.HTTPError as e:
+        return Response(
+            content=e.read() or b"",
+            status_code=e.code,
+            media_type=e.headers.get("content-type", "text/plain"),
+        )
+    except Exception as exc:
+        return Response(
+            content=f"skcode host unavailable: {exc}".encode(),
+            status_code=502,
+            media_type="text/plain",
+        )
+
+
 @app.get("/.well-known/skworld-module.json")
 async def skworld_module_manifest(request: Request) -> JSONResponse:
     """skchat's SKWorld module manifest (public discovery metadata, no bearer).
