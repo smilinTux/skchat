@@ -396,6 +396,25 @@ async def skworld_module_manifest(request: Request) -> JSONResponse:
     return JSONResponse(skchat_module_manifest(str(request.base_url)))
 
 
+@app.get("/api/v1/shell/modules")
+async def shell_modules(request: Request) -> JSONResponse:
+    """Aggregate every discoverable SKWorld subapp manifest for the shell.
+
+    Public discovery metadata (no bearer, no dataplane auth, like the
+    /.well-known/skworld-module.json route): ONE same-origin endpoint, reachable
+    over the 443 funnel, so the shell learns about all subapps at once instead of
+    probing each daemon port. Returns ``{"modules": [<skworld.module.json>, ...]}``
+    aggregating skchat's own manifest, skcode's, skdashboard's, and every
+    statically-emitted ``*.skworld-module.json`` in the node's shell registry dir.
+    Best-effort: any unreachable/missing source is skipped, never fails the whole
+    response. See ``shell_modules.aggregate_shell_modules`` and umbrella shell
+    design 5.3 (Registry).
+    """
+    from .shell_modules import aggregate_shell_modules
+
+    return JSONResponse({"modules": aggregate_shell_modules(str(request.base_url))})
+
+
 @app.post("/api/v1/audience-token")
 async def audience_token_mint(request: Request) -> JSONResponse:
     """Mint a fresh audience-scoped capauth token for THIS daemon's own identity.

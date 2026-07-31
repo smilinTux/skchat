@@ -4,7 +4,9 @@ Exempt = genuinely public or auth-bootstrap: health, static app, federation
 inbound (POST /api/v1/inbox), signed discovery, invite/pair/guest join, livekit
 signaling, the /api/v1/auth/* handshake itself, the guest-authed route
 families mounted under /api/v1 (/api/v1/guest/*, /api/v1/mode-c/*), the public
-PQ prekey directory (GET /api/v1/prekey*), and the pre-session UI bootstrap
+PQ prekey directory (GET /api/v1/prekey*), the public shell subapp-manifest
+discovery aggregate (GET /api/v1/shell/modules, the multi-manifest sibling of
+/.well-known/skworld-module.json), and the pre-session UI bootstrap
 reads (GET /api/v1/identity, GET /api/v1/capabilities). The guest/mode-c
 families carry their OWN auth (guest-session JWT via ``_guest_session``, or
 invite-token / operator-token gating) which the operator-session validator
@@ -35,6 +37,7 @@ _EXEMPT_EXACT = {
     ("POST", "/api/v1/auth/enroll/open"),  # itself operator-gated in-route
     ("GET", "/api/v1/identity"),  # pre-session UI bootstrap
     ("GET", "/api/v1/capabilities"),  # pre-session UI bootstrap
+    ("GET", "/api/v1/shell/modules"),  # public subapp-manifest discovery (like /.well-known)
 }
 _EXEMPT_PREFIX = (
     "/app",
