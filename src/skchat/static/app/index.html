@@ -21,6 +21,40 @@
   <meta name="description" content="A new Flutter project.">
 
   <!--
+    Stale-build self-heal. This app builds with `--pwa-strategy=none` (no service
+    worker) precisely because a stale SW repeatedly served old builds to devices
+    that had loaded an earlier PWA version. New builds no longer register a SW,
+    but a device that loaded an OLD build still has that SW registered and it
+    keeps intercepting fetches with cached assets. This runs before the Flutter
+    bootstrap: if any SW registration exists, unregister them all, drop every
+    Cache Storage entry, then reload ONCE (guarded by a sessionStorage flag to
+    prevent a reload loop). After that one heal the device has no SW and, with
+    the server's no-cache headers on index/bootstrap, always loads fresh.
+  -->
+  <script>
+    (function () {
+      if (!('serviceWorker' in navigator)) return;
+      navigator.serviceWorker.getRegistrations().then(function (regs) {
+        if (!regs || regs.length === 0) return;
+        Promise.all(regs.map(function (r) { return r.unregister(); }))
+          .then(function () {
+            if (!window.caches) return null;
+            return caches.keys().then(function (keys) {
+              return Promise.all(keys.map(function (k) { return caches.delete(k); }));
+            });
+          })
+          .then(function () {
+            if (!sessionStorage.getItem('sk_sw_purged')) {
+              sessionStorage.setItem('sk_sw_purged', '1');
+              location.reload();
+            }
+          })
+          .catch(function () { /* best-effort; never block app load */ });
+      }).catch(function () { /* ignore */ });
+    })();
+  </script>
+
+  <!--
     Viewport: tell mobile browsers to RESIZE the layout+visual viewport when the
     soft keyboard (an "interactive widget") appears, instead of scrolling the
     Flutter canvas to reveal the focused input. Without this, mobile Chrome/Safari
