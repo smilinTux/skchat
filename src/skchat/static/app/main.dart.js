@@ -162351,7 +162351,7 @@ s=r.style
 s.width="100%"
 s=r.style
 s.height="100%"
-r.allow="clipboard-read; clipboard-write"
+r.setAttribute("sandbox","allow-scripts allow-forms")
 return r},
 $S:404}
 A.FI.prototype={
