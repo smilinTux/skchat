@@ -132,10 +132,13 @@ def aggregate_shell_modules(base_url: str) -> list[dict]:
         _rewrite_prefix(skcode, skcode_upstream, f"{base}/skcode")
         by_id[skcode["id"]] = skcode
 
-    # 3. skdashboard: fetch its live manifest (served same-origin already, no rewrite).
+    # 3. skdashboard: fetch its live manifest and rewrite URLs onto /skdashboard
+    #    (it serves on a loopback port that the browser cannot reach; the webui
+    #    skdashboard_proxy bridges it onto the 443 funnel).
     dashboard_upstream = os.environ.get("SKDASHBOARD_URL", DEFAULT_SKDASHBOARD_URL).rstrip("/")
     dashboard = _fetch_json(f"{dashboard_upstream}/.well-known/skworld-module.json")
     if dashboard and dashboard.get("id"):
+        _rewrite_prefix(dashboard, dashboard_upstream, f"{base}/skdashboard")
         by_id[dashboard["id"]] = dashboard
 
     # 4. Static registry files (skos + any future statically-emitted subapp).
@@ -157,6 +160,12 @@ def aggregate_shell_modules(base_url: str) -> list[dict]:
             continue
         mid = manifest.get("id")
         if mid and mid not in by_id:
+            if mid == "skos":
+                # skos emits a static manifest pointing at its own loopback web
+                # surface; point its Grade B pane at the /skos same-origin proxy
+                # (webui skos_proxy) so it loads over the 443 funnel.
+                manifest["entry"] = {"url": f"{base}/skos/app"}
+                manifest["health"] = f"{base}/skos/health"
             by_id[mid] = manifest
 
     return list(by_id.values())

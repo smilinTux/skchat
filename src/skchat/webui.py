@@ -332,22 +332,17 @@ async def access_tool_proxy(request: Request):
         raise HTTPException(status_code=502, detail=f"access node unreachable: {exc}")
 
 
-@app.api_route("/skcode/{path:path}", methods=["GET", "POST"])
-async def skcode_proxy(path: str, request: Request):
-    """Same-origin reverse proxy to skcode-hostd (the tailnet-only skcode host,
-    default :9394) so the SKWorld shell's "Code" pane reaches skcode over the
-    443 funnel like every other call, never a direct daemon port. This is a raw
-    passthrough (preserves method, body, status, content-type) so the skcode web
-    client and its assets load. It adds NO auth of its own: skcode-hostd stays
-    deny-all, so its public client shell proxies through fine while its /api/v1
-    stays 401 until this device is paired. Upstream is overridable per node via
-    SKCODE_HOSTD_URL."""
+async def _reverse_proxy(request: Request, upstream: str, path: str, *, label: str):
+    """Raw same-origin reverse proxy to a sibling subapp daemon (``upstream``),
+    so the SKWorld shell's pane reaches it over the 443 funnel like every other
+    call, never a direct daemon port. Preserves method/body/status/content-type
+    so the subapp's web client + assets load; adds NO auth of its own (each
+    subapp keeps its own gate). Upstream is overridable per node via env."""
     import urllib.error
     import urllib.request
 
     from fastapi.responses import Response
 
-    upstream = os.environ.get("SKCODE_HOSTD_URL", "http://100.108.59.57:9394")
     url = f"{upstream.rstrip('/')}/{path}"
     if request.url.query:
         url = f"{url}?{request.url.query}"
@@ -378,10 +373,35 @@ async def skcode_proxy(path: str, request: Request):
         )
     except Exception as exc:
         return Response(
-            content=f"skcode host unavailable: {exc}".encode(),
+            content=f"{label} unavailable: {exc}".encode(),
             status_code=502,
             media_type="text/plain",
         )
+
+
+@app.api_route("/skcode/{path:path}", methods=["GET", "POST"])
+async def skcode_proxy(path: str, request: Request):
+    """/skcode/* -> skcode-hostd (tailnet-only, deny-all; SKCODE_HOSTD_URL,
+    default :9394). The public client shell proxies through; /api/v1 stays 401
+    until this device is paired."""
+    upstream = os.environ.get("SKCODE_HOSTD_URL", "http://100.108.59.57:9394")
+    return await _reverse_proxy(request, upstream, path, label="skcode host")
+
+
+@app.api_route("/skdashboard/{path:path}", methods=["GET", "POST"])
+async def skdashboard_proxy(path: str, request: Request):
+    """/skdashboard/* -> the skcapstone coordination dashboard (SKDASHBOARD_URL,
+    default :7778) so the shell's "Board" pane loads over the 443 funnel."""
+    upstream = os.environ.get("SKDASHBOARD_URL", "http://127.0.0.1:7778")
+    return await _reverse_proxy(request, upstream, path, label="skdashboard")
+
+
+@app.api_route("/skos/{path:path}", methods=["GET", "POST"])
+async def skos_proxy(path: str, request: Request):
+    """/skos/* -> the skos read-only web surface (SKOS_URL, default :7781) so the
+    shell's "OS" pane loads over the 443 funnel."""
+    upstream = os.environ.get("SKOS_URL", "http://127.0.0.1:7781")
+    return await _reverse_proxy(request, upstream, path, label="skos")
 
 
 @app.get("/.well-known/skworld-module.json")
