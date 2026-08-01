@@ -48,12 +48,94 @@ RATCHET_CAP = "pqdr1"
 #: today) is not locked out; behaviour is UNCHANGED when unset.
 REQUIRE_SIGNED_PREKEYS_ENV = "SKCHAT_REQUIRE_SIGNED_PREKEYS"
 
+#: Env flag (arch review §3 / root-key hardening): when truthy, refuse to load a
+#: root hybrid private key file that is group- or world-readable
+#: (``mode & 0o077``) instead of silently reading it. Default OFF so the
+#: existing plaintext-0600 deployments are not locked out.
+STRICT_KEY_PERMS_ENV = "SKCHAT_STRICT_KEY_PERMS"
+
+#: Env flag: when truthy, consult the OS keyring (via the optional ``keyring``
+#: package) for a sealed copy of the root hybrid private key before falling
+#: back to the plaintext file. Default OFF, and even when set, an absent
+#: keyring entry falls back to plaintext unchanged (never locks anyone out).
+KEY_KEYRING_ENV = "SKCHAT_KEY_KEYRING"
+
+#: Keyring "service" namespace under which sealed hybrid keys are stored.
+_KEYRING_SERVICE = "skchat-hybrid-key"
+
 _TRUTHY = {"1", "true", "yes", "on"}
 
 
 def require_signed_prekeys() -> bool:
     """Whether unsigned/invalid app-path prekey bundles must be rejected."""
     return os.environ.get(REQUIRE_SIGNED_PREKEYS_ENV, "").strip().lower() in _TRUTHY
+
+
+class InsecureKeyPermissions(RuntimeError):
+    """Raised when a root hybrid key file is group/world-readable under strict mode."""
+
+
+def strict_key_perms() -> bool:
+    """Whether a group/world-readable root hybrid key file must be refused."""
+    return os.environ.get(STRICT_KEY_PERMS_ENV, "").strip().lower() in _TRUTHY
+
+
+def _check_key_file_perms(path: Path) -> None:
+    """Refuse *path* if it's group/world-readable and strict mode is enabled.
+
+    Raises:
+        InsecureKeyPermissions: if ``SKCHAT_STRICT_KEY_PERMS`` is set and
+            ``path``'s mode has any group/world bit (``& 0o077``) set.
+    """
+    if not strict_key_perms():
+        return
+    mode = os.stat(path).st_mode & 0o777
+    if mode & 0o077:
+        raise InsecureKeyPermissions(
+            f"refusing to load {path}: mode {oct(mode)} is group/world-readable "
+            f"({STRICT_KEY_PERMS_ENV} is set) — chmod 600 it or unset the flag"
+        )
+
+
+def _sealed_key_hex(agent: str) -> Optional[str]:
+    """Best-effort sealed/keyring-backed private key hex, or ``None``.
+
+    Gated by ``SKCHAT_KEY_KEYRING``: unset (default), a missing ``keyring``
+    package, or no stored entry for *agent* all resolve to ``None`` so the
+    caller falls back to the plaintext file unchanged — this is an additive
+    path, never a way to break the existing plaintext-0600 load.
+    """
+    if os.environ.get(KEY_KEYRING_ENV, "").strip().lower() not in _TRUTHY:
+        return None
+    try:
+        import keyring
+    except ImportError:
+        return None
+    try:
+        return keyring.get_password(_KEYRING_SERVICE, f"{agent}_hybrid")
+    except Exception:
+        logger.warning("keyring lookup failed for %s hybrid key", agent, exc_info=True)
+        return None
+
+
+def _load_private_key_hex(priv_path: Path, agent: str) -> Optional[str]:
+    """Return the agent's root hybrid private key hex, or ``None`` if absent.
+
+    Tries the sealed/keyring path first (only when ``SKCHAT_KEY_KEYRING`` is
+    set and a sealed entry exists); otherwise reads the plaintext file at
+    ``priv_path``, refusing it under :func:`_check_key_file_perms` when strict
+    mode is on.
+
+    Raises:
+        InsecureKeyPermissions: see :func:`_check_key_file_perms`.
+    """
+    sealed = _sealed_key_hex(agent)
+    if sealed is not None:
+        return sealed
+    if not priv_path.exists():
+        return None
+    _check_key_file_perms(priv_path)
+    return priv_path.read_text().strip()
 
 
 def _pqc_dir() -> Path:
@@ -198,6 +280,12 @@ def ensure_agent_keypair(agent: Optional[str] = None) -> Optional[tuple[bytes, b
 
     Returns ``(public, private)`` or ``None`` if no PQ backend is available
     (honest classical fallback — never a silent failure).
+
+    Raises:
+        InsecureKeyPermissions: if the on-disk private key is group/world-
+            readable and ``SKCHAT_STRICT_KEY_PERMS`` is set. This is a refusal,
+            not a corruption — the key is NOT regenerated in this case (that
+            would silently mask the permissions problem).
     """
     agent = (agent or _current_agent()).split("@")[0]
     if not available():
@@ -205,14 +293,16 @@ def ensure_agent_keypair(agent: Optional[str] = None) -> Optional[tuple[bytes, b
     d = _pqc_dir()
     priv_path = d / f"{agent}_hybrid.key"
     pub_path = d / f"{agent}_hybrid.pub"
-    if priv_path.exists() and pub_path.exists():
-        try:
-            return (
-                bytes.fromhex(pub_path.read_text().strip()),
-                bytes.fromhex(priv_path.read_text().strip()),
-            )
-        except Exception:
-            logger.warning("corrupt %s hybrid key — regenerating", agent, exc_info=True)
+    if pub_path.exists():
+        priv_hex = _load_private_key_hex(priv_path, agent)
+        if priv_hex is not None:
+            try:
+                return (
+                    bytes.fromhex(pub_path.read_text().strip()),
+                    bytes.fromhex(priv_hex),
+                )
+            except Exception:
+                logger.warning("corrupt %s hybrid key — regenerating", agent, exc_info=True)
     try:
         from skcomms import pqkem
 
