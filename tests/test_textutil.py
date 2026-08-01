@@ -1,8 +1,8 @@
-"""Tests for the truncate_middle text helper."""
+"""Tests for the truncate_middle and humanize_duration text helpers."""
 
 from __future__ import annotations
 
-from skchat.textutil import truncate_middle
+from skchat.textutil import humanize_duration, truncate_middle
 
 
 class TestTruncateMiddle:
@@ -60,3 +60,43 @@ class TestTruncateMiddle:
         result = truncate_middle("abcdef", max_len=1)
         assert result == "…"
         assert len(result) == 1
+
+
+class TestHumanizeDuration:
+    """Tests for humanize_duration."""
+
+    def test_zero_seconds(self) -> None:
+        """Zero seconds formats as '0s'."""
+        assert humanize_duration(0) == "0s"
+
+    def test_seconds_only(self) -> None:
+        """Sub-minute durations show only seconds."""
+        assert humanize_duration(45) == "45s"
+
+    def test_minutes_and_seconds(self) -> None:
+        """Minutes and seconds are both shown when both are non-zero."""
+        assert humanize_duration(90) == "1m 30s"
+
+    def test_hours_and_minutes(self) -> None:
+        """Only the two largest non-zero units are shown; seconds are dropped."""
+        assert humanize_duration(3661) == "1h 1m"
+
+    def test_days_and_hours(self) -> None:
+        """Only the two largest non-zero units are shown; minutes/seconds are dropped."""
+        assert humanize_duration(90000) == "1d 1h"
+
+    def test_exact_minute_drops_seconds(self) -> None:
+        """A whole number of minutes has no seconds component to show."""
+        assert humanize_duration(120) == "2m"
+
+    def test_none_returns_zero_seconds(self) -> None:
+        """None input never raises and returns '0s'."""
+        assert humanize_duration(None) == "0s"  # type: ignore[arg-type]
+
+    def test_negative_returns_zero_seconds(self) -> None:
+        """Negative input never raises and returns '0s'."""
+        assert humanize_duration(-5) == "0s"
+
+    def test_non_numeric_returns_zero_seconds(self) -> None:
+        """Non-numeric input never raises and returns '0s'."""
+        assert humanize_duration("abc") == "0s"  # type: ignore[arg-type]
