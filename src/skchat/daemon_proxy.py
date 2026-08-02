@@ -808,6 +808,17 @@ _PREKEY_REFRESH_TTL_ENV = "SKCHAT_PREKEY_REFRESH_TTL"
 #: intent of the transport's ``_prekey_fetch_attempted`` guard.
 _last_refresh_attempt: dict[str, float] = {}
 
+#: Decrypt-failure NACK (coord 4c054eab, criterion 1) throttle: short ->
+#: ``time.monotonic()`` of the last forced re-pull. A recipient re-renders a
+#: locked message repeatedly, so it can NACK on every render; this collapses a
+#: burst of NACKs for the same reporting peer to a single re-pull per window.
+_last_nack_repull: dict[str, float] = {}
+
+#: Idempotency window (seconds) for the decrypt-failure NACK fast path. Short by
+#: design: the recovery action (re-pull + re-seal) is cheap, but a locked-bubble
+#: render loop must not hammer ``fetch_peer_prekey``.
+_NACK_REPULL_WINDOW = 60.0
+
 
 def _prekey_refresh_ttl() -> float:
     """Resolve the re-pull staleness TTL (seconds) from the env, or the default."""
@@ -897,6 +908,43 @@ def _maybe_refresh_peer(short: str) -> None:
     except Exception:
         # Best-effort only: a failed re-pull must never sink a send.
         logger.debug("prekey TTL re-pull for %s failed (best-effort)", short, exc_info=True)
+
+
+def _force_repull_peer(short: str) -> bool:
+    """Force an immediate best-effort re-pull of *short*'s prekey bundle.
+
+    The decrypt-failure NACK fast path (coord 4c054eab, criterion 1). Unlike
+    :func:`_maybe_refresh_peer`, this bypasses the TTL staleness gate: the peer
+    just told us (via the report) that it republished a fresh slot our cache is
+    missing, so we re-pull NOW regardless of the local copy's age. It also clears
+    that peer's TTL re-pull throttle so the NEXT ``_seal_hybrid_outbound`` also
+    refreshes if this immediate pull is a no-op (e.g. a same-daemon peer with no
+    inbox route to re-pull over).
+
+    Idempotent + rate-limited: repeated NACKs for the same peer inside
+    :data:`_NACK_REPULL_WINDOW` collapse to a single re-pull. Returns True if a
+    re-pull was attempted, False if collapsed by the window. NEVER raises.
+    """
+    now = time.monotonic()
+    last = _last_nack_repull.get(short)
+    if last is not None and (now - last) < _NACK_REPULL_WINDOW:
+        return False
+    _last_nack_repull[short] = now
+    # Clear the TTL re-pull throttle so a subsequent seal is not throttle-blocked
+    # from also refreshing this peer.
+    _last_refresh_attempt.pop(short, None)
+    try:
+        from skchat import prekey_exchange
+        from skchat.transport import _urllib_get_json
+
+        fqid = _resolve_peer_fqid(short)
+        prekey_exchange.fetch_peer_prekey(fqid, http_get=_urllib_get_json)
+    except Exception:
+        # Best-effort only: a failed re-pull must never 500 the NACK.
+        logger.debug(
+            "decrypt-failure re-pull for %s failed (best-effort)", short, exc_info=True
+        )
+    return True
 
 
 def _seal_hybrid_outbound(plaintext: str, *, recipient_short: str) -> str | None:
@@ -1064,6 +1112,52 @@ async def api_revoke_prekey(peer: str, key_id: str, request: Request):
 
     removed = PQ.remove_peer_bundle(_short_name(peer), key_id)
     return JSONResponse({"ok": True, "removed": bool(removed)})
+
+
+@router.post("/v1/dm/decrypt-failed")
+async def api_dm_decrypt_failed(request: Request):
+    """Decrypt-failure NACK: the fast-recovery trigger (coord 4c054eab, crit 1).
+
+    A recipient device that receives a ``pqdm2``/``pqdm1`` DM it CANNOT open (no
+    slot for its ``key_id``, or the AEAD open fails) POSTs here so THIS daemon
+    (the sender) re-pulls the reporting peer's freshly-republished bundle
+    IMMEDIATELY, instead of waiting for the 6h TTL re-pull
+    (:func:`_maybe_refresh_peer`, criteria 2+3). The reporting peer just published
+    a new device slot our cached bundle is missing; forcing a re-pull re-seals the
+    next reply to the fresh slot.
+
+    Direction: the recipient (e.g. ``chef``) failed to open a message from the
+    sender (this daemon, e.g. ``lumina``). It reports here so the SENDER re-pulls
+    the RECIPIENT's own bundle, so ``peer`` is the REPORTING device.
+
+    Body: ``{"peer": "<reporting short>", "message_id"?: "<id>"}``. Operator-gated
+    with the shared :func:`skchat.guest._require_operator` helper. Idempotent +
+    rate-limited: repeated NACKs for the same peer inside
+    :data:`_NACK_REPULL_WINDOW` collapse to a single re-pull. Returns
+    ``{ok, refreshed}`` (``refreshed`` False when the NACK was collapsed).
+    """
+    from skchat.guest import _require_operator
+
+    _require_operator(request)  # raises 401/403 for non-operators
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        raise HTTPException(400, "decrypt-failure report must be an object")
+    raw_peer = (body.get("peer") or "").strip()
+    if not raw_peer:
+        raise HTTPException(400, "decrypt-failure report requires a peer")
+    peer = _short_name(raw_peer)
+    message_id = body.get("message_id")
+    logger.info(
+        "decrypt-failure NACK from peer=%s message_id=%s -> forcing prekey re-pull",
+        peer,
+        message_id,
+    )
+    refreshed = _force_repull_peer(peer)
+    return JSONResponse({"ok": True, "refreshed": bool(refreshed)})
 
 
 @router.get("/v1/status")
