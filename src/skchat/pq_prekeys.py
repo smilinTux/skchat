@@ -150,6 +150,10 @@ def _normalise_bundle(bundle: dict) -> dict:
         # Absent for clients without the pqdr1 codec (app / older agents) so the
         # sender stays classical for them (RFC-0001 downgrade protection).
         "ratchet": bundle.get("ratchet"),
+        # Multi-device fanout advert: "pqdm2" means this device speaks the
+        # multi-recipient envelope, so the sender fans out to all device slots
+        # (Task 9). Distinct from `ratchet`; absent -> sender stays pqdm1 for it.
+        "codec": bundle.get("codec"),
         # When this slot was (re)published; drives newest-first slot ordering.
         "last_published": bundle.get("last_published"),
     }

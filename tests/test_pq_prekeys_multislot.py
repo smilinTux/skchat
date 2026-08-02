@@ -60,3 +60,14 @@ def test_remove_slot(tmp_peers):
     tmp_peers.store_peer_bundle("chef", _bundle("aaaaaaaaaaaaaaaa", ts=1))
     assert tmp_peers.remove_peer_bundle("chef", "aaaaaaaaaaaaaaaa") is True
     assert tmp_peers.load_peer_bundles("chef") == []
+
+
+def test_codec_advert_is_preserved_through_store_and_load(tmp_peers):
+    # Task 9 fanout only fires when load_peer_bundles reports codec == "pqdm2";
+    # _normalise_bundle must preserve the advert on store (it was being stripped).
+    b = _bundle("cafe000000000000", ts=1)
+    b["codec"] = "pqdm2"
+    tmp_peers.store_peer_bundle("chef", b)
+    slots = tmp_peers.load_peer_bundles("chef")
+    assert len(slots) == 1
+    assert slots[0]["codec"] == "pqdm2"
