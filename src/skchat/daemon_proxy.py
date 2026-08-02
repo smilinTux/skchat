@@ -763,6 +763,12 @@ async def api_publish_prekey(
         body = {}
     if not isinstance(body, dict):
         raise HTTPException(400, "prekey bundle must be an object")
+    # The app publishes the identity signature under `sig`; the reused verifier
+    # (skchat.prekey_sig.verify_prekey_bundle, via store_app_prekey_bundle) reads
+    # `signature`. Alias so the existing helper sees it (Task 5 may publish either
+    # field name); never clobber an explicit `signature`.
+    if body.get("sig") and not body.get("signature"):
+        body["signature"] = body["sig"]
     owner = _short_name((body.get("owner") or OPERATOR_ID))
     # P0.5 / SEAM 7: fail closed on unsigned/invalid bundles when the operator
     # opts in via SKCHAT_REQUIRE_SIGNED_PREKEYS. Resolve the claimed identity's
