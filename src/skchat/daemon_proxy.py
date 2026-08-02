@@ -689,7 +689,22 @@ def _resolve_signer_pubkey(peer: str) -> str | None:
 
 
 def _open_hybrid_inbound(token: str, *, sender_short: str) -> str | None:
-    """Open a `pqdm1:` token addressed to Lumina. Returns plaintext or None."""
+    """Open a hybrid-sealed inbound token addressed to Lumina.
+
+    Handles both wire formats:
+
+    * ``pqdm1:`` - the legacy single-recipient envelope, opened with Lumina's
+      hybrid private key (unchanged).
+    * ``pqdm2:`` - the multi-device fanout envelope (Phase 1). The token carries a
+      slot per recipient device; this daemon selects its OWN slot by ``key_id``
+      (its published hybrid prekey id) and opens it via ``open_multi``. A token
+      that carries NO slot for this device returns ``None`` (the graceful locked
+      placeholder), never a crash.
+
+    Returns the plaintext, or ``None`` on any failure / missing slot.
+    """
+    if token.startswith("pqdm2:"):
+        return _open_pqdm2_inbound(token, sender_short=sender_short)
     try:
         import base64 as _b64
 
@@ -713,6 +728,41 @@ def _open_hybrid_inbound(token: str, *, sender_short: str) -> str | None:
         return clear.decode("utf-8")
     except Exception:
         logger.debug("hybrid inbound open failed", exc_info=True)
+        return None
+
+
+def _open_pqdm2_inbound(token: str, *, sender_short: str) -> str | None:
+    """Open a `pqdm2:` fanout token by unwrapping THIS device's own slot.
+
+    The daemon's own device slot is its published hybrid prekey: ``key_id`` is the
+    first 16 hex of the public key, the private half is ``lumina_private()``. If
+    the token has no slot for this ``key_id`` (or any open fails), ``open_multi``
+    returns ``None`` and so do we - the caller keeps the sealed placeholder rather
+    than feeding Lumina opaque ciphertext.
+    """
+    try:
+        from skcomms.pqdm import open_multi
+
+        from skchat import pq_prekeys as PQ
+
+        priv = PQ.lumina_private()
+        if priv is None:
+            return None
+        my_key_id = PQ.lumina_bundle().get("key_id")
+        if not my_key_id:
+            return None
+        clear = open_multi(
+            token,
+            my_key_id=my_key_id,
+            my_private_hex=priv.hex(),
+            sender=sender_short,
+            recipient_id="lumina",
+        )
+        if clear is None:
+            return None
+        return clear.decode("utf-8")
+    except Exception:
+        logger.debug("pqdm2 inbound open failed", exc_info=True)
         return None
 
 
@@ -1446,7 +1496,7 @@ def _is_context_noise(content: str) -> bool:
     c = (content or "").strip()
     if not c:
         return True
-    if c.startswith("pqdm1:"):
+    if c.startswith("pqdm1:") or c.startswith("pqdm2:"):
         return True
     if c.startswith("__") and "__" in c[2:]:  # __TYPING__:… / __RECEIPT__:… etc.
         return True
@@ -1674,7 +1724,7 @@ async def api_send(request: Request):
     # with Lumina's hybrid private key so the brain + history see plaintext. The
     # conversation is recorded hybrid so the reply is sealed back symmetrically.
     convo_is_hybrid = False
-    if content.startswith("pqdm1:"):
+    if content.startswith("pqdm1:") or content.startswith("pqdm2:"):
         opened = _open_hybrid_inbound(content, sender_short="chef")
         if opened is not None:
             content = opened
