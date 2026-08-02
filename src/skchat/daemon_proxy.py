@@ -789,6 +789,25 @@ async def api_get_prekey(peer: str):
     return JSONResponse({"prekey": stored})
 
 
+@router.delete("/v1/prekey/{peer}/{key_id}")
+async def api_revoke_prekey(peer: str, key_id: str, request: Request):
+    """Revoke (retire) a single device prekey slot by ``key_id``.
+
+    Operator-only: gated with the shared ``skchat.guest._require_operator``
+    helper (bearer/``X-Operator-Token`` when ``SKCHAT_GUEST_OPERATOR_TOKEN`` is
+    set, else loopback/tailnet). A non-operator caller gets 401/403 and nothing
+    is touched. On success the slot is dropped from the multi-slot store
+    (``remove_peer_bundle``); ``removed`` is False if no such slot existed."""
+    from skchat.guest import _require_operator
+
+    _require_operator(request)  # raises 401/403 for non-operators
+
+    from skchat import pq_prekeys as PQ
+
+    removed = PQ.remove_peer_bundle(_short_name(peer), key_id)
+    return JSONResponse({"ok": True, "removed": bool(removed)})
+
+
 @router.get("/v1/status")
 async def api_status():
     return _proxy("http://127.0.0.1:9383/api/v1/household/agents")
