@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import json
+from pathlib import Path
 
 import pytest
 from cryptography.hazmat.primitives import hashes, serialization
@@ -41,6 +42,10 @@ def _sig(priv, payload):
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
+    # Enrollment now grants the device its skchat.prekey capability into the
+    # capauth store (default_base_dir() == Path.home()/.skcapstone); pin home to
+    # tmp so these tests never write grant artifacts into the real ~/.skcapstone.
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
     monkeypatch.setenv("SKCHAT_OPERATOR_TOKEN_SECRET", "sec")
     monkeypatch.delenv("SKCHAT_GUEST_OPERATOR_TOKEN", raising=False)  # loopback-allowed operator
     app = FastAPI()
