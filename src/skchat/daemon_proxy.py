@@ -1017,6 +1017,67 @@ async def api_publish_prekey(
     return JSONResponse({"ok": True, "stored": owner, "hybrid": PQ.peer_is_hybrid(owner)})
 
 
+@router.post("/v1/prekey/sign")
+async def api_sign_prekey(request: Request):
+    """Operator: mint an ASCII-armored OpenPGP detached signature over a prekey
+    bundle's canonical identity bytes, using the operator's PGP identity key.
+
+    The Flutter app cannot hold the operator identity key (it lives here, via
+    ``crypto.load_agent_crypto``); its local ``PgpBridge`` only emits raw RSA
+    base64, which the pgpy verifier rejects. So the app delegates: it POSTs the
+    canonical identity fields and attaches the armored signature this returns to
+    its published bundle. That signature verifies under the operator's PGP
+    public key (the same key ``prekey_sig.verify_prekey_bundle`` /
+    ``_load_peer_public_key`` loads), unblocking ``SKCHAT_REQUIRE_SIGNED_PREKEYS``.
+
+    Body: ``{hybrid_public_hex, key_id, suite}``. Signs EXACTLY the server's
+    canonical bytes (``skchat.prekey_sig._canonical_signed_bytes`` reads only the
+    identity-binding fields), so signer and verifier reconstruct byte-identical
+    input. Returns ``{ok, signature, fingerprint}``.
+
+    Operator-gated (``skchat.guest._require_operator``): this is a *scoped*
+    signing oracle for the operator identity key - only the operator's own
+    loopback/tailnet session (or a configured operator token) may mint a
+    signature, so a data-plane peer cannot get the operator to attest a prekey
+    it does not own.
+    """
+    from skchat.guest import _require_operator
+
+    _require_operator(request)  # raises 401/403 for non-operators
+
+    from skchat import crypto as _crypto
+    from skchat.prekey_sig import sign_prekey_bundle
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        raise HTTPException(400, "sign request must be an object")
+
+    fields = {
+        "suite": body.get("suite"),
+        "hybrid_public_hex": body.get("hybrid_public_hex"),
+        "key_id": body.get("key_id"),
+    }
+    # Refuse to sign an empty/degenerate payload (no blind signing oracle).
+    if not fields["hybrid_public_hex"] or not fields["suite"]:
+        raise HTTPException(400, "hybrid_public_hex and suite are required")
+
+    chat_crypto = _crypto.load_agent_crypto()
+    if chat_crypto is None or not getattr(chat_crypto, "can_sign", False):
+        raise HTTPException(503, "operator signing key unavailable")
+
+    signed = sign_prekey_bundle(chat_crypto, fields)
+    return JSONResponse(
+        {
+            "ok": True,
+            "signature": signed["signature"],
+            "fingerprint": getattr(chat_crypto, "fingerprint", None),
+        }
+    )
+
+
 @router.get("/v1/prekey/{peer:path}")
 async def api_get_prekey(peer: str):
     """Fetch a peer's prekey bundle(s). ``lumina`` returns Lumina's OWN hybrid
