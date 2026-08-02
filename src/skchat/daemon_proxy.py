@@ -675,17 +675,36 @@ def _short_name(uri: str) -> str:
 def _resolve_signer_pubkey(peer: str) -> str | None:
     """Best-effort ASCII-armored PGP public key for the claimed publisher.
 
-    Used only when ``SKCHAT_REQUIRE_SIGNED_PREKEYS`` is set: the signed prekey
-    bundle is verified against the identity's own key from the skcapstone peer
-    store. Returns ``None`` if the peer has no published key — the intake then
-    fails closed (nothing stored)."""
+    Used only when ``SKCHAT_REQUIRE_SIGNED_PREKEYS`` is set. Two sources, in
+    order:
+
+      1. The peer's own published key from the skcapstone peer store — the right
+         source for a REMOTE peer that self-signed its bundle.
+      2. This daemon's local agent identity key. Bundles published through the
+         operator-authenticated ``POST /api/v1/prekey/sign`` oracle are signed by
+         ``load_agent_crypto`` (the daemon agent's key), NOT a per-peer key, so
+         the operator's own app-published bundles verify only against this key.
+         The oracle is operator-gated, so only operator-attested bundles ever
+         carry this signature — a data-plane peer cannot obtain it.
+
+    Returns ``None`` if neither resolves — intake then fails closed."""
     try:
         from skchat.crypto import _load_peer_public_key
 
-        return _load_peer_public_key(peer)
+        armor = _load_peer_public_key(peer)
+        if armor:
+            return armor
     except Exception:
-        logger.debug("no signer pubkey for prekey publisher %s", peer, exc_info=True)
-        return None
+        logger.debug("no peer-store signer pubkey for %s", peer, exc_info=True)
+    try:
+        from skchat import crypto as _crypto
+
+        cc = _crypto.load_agent_crypto()
+        if cc is not None and getattr(cc, "can_sign", False):
+            return str(cc._private_key.pubkey)
+    except Exception:
+        logger.debug("no local agent signer pubkey", exc_info=True)
+    return None
 
 
 def _open_hybrid_inbound(token: str, *, sender_short: str) -> str | None:
