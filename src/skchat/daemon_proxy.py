@@ -781,18 +781,32 @@ async def api_publish_prekey(
 
 @router.get("/v1/prekey/{peer:path}")
 async def api_get_prekey(peer: str):
-    """Fetch a peer's prekey bundle. ``lumina`` returns Lumina's OWN hybrid
-    prekey (generated on demand); any other peer returns its published bundle,
-    or a classical (non-hybrid) bundle if none was published."""
+    """Fetch a peer's prekey bundle(s). ``lumina`` returns Lumina's OWN hybrid
+    prekey (generated on demand); any other peer returns every published device
+    slot, or a classical (non-hybrid) placeholder if none was published.
+
+    Multi-device fanout (Phase 1, Task 6): the response carries BOTH
+
+    * ``prekeys`` - every device slot, newest first (from ``load_peer_bundles``),
+      so the sender can fan out a DM to all of the peer's devices.
+    * ``prekey`` - the newest single slot, kept for pqdm1-only back-compat
+      callers that expect one bundle.
+    """
     from skchat import pq_prekeys as PQ
 
     short = _short_name(peer)
     if short == "lumina":
-        return JSONResponse({"prekey": PQ.lumina_bundle()})
-    stored = PQ.load_peer_bundle(short)
-    if stored is None:
-        return JSONResponse({"prekey": {"suite": PQ.CLASSICAL_SUITE, "hybrid_public_hex": ""}})
-    return JSONResponse({"prekey": stored})
+        own = PQ.lumina_bundle()
+        return JSONResponse({"prekeys": [own], "prekey": own})
+    slots = PQ.load_peer_bundles(short)
+    if not slots:
+        return JSONResponse(
+            {
+                "prekeys": [],
+                "prekey": {"suite": PQ.CLASSICAL_SUITE, "hybrid_public_hex": ""},
+            }
+        )
+    return JSONResponse({"prekeys": slots, "prekey": slots[0]})
 
 
 @router.delete("/v1/prekey/{peer}/{key_id}")
