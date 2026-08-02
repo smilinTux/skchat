@@ -15,13 +15,13 @@ Two responsibilities:
    persisted 0600, and exposed both as a published bundle (so the app can seal
    to her) and as the private key (so she can open hybrid DMs addressed to her).
 
-Storage: ``~/.skchat/pqc/`` —
-   * ``peers/<short>.json``   — published peer bundles (JSON)
-   * ``lumina_hybrid.key``    — Lumina's 2432-byte hybrid private key (hex, 0600)
-   * ``lumina_hybrid.pub``    — Lumina's 1216-byte hybrid public key (hex)
+Storage: ``~/.skchat/pqc/`` -
+   * ``peers/<short>.json``   - published peer bundles (JSON)
+   * ``lumina_hybrid.key``    - Lumina's 2432-byte hybrid private key (hex, 0600)
+   * ``lumina_hybrid.pub``    - Lumina's 1216-byte hybrid public key (hex)
 
 Honesty: if liboqs is unavailable, Lumina simply publishes no hybrid prekey
-(``available() is False``) and every conversation stays classical — the same
+(``available() is False``) and every conversation stays classical - the same
 negotiated-downgrade contract the rest of Q3 uses. Never a silent failure.
 """
 
@@ -30,6 +30,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -41,8 +42,17 @@ CLASSICAL_SUITE = "x25519-pgp-wrap-v1"
 #: DM ratchet wire-format capability this build advertises (RFC-0001 P1).
 RATCHET_CAP = "pqdr1"
 
+#: Multi-device fanout (Phase 1): the maximum number of concurrent device slots
+#: a single peer may hold. Retirement is by explicit revoke only (no auto-TTL
+#: prune); publishing an 11th DISTINCT device rejects rather than evicting.
+SLOT_CAP = 10
+
+
+class SlotCapExceeded(Exception):
+    """Raised when publishing a NEW device slot would exceed :data:`SLOT_CAP`."""
+
 #: Env flag (P0.5 / SEAM 7): when truthy, the **app-path** prekey intake
-#: (``store_app_prekey_bundle`` behind ``POST /api/v1/prekey``) fails closed —
+#: (``store_app_prekey_bundle`` behind ``POST /api/v1/prekey``) fails closed -
 #: only a bundle carrying a signature that verifies under the claimed identity's
 #: key is stored. Default OFF so the live app (which publishes UNSIGNED bundles
 #: today) is not locked out; behaviour is UNCHANGED when unset.
@@ -102,11 +112,35 @@ def _current_agent() -> str:
 # --------------------------------------------------------------------------- #
 
 
-def store_peer_bundle(peer: str, bundle: dict) -> None:
-    """Persist a published peer prekey bundle (keyed by short name)."""
-    path = _pqc_dir() / "peers" / f"{_short(peer)}.json"
-    # Normalise — only keep the contract fields.
-    safe = {
+def _safe_slot_id(key_id: str) -> str:
+    """Filesystem-safe token for a slot filename.
+
+    A ``key_id`` is 16-hex today, but it arrives from a published (untrusted)
+    bundle, so reduce it to ``[A-Za-z0-9._-]`` and strip leading dots the same way
+    :func:`_safe_agent` guards keypair paths - a slot file can never escape the
+    peer directory via ``..``/``/``. Empty results fall back to ``_default`` so a
+    classical (no-key_id) bundle still gets a stable single slot.
+    """
+    token = re.sub(r"[^A-Za-z0-9._-]", "", (key_id or "")).lstrip(".")
+    return token or "_default"
+
+
+def _peer_dir(peer: str) -> Path:
+    """The per-peer slot directory ``peers/<short>/`` (created on demand)."""
+    d = _pqc_dir() / "peers" / _short(peer)
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _normalise_bundle(bundle: dict) -> dict:
+    """Keep only the contract fields (plus ``last_published`` for slot ordering).
+
+    Normalisation is a pure function of its input (no wall-clock stamping), so
+    storing the same bundle twice yields byte-identical slots. A bundle that
+    omits ``last_published`` keeps ``None`` and simply sorts last in
+    :func:`load_peer_bundles`.
+    """
+    return {
         "suite": bundle.get("suite", CLASSICAL_SUITE),
         "hybrid_public_hex": bundle.get("hybrid_public_hex", "") or "",
         "signature": bundle.get("signature"),
@@ -116,8 +150,40 @@ def store_peer_bundle(peer: str, bundle: dict) -> None:
         # Absent for clients without the pqdr1 codec (app / older agents) so the
         # sender stays classical for them (RFC-0001 downgrade protection).
         "ratchet": bundle.get("ratchet"),
+        # When this slot was (re)published; drives newest-first slot ordering.
+        "last_published": bundle.get("last_published"),
     }
-    path.write_text(json.dumps(safe, indent=2))
+
+
+def store_peer_bundle(peer: str, bundle: dict) -> None:
+    """Upsert a published peer prekey slot, keyed by ``bundle["key_id"]``.
+
+    Multi-device fanout: each of a peer's devices is one slot file at
+    ``peers/<short>/<key_id>.json``. Republishing the same ``key_id`` overwrites
+    that slot in place; a NEW ``key_id`` adds a slot, and once the peer already
+    holds :data:`SLOT_CAP` distinct devices a further NEW device raises
+    :class:`SlotCapExceeded` (retirement is explicit revoke only). A bundle
+    without a ``key_id`` (classical fallback) collapses to a single ``_default``
+    slot, preserving the pre-multislot single-bundle behaviour.
+    """
+    slot_id = _safe_slot_id(bundle.get("key_id"))
+    d = _peer_dir(peer)
+    path = d / f"{slot_id}.json"
+    if not path.exists():
+        # A NEW distinct device - enforce the slot cap before creating it.
+        existing = len([p for p in d.glob("*.json") if p.is_file()])
+        if existing >= SLOT_CAP:
+            raise SlotCapExceeded(
+                f"{_short(peer)} already holds {existing} device slots "
+                f"(cap {SLOT_CAP}); revoke one before adding {slot_id}"
+            )
+    safe = _normalise_bundle(bundle)
+    # Atomic write: temp file in the same directory, then os.replace() onto the
+    # target so a crash mid-write never leaves a torn slot file (mirrors the
+    # operator_auth / history write pattern).
+    tmp = path.with_suffix(path.suffix + f".tmp-{os.getpid()}")
+    tmp.write_text(json.dumps(safe, indent=2))
+    os.replace(tmp, path)
 
 
 def store_app_prekey_bundle(
@@ -128,14 +194,14 @@ def store_app_prekey_bundle(
     Fail-closed signature verification is GATED behind
     ``SKCHAT_REQUIRE_SIGNED_PREKEYS`` (P0.5 / SEAM 7):
 
-    * flag unset (default) — behaviour is UNCHANGED: the bundle is stored as-is
+    * flag unset (default) - behaviour is UNCHANGED: the bundle is stored as-is
       via :func:`store_peer_bundle` (the app publishes unsigned bundles today, so
       the live app is not locked out).
-    * flag set — the bundle is stored ONLY if it carries a ``signature`` that
+    * flag set - the bundle is stored ONLY if it carries a ``signature`` that
       verifies against ``signer_public_armor`` via
       :func:`skchat.prekey_sig.verify_prekey_bundle`. A null/missing signature, a
       missing signer key, or a failed verification (prekey substitution / wrong
-      identity) rejects the bundle and stores nothing — closing the handshake
+      identity) rejects the bundle and stores nothing - closing the handshake
       MITM gap.
 
     Args:
@@ -149,7 +215,7 @@ def store_app_prekey_bundle(
     """
     if require_signed_prekeys() and not _prekey_signature_ok(bundle, signer_public_armor):
         logger.warning(
-            "PQC: rejecting unsigned/invalid app prekey for %s (%s is set — fail-closed)",
+            "PQC: rejecting unsigned/invalid app prekey for %s (%s is set - fail-closed)",
             _short(peer),
             REQUIRE_SIGNED_PREKEYS_ENV,
         )
@@ -161,7 +227,7 @@ def store_app_prekey_bundle(
 def _prekey_signature_ok(bundle: dict, signer_public_armor: Optional[str]) -> bool:
     """True iff *bundle* carries a signature that verifies under the signer key.
 
-    A null/missing signature or a missing signer key is False (fail-closed) —
+    A null/missing signature or a missing signer key is False (fail-closed) -
     the ``prekey_sig`` import (and thus PGP verification) only happens once both
     are present, reusing :func:`skchat.prekey_sig.verify_prekey_bundle`.
     """
@@ -172,16 +238,78 @@ def _prekey_signature_ok(bundle: dict, signer_public_armor: Optional[str]) -> bo
     return prekey_sig.verify_prekey_bundle(bundle, signer_public_armor)
 
 
-def load_peer_bundle(peer: str) -> Optional[dict]:
-    """Return a stored peer bundle (or None if the peer never published one)."""
-    path = _pqc_dir() / "peers" / f"{_short(peer)}.json"
-    if not path.exists():
-        return None
+def _slot_sort_key(bundle: dict) -> float:
+    """Newest-first ordering key: higher ``last_published`` sorts first."""
+    lp = bundle.get("last_published")
     try:
-        return json.loads(path.read_text())
-    except Exception:
-        logger.warning("corrupt peer prekey for %s", peer, exc_info=True)
-        return None
+        return float(lp)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def load_peer_bundles(peer: str) -> list[dict]:
+    """Return every current device slot for *peer*, newest first.
+
+    Reads all ``peers/<short>/<key_id>.json`` slots (plus a legacy flat
+    ``peers/<short>.json`` if one predates the migration), skipping any slot that
+    fails to parse (corrupt files are logged and quarantined out of the result,
+    never crash the load). Empty list when the peer has published nothing.
+    """
+    peers_root = _pqc_dir() / "peers"
+    slots: list[dict] = []
+    seen: set[str] = set()
+
+    d = peers_root / _short(peer)
+    if d.is_dir():
+        for path in sorted(d.glob("*.json")):
+            if not path.is_file():
+                continue
+            try:
+                bundle = json.loads(path.read_text())
+            except Exception:
+                logger.warning("corrupt peer prekey slot %s", path, exc_info=True)
+                continue
+            slots.append(bundle)
+            kid = bundle.get("key_id")
+            if kid:
+                seen.add(kid)
+
+    # Back-compat: a pre-multislot deployment stored one flat file. Fold it in as
+    # a slot unless a directory slot with the same key_id already supersedes it.
+    legacy = peers_root / f"{_short(peer)}.json"
+    if legacy.is_file():
+        try:
+            bundle = json.loads(legacy.read_text())
+            if bundle.get("key_id") not in seen:
+                slots.append(bundle)
+        except Exception:
+            logger.warning("corrupt legacy peer prekey %s", legacy, exc_info=True)
+
+    slots.sort(key=_slot_sort_key, reverse=True)
+    return slots
+
+
+def load_peer_bundle(peer: str) -> Optional[dict]:
+    """Return the NEWEST stored peer slot (or None if the peer never published).
+
+    Back-compat shim over :func:`load_peer_bundles` for callers that still expect
+    a single bundle (the newest device slot).
+    """
+    slots = load_peer_bundles(peer)
+    return slots[0] if slots else None
+
+
+def remove_peer_bundle(peer: str, key_id: str) -> bool:
+    """Retire a single device slot by ``key_id``. True if a slot was removed."""
+    path = _peer_dir(peer) / f"{_safe_slot_id(key_id)}.json"
+    if not path.is_file():
+        return False
+    try:
+        path.unlink()
+        return True
+    except OSError:
+        logger.warning("failed to remove peer prekey slot %s", path, exc_info=True)
+        return False
 
 
 def peer_is_hybrid(peer: str) -> bool:
@@ -216,7 +344,7 @@ def ensure_agent_keypair(agent: Optional[str] = None) -> Optional[tuple[bytes, b
     ``<agent>_hybrid.*``.
 
     Returns ``(public, private)`` or ``None`` if no PQ backend is available
-    (honest classical fallback — never a silent failure).
+    (honest classical fallback - never a silent failure).
     """
     agent = _safe_agent(agent or _current_agent())
     if not available():
@@ -231,7 +359,7 @@ def ensure_agent_keypair(agent: Optional[str] = None) -> Optional[tuple[bytes, b
                 bytes.fromhex(priv_path.read_text().strip()),
             )
         except Exception:
-            logger.warning("corrupt %s hybrid key — regenerating", agent, exc_info=True)
+            logger.warning("corrupt %s hybrid key - regenerating", agent, exc_info=True)
     try:
         from skcomms import pqkem
 
@@ -272,7 +400,7 @@ def agent_bundle(agent: Optional[str] = None) -> dict:
         "signature": None,
         "key_id": pub.hex()[:16],
         "device_id": f"{agent}-daemon",
-        # This build speaks the pqdr1 DM ratchet — advertise it so capable peers
+        # This build speaks the pqdr1 DM ratchet - advertise it so capable peers
         # negotiate Level-3 and incapable ones (app/older clients) stay classical.
         "ratchet": RATCHET_CAP,
     }
@@ -284,7 +412,7 @@ def publish_self_prekey(agent: Optional[str] = None) -> dict:
     Startup hook: a daemon calls this once on boot so the agent's hybrid prekey
     exists and is serveable (via ``GET /api/v1/prekey/<agent>``). Returns the
     published bundle (``suite``/``hybrid_public_hex``/…). When liboqs is absent
-    the bundle is classical-only — honest, never raised.
+    the bundle is classical-only - honest, never raised.
     """
     agent = _safe_agent(agent or _current_agent())
     bundle = agent_bundle(agent)
@@ -295,7 +423,7 @@ def publish_self_prekey(agent: Optional[str] = None) -> dict:
         logger.info("PQC: published hybrid prekey for resident agent %s", agent)
     else:
         logger.info(
-            "PQC: no hybrid backend — agent %s publishes a classical prekey "
+            "PQC: no hybrid backend - agent %s publishes a classical prekey "
             "(DMs to it stay classical until liboqs is available)",
             agent,
         )
@@ -350,7 +478,7 @@ def hybrid_pub_hex_for(identity_uri: str, *, self_agent: Optional[str] = None) -
       1. If the short name is the resident agent itself → its own public key.
       2. The published peer bundle in ``~/.skchat/pqc/peers/<short>.json``.
     Returns "" when no hybrid key is known (the member then falls back to the
-    classical wrap and is flagged in the group self-report — never locked out).
+    classical wrap and is flagged in the group self-report - never locked out).
     """
     short = _short(identity_uri)
     me = (self_agent or _current_agent()).split("@")[0]
