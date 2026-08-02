@@ -793,6 +793,112 @@ def _open_pqdm2_inbound(token: str, *, sender_short: str) -> str | None:
         return None
 
 
+# --------------------------------------------------------------------------- #
+# Best-effort TTL re-pull of a stale cross-node peer prekey (coord 4c054eab)
+# --------------------------------------------------------------------------- #
+#: How stale (seconds) the newest LOCAL peer slot may be before we attempt a
+#: best-effort re-pull. Override with ``SKCHAT_PREKEY_REFRESH_TTL``. Default 6h.
+_DEFAULT_PREKEY_REFRESH_TTL = 21600
+_PREKEY_REFRESH_TTL_ENV = "SKCHAT_PREKEY_REFRESH_TTL"
+
+#: In-process throttle: short -> ``time.monotonic()`` of the last re-pull ATTEMPT.
+#: A peer whose published bundle is legitimately older than the TTL (never
+#: republished) would otherwise re-GET on every single send; this caps the
+#: attempt to at most once per TTL window per process. Mirrors the one-shot
+#: intent of the transport's ``_prekey_fetch_attempted`` guard.
+_last_refresh_attempt: dict[str, float] = {}
+
+
+def _prekey_refresh_ttl() -> float:
+    """Resolve the re-pull staleness TTL (seconds) from the env, or the default."""
+    raw = os.environ.get(_PREKEY_REFRESH_TTL_ENV, "").strip()
+    if not raw:
+        return float(_DEFAULT_PREKEY_REFRESH_TTL)
+    try:
+        return float(raw)
+    except ValueError:
+        return float(_DEFAULT_PREKEY_REFRESH_TTL)
+
+
+def _peer_bundle_is_stale(short: str, ttl: float) -> bool:
+    """Whether the LOCAL prekey copy for *short* warrants a best-effort re-pull.
+
+    Stale (returns True) when there are NO local slots at all, OR the newest
+    slot's ``last_published`` (the publisher's own timestamp, already stamped on
+    every slot and used for newest-first ordering) is older than *ttl* seconds.
+    A missing / unparseable ``last_published`` is treated as stale (re-pull).
+    """
+    from skchat import pq_prekeys as PQ
+
+    slots = PQ.load_peer_bundles(short)
+    if not slots:
+        return True
+    newest = slots[0]  # load_peer_bundles returns newest-first
+    lp = newest.get("last_published")
+    try:
+        lp = float(lp)
+    except (TypeError, ValueError):
+        return True
+    return (time.time() - lp) > ttl
+
+
+def _resolve_peer_fqid(short: str) -> str:
+    """Resolve *short* to a federation peer FQID, or return *short* unchanged.
+
+    Mirrors ``ChatTransport._federation_target``: a peer that advertises an
+    ``https-s2s`` inbox resolves to its ``<agent>@<operator>.<realm>`` FQID so
+    the default skcomms inbox resolver in ``fetch_peer_prekey`` can route the
+    re-pull. A local/unknown peer (e.g. ``chef``, no federation route) yields the
+    bare short, and the re-pull then no-ops (no inbox) - best-effort, never fatal.
+    """
+    try:
+        from skcomms.discovery import PeerStore
+
+        for p in PeerStore().list_all():
+            names = {p.name, p.fqid, (p.fqid or "").split("@", 1)[0]}
+            if short in names and p.inbox_url():
+                return p.fqid or short
+    except Exception:
+        logger.debug("prekey re-pull: fqid resolve for %s failed", short, exc_info=True)
+    return short
+
+
+def _maybe_refresh_peer(short: str) -> None:
+    """Best-effort: refresh a stale cross-node peer bundle before sealing.
+
+    Cross-node peers never POST into our local store (unlike same-daemon peers
+    like ``chef``), so a cached bundle goes stale once that peer republishes a
+    fresh / new device slot. When the local copy is stale
+    (:func:`_peer_bundle_is_stale`) this re-pulls via
+    :func:`skchat.prekey_exchange.fetch_peer_prekey` (which persists through
+    ``store_peer_bundle``, so the subsequent ``load_peer_bundles`` returns the
+    fresh slots), reusing the same stdlib getter the transport wires.
+
+    BEST-EFFORT: any failure (no inbox route for a non-federated peer, a network
+    error, a throttled attempt) is caught and swallowed - sealing then proceeds
+    with whatever local slots exist. This NEVER raises and NEVER blocks a send.
+    """
+    try:
+        ttl = _prekey_refresh_ttl()
+        if not _peer_bundle_is_stale(short, ttl):
+            return
+        # Throttle: don't re-GET a stable-but-old peer on every message.
+        now = time.monotonic()
+        last = _last_refresh_attempt.get(short)
+        if last is not None and (now - last) < ttl:
+            return
+        _last_refresh_attempt[short] = now
+
+        from skchat import prekey_exchange
+        from skchat.transport import _urllib_get_json
+
+        fqid = _resolve_peer_fqid(short)
+        prekey_exchange.fetch_peer_prekey(fqid, http_get=_urllib_get_json)
+    except Exception:
+        # Best-effort only: a failed re-pull must never sink a send.
+        logger.debug("prekey TTL re-pull for %s failed (best-effort)", short, exc_info=True)
+
+
 def _seal_hybrid_outbound(plaintext: str, *, recipient_short: str) -> str | None:
     """Seal `plaintext` to the operator's stored prekey(s).
 
@@ -817,6 +923,10 @@ def _seal_hybrid_outbound(plaintext: str, *, recipient_short: str) -> str | None
         from skchat import pq_prekeys as PQ
 
         _SENDER = "lumina"
+        # Best-effort: refresh a stale cross-node peer copy before we load slots,
+        # so a peer that republished a fresh device slot is not sealed to a stale
+        # cached bundle. Never raises, never blocks the send (coord 4c054eab).
+        _maybe_refresh_peer(recipient_short)
         peer_slots = PQ.load_peer_bundles(recipient_short)
         if not peer_slots:
             return None
