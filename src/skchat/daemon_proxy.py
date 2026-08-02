@@ -716,26 +716,106 @@ def _open_hybrid_inbound(token: str, *, sender_short: str) -> str | None:
         return None
 
 
+#: Capability advert (published in a peer's prekey bundle) that opts the sender
+#: into multi-device fanout: seal ONE message, wrapped per device slot, as a
+#: ``pqdm2:`` token. Absent -> stay on the classical single-slot ``pqdm1:`` path.
+_FANOUT_CODEC = "pqdm2"
+
+
+def _slot_is_sealable(slot: dict) -> bool:
+    """Whether a stored prekey slot can receive a fanout wrap.
+
+    A slot is sealable when it carries a ``key_id`` and a valid hybrid public
+    key (right suite, non-empty, well-formed hex of the expected length). A
+    malformed or classical slot is skipped so one bad device never sinks the
+    whole fanout.
+    """
+    try:
+        from skcomms.pqdm import PrekeyBundle
+
+        if not slot.get("key_id"):
+            return False
+        bundle = PrekeyBundle.from_dict(slot)
+        if not bundle.is_hybrid:
+            return False
+        # Validates hex + length; raises PqDmFormatError on a malformed key.
+        bundle.hybrid_public()
+        return True
+    except Exception:
+        return False
+
+
 def _seal_hybrid_outbound(plaintext: str, *, recipient_short: str) -> str | None:
-    """Seal `plaintext` to the operator's stored prekey. Returns a `pqdm1:`
-    token or None (no prekey / no backend → caller keeps the plaintext)."""
+    """Seal `plaintext` to the operator's stored prekey(s).
+
+    Multi-device fanout (Phase 1, Task 9): when the peer's published bundle set
+    advertises ``codec: "pqdm2"``, fan the reply out to EVERY peer device slot
+    AND every sender-own device slot (loaded from the same store under the
+    sender short name ``lumina``) with a single ``seal_multi`` envelope -> a
+    ``pqdm2:`` token. Otherwise fall back to the classical single-slot
+    ``pqdm1:`` seal against the newest peer slot.
+
+    Fail-closed is preserved: returns ``None`` when nothing is sealable (no
+    prekey / no KEM backend / every hybrid slot malformed), so the caller keeps
+    refusing to leak plaintext onto a hybrid channel. When SOME but not all
+    slots are sealable, the reply is sealed to the sealable set and the skipped
+    ``key_id``s are logged.
+    """
     try:
         import base64 as _b64
 
-        from skcomms.pqdm import HYBRID_SUITE, PrekeyBundle, seal
+        from skcomms.pqdm import HYBRID_SUITE, PrekeyBundle, seal, seal_multi
 
         from skchat import pq_prekeys as PQ
 
-        peer = PQ.load_peer_bundle(recipient_short)
-        if not peer:
+        _SENDER = "lumina"
+        peer_slots = PQ.load_peer_bundles(recipient_short)
+        if not peer_slots:
             return None
-        bundle = PrekeyBundle.from_dict(peer)
+
+        fanout = any(s.get("codec") == _FANOUT_CODEC for s in peer_slots)
+        if fanout:
+            # Collect every recipient device: the peer's slots plus the sender's
+            # own slots (so all of Lumina's devices can also open her reply).
+            own_slots = PQ.load_peer_bundles(_SENDER)
+            recipients: list[dict] = []
+            seen: set[str] = set()
+            skipped: list[str] = []
+            for slot in (*peer_slots, *own_slots):
+                kid = slot.get("key_id")
+                if _slot_is_sealable(slot):
+                    if kid in seen:
+                        continue
+                    seen.add(kid)
+                    recipients.append(
+                        {"key_id": kid, "hybrid_public_hex": slot["hybrid_public_hex"]}
+                    )
+                elif kid:
+                    skipped.append(kid)
+            if skipped:
+                logger.warning(
+                    "hybrid fanout: skipping %d unsealable slot(s): %s",
+                    len(skipped),
+                    ", ".join(skipped),
+                )
+            if not recipients:
+                # Fail closed: advertised pqdm2 but nothing is sealable.
+                return None
+            return seal_multi(
+                plaintext.encode("utf-8"),
+                recipients,
+                sender=_SENDER,
+                recipient_id=recipient_short,
+            )
+
+        # Classical fallback: seal to the newest peer slot as a pqdm1 token.
+        bundle = PrekeyBundle.from_dict(peer_slots[0])
         if not bundle.is_hybrid:
             return None
         sealed = seal(
             plaintext.encode("utf-8"),
             bundle,
-            sender="lumina",
+            sender=_SENDER,
             recipient=recipient_short,
         )
         return f"pqdm1:{HYBRID_SUITE}:" + _b64.b64encode(sealed).decode("ascii")
