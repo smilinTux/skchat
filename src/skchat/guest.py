@@ -268,13 +268,31 @@ def _client_is_private(request: object) -> bool:
     return host.startswith(_PRIVATE_PREFIXES)
 
 
+def _presented_operator_session_ok(presented: str) -> bool:
+    """True iff ``presented`` is a valid, unrevoked operator-tier session JWT.
+
+    Lets the operator's app reach operator-scoped endpoints while authenticating
+    with its operator-session Bearer (not the raw shared secret). A guest/peer
+    credential is not an operator-tier session and returns False, so this never
+    widens the trust boundary beyond enrolled operators.
+    """
+    try:
+        from .operator_auth import verify_operator_session
+
+        verify_operator_session(presented)
+        return True
+    except Exception:
+        return False
+
+
 def _require_operator(request: object) -> None:
     """Authorize an operator-only request, or raise HTTP 401/403.
 
     Policy (additive, P0 posture):
-      * If ``SKCHAT_GUEST_OPERATOR_TOKEN`` is set, the caller MUST present it as
-        a bearer token (``Authorization: Bearer <token>`` or ``X-Operator-Token``
-        header) -- this makes the endpoints safe even if Funnel-exposed.
+      * If ``SKCHAT_GUEST_OPERATOR_TOKEN`` is set, the caller MUST present EITHER
+        that exact shared secret (``X-Operator-Token`` / ``Authorization: Bearer``)
+        OR a valid enrolled-operator SESSION JWT (the same Bearer the data-plane
+        gate accepts) -- this makes the endpoints safe even if Funnel-exposed.
       * Otherwise, fall back to the pairing-route posture: only loopback/tailnet
         (private-IP) clients are allowed; public callers get 403.
 
@@ -290,9 +308,20 @@ def _require_operator(request: object) -> None:
             auth = (headers.get("authorization") or "").strip()
             if auth.lower().startswith("bearer "):
                 presented = auth[7:].strip()
-        if not secrets.compare_digest(presented, token):
-            raise HTTPException(status_code=401, detail="operator authentication required")
-        return
+        # Path 1: the exact shared secret (X-Operator-Token / legacy operator token).
+        if presented and secrets.compare_digest(presented, token):
+            return
+        # Path 2: a valid enrolled-operator SESSION. The Flutter app authenticates
+        # every call with its operator-session JWT (via the data-plane auth
+        # interceptor), not the raw shared secret, so without this the
+        # operator-scoped endpoints (notably POST /api/v1/prekey/sign) 401 even
+        # for the real operator. ``verify_operator_session`` accepts ONLY a
+        # genuine operator-tier session -- a guest/peer FQID token does not
+        # verify -- so the signing-oracle invariant holds: a data-plane peer can
+        # never get the operator to attest a prekey it does not own.
+        if presented and _presented_operator_session_ok(presented):
+            return
+        raise HTTPException(status_code=401, detail="operator authentication required")
     # No shared secret configured: trust only the local/tailnet network.
     if not _client_is_private(request):
         raise HTTPException(
