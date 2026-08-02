@@ -16,6 +16,7 @@ from fastapi import APIRouter, FastAPI, HTTPException, Request
 
 from . import operator_auth as oa
 from .guest import _require_operator
+from .operator_grants import grant_operator_prekey_capability
 from .pairing_gate import PairingGate
 
 _pairing = PairingGate(max_accepts_per_window=1)  # operator enroll: 1 device per window
@@ -52,7 +53,13 @@ def register_operator_auth_routes(app: FastAPI, *, device_store: oa.DeviceStore)
         ):
             raise HTTPException(401, "device signature invalid")
         _pairing.consume()
-        return {"device_fp": device_store.enroll(pub)}
+        device_fp = device_store.enroll(pub)
+        # Grant the enrolled device the skchat.prekey capability so a POST
+        # /api/v1/prekey from its session is AUTHORIZED (not just authenticated)
+        # when the authz PDP is enforcing. Best-effort: a grant failure is logged
+        # inside and never breaks the enrollment response.
+        grant_operator_prekey_capability(device_fp, pub)
+        return {"device_fp": device_fp}
 
     @router.get("/challenge")
     async def challenge():

@@ -241,6 +241,16 @@ def _capability_for_path(path: str) -> Optional[str]:
     return None
 
 
+def operator_subject(device_fp: str) -> str:
+    """The PDP subject id for an enrolled operator device.
+
+    Single source of truth for the ``operator:<device_fp>`` subject string so the
+    capability grant issued at enrollment (see :mod:`skchat.operator_grants`) and
+    the subject :func:`_extract_subject` hands the PDP can never drift apart.
+    """
+    return f"operator:{device_fp}"
+
+
 def _extract_subject(token: str) -> Optional[str]:
     """Best-effort authenticated subject for the PDP call.
 
@@ -252,7 +262,7 @@ def _extract_subject(token: str) -> Optional[str]:
         from .operator_auth import verify_operator_session
 
         session = verify_operator_session(token)
-        return f"operator:{session.device_fp}"
+        return operator_subject(session.device_fp)
     except Exception:
         pass
     try:
