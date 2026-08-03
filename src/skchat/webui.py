@@ -509,6 +509,11 @@ async def skcode_proxy(path: str, request: Request):
     resp = await _reverse_proxy(request, _skcode_upstream(), path, label="skcode host")
     for _k, _v in _SKCODE_CORS.items():
         resp.headers[_k] = _v
+    # Never cache the skcode client/app or its API. Mobile browsers heuristically
+    # cache HTML with no cache headers, which pins a device to a STALE client
+    # (an old inject path that posts empty session ids, etc.). no-store forces a
+    # fresh client + fresh token on every load.
+    resp.headers["Cache-Control"] = "no-store, max-age=0"
     return resp
 
 
