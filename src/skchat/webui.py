@@ -451,13 +451,127 @@ def _set_embed_cookie(response, request: Request, module: str) -> None:
     )
 
 
+#: Default upstream for skcode-hostd (tailnet-only bind, port 9394). Overridable
+#: per node via SKCODE_HOSTD_URL. Kept in one place so the GET/POST proxy and the
+#: WebSocket tail proxy below always target the same host.
+DEFAULT_SKCODE_HOSTD_URL = "http://100.108.59.57:9394"
+
+
+def _skcode_upstream() -> str:
+    """The skcode-hostd base URL this webui proxies to (env-overridable)."""
+    return os.environ.get("SKCODE_HOSTD_URL", DEFAULT_SKCODE_HOSTD_URL).rstrip("/")
+
+
+def _skcode_ws_url(upstream: str, path: str, query: str) -> str:
+    """Map an http(s) upstream base + proxied path (+ query) to the ws(s) URL of
+    the same route on skcode-hostd. The browser connects to
+    ``wss://<origin>/skcode/api/v1/sessions/<sid>/stream?token=...``; this rebuilds
+    the equivalent ``ws://<host>:9394/api/v1/sessions/<sid>/stream?token=...`` on
+    the tailnet-only host. The token rides the query string verbatim (browsers
+    cannot set headers on a WebSocket), so the host's own gate still decides."""
+    base = upstream.rstrip("/")
+    if base.startswith("https://"):
+        ws_base = "wss://" + base[len("https://"):]
+    elif base.startswith("http://"):
+        ws_base = "ws://" + base[len("http://"):]
+    else:
+        ws_base = base
+    url = f"{ws_base}/{path.lstrip('/')}"
+    if query:
+        url = f"{url}?{query}"
+    return url
+
+
 @app.api_route("/skcode/{path:path}", methods=["GET", "POST"])
 async def skcode_proxy(path: str, request: Request):
     """/skcode/* -> skcode-hostd (tailnet-only, deny-all; SKCODE_HOSTD_URL,
     default :9394). The public client shell proxies through; /api/v1 stays 401
     until this device is paired."""
-    upstream = os.environ.get("SKCODE_HOSTD_URL", "http://100.108.59.57:9394")
-    return await _reverse_proxy(request, upstream, path, label="skcode host")
+    return await _reverse_proxy(request, _skcode_upstream(), path, label="skcode host")
+
+
+@app.websocket("/skcode/{path:path}")
+async def skcode_ws_proxy(websocket: WebSocket, path: str) -> None:
+    """Same-origin WebSocket proxy for skcode-hostd's session tail
+    (``/api/v1/sessions/{sid}/stream``), so live session output reaches the shell
+    over the 443 funnel exactly like the GET/POST proxy above, never a direct
+    daemon port.
+
+    AUTH is UNCHANGED: skcode-hostd runs its own deny-all gate and reads the wire
+    token from the WS query string (browsers cannot set a WebSocket Authorization
+    header). This proxy forwards that query string verbatim and adds no auth of its
+    own, so the host still fails closed. When the host refuses the token it closes
+    the handshake, and we relay that to the browser as a 1008 close (which the
+    read-only client renders as its "pair this device" hint), never a silent hang.
+    """
+    import websockets
+    import websockets.exceptions as _ws_exc
+
+    # Handshake-rejection class differs across websockets versions (InvalidStatus
+    # in v14+, InvalidStatusCode earlier); accept whichever this build exposes.
+    _reject_errors = tuple(
+        e
+        for e in (
+            getattr(_ws_exc, "InvalidStatus", None),
+            getattr(_ws_exc, "InvalidStatusCode", None),
+        )
+        if e is not None
+    ) or (Exception,)
+
+    upstream_url = _skcode_ws_url(
+        _skcode_upstream(), path, websocket.url.query
+    )
+    await websocket.accept()
+
+    try:
+        upstream = await websockets.connect(upstream_url, open_timeout=10)
+    except _reject_errors:
+        # The host rejected the handshake (deny-all / bad token). Mirror its
+        # policy close so the client shows the pairing hint, not an error.
+        await websocket.close(code=1008)
+        return
+    except Exception as exc:  # noqa: BLE001 - host unreachable / network error.
+        logger.warning("skcode ws proxy connect failed: %s", exc)
+        await websocket.close(code=1011)
+        return
+
+    async def _client_to_upstream() -> None:
+        # The read-only tail client never sends, but pump anyway so the bridge is
+        # correct for any future duplex route.
+        try:
+            while True:
+                msg = await websocket.receive_text()
+                await upstream.send(msg)
+        except WebSocketDisconnect:
+            return
+        except Exception:  # noqa: BLE001
+            return
+
+    async def _upstream_to_client() -> None:
+        try:
+            async for msg in upstream:
+                if isinstance(msg, bytes):
+                    await websocket.send_bytes(msg)
+                else:
+                    await websocket.send_text(msg)
+        except Exception:  # noqa: BLE001 - upstream closed / errored.
+            return
+
+    up = asyncio.create_task(_upstream_to_client())
+    down = asyncio.create_task(_client_to_upstream())
+    try:
+        # When either side closes, tear down both.
+        done, pending = await asyncio.wait(
+            {up, down}, return_when=asyncio.FIRST_COMPLETED
+        )
+        for task in pending:
+            task.cancel()
+    finally:
+        await upstream.close()
+        try:
+            await websocket.close()
+        except Exception:  # noqa: BLE001 - already closed.
+            pass
 
 
 @app.api_route("/skdashboard/{path:path}", methods=["GET", "POST"])
