@@ -482,12 +482,34 @@ def _skcode_ws_url(upstream: str, path: str, query: str) -> str:
     return url
 
 
-@app.api_route("/skcode/{path:path}", methods=["GET", "POST"])
+#: CORS for the opaque-origin embed iframe (A3 containment). The skcode client
+#: runs in a sandboxed null origin (no allow-same-origin), so its authenticated
+#: /skcode/api calls are cross-origin. These headers let the sandboxed client
+#: carry its passed-in skcode token (Bearer) and READ the response. The token is
+#: still the only gate (hostd verifies audience + scope + signature); CORS never
+#: bypasses that, it only lets the browser surface the response to the confined
+#: client. Non-credentialed (Bearer, not cookies), so "*" is valid + safe here.
+_SKCODE_CORS = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Authorization, Content-Type",
+    "Access-Control-Max-Age": "600",
+}
+
+
+@app.api_route("/skcode/{path:path}", methods=["GET", "POST", "OPTIONS"])
 async def skcode_proxy(path: str, request: Request):
     """/skcode/* -> skcode-hostd (tailnet-only, deny-all; SKCODE_HOSTD_URL,
     default :9394). The public client shell proxies through; /api/v1 stays 401
-    until this device is paired."""
-    return await _reverse_proxy(request, _skcode_upstream(), path, label="skcode host")
+    until this device presents a valid audience=skcode token."""
+    if request.method == "OPTIONS":
+        from starlette.responses import Response as _Resp
+
+        return _Resp(status_code=204, headers=_SKCODE_CORS)
+    resp = await _reverse_proxy(request, _skcode_upstream(), path, label="skcode host")
+    for _k, _v in _SKCODE_CORS.items():
+        resp.headers[_k] = _v
+    return resp
 
 
 @app.websocket("/skcode/{path:path}")
