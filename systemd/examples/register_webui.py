@@ -23,7 +23,12 @@ except Exception as exc:  # skcapstone optional --- never block webui startup
 try:
     path = register_service(
         f"skchat-webui-{agent}",
-        health_url=f"http://localhost:{port}/" if port else None,
+        # Probe the lightweight JSON health endpoint, not "/". The root route
+        # 307-redirects and lazy-initializes on the first hit after an idle
+        # period (3-5 s cold start), which tripped the 3 s health-check timeout
+        # and produced recurring false "DOWN" incidents on low-traffic agents.
+        # /api/health returns 200 in ~2 ms warm or cold.
+        health_url=f"http://localhost:{port}/api/health" if port else None,
     )
     print(f"register_webui: registered skchat-webui-{agent} -> {path}")
 except Exception as exc:
