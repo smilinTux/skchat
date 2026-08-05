@@ -214,3 +214,57 @@ def test_fetch_returns_empty_on_network_error(am, monkeypatch):
     monkeypatch.setattr("urllib.request.urlopen", _boom)
     real_fetch = importlib.reload(am)._fetch_gateway_free_models
     assert real_fetch() == []
+
+
+# --- Model enablement (advertise allowlist) ---------------------------------
+
+
+def test_list_managed_models_flags_enabled_from_gateway(am, monkeypatch):
+    catalog = [
+        {"id": "ornith-big", "provider": "chiap08-ornith", "advertised": True},
+        {"id": "claude-opus-4-8", "provider": "anthropic", "advertised": True},
+        {"id": "some/free-model", "provider": "openrouter", "advertised": False},
+    ]
+    monkeypatch.setattr(am, "_admin_get_models", lambda: catalog)
+    out = am.list_managed_models()
+    assert out["source"] == "gateway"
+    assert out["models"] == catalog
+    assert set(out["enabled"]) == {"ornith-big", "claude-opus-4-8"}
+
+
+def test_list_managed_models_degrades_to_curated_when_gateway_down(am, monkeypatch):
+    def _boom():
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(am, "_admin_get_models", _boom)
+    out = am.list_managed_models()
+    assert out["source"] == "curated"
+    # every curated model is present and flagged enabled
+    ids = {m["id"] for m in out["models"]}
+    assert "claude-opus-4-8" in ids and "ornith-tiny" in ids
+    assert all(m["advertised"] is True for m in out["models"])
+    assert set(out["enabled"]) == ids
+
+
+def test_set_enabled_models_validates_shape(am):
+    with pytest.raises(ValueError):
+        am.set_enabled_models("not-a-list")
+    with pytest.raises(ValueError):
+        am.set_enabled_models([1, 2, 3])
+
+
+def test_set_enabled_models_puts_to_gateway_and_returns_view(am, monkeypatch):
+    put_calls = []
+    monkeypatch.setattr(am, "_admin_put_advertise", lambda enabled: put_calls.append(enabled))
+    # after the PUT, the manage view reflects the new advertised set
+    monkeypatch.setattr(
+        am,
+        "_admin_get_models",
+        lambda: [
+            {"id": "ornith-big", "advertised": True},
+            {"id": "claude-opus-4-8", "advertised": False},
+        ],
+    )
+    out = am.set_enabled_models(["ornith-big"])
+    assert put_calls == [["ornith-big"]]
+    assert out["enabled"] == ["ornith-big"]

@@ -1286,6 +1286,15 @@ class ChatDaemon:
                     )
                     return
 
+                if self.path.split("?", 1)[0] == "/api/v1/models/manage":
+                    # Model ENABLEMENT view: every discovered model + which are
+                    # enabled (advertised on the gateway allowlist). Drives the
+                    # "Manage models" UI in the app + the SKDashboard console.
+                    from .agent_model import list_managed_models
+
+                    self._respond_json(200, list_managed_models())
+                    return
+
                 def _status_body() -> dict:
                     last_poll_at = (
                         daemon_ref.last_poll_time.isoformat()
@@ -1350,13 +1359,12 @@ class ChatDaemon:
                 self.end_headers()
 
             def do_POST(self) -> None:  # noqa: N802
-                if self.path.split("?", 1)[0] != "/api/v1/agent/model":
+                path = self.path.split("?", 1)[0]
+                if path not in ("/api/v1/agent/model", "/api/v1/models/manage"):
                     self.send_response(404)
                     self.end_headers()
                     return
                 import os
-
-                from .agent_model import get_model, list_models, set_model
 
                 try:
                     length = int(self.headers.get("Content-Length", 0))
@@ -1369,6 +1377,25 @@ class ChatDaemon:
                     )
                     self._respond_json(400, {"error": "invalid JSON body"})
                     return
+
+                if path == "/api/v1/models/manage":
+                    # Set the ENABLED/advertised model set on the gateway allowlist.
+                    from .agent_model import set_enabled_models
+
+                    try:
+                        view = set_enabled_models(data.get("enabled"))
+                    except ValueError as exc:
+                        self._respond_json(400, {"error": str(exc)})
+                        return
+                    except Exception as exc:  # gateway unreachable / admin error
+                        logger.warning("set_enabled_models failed: %s", exc)
+                        self._respond_json(502, {"error": "gateway admin unreachable"})
+                        return
+                    self._respond_json(200, view)
+                    return
+
+                from .agent_model import get_model, list_models, set_model
+
                 agent = data.get("agent") or os.environ.get("SKAGENT", "lumina")
                 model = data.get("model")
                 try:

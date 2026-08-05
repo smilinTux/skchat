@@ -178,6 +178,79 @@ def _valid_ids() -> set[str]:
     return {m["id"] for m in list_models()}
 
 
+# --- Model ENABLEMENT (advertise allowlist) ---------------------------------
+# The gateway's advertise allowlist (/admin/models[,/advertise]) is the single
+# source of truth for which discovered models are "enabled" (advertised on
+# /v1/models, and therefore offered in the picker / to the brain). These helpers
+# let the daemon (and thus the app + dashboard, same host) read and write it.
+
+# Short timeout so a slow/hung gateway never stalls the manage UI or the daemon.
+_ADMIN_TIMEOUT_S = 3.0
+
+
+def _admin_get_models() -> list[dict]:
+    """GET the gateway's FULL discovered catalog with ``advertised`` flags
+    (loopback ``/admin/models``). Raises on any failure (caller degrades)."""
+    import urllib.request
+
+    url = f"{_gateway_base()}/admin/models"
+    req = urllib.request.Request(url, headers={"Accept": "application/json"})
+    with urllib.request.urlopen(req, timeout=_ADMIN_TIMEOUT_S) as resp:
+        payload = json.loads(resp.read().decode("utf-8"))
+    return payload.get("data", []) or []
+
+
+def _admin_put_advertise(enabled: list[str]) -> dict:
+    """PUT the enabled/advertised allowlist to the gateway (loopback
+    ``/admin/models/advertise``). Raises on any failure."""
+    import urllib.request
+
+    url = f"{_gateway_base()}/admin/models/advertise"
+    body = json.dumps({"enabled": enabled}).encode("utf-8")
+    req = urllib.request.Request(
+        url, data=body, method="PUT", headers={"Content-Type": "application/json"}
+    )
+    with urllib.request.urlopen(req, timeout=_ADMIN_TIMEOUT_S) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def list_managed_models() -> dict:
+    """All discovered models + which are ENABLED (advertised), for the manage UI.
+
+    Reads the gateway's ``/admin/models`` (the full catalog, each tagged
+    ``advertised``). Returns ``{"models": [...], "enabled": [ids], "source": ...}``.
+    An empty gateway allowlist means "advertise everything", so every model comes
+    back ``advertised: True``. Degrades to the curated list (all enabled) when the
+    gateway is unreachable; never raises.
+    """
+    try:
+        data = _admin_get_models()
+    except Exception:
+        return {
+            "models": [{**m, "advertised": True} for m in AVAILABLE_MODELS],
+            "enabled": [m["id"] for m in AVAILABLE_MODELS],
+            "source": "curated",
+        }
+    enabled = [m["id"] for m in data if m.get("advertised")]
+    return {"models": data, "enabled": enabled, "source": "gateway"}
+
+
+def set_enabled_models(enabled: list[str]) -> dict:
+    """Persist the ENABLED/advertised model set to the gateway allowlist.
+
+    ``enabled`` is the FULL set of model ids to advertise (an empty list means
+    "advertise everything"). Validates the shape, PUTs to the gateway's loopback
+    ``/admin/models/advertise``, then returns the refreshed manage view.
+
+    Raises:
+        ValueError: ``enabled`` is not a list of strings.
+    """
+    if not isinstance(enabled, list) or not all(isinstance(x, str) for x in enabled):
+        raise ValueError("enabled must be a list of model-id strings")
+    _admin_put_advertise(enabled)
+    return list_managed_models()
+
+
 def _read() -> dict:
     try:
         data = json.loads(_state_path().read_text(encoding="utf-8"))
