@@ -151,3 +151,10 @@ class DeviceStore:
 
     def pubkey_for(self, device_fp: str) -> str | None:
         return self._data.get(device_fp)
+
+    def fingerprints(self) -> list[str]:
+        """All enrolled device fingerprints for the operator, insertion order."""
+        return list(self._data.keys())
+
+    def count(self) -> int:
+        return len(self._data)

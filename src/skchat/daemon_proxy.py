@@ -82,6 +82,27 @@ def _get_history():
     return _HISTORY
 
 
+_DEVICE_STORE = None
+
+
+def _get_device_store():
+    """Lazy singleton for the operator's enrolled-device registry.
+
+    Reads the SAME on-disk store ``webui.py`` enrolls devices into
+    (``~/.skchat/state/operator_devices.json``) rather than a second source of
+    truth, so self-delivery fan-out below sees every device the operator has
+    actually paired.
+    """
+    global _DEVICE_STORE
+    if _DEVICE_STORE is None:
+        from .operator_auth import DeviceStore
+
+        _DEVICE_STORE = DeviceStore(
+            Path(os.path.expanduser("~/.skchat/state/operator_devices.json"))
+        )
+    return _DEVICE_STORE
+
+
 _PRESENCE = None
 
 
@@ -240,6 +261,62 @@ def _shadow_log(msg) -> None:
         _get_message_log().record(msg)
     except Exception:
         logger.debug("shadow message-log write failed (send unaffected)", exc_info=True)
+
+
+def _self_sync_conversation_id(device_fp: str) -> str:
+    """Per-device conversation id for self-delivered outbound DMs."""
+    return f"device-sync:{device_fp}"
+
+
+def _self_deliver_own_devices(msg, *, origin_device_fp: str | None = None) -> int:
+    """Fan out an operator-authored DM to the operator's OTHER enrolled devices.
+
+    The peer (e.g. Lumina) is already delivered by the normal persist above —
+    this ONLY covers the sender's OWN sibling devices, which otherwise never
+    see their own outbound (the missing half of Task 11's fanout: the pqdm2
+    envelope is sealed to every sender-own device slot, but nothing routed a
+    copy to them). A no-op when the operator has 0 or 1 enrolled devices (no
+    siblings to reach) or *msg* wasn't authored by the operator (e.g. Lumina's
+    own reply keeps its existing single-recipient delivery, unchanged).
+
+    Writes one ``MessageLog`` row per sibling device under its own
+    ``device-sync:<fp>`` conversation, keyed off ``msg.id`` so a retry of the
+    same send is idempotent (no duplicate rows) and the originating device
+    (``origin_device_fp``) is skipped so it never gets an echo of a message it
+    already has locally. Best-effort: a log failure never breaks the send.
+    """
+    if getattr(msg, "sender", None) != OPERATOR_ID:
+        return 0
+    try:
+        devices = _get_device_store().fingerprints()
+    except Exception:
+        logger.debug("self-delivery: device store unavailable", exc_info=True)
+        return 0
+    if len(devices) <= 1:
+        return 0
+    others = [fp for fp in devices if fp != origin_device_fp]
+    log = _get_message_log()
+    delivered = 0
+    for fp in others:
+        try:
+            log.append(
+                _self_sync_conversation_id(fp),
+                client_dedup_key=f"{msg.id}:{fp}",
+                sender=msg.sender,
+                recipient=msg.recipient,
+                content=msg.content,
+                kind="dm-self-sync",
+                payload=msg.model_dump_json(),
+            )
+            delivered += 1
+        except Exception:
+            logger.debug("self-delivery to device %s failed", fp, exc_info=True)
+    return delivered
+
+
+def self_sync_inbox(device_fp: str, since_seq: int = 0, limit: int = 500) -> list[dict]:
+    """The outbound DMs self-delivered to *device_fp* (Task 11 fanout read side)."""
+    return _get_message_log().read(_self_sync_conversation_id(device_fp), since_seq, limit)
 
 
 def _is_lumina(peer: str) -> bool:
@@ -1554,6 +1631,12 @@ async def api_send(request: Request):
     reply_to_id = body.get("reply_to_id") or body.get("reply_to") or None
     thread_id = body.get("thread_id") or None
     group_id = (body.get("group_id") or "").strip()
+    # Optional originating-device fingerprint (see operator_auth.DeviceStore):
+    # lets self-delivery below skip the device that already has this send
+    # locally. Absent for clients that don't yet send it — self-delivery then
+    # simply fans out to every OTHER enrolled device (never to zero/one, since
+    # that's the "no siblings" case already).
+    origin_device_fp = (body.get("device_fp") or "").strip() or None
 
     # Typed-message contract (P1): an optional content_type + rich payload.
     # The Golden rule holds — an unknown type still rides its `body`/content.
@@ -1717,6 +1800,7 @@ async def api_send(request: Request):
             content_type=content_type,
             rich=rich,
         )
+        _self_deliver_own_devices(msg, origin_device_fp=origin_device_fp)
         return JSONResponse(
             _apply_contract(
                 {
@@ -1756,6 +1840,7 @@ async def api_send(request: Request):
             content_type=content_type,
             rich=rich,
         )
+        _self_deliver_own_devices(user_msg, origin_device_fp=origin_device_fp)
 
         # 2. Build the prior-turn history for context (oldest-first role/content).
         prior = _lumina_messages(limit=40)
