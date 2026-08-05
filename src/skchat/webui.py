@@ -342,29 +342,127 @@ async def access_tool_proxy(request: Request):
         raise HTTPException(status_code=502, detail=f"access node unreachable: {exc}")
 
 
-#: Root-absolute asset URLs in proxied HTML: an ``href=`` / ``src=`` whose value
-#: begins ``/static/`` or ``/assets/``. Anchored on the leading ``/`` so an
-#: already-prefixed value (``/skdashboard/static/...``) does NOT match, which
-#: keeps the rewrite idempotent (no double-prefix).
-_HTML_ASSET_ATTR_RE = _re.compile(rb"""((?:href|src)\s*=\s*["'])(/(?:static|assets)/)""")
+#: Root-absolute URLs in proxied HTML: an ``href=`` / ``src=`` whose value begins
+#: with a single ``/`` (a same-origin, root-absolute path). Captures the value up
+#: to the closing quote. Matches BOTH asset loads (``/static/...``, ``/assets/...``)
+#: AND in-app nav links (``/board``, ``/cockpit``, ``/models`` ...); protocol-
+#: relative (``//host``) and already-prefixed values are filtered in the
+#: substitution, so the rewrite stays correct and idempotent.
+_HTML_ROOT_ABS_ATTR_RE = _re.compile(rb"""((?:href|src)\s*=\s*["'])(/[^"'\s>]*)""")
 
 
 def _rewrite_html_asset_prefix(body: bytes, prefix: str) -> bytes:
-    """Rewrite root-absolute ``/static`` and ``/assets`` asset URLs in proxied HTML
-    onto a same-origin module ``prefix``.
+    """Rewrite ROOT-ABSOLUTE ``href``/``src`` URLs in proxied HTML onto a
+    same-origin module ``prefix`` (assets AND in-app nav).
 
-    A subapp (e.g. the skcapstone coordination dashboard) whose HTML references its
-    CSS/JS by absolute path (``/static/css/board.css``, ``/static/js/cmdb.js``)
-    would, through the ``/skdashboard`` reverse-proxy prefix, have the browser
-    request ``<origin>/static/...`` and hit the SHELL's own Flutter ``/static``
-    mount instead of the dashboard's, so the embedded pane renders blank. Rewriting
-    ``/static`` -> ``/skdashboard/static`` (and ``/assets`` likewise) points those
-    subresource loads back through the proxy. Idempotent: an already-prefixed URL
-    does not start with ``/static`` so it is left untouched. Applied ONLY to
-    ``text/html`` bodies (dashboard CSS ``url()`` refs are all ``data:`` URIs, so
-    stylesheets need no rewriting)."""
+    A subapp (the skcapstone coordination dashboard) references BOTH its assets
+    (``/static/css/board.css``, ``/static/js/cmdb.js``) and its own navigation
+    (``<a href="/board">``, ``/cockpit``, ``/models`` ...) by ROOT-ABSOLUTE path.
+    Served raw through the ``/skdashboard`` reverse-proxy prefix, the browser
+    resolves those against the SHELL origin: asset loads hit the shell's own
+    Flutter ``/static`` mount (blank pane), and a nav click NAVIGATES THE IFRAME
+    OUT of the ``/skdashboard`` prefix into skchat's own routes (a dead pane).
+    Rewriting every root-absolute ``/x`` -> ``/skdashboard/x`` keeps both the asset
+    loads and the nav inside the proxied prefix.
+
+    Left untouched (returned verbatim):
+
+    * protocol-relative (``//cdn.example/x``) and absolute (``http(s)://...``)
+      URLs, which are cross-origin and must not be reparented;
+    * values already under ``prefix`` (``/skdashboard/...``), so the rewrite is
+      IDEMPOTENT (no ``/skdashboard/skdashboard`` double-prefix).
+
+    Applied ONLY to ``text/html`` bodies (dashboard CSS ``url()`` refs are all
+    ``data:`` URIs, so stylesheets need no rewriting; ``.js`` runtime ``fetch``
+    URLs are handled at dispatch time by :func:`_embed_fetch_shim`, not here)."""
     p = prefix.rstrip("/").encode()
-    return _HTML_ASSET_ATTR_RE.sub(lambda m: m.group(1) + p + m.group(2), body)
+
+    def _sub(m: "_re.Match[bytes]") -> bytes:
+        open_attr, value = m.group(1), m.group(2)
+        # Protocol-relative (//host/...) -> cross-origin, never reparent.
+        if value.startswith(b"//"):
+            return m.group(0)
+        # Already under the prefix -> idempotent, leave as-is.
+        if value == p or value.startswith(p + b"/"):
+            return m.group(0)
+        return open_attr + p + value
+
+    return _HTML_ROOT_ABS_ATTR_RE.sub(_sub, body)
+
+
+#: Insert-point for the embed shim: right after the opening ``<head>`` tag
+#: (case-insensitive). Pages with no ``<head>`` fall back to a top-of-body prepend.
+_HTML_HEAD_OPEN_RE = _re.compile(rb"(<head[^>]*>)", _re.IGNORECASE)
+
+
+def _embed_fetch_shim(prefix: str, token: str) -> bytes:
+    """A tiny classic ``<script>`` that reparents the proxied subapp's RUNTIME
+    root-absolute ``fetch``/``XHR`` requests onto ``prefix`` and (when present)
+    attaches the read-only ``embed_token``.
+
+    Why a runtime shim and not a static rewrite: the dashboard's data calls live in
+    ES-module ``.js`` files (``api.js``: ``fetch('/api/card/...')``) served through
+    the proxy as ``application/javascript``. Regex-rewriting URLs inside JS is
+    fragile (template literals, strings, comments); wrapping ``window.fetch`` /
+    ``XMLHttpRequest.open`` catches every call at dispatch time -- including
+    template-literal URLs -- without editing the subapp's source.
+
+    Why the token rides the URL (not a cookie): the embed iframe is sandboxed
+    WITHOUT ``allow-same-origin`` (A3 containment), so its document origin is
+    OPAQUE. A ``fetch`` from an opaque origin to the funnel is CROSS-ORIGIN, so the
+    default ``credentials:'same-origin'`` mode sends NO cookies -- the path-scoped
+    embed cookie (which authorizes the ``<link>``/``<script>`` asset loads fine)
+    never reaches ``fetch``. Carrying the token as a query param authorizes the
+    request without a cookie, exactly the skcode token-in-URL model; the module
+    proxy adds ``Access-Control-Allow-Origin: *`` so the opaque-origin pane can READ
+    the reply.
+
+    Only ROOT-ABSOLUTE (``/x``; not ``//host``, not already ``prefix``) URLs are
+    touched, so cross-origin and already-prefixed calls (e.g. the prefix-aware
+    ``models.html``) stay correct."""
+    p = json.dumps(prefix.rstrip("/"))
+    t = json.dumps(token or "")
+    js = (
+        '(function(){"use strict";'
+        "var P=%s,T=%s;"
+        'function internal(u){return typeof u==="string"&&u.charAt(0)==="/"&&u.charAt(1)!=="/";}'
+        'function withPrefix(u){return (u===P||u.indexOf(P+"/")===0)?u:P+u;}'
+        'function withToken(u){if(!T||u.indexOf("embed_token=")!==-1)return u;'
+        'return u+(u.indexOf("?")===-1?"?":"&")+"embed_token="+encodeURIComponent(T);}'
+        "function fix(u){return internal(u)?withToken(withPrefix(u)):u;}"
+        "var of=window.fetch;"
+        "if(of){window.fetch=function(input,init){try{"
+        'if(typeof input==="string"){input=fix(input);}'
+        'else if(input&&typeof input.url==="string"){input=new Request(fix(input.url),input);}'
+        "}catch(e){}return of.call(this,input,init);};}"
+        "var xo=XMLHttpRequest.prototype.open;"
+        "XMLHttpRequest.prototype.open=function(){try{"
+        'if(typeof arguments[1]==="string"){arguments[1]=fix(arguments[1]);}'
+        "}catch(e){}return xo.apply(this,arguments);};"
+        "})();"
+    ) % (p, t)
+    return b"<script>" + js.encode("utf-8") + b"</script>"
+
+
+#: Marker so re-proxying the same body never double-injects the shim.
+_EMBED_SHIM_MARKER = b"<!--SKEMBED_SHIM-->"
+
+
+def _inject_embed_shim(body: bytes, prefix: str, token: str) -> bytes:
+    """Inject :func:`_embed_fetch_shim` as the FIRST child of ``<head>``.
+
+    A classic inline script runs before the deferred ES-module scripts, so
+    ``window.fetch`` is patched before the dashboard issues its first call. Falls
+    back to a top prepend when the page has no ``<head>``. Idempotent: a body that
+    already carries the shim marker is returned unchanged."""
+    if _EMBED_SHIM_MARKER in body:
+        return body
+    shim = _EMBED_SHIM_MARKER + _embed_fetch_shim(prefix, token)
+    m = _HTML_HEAD_OPEN_RE.search(body)
+    if m:
+        i = m.end()
+        return body[:i] + shim + body[i:]
+    return shim + body
 
 
 async def _reverse_proxy(
@@ -374,6 +472,7 @@ async def _reverse_proxy(
     *,
     label: str,
     html_prefix: str | None = None,
+    embed_token: str | None = None,
 ):
     """Raw same-origin reverse proxy to a sibling subapp daemon (``upstream``),
     so the SKWorld shell's pane reaches it over the 443 funnel like every other
@@ -381,11 +480,15 @@ async def _reverse_proxy(
     so the subapp's web client + assets load; adds NO auth of its own (each
     subapp keeps its own gate). Upstream is overridable per node via env.
 
-    When ``html_prefix`` is set, ``text/html`` response bodies have their
-    root-absolute ``/static``/``/assets`` asset URLs rewritten onto that prefix
-    (see :func:`_rewrite_html_asset_prefix`), so a subapp that references assets by
-    absolute path loads them through the proxy prefix rather than the shell's own
-    ``/static`` mount."""
+    When ``html_prefix`` is set, ``text/html`` response bodies are transformed so an
+    embedded subapp stays inside the proxy prefix and can reach its API:
+
+    * root-absolute ``href``/``src`` (assets AND nav) are rewritten onto the prefix
+      (see :func:`_rewrite_html_asset_prefix`); and
+    * a runtime ``fetch``/``XHR`` shim is injected (see :func:`_embed_fetch_shim`)
+      that reparents root-absolute API calls onto the prefix and, when
+      ``embed_token`` is given, attaches it as a query param so the opaque-origin
+      iframe's cross-origin data calls authorize without a cookie."""
     import urllib.error
     import urllib.request
 
@@ -412,6 +515,7 @@ async def _reverse_proxy(
             data = r.read()
             if html_prefix and "text/html" in ctype.lower():
                 data = _rewrite_html_asset_prefix(data, html_prefix)
+                data = _inject_embed_shim(data, html_prefix, embed_token or "")
             return Response(
                 content=data,
                 status_code=r.status,
@@ -657,9 +761,29 @@ async def skdashboard_proxy(path: str, request: Request):
     still 401s, so the leak stays closed."""
     how = _authorize_module_proxy(request, "skdashboard")
     upstream = os.environ.get("SKDASHBOARD_URL", "http://127.0.0.1:7778")
+    # The token the injected fetch/XHR shim will hang off in-pane API calls: from
+    # the initial navigation's query param, else the path-scoped cookie set on that
+    # first load (which the HttpOnly cookie hides from the pane's own JS, so the
+    # proxy must read it server-side and inject it).
+    embed_tok = (
+        request.query_params.get("embed_token")
+        or request.cookies.get(cookie_name("skdashboard"))
+        or ""
+    ).strip()
     resp = await _reverse_proxy(
-        request, upstream, path, label="skdashboard", html_prefix="/skdashboard"
+        request,
+        upstream,
+        path,
+        label="skdashboard",
+        html_prefix="/skdashboard",
+        embed_token=embed_tok,
     )
+    # The embed iframe is opaque-origin (A3, no allow-same-origin), so its in-pane
+    # fetch()es to this proxy are CROSS-ORIGIN and unreadable without CORS. Allow
+    # the read: non-credentialed (the token rides the URL, not a cookie), so "*" is
+    # valid + safe, the same model as the skcode pane. The embed token stays the
+    # only gate; CORS never bypasses _authorize_module_proxy.
+    resp.headers["Access-Control-Allow-Origin"] = "*"
     if how == "embed" and presented_via_query(request):
         _set_embed_cookie(resp, request, "skdashboard")
     return resp

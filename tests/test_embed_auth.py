@@ -73,7 +73,9 @@ def stub_upstream(monkeypatch):
     """
     from fastapi.responses import Response
 
-    async def _fake_proxy(request, upstream, path, *, label):
+    async def _fake_proxy(request, upstream, path, *, label, **kwargs):
+        # Accept (and ignore) the real proxy's html_prefix / embed_token kwargs so
+        # this stub tracks the signature without caring about body transforms.
         return Response(content=b"OK", status_code=200, media_type="text/plain")
 
     monkeypatch.setattr(webui, "_reverse_proxy", _fake_proxy)
