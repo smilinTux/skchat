@@ -1322,6 +1322,24 @@ async def api_identity():
 # --------------------------------------------------------------------------- #
 # Chat surface — Lumina always present + real history + real replies
 # --------------------------------------------------------------------------- #
+@router.get("/v1/geo/units")
+async def api_geo_units(request: Request):
+    """Proxy the SkMap live geo-units feed from the skcomms daemon (:9384).
+
+    The web app fetches the geo plane same-origin through the funnel, so the
+    webui must forward it to skcomms (the plane is operator-gated by the router
+    that mounts this handler). Passes ``format`` / ``include_stale`` through.
+    """
+    params = request.query_params
+    q = []
+    if params.get("format"):
+        q.append(f"format={params['format']}")
+    if params.get("include_stale"):
+        q.append(f"include_stale={params['include_stale']}")
+    qs = ("?" + "&".join(q)) if q else ""
+    return JSONResponse(_proxy(f"{_SKCOMMS_API}/api/v1/geo/units{qs}"))
+
+
 @router.get("/v1/peers")
 async def api_peers():
     """Contacts. Lumina is ALWAYS first; other known peers follow."""
