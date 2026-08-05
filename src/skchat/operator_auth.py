@@ -151,3 +151,13 @@ class DeviceStore:
 
     def pubkey_for(self, device_fp: str) -> str | None:
         return self._data.get(device_fp)
+
+    def fingerprints(self) -> list[str]:
+        """Every enrolled device fingerprint (the operator's paired devices).
+
+        Read-only snapshot used by the DM self-delivery fan-out so an outbound
+        message can reach the operator's OTHER devices. Order is insertion order
+        (dict preserves it); callers must not rely on a particular order.
+        """
+        with self._lock:
+            return list(self._data)

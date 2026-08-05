@@ -254,6 +254,146 @@ def _shadow_log(msg) -> None:
         logger.debug("shadow message-log write failed (send unaffected)", exc_info=True)
 
 
+# --------------------------------------------------------------------------- #
+# DM self-delivery: fan an operator-authored outbound out to the operator's
+# OTHER enrolled devices so a sibling renders it IN the real DM thread.
+#
+# The bug: when the operator sends a DM from device A, the message is delivered
+# only to the peer (e.g. Lumina). The pqdm2 envelope is sealed to every
+# sender-own device slot, but nothing routed a copy to the operator's OWN other
+# devices, so device B never saw its own outbound (and reply-quotes that
+# reference it could not resolve). Lumina's reply IS addressed to the operator's
+# devices, so it shows (hence the one-sided thread).
+#
+# The fix queues one copy of the operator's outbound FOR each sibling device
+# under the SAME DM conversation_id (``dm:<a>|<b>``), NOT a device-scoped
+# ``device-sync:<fp>`` side channel, so the sibling renders it in the actual
+# Lumina thread as its own outbound. Operator-authored only; the originating
+# device is skipped (it already has the message locally); idempotent on a send
+# retry; best-effort so a delivery failure can NEVER break the send. Lumina's own
+# replies and legacy pqdm1 sends are untouched.
+# --------------------------------------------------------------------------- #
+_DEVICE_STORE = None
+
+
+def _operator_devices_path() -> Path:
+    """Path to the operator's enrolled-device registry (SKCHAT_HOME-aware).
+
+    Matches the store ``webui.py`` enrolls devices into
+    (``$SKCHAT_HOME/state/operator_devices.json``, default
+    ``~/.skchat/state/operator_devices.json``) so self-delivery sees every
+    device the operator has actually paired (one source of truth, not a copy).
+    """
+    home = Path(os.environ.get("SKCHAT_HOME") or "~/.skchat").expanduser()
+    return home / "state" / "operator_devices.json"
+
+
+def _get_device_store():
+    """The operator's enrolled-device registry.
+
+    A test may inject a store by setting the module-level ``_DEVICE_STORE``;
+    otherwise a fresh store is constructed per call from the CURRENT
+    ``SKCHAT_HOME`` (a small JSON read on a human-paced send). It is deliberately
+    NOT cached to a singleton: caching once would pin the first request's home
+    and leak enrolled devices across differing ``SKCHAT_HOME`` roots.
+    """
+    if _DEVICE_STORE is not None:
+        return _DEVICE_STORE
+    from .operator_auth import DeviceStore
+
+    return DeviceStore(_operator_devices_path())
+
+
+def _self_deliver_enabled() -> bool:
+    """Whether DM self-delivery to sibling devices is on (default ON).
+
+    Only ``0`` / ``false`` / ``no`` / ``off`` disable it; unset means ON so the
+    thread is symmetric out of the box. Writes are best-effort and isolated to
+    the per-device delivery table, so they never affect history or the shared
+    message log even when on.
+    """
+    return os.getenv("SKCHAT_DM_SELF_DELIVER", "").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+
+
+def _origin_device_fp(request) -> str | None:
+    """Best-effort fingerprint of the device that authored this request.
+
+    Prefers the enrolled-operator session JWT (its ``device_fp`` claim); falls
+    back to an explicit ``X-Device-Fingerprint`` header. Returns ``None`` when
+    neither is present (e.g. data-plane auth off). Self-delivery then reaches
+    every enrolled device, which is still correct, just without the origin-echo
+    skip. Never raises."""
+    try:
+        from .dataplane_auth import _extract_credential
+        from .operator_auth import verify_operator_session
+
+        token = _extract_credential(request)
+        if token:
+            try:
+                return verify_operator_session(token).device_fp
+            except Exception:
+                pass
+    except Exception:
+        logger.debug("origin device fp: session read failed", exc_info=True)
+    try:
+        hdr = (request.headers.get("x-device-fingerprint") or "").strip()
+        return hdr or None
+    except Exception:
+        return None
+
+
+def _self_deliver_own_devices(msg, *, origin_device_fp: str | None = None) -> int:
+    """Queue *msg* for the operator's OTHER enrolled devices (see module note).
+
+    A no-op unless *msg* is an operator-authored 1:1 DM (``sender==OPERATOR_ID``
+    and a ``dm:`` conversation, since group fan-out copies keep their own
+    delivery).
+    The peer is already delivered by the normal persist; this ONLY covers the
+    sender's sibling devices. Skips ``origin_device_fp`` (no self-echo) and is
+    idempotent per device on ``msg.id``. Returns the number of sibling devices
+    queued. Best-effort: any failure is swallowed so the send is never broken.
+    """
+    if not _self_deliver_enabled():
+        return 0
+    if getattr(msg, "sender", None) != OPERATOR_ID:
+        return 0
+    try:
+        from skchat.message_log import conversation_id_for
+
+        conv = conversation_id_for(msg)
+    except Exception:
+        return 0
+    if not conv.startswith("dm:"):
+        # Only 1:1 DMs self-deliver here; group copies are handled by group fanout.
+        return 0
+    try:
+        devices = _get_device_store().fingerprints()
+    except Exception:
+        logger.debug("self-delivery: device store unavailable", exc_info=True)
+        return 0
+    others = [fp for fp in devices if fp and fp != origin_device_fp]
+    if not others:
+        return 0
+    try:
+        log = _get_message_log()
+    except Exception:
+        logger.debug("self-delivery: message log unavailable", exc_info=True)
+        return 0
+    delivered = 0
+    for fp in others:
+        try:
+            log.deliver_message_to_device(fp, msg)
+            delivered += 1
+        except Exception:
+            logger.debug("self-delivery to device failed", exc_info=True)
+    return delivered
+
+
 def _is_lumina(peer: str) -> bool:
     """True if *peer* addresses Lumina (any of her known aliases)."""
     if not peer:
@@ -777,6 +917,8 @@ def _slot_is_sealable(slot: dict) -> bool:
         return True
     except Exception:
         return False
+
+
 def _open_pqdm2_inbound(token: str, *, sender_short: str) -> str | None:
     """Open a `pqdm2:` fanout token by unwrapping THIS device's own slot.
 
@@ -960,9 +1102,7 @@ def _force_repull_peer(short: str) -> bool:
         prekey_exchange.fetch_peer_prekey(fqid, http_get=_urllib_get_json)
     except Exception:
         # Best-effort only: a failed re-pull must never 500 the NACK.
-        logger.debug(
-            "decrypt-failure re-pull for %s failed (best-effort)", short, exc_info=True
-        )
+        logger.debug("decrypt-failure re-pull for %s failed (best-effort)", short, exc_info=True)
     return True
 
 
@@ -2055,6 +2195,9 @@ async def api_send(request: Request):
     # (and future dual-serve branches / P0.5 auth) can gate on them. A client
     # that sends no header yields an empty cap map -> legacy behavior unchanged.
     caps = _client_caps(request)
+    # Fingerprint of the device that authored this send, so DM self-delivery can
+    # skip it (it already has the message locally) and only fan out to siblings.
+    origin_fp = _origin_device_fp(request)
 
     try:
         body = await request.json()
@@ -2228,6 +2371,8 @@ async def api_send(request: Request):
             content_type=content_type,
             rich=rich,
         )
+        # Self-deliver the operator's outbound to sibling devices (in-thread).
+        _self_deliver_own_devices(msg, origin_device_fp=origin_fp)
         return JSONResponse(
             _apply_contract(
                 {
@@ -2267,6 +2412,9 @@ async def api_send(request: Request):
             content_type=content_type,
             rich=rich,
         )
+        # Self-deliver the operator's outbound to sibling devices so they render
+        # it in the Lumina thread (the peer + Lumina's reply already reach them).
+        _self_deliver_own_devices(user_msg, origin_device_fp=origin_fp)
 
         # 2. Build the prior-turn history for context (oldest-first role/content).
         prior = _lumina_messages(limit=40)

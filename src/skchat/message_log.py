@@ -151,6 +151,42 @@ class MessageLog:
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_msglog_dedup "
             "ON message_log(conversation_id, client_dedup_key)"
         )
+        # Per-device delivery projection (DM self-delivery to sibling devices).
+        # A separate table so it NEVER perturbs the shared per-conversation log
+        # above (that log stays one row per logical message). Each row is a copy
+        # queued FOR one device, carrying the REAL conversation_id (e.g.
+        # ``dm:<a>|<b>``) so a sibling renders it in the actual thread rather than
+        # a device-scoped side channel. The seq is monotonic PER DEVICE so each
+        # device can page its own delivery queue with a cursor.
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS device_delivery (
+                device_fp        TEXT    NOT NULL,
+                seq              INTEGER NOT NULL,
+                conversation_id  TEXT    NOT NULL,
+                message_id       TEXT    NOT NULL,
+                client_dedup_key TEXT,
+                sender           TEXT    NOT NULL,
+                recipient        TEXT    NOT NULL,
+                content          TEXT    NOT NULL,
+                ts               TEXT    NOT NULL,
+                kind             TEXT    NOT NULL DEFAULT 'text',
+                payload          TEXT,
+                PRIMARY KEY (device_fp, seq)
+            )
+            """
+        )
+        # Idempotency: a repeat delivery of the same message to the same device
+        # (a send retry) resolves to the existing row (NULL keys are exempt).
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_devdeliver_dedup "
+            "ON device_delivery(device_fp, client_dedup_key)"
+        )
+        # Read path: a device pages its queue for one conversation by seq.
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_devdeliver_read "
+            "ON device_delivery(device_fp, conversation_id, seq)"
+        )
 
     # ------------------------------------------------------------------
     # Row shaping
@@ -362,6 +398,153 @@ class MessageLog:
             (conversation_id,),
         ).fetchone()
         return int(row["s"])
+
+    # ------------------------------------------------------------------
+    # Per-device delivery (DM self-delivery to the operator's siblings)
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _delivery_row_to_dict(row: sqlite3.Row) -> dict:
+        return {
+            "device_fp": row["device_fp"],
+            "seq": row["seq"],
+            "conversation_id": row["conversation_id"],
+            "message_id": row["message_id"],
+            "client_dedup_key": row["client_dedup_key"],
+            "sender": row["sender"],
+            "recipient": row["recipient"],
+            "content": row["content"],
+            "ts": row["ts"],
+            "kind": row["kind"],
+            "payload": row["payload"] if "payload" in row.keys() else None,
+        }
+
+    def deliver_to_device(
+        self,
+        device_fp: str,
+        conversation_id: str,
+        *,
+        message_id: str,
+        client_dedup_key: Optional[str] = None,
+        sender: str,
+        recipient: str,
+        content: str,
+        kind: str = "text",
+        payload: Optional[str] = None,
+    ) -> dict:
+        """Queue one message copy FOR *device_fp* under *conversation_id*.
+
+        Assigns a per-device monotonic ``seq`` in ONE transaction (mirrors
+        :meth:`append`). Idempotent: a repeat ``(device_fp, client_dedup_key)``
+        (a send retry) returns the existing row flagged ``deduped=True`` and
+        never queues a second copy. ``conversation_id`` is the REAL thread id
+        (e.g. ``dm:<a>|<b>``) so the receiving device renders the copy in that
+        thread, not a device-scoped side channel.
+        """
+        conn = self._conn
+        with self._lock:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                existing = None
+                if client_dedup_key is not None:
+                    existing = conn.execute(
+                        "SELECT * FROM device_delivery WHERE device_fp=? AND client_dedup_key=?",
+                        (device_fp, client_dedup_key),
+                    ).fetchone()
+                if existing is None:
+                    existing = conn.execute(
+                        "SELECT * FROM device_delivery WHERE device_fp=? AND message_id=?",
+                        (device_fp, message_id),
+                    ).fetchone()
+                if existing is not None:
+                    conn.execute("COMMIT")
+                    return {**self._delivery_row_to_dict(existing), "deduped": True}
+
+                ts = _now_iso()
+                conn.execute(
+                    """
+                    INSERT INTO device_delivery
+                        (device_fp, seq, conversation_id, message_id, client_dedup_key,
+                         sender, recipient, content, ts, kind, payload)
+                    VALUES (
+                        ?,
+                        (SELECT COALESCE(MAX(seq), 0) + 1 FROM device_delivery
+                         WHERE device_fp = ?),
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    )
+                    """,
+                    (
+                        device_fp,
+                        device_fp,
+                        conversation_id,
+                        message_id,
+                        client_dedup_key,
+                        sender,
+                        recipient,
+                        content,
+                        ts,
+                        kind,
+                        payload,
+                    ),
+                )
+                row = conn.execute(
+                    "SELECT * FROM device_delivery WHERE device_fp=? AND message_id=?",
+                    (device_fp, message_id),
+                ).fetchone()
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+            return {**self._delivery_row_to_dict(row), "deduped": False}
+
+    def deliver_message_to_device(self, device_fp: str, message) -> dict:
+        """Queue a ``ChatMessage`` for *device_fp* under its canonical
+        conversation id. Idempotent on the message's own ``id`` (so a send retry
+        of the SAME logical message never queues a duplicate to that device).
+        """
+        try:
+            payload = message.model_dump_json()
+        except Exception:
+            payload = None
+        mt = getattr(message, "message_type", None)
+        kind = str(getattr(mt, "value", mt) or "text")
+        mid = getattr(message, "id", None) or str(uuid.uuid4())
+        return self.deliver_to_device(
+            device_fp,
+            conversation_id_for(message),
+            message_id=mid,
+            client_dedup_key=mid,
+            sender=(getattr(message, "sender", "") or ""),
+            recipient=(getattr(message, "recipient", "") or ""),
+            content=(getattr(message, "content", "") or ""),
+            kind=kind,
+            payload=payload,
+        )
+
+    def read_for_device(
+        self,
+        device_fp: str,
+        conversation_id: Optional[str] = None,
+        since_seq: int = 0,
+        limit: int = 500,
+    ) -> list[dict]:
+        """Return messages queued for *device_fp* with ``seq > since_seq``,
+        ascending. When *conversation_id* is given, only that thread's copies are
+        returned (so a device fetching the DM thread gets exactly the operator's
+        own outbound queued under that same conversation id)."""
+        if conversation_id is None:
+            rows = self._conn.execute(
+                "SELECT * FROM device_delivery "
+                "WHERE device_fp=? AND seq>? ORDER BY seq ASC LIMIT ?",
+                (device_fp, since_seq, limit),
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT * FROM device_delivery "
+                "WHERE device_fp=? AND conversation_id=? AND seq>? "
+                "ORDER BY seq ASC LIMIT ?",
+                (device_fp, conversation_id, since_seq, limit),
+            ).fetchall()
+        return [self._delivery_row_to_dict(r) for r in rows]
 
     def close(self) -> None:
         try:
