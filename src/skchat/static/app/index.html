@@ -66,6 +66,41 @@
   -->
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content">
 
+  <!--
+    Keyboard-safe host for browsers that do NOT shrink the LAYOUT viewport when
+    the soft keyboard opens (notably Firefox Android, which ignores
+    `interactive-widget`). We drive the Flutter host height from the VISUAL
+    viewport so the bottom-pinned composer stays above the keyboard. On browsers
+    that already resize the layout viewport the keyboard delta is ~0, so this is
+    a NO-OP (no double-adjust).
+  -->
+  <style>
+    html, body { height: 100%; margin: 0; padding: 0; }
+    body { overflow: hidden; }
+  </style>
+  <script>
+    (function () {
+      var vv = window.visualViewport;
+      if (!vv) return;
+      var raf = 0;
+      function apply() {
+        raf = 0;
+        var kb = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+        var h = kb > 40 ? Math.round(vv.height) : window.innerHeight;
+        var px = h + 'px';
+        if (document.documentElement.style.height !== px) {
+          document.documentElement.style.height = px;
+          document.body.style.height = px;
+        }
+      }
+      function schedule() { if (!raf) raf = requestAnimationFrame(apply); }
+      vv.addEventListener('resize', schedule);
+      vv.addEventListener('scroll', schedule);
+      window.addEventListener('orientationchange', function () { setTimeout(apply, 300); });
+      window.addEventListener('load', function () { setTimeout(apply, 300); });
+    })();
+  </script>
+
   <!-- iOS meta tags & icons -->
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black">
