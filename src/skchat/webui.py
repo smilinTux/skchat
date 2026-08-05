@@ -46,13 +46,15 @@ from .dataplane_auth import (
 from .dataplane_paths import is_gated
 from .embed_auth import (
     EMBED_MODULES,
+    MODE_RO,
+    MODE_RW,
     EmbedAuthError,
     cookie_name,
     cookie_path,
     embed_tokens_enabled,
     mint_embed_token,
     presented_via_query,
-    request_embed_ok,
+    request_embed_token,
 )
 
 logger = logging.getLogger(__name__)
@@ -543,10 +545,16 @@ def _authorize_module_proxy(request: Request, module: str) -> str:
     * A valid ``Authorization`` operator/dataplane credential -> ``"auth"``: FULL
       access (read + write), exactly as a direct authenticated call.
     * A valid module-scoped ``embed_token`` (query param or the path-scoped
-      cookie) -> ``"embed"``: READ-ONLY. The iframe pane cannot set a header, so
-      the authenticated app mints this short-lived, module-scoped token and hangs
-      it off the iframe ``src``. A non-GET/HEAD request that authorizes ONLY via an
-      embed token is refused (403), so the pane can never mutate.
+      cookie) -> ``"embed"``. The iframe pane cannot set a header, so the
+      authenticated app mints this short-lived, module-scoped token and hangs it
+      off the iframe ``src``. Write authority follows the token's ``mode``:
+        - ``ro`` (read-only): a non-GET/HEAD request is refused (403), so a
+          read-only pane can never mutate.
+        - ``rw`` (read + write): non-GET/HEAD (POST/PUT/DELETE) is allowed, so the
+          trusted first-party admin pane (skdashboard) re-enables its in-pane Save
+          actions for the same already-authenticated operator. ``rw`` tokens are
+          only minted for a trusted-module allowlist presented by a full operator
+          credential (see :func:`embed_token_mint`).
 
     When neither is present the request falls through to
     :func:`enforce_dataplane_auth`, which raises 401 when the plane-wide gate is
@@ -557,9 +565,10 @@ def _authorize_module_proxy(request: Request, module: str) -> str:
     # the plane-wide flag (like the audience-token mint), so a valid Bearer works.
     if request_is_authenticated(request):
         return "auth"
-    # Module-scoped embed token: read-only.
-    if request_embed_ok(request, module):
-        if request.method not in ("GET", "HEAD"):
+    # Module-scoped embed token: read for any mode; write only for rw.
+    et = request_embed_token(request, module)
+    if et is not None:
+        if request.method not in ("GET", "HEAD") and not et.writable:
             raise HTTPException(status_code=403, detail="embed token is read-only")
         return "embed"
     # Neither: apply the plane-wide gate (401 when SKCHAT_DATAPLANE_AUTH is on).
@@ -641,6 +650,39 @@ _SKCODE_CORS = {
     "Access-Control-Allow-Headers": "Authorization, Content-Type",
     "Access-Control-Max-Age": "600",
 }
+
+
+#: Methods the gated module proxies expose. Writes (POST/PUT/DELETE) are only
+#: honored for a full operator credential OR a mode=rw embed token (see
+#: :func:`_authorize_module_proxy`); OPTIONS is the CORS preflight, served
+#: unauthenticated (browsers send no credentials on a preflight).
+_MODULE_PROXY_METHODS = ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+
+
+def _module_cors_headers(request: Request) -> dict:
+    """CORS headers for a gated module proxy (opaque-origin embed iframe).
+
+    The embed iframe is sandboxed WITHOUT ``allow-same-origin`` (A3 containment),
+    so its document origin is OPAQUE and its in-pane ``fetch`` calls are
+    cross-origin. A JSON-content-type write (the Models console Save posts
+    ``application/json``) triggers a CORS PREFLIGHT ``OPTIONS`` the browser sends
+    with NO credentials; these headers let that preflight (and the subsequent
+    write) pass. The embed token stays the ONLY gate: it rides the URL/query, not
+    a cookie, so this is NON-CREDENTIALED CORS (no ``Allow-Credentials``) and the
+    echoed/`*` origin never grants ambient authority. ``Allow-Headers`` includes
+    ``Content-Type`` so the JSON body's content-type header is permitted.
+    """
+    origin = request.headers.get("origin") or "*"
+    return {
+        # Echo the caller's origin (an opaque-origin iframe sends ``null``); fall
+        # back to ``*`` when no Origin header is present. Non-credentialed, so this
+        # is safe and never confers cookie-backed authority.
+        "Access-Control-Allow-Origin": origin,
+        "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "Access-Control-Allow-Headers": "Authorization, Content-Type",
+        "Access-Control-Max-Age": "600",
+        "Vary": "Origin",
+    }
 
 
 @app.api_route("/skcode/{path:path}", methods=["GET", "POST", "OPTIONS"])
@@ -747,7 +789,7 @@ async def skcode_ws_proxy(websocket: WebSocket, path: str) -> None:
             pass
 
 
-@app.api_route("/skdashboard/{path:path}", methods=["GET", "POST"])
+@app.api_route("/skdashboard/{path:path}", methods=_MODULE_PROXY_METHODS)
 async def skdashboard_proxy(path: str, request: Request):
     """/skdashboard/* -> the skcapstone coordination dashboard (SKDASHBOARD_URL,
     default :7778) so the shell's "Board" pane loads over the 443 funnel.
@@ -756,9 +798,21 @@ async def skdashboard_proxy(path: str, request: Request):
     has NO auth of its own, so proxying it unauthenticated over the PUBLIC funnel
     would expose the whole coordination board (task list, agent status). It
     accepts EITHER a full operator credential (read + write) OR a short-lived,
-    module-scoped, read-only ``embed_token`` the authenticated app mints for the
-    iframe pane (see ``embed_auth``). An unauth request with no/invalid token
-    still 401s, so the leak stays closed."""
+    module-scoped ``embed_token`` the authenticated app mints for the iframe pane
+    (see ``embed_auth``). A ``ro`` token authorizes reads only; a ``rw`` token
+    (minted only for this trusted first-party admin module, only for an operator
+    credential) additionally authorizes writes (the Models console Save, cmdb
+    seed, kanban mutations). An unauth request with no/invalid token still 401s,
+    so the leak stays closed.
+
+    OPTIONS is served here as the CORS preflight (unauthenticated): the pane's
+    in-pane JSON-content-type write is cross-origin (opaque iframe origin) and the
+    browser preflights it, so the proxy must answer the preflight before the write
+    ever carries its token."""
+    if request.method == "OPTIONS":
+        from starlette.responses import Response as _Resp
+
+        return _Resp(status_code=204, headers=_module_cors_headers(request))
     how = _authorize_module_proxy(request, "skdashboard")
     upstream = os.environ.get("SKDASHBOARD_URL", "http://127.0.0.1:7778")
     # The token the injected fetch/XHR shim will hang off in-pane API calls: from
@@ -780,10 +834,12 @@ async def skdashboard_proxy(path: str, request: Request):
     )
     # The embed iframe is opaque-origin (A3, no allow-same-origin), so its in-pane
     # fetch()es to this proxy are CROSS-ORIGIN and unreadable without CORS. Allow
-    # the read: non-credentialed (the token rides the URL, not a cookie), so "*" is
-    # valid + safe, the same model as the skcode pane. The embed token stays the
-    # only gate; CORS never bypasses _authorize_module_proxy.
-    resp.headers["Access-Control-Allow-Origin"] = "*"
+    # the read (and, for a rw token, the write response): non-credentialed (the
+    # token rides the URL, not a cookie), so echoing the origin / "*" is valid +
+    # safe, the same model as the skcode pane. The embed token stays the only gate;
+    # CORS never bypasses _authorize_module_proxy.
+    for _k, _v in _module_cors_headers(request).items():
+        resp.headers[_k] = _v
     if how == "embed" and presented_via_query(request):
         _set_embed_cookie(resp, request, "skdashboard")
     return resp
@@ -804,15 +860,33 @@ async def skos_proxy(path: str, request: Request):
     return resp
 
 
+#: Env allowlist of modules for which a mode=rw embed token may be minted.
+#: Comma/space-separated; defaults to the single trusted first-party admin module
+#: ``skdashboard``. A module NOT on this list can only ever get a ro token, so an
+#: embedded write surface is opt-in per module and can be narrowed to none by
+#: setting the var empty. Read at call time so an operator editing the unit's
+#: ``Environment=`` line (or a test) can change it without a reimport.
+_EMBED_RW_MODULES_ENV = "SKCHAT_EMBED_RW_MODULES"
+_DEFAULT_EMBED_RW_MODULES = "skdashboard"
+
+
+def _embed_rw_modules() -> frozenset:
+    """The set of modules for which a rw embed token may be minted (env-driven)."""
+    raw = os.environ.get(_EMBED_RW_MODULES_ENV, _DEFAULT_EMBED_RW_MODULES)
+    parts = [p.strip() for p in raw.replace(",", " ").split()]
+    # Only ever allow rw for a module that is also a real embeddable gated module.
+    return frozenset(p for p in parts if p and p in EMBED_MODULES)
+
+
 @app.post("/api/v1/embed-token")
 async def embed_token_mint(request: Request) -> JSONResponse:
-    """Mint a short-lived, module-scoped, READ-ONLY embed token for an iframe pane.
+    """Mint a short-lived, module-scoped embed token for an iframe pane.
 
     The shell's Grade B panes (``/skdashboard``, ``/skos``) are iframes that cannot
     set an ``Authorization`` header, so once those proxies are gated they can only
     401. The AUTHENTICATED app calls this to obtain a token it appends to the iframe
-    ``src`` as ``?embed_token=...``; the proxy then accepts that token (read-only,
-    scoped to the exact module) for the token's short life.
+    ``src`` as ``?embed_token=...``; the proxy then accepts that token (scoped to
+    the exact module) for the token's short life.
 
     Two gates, both required (mirrors the audience-token mint):
 
@@ -821,19 +895,26 @@ async def embed_token_mint(request: Request) -> JSONResponse:
     * GATE 2 (auth): the request MUST carry a valid operator/capauth credential
       (validated via :func:`request_is_authenticated`). An unauthenticated caller
       gets 401 and no token is ever minted, even with the flag on. So a token can
-      only come into existence via an authenticated request.
+      only come into existence via an authenticated request. NOTE: an embed token
+      is NOT an operator credential (it rides the URL/query, not a validated
+      dataplane Bearer), so it can never satisfy this gate and thus can never be
+      used to mint another (let alone a rw) token.
 
-    Body (JSON): ``{"module": "skdashboard" | "skos"}``. The module MUST be one of
-    the gated proxy modules; any other value is 400. The token is always read-only
-    and scoped to that one module, so it can never authorize a different module or
-    a write.
+    Body (JSON): ``{"module": "skdashboard" | "skos", "mode": "ro" | "rw"}``. The
+    module MUST be one of the gated proxy modules; any other value is 400. ``mode``
+    defaults to ``ro``. A ``rw`` request is honored ONLY for a module on the
+    ``SKCHAT_EMBED_RW_MODULES`` allowlist (default ``skdashboard``); requesting
+    ``rw`` for any other module is 403. This re-enables the embedded write surface
+    (Models console Save etc.) for the trusted first-party admin pane and the same
+    already-authenticated operator, without granting a new privilege.
     """
     # GATE 1: flag. Inert (looks like the route does not exist) when off.
     if not embed_tokens_enabled():
         raise HTTPException(status_code=404, detail="not found")
 
     # GATE 2: authentication. Always enforced when minting, independent of the
-    # plane-wide gate flag, so we never mint for an anonymous caller.
+    # plane-wide gate flag, so we never mint for an anonymous caller. A full
+    # operator credential is required; an embed token cannot satisfy this.
     if not request_is_authenticated(request):
         raise HTTPException(status_code=401, detail="capauth authentication required")
 
@@ -850,17 +931,33 @@ async def embed_token_mint(request: Request) -> JSONResponse:
             detail=f"module must be one of {sorted(EMBED_MODULES)}",
         )
 
+    # Requested mode (default ro). Only the ro/rw values are legitimate; anything
+    # else is a bad request rather than a silent downgrade.
+    mode = body.get("mode", MODE_RO)
+    if mode not in (MODE_RO, MODE_RW):
+        raise HTTPException(
+            status_code=400, detail=f"mode must be one of {[MODE_RO, MODE_RW]}"
+        )
+    # rw is only mintable for the trusted-module allowlist. Deny (403) for any
+    # other module so an embedded write surface stays scoped to skdashboard.
+    if mode == MODE_RW and module not in _embed_rw_modules():
+        raise HTTPException(
+            status_code=403,
+            detail=f"module {module!r} may not be granted a read-write embed token",
+        )
+
     try:
-        token, exp = mint_embed_token(module)
+        token, exp = mint_embed_token(module, mode=mode)
     except EmbedAuthError as exc:  # missing signing key etc: fail closed, no token.
         logger.warning("embed-token mint failed: %s", exc)
         raise HTTPException(status_code=500, detail="embed token mint failed")
 
-    logger.info("embed-token minted module=%s exp=%s", module, exp)
+    logger.info("embed-token minted module=%s mode=%s exp=%s", module, mode, exp)
     return JSONResponse(
         {
             "token": token,
             "module": module,
+            "mode": mode,
             "expires_at": datetime.fromtimestamp(exp, tz=timezone.utc).isoformat(),
         }
     )

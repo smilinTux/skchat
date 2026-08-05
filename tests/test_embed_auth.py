@@ -127,6 +127,30 @@ class TestMintVerify:
         token, _ = embed_auth.mint_embed_token("skdashboard")
         assert embed_auth.verify_embed_token(token, "skdashboard").module == "skdashboard"
 
+    def test_default_mode_is_ro(self):
+        token, _ = embed_auth.mint_embed_token("skdashboard")
+        et = embed_auth.verify_embed_token(token, "skdashboard")
+        assert et.mode == embed_auth.MODE_RO
+        assert et.writable is False
+
+    def test_rw_mint_then_verify_roundtrip(self):
+        token, exp = embed_auth.mint_embed_token("skdashboard", mode=embed_auth.MODE_RW)
+        et = embed_auth.verify_embed_token(token, "skdashboard")
+        assert et.module == "skdashboard"
+        assert et.exp == exp
+        assert et.mode == embed_auth.MODE_RW
+        assert et.writable is True
+
+    def test_rw_token_still_scope_checked(self):
+        """A rw token minted for one module never authorizes another module."""
+        token, _ = embed_auth.mint_embed_token("skdashboard", mode=embed_auth.MODE_RW)
+        with pytest.raises(embed_auth.EmbedAuthError):
+            embed_auth.verify_embed_token(token, "skos")
+
+    def test_unknown_mode_cannot_mint(self):
+        with pytest.raises(embed_auth.EmbedAuthError):
+            embed_auth.mint_embed_token("skdashboard", mode="admin")
+
     def test_no_key_fails_closed(self, monkeypatch):
         monkeypatch.delenv("SKCHAT_EMBED_TOKEN_SECRET", raising=False)
         monkeypatch.delenv("SKCHAT_OPERATOR_TOKEN_SECRET", raising=False)
@@ -179,6 +203,80 @@ class TestMintEndpoint:
             json={"module": "skchat"},  # not an embeddable gated module
         )
         assert resp.status_code == 400
+
+    def test_rw_mint_allowed_for_allowlisted_module(self, client, monkeypatch):
+        """skdashboard is on the default rw allowlist -> a rw mint succeeds."""
+        monkeypatch.setenv(embed_auth.EMBED_MINT_ENV_FLAG, "1")
+        dataplane_auth.set_validator(_FakeValidator(True))
+        resp = client.post(
+            "/api/v1/embed-token",
+            headers={"Authorization": "Bearer valid"},
+            json={"module": "skdashboard", "mode": "rw"},
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["mode"] == "rw"
+        et = embed_auth.verify_embed_token(body["token"], "skdashboard")
+        assert et.writable is True
+
+    def test_rw_mint_denied_for_non_allowlisted_module(self, client, monkeypatch):
+        """skos is NOT on the default rw allowlist -> a rw mint is 403 (ro-only)."""
+        monkeypatch.setenv(embed_auth.EMBED_MINT_ENV_FLAG, "1")
+        dataplane_auth.set_validator(_FakeValidator(True))
+        resp = client.post(
+            "/api/v1/embed-token",
+            headers={"Authorization": "Bearer valid"},
+            json={"module": "skos", "mode": "rw"},
+        )
+        assert resp.status_code == 403
+
+    def test_rw_mint_denied_when_module_removed_from_allowlist(
+        self, client, monkeypatch
+    ):
+        """Emptying SKCHAT_EMBED_RW_MODULES makes even skdashboard rw-ineligible."""
+        monkeypatch.setenv(embed_auth.EMBED_MINT_ENV_FLAG, "1")
+        monkeypatch.setenv("SKCHAT_EMBED_RW_MODULES", "")
+        dataplane_auth.set_validator(_FakeValidator(True))
+        resp = client.post(
+            "/api/v1/embed-token",
+            headers={"Authorization": "Bearer valid"},
+            json={"module": "skdashboard", "mode": "rw"},
+        )
+        assert resp.status_code == 403
+
+    def test_ro_mint_still_default_and_scoped(self, client, monkeypatch):
+        """Omitting mode mints ro; that ro token is not writable."""
+        monkeypatch.setenv(embed_auth.EMBED_MINT_ENV_FLAG, "1")
+        dataplane_auth.set_validator(_FakeValidator(True))
+        resp = client.post(
+            "/api/v1/embed-token",
+            headers={"Authorization": "Bearer valid"},
+            json={"module": "skdashboard"},
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["mode"] == "ro"
+        assert embed_auth.verify_embed_token(body["token"], "skdashboard").writable is False
+
+    def test_bad_mode_is_400(self, client, monkeypatch):
+        monkeypatch.setenv(embed_auth.EMBED_MINT_ENV_FLAG, "1")
+        dataplane_auth.set_validator(_FakeValidator(True))
+        resp = client.post(
+            "/api/v1/embed-token",
+            headers={"Authorization": "Bearer valid"},
+            json={"module": "skdashboard", "mode": "admin"},
+        )
+        assert resp.status_code == 400
+
+    def test_rw_mint_still_needs_operator_credential(self, client, monkeypatch):
+        """An unauthenticated caller cannot mint even a rw token (401, not 403)."""
+        monkeypatch.setenv(embed_auth.EMBED_MINT_ENV_FLAG, "1")
+        dataplane_auth.set_validator(_FakeValidator(False))
+        resp = client.post(
+            "/api/v1/embed-token",
+            json={"module": "skdashboard", "mode": "rw"},
+        )
+        assert resp.status_code == 401
 
 
 # --------------------------------------------------------------------------- #
@@ -234,14 +332,55 @@ class TestProxyAuthorization:
         assert resp.status_code == 401
 
     def test_embed_token_is_read_only(self, client, stub_upstream):
-        """A POST (write) that only presents an embed token is refused (403)."""
+        """A POST (write) that only presents a RO embed token is refused (403)."""
         dataplane_auth.set_validator(_FakeValidator(False))
-        token, _ = embed_auth.mint_embed_token("skdashboard")
+        token, _ = embed_auth.mint_embed_token("skdashboard")  # ro (default)
         resp = client.post(
             f"/skdashboard/api/card/x/queue?embed_token={token}",
             json={},
         )
         assert resp.status_code == 403
+
+    def test_rw_embed_token_may_write(self, client, stub_upstream):
+        """A POST (write) presenting a RW embed token reaches the 200 upstream path."""
+        dataplane_auth.set_validator(_FakeValidator(False))  # no header credential
+        token, _ = embed_auth.mint_embed_token("skdashboard", mode=embed_auth.MODE_RW)
+        resp = client.post(
+            f"/skdashboard/api/models/advertise?embed_token={token}",
+            json={"enabled": []},
+        )
+        assert resp.status_code == 200
+        assert resp.text == "OK"
+
+    def test_rw_embed_token_write_is_scope_checked(self, client, stub_upstream):
+        """A rw token for skos cannot write through the skdashboard proxy (401)."""
+        dataplane_auth.set_validator(_FakeValidator(False))
+        token, _ = embed_auth.mint_embed_token("skos", mode=embed_auth.MODE_RW)
+        resp = client.post(
+            f"/skdashboard/api/models/advertise?embed_token={token}",
+            json={"enabled": []},
+        )
+        assert resp.status_code == 401
+
+    def test_options_preflight_returns_cors(self, client):
+        """The CORS preflight is served unauthenticated with the write CORS headers."""
+        dataplane_auth.set_validator(_FakeValidator(False))  # preflight carries none
+        resp = client.options(
+            "/skdashboard/api/models/advertise",
+            headers={
+                "Origin": "https://skchat.skworld.io",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "content-type",
+            },
+        )
+        assert resp.status_code == 204
+        allow_methods = resp.headers["access-control-allow-methods"]
+        assert "POST" in allow_methods
+        assert "PUT" in allow_methods
+        assert "OPTIONS" in allow_methods
+        assert "Content-Type" in resp.headers["access-control-allow-headers"]
+        # Echoes the caller's origin (non-credentialed CORS).
+        assert resp.headers["access-control-allow-origin"] == "https://skchat.skworld.io"
 
     def test_full_auth_may_write(self, client, stub_upstream):
         """A full operator credential keeps read + write (POST) access."""

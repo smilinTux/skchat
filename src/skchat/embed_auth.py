@@ -42,8 +42,14 @@ Scope + lifetime
 * ``tier`` is always ``"embed-token"``.
 * ``module`` is the exact proxy module id the token authorizes (``skdashboard``
   or ``skos``); a token minted for one module never authorizes another.
-* ``mode`` is always ``"ro"`` (read-only); the proxy refuses any non-GET/HEAD
-  request that presents only an embed token.
+* ``mode`` is ``"ro"`` (read-only, the default) or ``"rw"`` (read + write). A
+  ``ro`` token authorizes only GET/HEAD through the proxy; a non-GET/HEAD request
+  that presents a ``ro`` token is refused (403). A ``rw`` token is a superset: it
+  additionally authorizes writes (POST/PUT/DELETE) so the trusted first-party
+  admin pane (skdashboard) can re-enable its in-pane Save actions for the same
+  already-authenticated operator. ``rw`` is only ever minted for an explicit
+  trusted-module allowlist and only for a caller presenting a full operator
+  credential (see the ``POST /api/v1/embed-token`` mint route in ``webui``).
 * TTL defaults to 120s and is capped at 600s. Short by design: the token only has
   to survive the initial iframe navigation, after which the proxy hands the pane a
   path-scoped, HttpOnly cookie carrying the same token so subresource requests
@@ -70,9 +76,23 @@ logger = logging.getLogger("skchat.embed_auth")
 #: replayed as another even before the distinct signing key is considered.
 _TIER = "embed-token"
 
-#: Read-only marker carried by every embed token. The proxy refuses any non-GET
-#: request that authorizes only via an embed token.
+#: Read-only marker: the proxy refuses any non-GET request that authorizes only
+#: via a ``ro`` embed token. This is the DEFAULT mode for a minted token.
 _MODE_RO = "ro"
+
+#: Read-write marker (superset of ``ro``): additionally authorizes writes
+#: (POST/PUT/DELETE) through the proxy. Only minted for a trusted-module allowlist
+#: presented by a full operator credential (enforced at the mint endpoint).
+_MODE_RW = "rw"
+
+#: The mode values an embed token may legitimately carry.
+_MODES = frozenset({_MODE_RO, _MODE_RW})
+
+#: Public aliases so callers (e.g. the mint endpoint) reference modes by name
+#: instead of magic strings.
+MODE_RO = _MODE_RO
+MODE_RW = _MODE_RW
+EMBED_MODES_VALID = _MODES
 
 #: Default / maximum embed-token lifetime (seconds). Short: it only has to outlive
 #: the initial iframe navigation before the scoped cookie takes over.
@@ -114,6 +134,12 @@ class EmbedToken:
     jti: str
     module: str
     exp: int
+    mode: str = _MODE_RO
+
+    @property
+    def writable(self) -> bool:
+        """True iff this token authorizes writes (POST/PUT/DELETE) through the proxy."""
+        return self.mode == _MODE_RW
 
 
 def embed_tokens_enabled() -> bool:
@@ -160,22 +186,30 @@ def cookie_path(module: str) -> str:
     return f"/{module}"
 
 
-def mint_embed_token(module: str, *, ttl: int | None = None) -> tuple[str, int]:
-    """Mint a short-lived, module-scoped, read-only embed token.
+def mint_embed_token(
+    module: str, *, ttl: int | None = None, mode: str = _MODE_RO
+) -> tuple[str, int]:
+    """Mint a short-lived, module-scoped embed token.
 
     Args:
         module: The proxy module id to authorize. MUST be in :data:`EMBED_MODULES`.
         ttl: Lifetime in seconds; defaults to :data:`DEFAULT_TTL`, capped at
             :data:`MAX_TTL`.
+        mode: ``"ro"`` (read-only, the default) or ``"rw"`` (read + write). ``rw``
+            is a superset that additionally authorizes writes through the proxy;
+            the rw-vs-ro POLICY (which modules/callers may request rw) is enforced
+            at the mint ENDPOINT, not here, so this stays a pure token factory.
 
     Returns:
         ``(token, expires_at_epoch)``.
 
     Raises:
-        EmbedAuthError: for an unknown module or a missing signing key.
+        EmbedAuthError: for an unknown module, an unknown mode, or a missing key.
     """
     if module not in EMBED_MODULES:
         raise EmbedAuthError(f"unknown embed module: {module!r}")
+    if mode not in _MODES:
+        raise EmbedAuthError(f"unknown embed mode: {mode!r}")
     now = int(time.time())
     ttl = DEFAULT_TTL if ttl is None else max(1, min(int(ttl), MAX_TTL))
     exp = now + ttl
@@ -183,7 +217,7 @@ def mint_embed_token(module: str, *, ttl: int | None = None) -> tuple[str, int]:
         "jti": uuid.uuid4().hex,
         "tier": _TIER,
         "module": module,
-        "mode": _MODE_RO,
+        "mode": mode,
         "iat": now,
         "exp": exp,
     }
@@ -195,10 +229,11 @@ def verify_embed_token(token: str, module: str) -> EmbedToken:
     """Verify an embed token is valid AND scoped to ``module``. Raises on failure.
 
     Checks, in order: a well-formed HS256 signature over our key, the required
-    claim set, the fixed ``embed-token`` tier, the read-only mode, non-expiry
-    (PyJWT enforces ``exp``), and that the ``module`` claim equals the module the
-    caller is authorizing. A token minted for a different module (foreign scope)
-    is rejected here.
+    claim set, the fixed ``embed-token`` tier, a recognised mode (``ro`` or
+    ``rw``), non-expiry (PyJWT enforces ``exp``), and that the ``module`` claim
+    equals the module the caller is authorizing. A token minted for a different
+    module (foreign scope) is rejected here. The returned :class:`EmbedToken`
+    carries the verified ``mode`` so the proxy can allow writes only for ``rw``.
     """
     if not token:
         raise EmbedAuthError("empty embed token")
@@ -213,13 +248,16 @@ def verify_embed_token(token: str, module: str) -> EmbedToken:
         raise EmbedAuthError(f"invalid embed token: {e}") from e
     if claims.get("tier") != _TIER:
         raise EmbedAuthError("wrong tier")
-    if claims.get("mode") != _MODE_RO:
-        raise EmbedAuthError("wrong mode")
+    mode = claims.get("mode")
+    if mode not in _MODES:
+        raise EmbedAuthError(f"unknown mode {mode!r}")
     if claims.get("module") != module:
         raise EmbedAuthError(
             f"embed token scoped to {claims.get('module')!r}, not {module!r}"
         )
-    return EmbedToken(jti=claims["jti"], module=claims["module"], exp=claims["exp"])
+    return EmbedToken(
+        jti=claims["jti"], module=claims["module"], exp=claims["exp"], mode=mode
+    )
 
 
 def _token_from_request(request: Request, module: str) -> str | None:
@@ -236,23 +274,33 @@ def _token_from_request(request: Request, module: str) -> str | None:
     return c or None
 
 
-def request_embed_ok(request: Request, module: str) -> bool:
-    """Return True iff the request carries a valid embed token scoped to ``module``.
+def request_embed_token(request: Request, module: str) -> EmbedToken | None:
+    """Return the VERIFIED embed token scoped to ``module`` on the request, or None.
 
-    Never raises: a missing/invalid/expired/foreign-scope token is simply False,
-    so the caller can fall through to the operator-auth gate.
+    Never raises: a missing/invalid/expired/foreign-scope token is simply None, so
+    the caller can fall through to the operator-auth gate. The returned token
+    carries its verified ``mode`` (``ro``/``rw``) so the proxy can decide whether a
+    write is authorized.
     """
     token = _token_from_request(request, module)
     if not token:
-        return False
+        return None
     try:
-        verify_embed_token(token, module)
-        return True
+        return verify_embed_token(token, module)
     except EmbedAuthError:
-        return False
+        return None
     except Exception:  # pragma: no cover - defensive: any key/parse error denies
         logger.info("embed token rejected", exc_info=True)
-        return False
+        return None
+
+
+def request_embed_ok(request: Request, module: str) -> bool:
+    """Return True iff the request carries a valid embed token scoped to ``module``.
+
+    Never raises. Thin bool wrapper over :func:`request_embed_token` for callers
+    that only need presence, not the mode.
+    """
+    return request_embed_token(request, module) is not None
 
 
 def presented_via_query(request: Request) -> bool:
@@ -268,6 +316,9 @@ def presented_via_query(request: Request) -> bool:
 __all__ = [
     "EMBED_MODULES",
     "EMBED_MINT_ENV_FLAG",
+    "MODE_RO",
+    "MODE_RW",
+    "EMBED_MODES_VALID",
     "DEFAULT_TTL",
     "MAX_TTL",
     "EmbedAuthError",
@@ -275,6 +326,7 @@ __all__ = [
     "embed_tokens_enabled",
     "mint_embed_token",
     "verify_embed_token",
+    "request_embed_token",
     "request_embed_ok",
     "presented_via_query",
     "cookie_name",
