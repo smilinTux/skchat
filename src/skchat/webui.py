@@ -342,12 +342,50 @@ async def access_tool_proxy(request: Request):
         raise HTTPException(status_code=502, detail=f"access node unreachable: {exc}")
 
 
-async def _reverse_proxy(request: Request, upstream: str, path: str, *, label: str):
+#: Root-absolute asset URLs in proxied HTML: an ``href=`` / ``src=`` whose value
+#: begins ``/static/`` or ``/assets/``. Anchored on the leading ``/`` so an
+#: already-prefixed value (``/skdashboard/static/...``) does NOT match, which
+#: keeps the rewrite idempotent (no double-prefix).
+_HTML_ASSET_ATTR_RE = _re.compile(rb"""((?:href|src)\s*=\s*["'])(/(?:static|assets)/)""")
+
+
+def _rewrite_html_asset_prefix(body: bytes, prefix: str) -> bytes:
+    """Rewrite root-absolute ``/static`` and ``/assets`` asset URLs in proxied HTML
+    onto a same-origin module ``prefix``.
+
+    A subapp (e.g. the skcapstone coordination dashboard) whose HTML references its
+    CSS/JS by absolute path (``/static/css/board.css``, ``/static/js/cmdb.js``)
+    would, through the ``/skdashboard`` reverse-proxy prefix, have the browser
+    request ``<origin>/static/...`` and hit the SHELL's own Flutter ``/static``
+    mount instead of the dashboard's, so the embedded pane renders blank. Rewriting
+    ``/static`` -> ``/skdashboard/static`` (and ``/assets`` likewise) points those
+    subresource loads back through the proxy. Idempotent: an already-prefixed URL
+    does not start with ``/static`` so it is left untouched. Applied ONLY to
+    ``text/html`` bodies (dashboard CSS ``url()`` refs are all ``data:`` URIs, so
+    stylesheets need no rewriting)."""
+    p = prefix.rstrip("/").encode()
+    return _HTML_ASSET_ATTR_RE.sub(lambda m: m.group(1) + p + m.group(2), body)
+
+
+async def _reverse_proxy(
+    request: Request,
+    upstream: str,
+    path: str,
+    *,
+    label: str,
+    html_prefix: str | None = None,
+):
     """Raw same-origin reverse proxy to a sibling subapp daemon (``upstream``),
     so the SKWorld shell's pane reaches it over the 443 funnel like every other
     call, never a direct daemon port. Preserves method/body/status/content-type
     so the subapp's web client + assets load; adds NO auth of its own (each
-    subapp keeps its own gate). Upstream is overridable per node via env."""
+    subapp keeps its own gate). Upstream is overridable per node via env.
+
+    When ``html_prefix`` is set, ``text/html`` response bodies have their
+    root-absolute ``/static``/``/assets`` asset URLs rewritten onto that prefix
+    (see :func:`_rewrite_html_asset_prefix`), so a subapp that references assets by
+    absolute path loads them through the proxy prefix rather than the shell's own
+    ``/static`` mount."""
     import urllib.error
     import urllib.request
 
@@ -370,10 +408,14 @@ async def _reverse_proxy(request: Request, upstream: str, path: str, *, label: s
     )
     try:
         with urllib.request.urlopen(req, timeout=10) as r:
+            ctype = r.headers.get("content-type", "application/octet-stream")
+            data = r.read()
+            if html_prefix and "text/html" in ctype.lower():
+                data = _rewrite_html_asset_prefix(data, html_prefix)
             return Response(
-                content=r.read(),
+                content=data,
                 status_code=r.status,
-                media_type=r.headers.get("content-type", "application/octet-stream"),
+                media_type=ctype,
             )
     except urllib.error.HTTPError as e:
         return Response(
@@ -615,7 +657,9 @@ async def skdashboard_proxy(path: str, request: Request):
     still 401s, so the leak stays closed."""
     how = _authorize_module_proxy(request, "skdashboard")
     upstream = os.environ.get("SKDASHBOARD_URL", "http://127.0.0.1:7778")
-    resp = await _reverse_proxy(request, upstream, path, label="skdashboard")
+    resp = await _reverse_proxy(
+        request, upstream, path, label="skdashboard", html_prefix="/skdashboard"
+    )
     if how == "embed" and presented_via_query(request):
         _set_embed_cookie(resp, request, "skdashboard")
     return resp
