@@ -122,6 +122,12 @@ async def operator_create_invite(group_id: str, request: Request, mode: str = "g
     behaviour (invite into the existing ``group_id``). Returns ``{token,
     join_url, ...}``. Operator-gated (tailnet/loopback or
     ``SKCHAT_GUEST_OPERATOR_TOKEN``); 404 when the feature flag is off.
+
+    ``mode=dm`` additionally accepts: ``reusable?`` (mints the operator's
+    standing my-DM-link — never single-use, carries a ``dm_reuse`` claim) and
+    ``alias?``/``contact_ttl?`` (pre-set nickname + contact-expiry TTL for the
+    invite, stored server-side keyed by ``jti`` — never in the JWT payload or
+    any response).
     """
     _require_flag_operator()
     from skchat.guest import _require_operator
@@ -142,13 +148,35 @@ async def operator_create_invite(group_id: str, request: Request, mode: str = "g
 
     if (mode or "group").strip().lower() == "dm":
         # A 1:1 DM invite mints its OWN 2-seat guest group; the path group_id is
-        # not used. DMs default single-use (override via body).
+        # not used. DMs default single-use (override via body); ``reusable`` mints
+        # the operator's standing my-DM-link instead (never single-use).
+        reusable = bool(body.get("reusable", False))
+        single_use = False if reusable else bool(body.get("single_use", True))
         try:
-            result = GG.create_dm_invite(single_use=bool(body.get("single_use", True)), ttl=ttl)
+            result = GG.create_dm_invite(single_use=single_use, ttl=ttl, reusable=reusable)
         except RuntimeError as exc:  # secret unset
             raise HTTPException(503, str(exc)) from exc
+
+        # Pre-set alias + contact-expiry TTL: sidecar-only, keyed by jti. NEVER
+        # placed in the JWT payload or echoed back in this (or any /guest/*)
+        # response — see the SPEC CORRECTION note on the sidecar functions.
+        alias_raw = body.get("alias")
+        alias = (str(alias_raw).strip() or None) if alias_raw not in (None, "") else None
+        contact_ttl_raw = body.get("contact_ttl")
+        contact_ttl = None
+        if contact_ttl_raw is not None:
+            try:
+                contact_ttl = int(contact_ttl_raw)
+            except (TypeError, ValueError):
+                contact_ttl = None
+        if alias is not None or contact_ttl is not None:
+            GG.store_dm_invite_meta(result["jti"], alias=alias, contact_ttl=contact_ttl)
+
         logger.info(
-            "guest-group DM invite minted (jti=%s gid=%s)", result["jti"], result["group_id"]
+            "guest-group DM invite minted (jti=%s gid=%s reusable=%s)",
+            result["jti"],
+            result["group_id"],
+            reusable,
         )
         return JSONResponse(result)
 
@@ -198,6 +226,19 @@ def _operator_signed_prekey():
         return None
 
 
+def _dm_operator_display_name(group) -> str:
+    """The operator's display name for a ``mode=dm`` invite landing page.
+
+    Seat 1 (the group creator) is the admin; at mint time it is the only
+    member. Falls back to the first member if no admin is recorded.
+    """
+    for admin_uri in group.admin_uris:
+        member = group.get_member(admin_uri)
+        if member is not None:
+            return member.display_name
+    return group.members[0].display_name if group.members else ""
+
+
 @router.get("/guest/invite/{token}")
 async def guest_invite_preview(token: str):
     """Public-of-tailnet preview of an invite (group name) for the landing page.
@@ -222,6 +263,9 @@ async def guest_invite_preview(token: str):
         "group_name": group.name,
         "expires_at": info["exp"],
     }
+    if group.metadata.get("mode") == "dm":
+        resp["mode"] = "dm"
+        resp["operator_name"] = _dm_operator_display_name(group)
     # Phase 1: surface the operator-signed material so the joiner can verify the
     # operator signature (under the FULL inline pubkey) and the bundle commitment
     # BEFORE the handshake — fail-closed, no directory lookup (C1/C2/H3).
