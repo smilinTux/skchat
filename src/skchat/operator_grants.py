@@ -63,28 +63,30 @@ SEND_CAPABILITY = "skchat.send"  # act on the wire (min mode VERIFIED)
 GROUPS_CAPABILITY = "skchat.groups"  # mutate shared group state (min mode VERIFIED)
 CALLS_CAPABILITY = "skchat.calls"  # ring/join/mint LiveKit tokens (min mode VERIFIED)
 
-#: The operator-seat bundle that is grantable TODAY at the device's ``attested``
-#: enrollment (SKWorld Authorization Model L2.4). Every capability here has a
-#: minimum mode of TOFU or ATTESTED, so ``decide`` allows it for an attested
-#: operator device with no pairing change. ``skchat.prekey`` + ``skchat.inbox``
-#: are the shipped grants; ``skchat.status`` (read metadata), ``skchat.media.write``
-#: (uploads), and ``skchat.voice`` (STT/TTS) are the newly-minted additions.
+#: The full operator-seat bundle (SKWorld Authorization Model L2.4; Option A
+#: adopted 2026-08-06). An operator device is enrolled ``verified`` (see
+#: ``_GRANT_MODE``) because the operator pairing ceremony IS a verification event,
+#: so the operator holds all eight skchat capabilities, including the verified-tier
+#: ``skchat.send`` / ``skchat.groups`` / ``skchat.calls`` its own app traffic
+#: exercises. IMPORTANT: verified MODE is necessary-not-sufficient, each capability
+#: still requires its own token issued here, so elevating the device mode does NOT
+#: over-grant beyond this explicit bundle (the operator gains no skcode/other
+#: verified-tier capability without a token for it).
 OPERATOR_CAPABILITIES = [
     PREKEY_CAPABILITY,
     INBOX_CAPABILITY,
     STATUS_CAPABILITY,
     MEDIA_WRITE_CAPABILITY,
     VOICE_CAPABILITY,
+    SEND_CAPABILITY,
+    GROUPS_CAPABILITY,
+    CALLS_CAPABILITY,
 ]
 
-#: DEFERRED operator grants (SKWorld Authorization Model L2.4): the verified-tier
-#: capabilities the operator's own app traffic exercises (``skchat.send`` POSTs,
-#: group creation, placing calls). They are NOT minted here because an operator
-#: device enrolls ``attested`` while these require ``verified``. Granting them
-#: needs the "operator ceremony == verified" pairing change (its own review +
-#: backfill, Chef's call), which this work deliberately does NOT touch. Recorded
-#: as a constant so the deferral is explicit and diff-reviewable, not a silent gap.
-OPERATOR_DEFERRED_CAPABILITIES = [SEND_CAPABILITY, GROUPS_CAPABILITY, CALLS_CAPABILITY]
+#: No operator grants are deferred now (Option A adopted): the operator ceremony
+#: earns ``verified``, so the verified-tier caps are in the bundle above. Kept as
+#: an empty constant for back-compat with callers/tests that reference it.
+OPERATOR_DEFERRED_CAPABILITIES: list[str] = []
 
 #: The full agent bundle (subjects like ``lumina@chef.skworld`` / ``opus@chef.skworld``),
 #: which enroll ``verified`` and so hold all eight capabilities (L2.4). The base
@@ -101,11 +103,14 @@ AGENT_CAPABILITIES = [
     CALLS_CAPABILITY,
 ]
 
-#: Enrollment mode recorded for the operator device. ``skchat.prekey`` requires
-#: at least ``attested``; the operator-gated, signature-verified handshake earns it
-#: (and ``attested`` also satisfies ``skchat.inbox``'s ``TOFU`` minimum, plus the
-#: TOFU/ATTESTED floors of ``status``/``media.write``/``voice``).
-_GRANT_MODE = "attested"
+#: Enrollment mode recorded for the operator device (Option A, 2026-08-06):
+#: ``verified``. The operator pairing ceremony is operator-gated (loopback/tailnet
+#: or the operator token) AND the device signs over a fresh operator-issued window
+#: nonce, cryptographic proof of key possession under sovereign authorization,
+#: which IS verification. This lets the operator hold the verified-tier caps
+#: (send/groups/calls). Only the full ceremony earns ``verified``; bare TOFU and
+#: guest enrollment paths keep their own (lower) modes.
+_GRANT_MODE = "verified"
 
 
 def grant_operator_capabilities(device_fp: str, device_pubkey_b64: str) -> bool:
@@ -153,38 +158,56 @@ grant_operator_prekey_capability = grant_operator_capabilities
 
 
 def backfill_operator_capabilities(base_dir=None) -> int:
-    """Grant ``skchat.inbox`` (+ non-expiring prekey) to every already-enrolled
-    operator device that is missing it. Idempotent; returns the number of
-    subjects updated. Use once after deploying the inbox grant to reconcile
-    devices enrolled before it (they carry prekey-only, so their inbox polls
-    diverge under the PDP).
+    """Reconcile every already-enrolled operator device to the CURRENT model:
+    elevate its device record to ``verified`` (Option A) and re-issue the full
+    non-expiring :data:`OPERATOR_CAPABILITIES` bundle. Idempotent; returns the
+    number of subjects updated.
+
+    Elevation matters because the PDP checks the DEVICE RECORD's enrollment mode
+    (not the token) against each capability's minimum mode, so the verified-tier
+    caps (send/groups/calls) only pass once the device record itself is verified.
+    Re-enrolling with the device's stored pubkey upserts that record in place
+    (``store.upsert_device``), it does not create a duplicate or a new device.
+    Best-effort per subject; a capauth error is logged and skipped, never raised.
     """
     try:
-        from capauth.pairing import default_base_dir
+        from capauth.pairing import (
+            approve,
+            default_base_dir,
+            enroll_device,
+            list_devices,
+        )
         from capauth.tokens import issue_token, list_tokens
     except Exception:
         logger.warning("backfill: capauth unavailable", exc_info=True)
         return 0
 
     base = base_dir if base_dir is not None else default_base_dir()
-    # Every enrolled operator subject (from ANY token, active or expired), and the
-    # subset that already holds an ACTIVE inbox grant. The polling device that
-    # diverges is typically one whose short-TTL token expired, so discovery must
-    # NOT filter on active - only the "already covered" check does.
+    # Every enrolled operator subject (from ANY token, active or expired).
     all_operators: set[str] = set()
-    has_active_inbox: set[str] = set()
     for t in list_tokens(base):
         subj = getattr(t.payload, "subject", None)
-        if not subj or not str(subj).startswith("operator:"):
-            continue
-        all_operators.add(subj)
-        caps = getattr(t.payload, "capabilities", []) or []
-        if t.payload.is_active and INBOX_CAPABILITY in caps:
-            has_active_inbox.add(subj)
+        if subj and str(subj).startswith("operator:"):
+            all_operators.add(subj)
 
     updated = 0
-    for subject in all_operators - has_active_inbox:
+    for subject in all_operators:
         try:
+            # Elevate every device record for this operator subject to verified,
+            # re-enrolling with its own stored pubkey (upsert in place).
+            for dev in list_devices(subject, base_dir=base):
+                pubkey = getattr(dev, "pubkey", None)
+                if not pubkey:
+                    continue
+                enrollment = enroll_device(
+                    pubkey,
+                    OPERATOR_CAPABILITIES,
+                    mode=_GRANT_MODE,
+                    subject=subject,
+                    base_dir=base,
+                )
+                approve(enrollment.enrollment_id, "skchat", base_dir=base)
+            # Re-issue the full non-expiring bundle.
             issue_token(base, subject, OPERATOR_CAPABILITIES, ttl_hours=None, sign=False)
             updated += 1
         except Exception:

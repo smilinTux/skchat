@@ -124,6 +124,7 @@ _ROUTE_CAPABILITY_RULES: tuple[tuple[str, str, str], ...] = (
     ("GET", "/agent/state", CAP_STATUS),
     ("GET", "/adapters", CAP_STATUS),
     ("GET", "/api/board", CAP_STATUS),  # interim; migrates to skboard.read (L1.8)
+    ("GET", "/api/v1/guest-dm/contacts", CAP_STATUS),  # operator-only: read the dm_contacts registry
     # --- skchat.prekey (publish/sign/delete own prekey bundles) ------------- #
     ("POST", "/api/v1/prekey", CAP_PREKEY),
     ("POST", "/api/v1/prekey/sign", CAP_PREKEY),
@@ -150,6 +151,9 @@ _ROUTE_CAPABILITY_RULES: tuple[tuple[str, str, str], ...] = (
     ("DELETE", "/api/v1/groups/{group_id}/members/{identity}", CAP_GROUPS),
     ("POST", "/api/v1/groups/{group_id}/invite", CAP_GROUPS),
     ("DELETE", "/api/v1/groups/{group_id}/invite/{token}", CAP_GROUPS),
+    # operator-only dm_contacts registry mutations (partial-update, revoke invite jti)
+    ("PATCH", "/api/v1/guest-dm/contacts/{fp}", CAP_GROUPS),
+    ("POST", "/api/v1/guest-dm/contacts/{fp}/revoke", CAP_GROUPS),
     # --- skchat.calls (ring peers / join calls / mint LiveKit tokens) ------- #
     ("POST", "/api/v1/access/token", CAP_CALLS),  # mints a LiveKit token as the identity
     ("POST", "/api/v1/groups/{group_id}/call/start", CAP_CALLS),
