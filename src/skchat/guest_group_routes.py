@@ -972,13 +972,62 @@ async def guest_file_download(transfer_id: str, request: Request):
 # --------------------------------------------------------------------------- #
 # Guest: (re)mint a LiveKit call token for the bound group
 # --------------------------------------------------------------------------- #
+async def _ring_operator_for_guest_call(session: GG.GuestSession, group, room: str) -> None:
+    """S6: notify the operator that a guest is requesting a call (dm groups only).
+
+    Skipped entirely - no ws event, no alert - when the guest's ``dm_contacts``
+    row is muted (still mints a working token; the caller does that before this
+    runs). The alias is looked up server-side and only ever placed in the
+    operator-facing ws payload, never echoed back to the guest.
+    """
+    contact = GG.get_dm_contact(session.fp)
+    if contact is not None and contact.get("muted"):
+        return
+    alias = contact.get("alias") if contact is not None else None
+
+    try:
+        from skchat import webui as _webui
+
+        payload = {
+            "type": "guest_call",
+            "group_id": group.id,
+            "guest_id": session.guest_id,
+            "display": session.name,
+        }
+        if alias:
+            payload["alias"] = alias
+        await _webui._ws_broadcast(payload)
+    except Exception:
+        logger.debug("guest_call ws broadcast unavailable", exc_info=True)
+
+    try:
+        from skchat import call_observability as CO
+
+        operator_uri = group.admin_uris[0] if group.admin_uris else "operator"
+        CO.alert_operator(
+            from_fqid=session.guest_id,
+            to_fqid=operator_uri,
+            room=room,
+            topic=f"guest call from {alias or session.name}",
+        )
+    except Exception as exc:  # noqa: BLE001 - observability must not break the call
+        logger.debug("guest call operator alert skipped: %s", exc)
+
+
 @router.post("/guest/call")
 async def guest_call(request: Request):
     """Mint a fresh LiveKit guest call token for the bound group's room.
 
-    Body (optional): ``{group_id?}`` (must match the token's group if present).
-    Returns the same shape as the join response's ``call`` block: publish
-    audio/video/**screen** + subscribe, never room_admin.
+    Body (optional): ``{group_id?, ring?}`` (``group_id`` must match the
+    token's group if present). Returns the same shape as the join response's
+    ``call`` block: publish audio/video/**screen** + subscribe, never
+    room_admin.
+
+    ``ring: true`` on a ``metadata.mode="dm"`` group additionally rings the
+    operator - a ``guest_call`` ws event (S4-style ``{type: new}`` nudge
+    pattern) plus a best-effort ``call_observability.alert_operator`` alert -
+    unless the guest's ``dm_contacts`` row is muted. Omitted/false keeps this a
+    silent token remint (unchanged behaviour); non-dm guest groups never ring.
     """
     _require_flag_guest()
     session = _guest_session(request)
@@ -988,9 +1037,12 @@ async def guest_call(request: Request):
     except Exception:
         body = {}
     _assert_same_group(session, (body.get("group_id") or "").strip())
+    ring = bool(body.get("ring", False))
     call = _mint_guest_call_token(group.id, session.guest_id, session.name, request)
     if not call.get("available"):
         raise HTTPException(503, "livekit not configured")
+    if ring and group.metadata.get("mode") == "dm":
+        await _ring_operator_for_guest_call(session, group, call["room"])
     return JSONResponse(call)
 
 
