@@ -165,3 +165,45 @@ def test_group_msg_to_app_suppresses_quoted_on_sealed():
     )
     out2 = daemon_proxy._group_msg_to_app(m2, group_id="g1")
     assert out2["quoted_text"] == "visible group quote"
+
+
+# ── Sealed reply-quote envelope (skq1:) unwrap (fix/sealed-reply-quote) ────────
+
+
+def test_unwrap_skq1_yields_body_and_quoted():
+    """`skq1:` + json({t,q,qs,qi}) unwraps to the real body + quoted map."""
+    import json
+
+    payload = "skq1:" + json.dumps(
+        {"t": "real body", "q": "the quote", "qs": "Chef", "qi": "orig-9"}
+    )
+    body, quoted = daemon_proxy._unwrap_skq1(payload)
+    assert body == "real body"
+    assert quoted == {
+        "quoted_text": "the quote",
+        "quoted_sender": "Chef",
+        "quoted_id": "orig-9",
+    }
+
+
+def test_unwrap_skq1_plain_string_is_passthrough():
+    """A plaintext without the prefix yields (string, {}) unchanged."""
+    body, quoted = daemon_proxy._unwrap_skq1("just a normal message")
+    assert body == "just a normal message"
+    assert quoted == {}
+
+
+def test_unwrap_skq1_malformed_falls_back_to_raw():
+    """A `skq1:` prefix over non-JSON falls back to the raw string, empty map."""
+    body, quoted = daemon_proxy._unwrap_skq1("skq1:{not valid json")
+    assert body == "skq1:{not valid json"
+    assert quoted == {}
+
+
+def test_unwrap_skq1_wrapper_without_quote_is_body_only():
+    """A wrapper carrying only `t` (no q/qs/qi) yields the body + empty map."""
+    import json
+
+    body, quoted = daemon_proxy._unwrap_skq1("skq1:" + json.dumps({"t": "hi"}))
+    assert body == "hi"
+    assert quoted == {}
