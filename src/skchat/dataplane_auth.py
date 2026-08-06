@@ -363,6 +363,17 @@ def enforce_dataplane_auth(request: Request) -> None:
 
     # enforce: the PDP governs. Unknown capability or a decide() error fails closed.
     if capability is None or not pdp_allow:
+        # We only reach here having passed authentication (legacy allow), so ANY
+        # PDP deny in enforce is a divergence from the legacy outcome. Log it as the
+        # enforce-deny signal (the rollback guard watches this line to auto-revert to
+        # shadow if the enforce flip starts 403ing legitimate traffic), then fail closed.
+        logger.warning(
+            "authz PDP enforce-deny path=%s cap=%s subject=%s pdp=%s",
+            request.url.path,
+            capability,
+            _redact(_extract_subject(token)),
+            pdp_allow,
+        )
         raise HTTPException(status_code=403, detail="capauth authorization denied")
 
 

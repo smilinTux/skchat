@@ -102,6 +102,22 @@ def test_enforce_denies_when_pdp_denies(monkeypatch):
     assert ei.value.status_code == 403  # authenticated but not authorized
 
 
+def test_enforce_deny_logs_guard_signal(monkeypatch, caplog):
+    """Every enforce 403 must emit 'authz PDP enforce-deny' so the rollback guard
+    can watch for a legitimate (authenticated) request being denied and auto-revert."""
+    import logging
+
+    monkeypatch.setenv("SKCHAT_DATAPLANE_AUTH", "1")
+    monkeypatch.setenv("SKCHAT_AUTHZ_PDP", "enforce")
+    dataplane_auth.set_validator(_Stub(True))
+    monkeypatch.setattr(dataplane_auth, "_extract_subject", lambda t: "lumina@host")
+    monkeypatch.setattr("capauth.authz.decide", lambda *a, **k: _decision(False))
+    with caplog.at_level(logging.WARNING, logger="skchat.dataplane_auth"):
+        with pytest.raises(HTTPException):
+            dataplane_auth.enforce_dataplane_auth(_req("/api/v1/inbox"))
+    assert any("authz PDP enforce-deny" in r.message for r in caplog.records)
+
+
 def test_enforce_allows_when_pdp_allows(monkeypatch):
     monkeypatch.setenv("SKCHAT_DATAPLANE_AUTH", "1")
     monkeypatch.setenv("SKCHAT_AUTHZ_PDP", "enforce")
