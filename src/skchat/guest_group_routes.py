@@ -93,21 +93,44 @@ def _guest_session(request: Request) -> GG.GuestSession:
 
 
 def _enforce_dm_contact_status(session: GG.GuestSession) -> None:
-    """S3 chokepoint: a BOUND dm guest whose contact is revoked/expired gets a
+    """S3/G3 chokepoint: a BOUND dm guest whose access has been cut gets a
     clear, distinguishable 403 on every route - never a generic failure.
 
-    Guests with no ``dm_contacts`` row (classic non-dm guest-group members) and
-    a contact row bound to some OTHER group (defensive - the fp collided with
-    an unrelated dm elsewhere) are unaffected.
+    Three independent, distinguishable reasons (guest-dm G3 generalizes this
+    from person-only to person + per-group + group):
+
+    * ``contact_revoked`` / ``contact_expired`` - PERSON-level (``dm_contacts``,
+      fp-keyed). Applies to EVERY group this person is in, not just the one
+      the session is bound to - a person-level revoke kills all their rooms.
+    * ``membership_revoked`` - PER-GROUP (``dm_contact_memberships``, keyed by
+      ``(fp, group_id)``). Scoped to only the session's bound group; the same
+      person's other rooms are unaffected.
+    * ``group_expired`` - the bound dm-family group's optional
+      ``metadata.expires_at`` has passed; affects every guest of that group,
+      operator history is retained.
+
+    Guests with no ``dm_contacts`` row (classic non-dm guest-group members)
+    are unaffected by the person/membership checks.
     """
     contact = GG.get_dm_contact(session.fp)
-    if contact is None or contact.get("group_id") != session.group_id:
-        return
-    if contact.get("status") == "revoked":
-        raise HTTPException(403, detail={"reason": "contact_revoked"})
-    expires_at = contact.get("contact_expires_at")
-    if expires_at is not None and float(expires_at) <= time.time():
-        raise HTTPException(403, detail={"reason": "contact_expired"})
+    if contact is not None:
+        if contact.get("status") == "revoked":
+            raise HTTPException(403, detail={"reason": "contact_revoked"})
+        expires_at = contact.get("contact_expires_at")
+        if expires_at is not None and float(expires_at) <= time.time():
+            raise HTTPException(403, detail={"reason": "contact_expired"})
+
+    membership = GG.get_membership(session.fp, session.group_id)
+    if membership is not None and membership.get("status") == "revoked":
+        raise HTTPException(403, detail={"reason": "membership_revoked"})
+
+    from skchat import daemon_proxy_groups as G
+
+    group = G.load_group(session.group_id)
+    if group is not None and GG.is_guest_dm_like(group):
+        group_expires_at = group.metadata.get("expires_at")
+        if group_expires_at is not None and float(group_expires_at) <= time.time():
+            raise HTTPException(403, detail={"reason": "group_expired"})
 
 
 def _bound_group(session: GG.GuestSession):
@@ -579,13 +602,20 @@ def _dm_reentry(peek: dict, guest_pubkey: str, request: Request):
         keeps its group_id, so a pre-promotion invite's jti still resolves
         here) group that still exists;
       * the presenting ``guest_pubkey``'s fingerprint has an ACTIVE (not
-        revoked/expired) ``dm_contacts`` row bound to that exact jti + group;
-      * that contact's guest_id is already a member of the group.
+        revoked/expired) PERSON row (``dm_contacts`` - guest-dm G3: this check
+        is person-wide, not gated to this group);
+      * that same fp has an ACTIVE membership (``dm_contact_memberships``) for
+        THIS group, bound to that exact jti (guest-dm G3: per-group, so a
+        revoke of one of this person's OTHER groups never blocks re-entry
+        here, and a per-group revoke of THIS group always does);
+      * that guest is still a member of the group (found via its ``#<fp>``
+        roster suffix - see :func:`skchat.guest_groups.find_guest_id_by_fp`).
 
     Returns ``None`` on any mismatch (wrong key, stranger, revoked/expired
-    contact, non-dm-family group, vanished group/membership) so the caller
-    falls through to the same generic 401 every other invalid presenter gets -
-    no oracle distinguishing "almost, but not quite" from "never valid".
+    person, revoked membership, non-dm-family group, vanished group/member)
+    so the caller falls through to the same generic 401 every other invalid
+    presenter gets - no oracle distinguishing "almost, but not quite" from
+    "never valid".
     """
     if not peek.get("single_use"):
         return None
@@ -603,19 +633,22 @@ def _dm_reentry(peek: dict, guest_pubkey: str, request: Request):
 
     fp = GG.pubkey_fingerprint(guest_pubkey)
     contact = GG.get_dm_contact(fp)
-    if (
-        contact is None
-        or contact.get("invite_jti") != jti
-        or contact.get("group_id") != group.id
-        or contact.get("status") != "active"
-    ):
+    if contact is None or contact.get("status") != "active":
         return None
     expires_at = contact.get("contact_expires_at")
     if expires_at is not None and float(expires_at) <= time.time():
         return None
 
-    guest_id = contact["guest_id"]
-    member = group.get_member(guest_id)
+    membership = GG.get_membership(fp, group.id)
+    if (
+        membership is None
+        or membership.get("invite_jti") != jti
+        or membership.get("status") != "active"
+    ):
+        return None
+
+    guest_id = GG.find_guest_id_by_fp(group, fp)
+    member = group.get_member(guest_id) if guest_id else None
     if member is None:
         return None
 
@@ -1683,6 +1716,28 @@ async def guest_dm_contact_revoke(fp: str, request: Request):
         raise HTTPException(404, "contact not found")
     logger.info("dm contact revoked: fp=%s", fp)
     return JSONResponse({"ok": True, "revoked_fp": fp})
+
+
+@router.post("/guest-dm/contacts/{fp}/groups/{group_id}/revoke")
+async def guest_dm_membership_revoke(fp: str, group_id: str, request: Request):
+    """Operator-only: revoke ONE guest's membership in ONE dm-family group.
+
+    guest-dm G3, per-group revoke: unlike ``.../contacts/{fp}/revoke`` (person-
+    level, kills every room), this removes the guest from ``group_id``'s
+    roster + ``metadata.guests`` and marks just that ``(fp, group_id)``
+    membership row revoked - the group, its other guests, and this same
+    person's OTHER rooms are all untouched. 404 if no membership row exists
+    for ``(fp, group_id)``.
+    """
+    _require_flag_operator()
+    from skchat.guest import _require_operator
+
+    _require_operator(request)
+
+    if not GG.revoke_group_membership(fp, group_id):
+        raise HTTPException(404, "membership not found")
+    logger.info("dm membership revoked: fp=%s group=%s", fp, group_id)
+    return JSONResponse({"ok": True, "revoked_fp": fp, "group_id": group_id})
 
 
 def register_guest_group_routes(app) -> None:
