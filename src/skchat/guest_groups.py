@@ -333,13 +333,25 @@ class InviteInvalid(Exception):
 
 
 def verify_group_invite(
-    token: str, *, burn_single_use: bool = True, expected_aud: Optional[str] = None
+    token: str,
+    *,
+    burn_single_use: bool = True,
+    expected_aud: Optional[str] = None,
+    check_used: bool = True,
 ) -> dict:
     """Verify an invite token → ``{jti, group_id, exp, single_use}``.
 
     Raises :class:`InviteInvalid` for any bad/expired/revoked/used token. When
     ``burn_single_use`` is True a ``once`` invite is atomically burned here (so a
     second join loses the race) — pass False to peek without consuming (preview).
+
+    ``check_used=False`` additionally skips the "already used" rejection for a
+    single-use invite (signature/tier/revocation/expiry/audience are still fully
+    enforced) — used by the S3 DM re-entry peek, which needs the invite's
+    ``group_id``/``jti`` even though its single-use jti is already burned.
+    ``burn_single_use`` still atomically fails on an already-used jti regardless
+    of this flag (the primary-key insert is the real guard), so this can never
+    be used to sneak a second burn through.
     """
     import jwt as _jwt
     from jwt.exceptions import PyJWTError
@@ -380,7 +392,7 @@ def verify_group_invite(
     exp = float(payload["exp"])
     single_use = bool(payload.get("once"))
     if single_use:
-        if _is_used(jti):
+        if check_used and _is_used(jti):
             raise InviteInvalid(f"single-use invite {jti!r} already used")
         if burn_single_use and not _mark_used(jti, expires_at=exp):
             raise InviteInvalid(f"single-use invite {jti!r} already used")
@@ -758,6 +770,39 @@ def get_dm_contact(fp: str) -> Optional[dict]:
         "last_seen_at",
     )
     return dict(zip(keys, row))
+
+
+def revoke_dm_contact(fp: str) -> bool:
+    """Revoke a guest contact (S3 semantics; the operator-facing route is S4).
+
+    Marks the ``dm_contacts`` row ``status='revoked'`` — the S3 enforcement
+    chokepoint (``guest_group_routes._enforce_dm_contact_status``) then 403s
+    every guest route for this fp on its next request, and re-entry via a
+    burned single-use jti is blocked (the re-entry check requires an active
+    contact). Also revokes the invite ``jti`` that admitted this contact
+    (``guest.revoke_invite``) so the link itself dies, not just this session.
+
+    Returns True iff a contact row existed for ``fp`` (False is a no-op).
+    """
+    from skchat.guest import revoke_invite
+
+    f = (fp or "").strip()
+    if not f:
+        return False
+    contact = get_dm_contact(f)
+    if contact is None:
+        return False
+    with _store_lock:
+        conn = _connect()
+        try:
+            conn.execute("UPDATE dm_contacts SET status = 'revoked' WHERE fp = ?", (f,))
+            conn.commit()
+        finally:
+            conn.close()
+    jti = contact.get("invite_jti")
+    if jti:
+        revoke_invite(jti)
+    return True
 
 
 def resolve_dm_admission_group(info: dict, fp: str, *, now_fn=None):
