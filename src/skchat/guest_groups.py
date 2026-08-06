@@ -587,6 +587,31 @@ def _connect() -> sqlite3.Connection:
         "  last_seen_at REAL"
         ")"
     )
+    # guest-dm G3: the PERSON registry (dm_contacts, fp-keyed: alias/muted/
+    # status) is split from PER-GROUP membership - a person can now hold
+    # active rooms in more than one dm-family group (a DM plus a gdm) at
+    # once. One row per (fp, group_id).
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS dm_contact_memberships ("
+        "  fp TEXT NOT NULL,"
+        "  group_id TEXT NOT NULL,"
+        "  invite_jti TEXT,"
+        "  status TEXT NOT NULL DEFAULT 'active',"
+        "  added_at REAL NOT NULL,"
+        "  PRIMARY KEY (fp, group_id)"
+        ")"
+    )
+    # One-time-per-row migration of legacy (pre-G3) dm_contacts rows, each of
+    # which held exactly one group_id: give it a matching membership row.
+    # INSERT OR IGNORE + the (fp, group_id) primary key make this idempotent
+    # and safe to run on every connect - it never overwrites a row a live
+    # upsert/revoke already created or touched.
+    conn.execute(
+        "INSERT OR IGNORE INTO dm_contact_memberships"
+        " (fp, group_id, invite_jti, status, added_at)"
+        " SELECT fp, group_id, invite_jti, COALESCE(status, 'active'), created_at"
+        " FROM dm_contacts WHERE group_id IS NOT NULL AND group_id != ''"
+    )
     conn.commit()
     return conn
 
@@ -767,9 +792,173 @@ def upsert_dm_contact(
                     " alias = ?, contact_expires_at = ?, last_seen_at = ? WHERE fp = ?",
                     (guest_id, group_id, invite_jti, final_alias, final_expires, now, f),
                 )
+            # guest-dm G3: every dm-family admission also upserts the
+            # PER-GROUP membership row (fp, group_id) - this is what lets the
+            # same person hold independent active/revoked state in more than
+            # one dm-family group at once.
+            _upsert_membership_locked(conn, f, group_id, invite_jti=invite_jti, now=now)
             conn.commit()
         finally:
             conn.close()
+
+
+# ── Per-group membership registry (guest-dm G3) ─────────────────────────────
+# ``dm_contact_memberships`` is keyed by ``(fp, group_id)`` - the PERSON
+# registry above (``dm_contacts``) stays fp-global (alias/mute/status apply to
+# every room the person is in); this table tracks whether THIS specific
+# person is still an active member of THIS specific dm-family group, so a
+# per-group revoke can pull one guest out of one room without touching any of
+# their other rooms or the shared person row.
+
+_MEMBERSHIP_COLUMNS = ("fp", "group_id", "invite_jti", "status", "added_at")
+_MEMBERSHIP_SELECT = "SELECT " + ", ".join(_MEMBERSHIP_COLUMNS) + " FROM dm_contact_memberships"
+
+
+def _upsert_membership_locked(
+    conn: sqlite3.Connection, fp: str, group_id: str, *, invite_jti, now: float
+) -> None:
+    """Insert/refresh a membership row using an ALREADY-OPEN connection.
+
+    Callers must already hold ``_store_lock`` (this never acquires it) - used
+    both standalone (:func:`upsert_membership`) and inline from
+    :func:`upsert_dm_contact`, which holds the lock for its own transaction.
+    Mirrors ``upsert_dm_contact``: ``status`` is only ever set on INSERT
+    (default ``'active'``) - a rejoin refreshes ``invite_jti`` but never
+    silently un-revokes a membership a rejoin should not resurrect.
+    """
+    existing = conn.execute(
+        "SELECT 1 FROM dm_contact_memberships WHERE fp = ? AND group_id = ?", (fp, group_id)
+    ).fetchone()
+    if existing is None:
+        conn.execute(
+            "INSERT INTO dm_contact_memberships (fp, group_id, invite_jti, status, added_at)"
+            " VALUES (?, ?, ?, 'active', ?)",
+            (fp, group_id, invite_jti, now),
+        )
+    else:
+        conn.execute(
+            "UPDATE dm_contact_memberships SET invite_jti = ? WHERE fp = ? AND group_id = ?",
+            (invite_jti, fp, group_id),
+        )
+
+
+def upsert_membership(
+    fp: str, group_id: str, *, invite_jti: Optional[str] = None, now_fn=None
+) -> None:
+    """Insert or refresh the ``(fp, group_id)`` membership row standalone."""
+    f = (fp or "").strip()
+    gid = (group_id or "").strip()
+    if not f or not gid:
+        return
+    now = float((now_fn or time.time)())
+    with _store_lock:
+        conn = _connect()
+        try:
+            _upsert_membership_locked(conn, f, gid, invite_jti=invite_jti, now=now)
+            conn.commit()
+        finally:
+            conn.close()
+
+
+def get_membership(fp: str, group_id: str) -> Optional[dict]:
+    """Return the ``dm_contact_memberships`` row for ``(fp, group_id)``, or None."""
+    f = (fp or "").strip()
+    gid = (group_id or "").strip()
+    if not f or not gid:
+        return None
+    with _store_lock:
+        conn = _connect()
+        try:
+            row = conn.execute(
+                _MEMBERSHIP_SELECT + " WHERE fp = ? AND group_id = ?", (f, gid)
+            ).fetchone()
+        finally:
+            conn.close()
+    if row is None:
+        return None
+    return dict(zip(_MEMBERSHIP_COLUMNS, row))
+
+
+def list_memberships(fp: str) -> list[dict]:
+    """Return every membership row for a person (``fp``), most-recent first."""
+    f = (fp or "").strip()
+    if not f:
+        return []
+    with _store_lock:
+        conn = _connect()
+        try:
+            rows = conn.execute(
+                _MEMBERSHIP_SELECT + " WHERE fp = ? ORDER BY added_at DESC", (f,)
+            ).fetchall()
+        finally:
+            conn.close()
+    return [dict(zip(_MEMBERSHIP_COLUMNS, row)) for row in rows]
+
+
+def find_guest_id_by_fp(group, fp: str) -> Optional[str]:
+    """Find a group's guest_id for ``fp`` via the ``guest:<slug>#<fp>`` suffix.
+
+    ``dm_contact_memberships`` has no ``guest_id`` column (fp/group_id is the
+    whole key), and a guest's slug prefix can change across a rename or
+    across distinct groups - the ``#<fp>`` suffix is the stable part, so a
+    suffix scan of ``group.metadata['guests']`` is the reliable way back to
+    the roster entry for a given browser key.
+    """
+    if group is None:
+        return None
+    suffix = f"#{fp}"
+    for guest_id in group.metadata.get("guests") or {}:
+        if guest_id.endswith(suffix):
+            return guest_id
+    return None
+
+
+def revoke_group_membership(fp: str, group_id: str) -> bool:
+    """Per-group revoke (guest-dm G3): pull ONE guest out of ONE dm-family group.
+
+    Marks the ``(fp, group_id)`` membership row ``status='revoked'`` and
+    removes the guest from that group's roster
+    (:func:`daemon_proxy_groups.remove_member`) + its
+    ``metadata.guests`` sidecar entry, then saves. The PERSON row
+    (``dm_contacts``) and every OTHER membership for this ``fp`` are left
+    untouched - unlike :func:`revoke_dm_contact` (person-level), this never
+    touches the invite jti or any other room. The S3 chokepoint
+    (``guest_group_routes._enforce_dm_contact_status``) then 403s this guest
+    for THIS group only, with reason ``membership_revoked``.
+
+    Returns True iff a membership row existed for ``(fp, group_id)``.
+    """
+    f = (fp or "").strip()
+    gid = (group_id or "").strip()
+    if not f or not gid:
+        return False
+    if get_membership(f, gid) is None:
+        return False
+    with _store_lock:
+        conn = _connect()
+        try:
+            conn.execute(
+                "UPDATE dm_contact_memberships SET status = 'revoked'"
+                " WHERE fp = ? AND group_id = ?",
+                (f, gid),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    from skchat import daemon_proxy_groups as G
+
+    group = G.load_group(gid)
+    if group is not None:
+        guest_id = find_guest_id_by_fp(group, f)
+        if guest_id is not None:
+            G.remove_member(group, guest_id)
+            guests = dict(group.metadata.get("guests") or {})
+            if guest_id in guests:
+                del guests[guest_id]
+                group.metadata["guests"] = guests
+            G.save_group(group)
+    return True
 
 
 _DM_CONTACT_COLUMNS = (
