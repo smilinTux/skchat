@@ -1,4 +1,4 @@
-"""Tests for guest-dm G2 — group invite modes (epic 8685ede6).
+"""Tests for guest-dm G2 - group invite modes (epic 8685ede6).
 
 Depends on S1 (d964b5a7), S2 (a69e7d4e), G1 (8dc9cce0). Mirrors the 1:1 BOTH
 invite decision at group scope: per-person single-use invites into a gdm
@@ -159,7 +159,7 @@ def test_shared_link_dedupes_returning_fp(env, client):
     _join(client, inv["token"], name="Bob", pubkey="KEY-B")
     before = G.load_group(gid).member_count
 
-    # Bob returns via the same standing link — idempotent, no new seat.
+    # Bob returns via the same standing link - idempotent, no new seat.
     r_again = _join(client, inv["token"], name="Bob", pubkey="KEY-B")
     assert r_again.status_code == 200, r_again.text
     assert r_again.json()["group"]["id"] == gid
@@ -223,7 +223,7 @@ def test_revoke_shared_link_blocks_new_joins_not_existing_sessions(env, client):
     r_dana = _join(client, inv["token"], name="Dana", pubkey="KEY-D")
     assert r_dana.status_code == 401
 
-    # Bob's EXISTING session keeps working — his access is governed by
+    # Bob's EXISTING session keeps working - his access is governed by
     # contact/membership status, not the (now-dead) invite jti.
     conv = client.get("/api/v1/guest/conversation", headers=_auth(bob_session))
     assert conv.status_code == 200, conv.text
