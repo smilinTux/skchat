@@ -5,11 +5,11 @@ Two route families, both gated by ``SKCHAT_GUEST_LINKS_ENABLED``:
 * **Operator** (capauth/operator-gated, reuses ``guest._require_operator``):
   mint / list / revoke a room-scoped invite for a group.
 * **Guest** (guest-session-token-gated): join, then the FULL in-room kit for the
-  ONE bound group — read history, send signed messages, react, upload+download
+  ONE bound group - read history, send signed messages, react, upload+download
   files, and get a LiveKit guest call token (publish A/V/screen). EVERYTHING is
   pinned to the ``group_id`` carried in the guest's session token; a request for
   any other group/conversation/file → 403. There is NO guest endpoint for
-  invite/create/admin/peer-list/agent-tools — that surface simply does not exist.
+  invite/create/admin/peer-list/agent-tools - that surface simply does not exist.
 
 When the flag is OFF: operator routes 404, guest routes 403 (no oracle).
 """
@@ -33,7 +33,7 @@ logger = logging.getLogger("skchat.guest_group_routes")
 
 router = APIRouter(prefix="/api/v1")
 
-# Max guest upload (50 MiB — smaller than the operator cap; guests are untrusted).
+# Max guest upload (50 MiB - smaller than the operator cap; guests are untrusted).
 MAX_GUEST_UPLOAD = 50 * 1024 * 1024
 
 # Transfer-id charset guard (path component served from disk).
@@ -71,7 +71,9 @@ def _guest_session(request: Request) -> GG.GuestSession:
     """Extract + verify the guest session token from the request, or 403.
 
     Accepted as ``Authorization: Bearer <jwt>`` or ``X-Guest-Token: <jwt>``.
-    The returned session pins the request to exactly one group_id.
+    The returned session pins the request to exactly one group_id. This is the
+    S3 enforcement chokepoint: every guest route funnels through here, so the
+    ``dm_contacts`` revoked/expired check runs on every request, not just join.
     """
     headers = request.headers
     tok = (headers.get("x-guest-token") or "").strip()
@@ -82,10 +84,30 @@ def _guest_session(request: Request) -> GG.GuestSession:
     if not tok:
         raise HTTPException(403, "guest session token required")
     try:
-        return GG.verify_guest_session(tok)
+        session = GG.verify_guest_session(tok)
     except GG.SessionInvalid as exc:
         logger.info("guest session rejected: %s", exc)
         raise HTTPException(403, "invalid or expired guest session") from exc
+    _enforce_dm_contact_status(session)
+    return session
+
+
+def _enforce_dm_contact_status(session: GG.GuestSession) -> None:
+    """S3 chokepoint: a BOUND dm guest whose contact is revoked/expired gets a
+    clear, distinguishable 403 on every route - never a generic failure.
+
+    Guests with no ``dm_contacts`` row (classic non-dm guest-group members) and
+    a contact row bound to some OTHER group (defensive - the fp collided with
+    an unrelated dm elsewhere) are unaffected.
+    """
+    contact = GG.get_dm_contact(session.fp)
+    if contact is None or contact.get("group_id") != session.group_id:
+        return
+    if contact.get("status") == "revoked":
+        raise HTTPException(403, detail={"reason": "contact_revoked"})
+    expires_at = contact.get("contact_expires_at")
+    if expires_at is not None and float(expires_at) <= time.time():
+        raise HTTPException(403, detail={"reason": "contact_expired"})
 
 
 def _bound_group(session: GG.GuestSession):
@@ -117,16 +139,16 @@ async def operator_create_invite(group_id: str, request: Request, mode: str = "g
 
     Body (all optional): ``{ttl?, single_use?}``. Query ``?mode=dm|group``
     (default ``group``): ``mode=dm`` mints a NEW 2-seat DM guest group
-    (``metadata.mode="dm"``, seat 1 = operator) and invites into it — the path
+    (``metadata.mode="dm"``, seat 1 = operator) and invites into it - the path
     ``group_id`` is unused in that case; ``mode=group`` is the unchanged
     behaviour (invite into the existing ``group_id``). Returns ``{token,
     join_url, ...}``. Operator-gated (tailnet/loopback or
     ``SKCHAT_GUEST_OPERATOR_TOKEN``); 404 when the feature flag is off.
 
     ``mode=dm`` additionally accepts: ``reusable?`` (mints the operator's
-    standing my-DM-link — never single-use, carries a ``dm_reuse`` claim) and
+    standing my-DM-link - never single-use, carries a ``dm_reuse`` claim) and
     ``alias?``/``contact_ttl?`` (pre-set nickname + contact-expiry TTL for the
-    invite, stored server-side keyed by ``jti`` — never in the JWT payload or
+    invite, stored server-side keyed by ``jti`` - never in the JWT payload or
     any response).
     """
     _require_flag_operator()
@@ -159,7 +181,7 @@ async def operator_create_invite(group_id: str, request: Request, mode: str = "g
 
         # Pre-set alias + contact-expiry TTL: sidecar-only, keyed by jti. NEVER
         # placed in the JWT payload or echoed back in this (or any /guest/*)
-        # response — see the SPEC CORRECTION note on the sidecar functions.
+        # response - see the SPEC CORRECTION note on the sidecar functions.
         alias_raw = body.get("alias")
         alias = (str(alias_raw).strip() or None) if alias_raw not in (None, "") else None
         contact_ttl_raw = body.get("contact_ttl")
@@ -268,7 +290,7 @@ async def guest_invite_preview(token: str):
         resp["operator_name"] = _dm_operator_display_name(group)
     # Phase 1: surface the operator-signed material so the joiner can verify the
     # operator signature (under the FULL inline pubkey) and the bundle commitment
-    # BEFORE the handshake — fail-closed, no directory lookup (C1/C2/H3).
+    # BEFORE the handshake - fail-closed, no directory lookup (C1/C2/H3).
     if GG.pq_invites_enabled():
         resp.update(
             {
@@ -316,16 +338,23 @@ async def guest_join(request: Request):
     if not display_name:
         raise HTTPException(400, "display_name is required")
 
-    # Phase 1: peek the operator claims BEFORE burning so a bad/absent guest
-    # binding is rejected without consuming a single-use invite.
+    # Peek the operator claims BEFORE burning - needed for the Phase 1 guest-
+    # binding check below AND for the S3 re-entry decision after the burn
+    # attempt. ``check_used=False`` so a burned single-use jti still peeks
+    # cleanly (only signature/tier/revocation/expiry/audience gate the peek).
+    try:
+        peek = GG.verify_group_invite(invite_token, burn_single_use=False, check_used=False)
+    except GG.InviteInvalid as exc:
+        logger.info("guest-group join rejected (peek): %s", exc)
+        raise HTTPException(401, "invalid or expired invite") from exc
+
+    # Phase 1: the guest-binding check runs regardless of the invite's burned
+    # state, so it also gates the S3 re-entry path - a stolen/replayed link
+    # presented by a third party who lacks the guest key is rejected the same
+    # as a first-time join.
     if GG.pq_invites_enabled():
         from skchat import pq_invites as PQI
 
-        try:
-            peek = GG.verify_group_invite(invite_token, burn_single_use=False)
-        except GG.InviteInvalid as exc:
-            logger.info("guest-group join rejected (peek): %s", exc)
-            raise HTTPException(401, "invalid or expired invite") from exc
         bc = peek.get("bc")
         # Bind the guest browser key to THIS invite; a stolen link replayed by a
         # third party who lacks the guest key → 401 (generic, no oracle).
@@ -341,6 +370,13 @@ async def guest_join(request: Request):
     try:
         info = GG.verify_group_invite(invite_token, burn_single_use=True)
     except GG.InviteInvalid as exc:
+        # S3 re-entry: a single-use DM invite whose jti is already burned may
+        # still admit back the SAME previously-admitted guest - their session
+        # JWT outlived the invite's own (already-consumed) link. Any other
+        # presenter falls through to the same generic 401 below (no oracle).
+        reentry = _dm_reentry(peek, guest_pubkey, request)
+        if reentry is not None:
+            return reentry
         logger.info("guest-group join rejected: %s", exc)
         raise HTTPException(401, "invalid or expired invite") from exc
 
@@ -357,7 +393,7 @@ async def guest_join(request: Request):
 
     is_dm = group.metadata.get("mode") == "dm"
     if is_dm and info.get("dm_reuse"):
-        # Reusable my-DM-link (S1 marker): fan out per distinct guest key — a
+        # Reusable my-DM-link (S1 marker): fan out per distinct guest key - a
         # returning fp resolves to its own existing DM (registry lookup), a
         # brand-new fp lands in the anchor (first-ever arrival) or a freshly
         # minted sibling DM (each later arrival), rate-capped per invite jti.
@@ -394,7 +430,7 @@ async def guest_join(request: Request):
 
     session = GG.mint_guest_session(group_id=group_id, guest_id=guest_id, name=display, fp=fp)
 
-    # LiveKit guest call token (publish A/V + screen + subscribe, never admin) —
+    # LiveKit guest call token (publish A/V + screen + subscribe, never admin) -
     # reuse the group call room derivation so guests + members share one room.
     call = _mint_guest_call_token(group_id, guest_id, display, request)
 
@@ -405,6 +441,83 @@ async def guest_join(request: Request):
             "session_token": session,
             "guest_id": guest_id,
             "display_name": display,
+            "fingerprint": fp,
+            "trust": "untrusted",
+            "group": {"id": group.id, "name": group.name},
+            "call": call,
+            "messages": bootstrap,
+        }
+    )
+
+
+def _dm_reentry(peek: dict, guest_pubkey: str, request: Request):
+    """S3: re-admit a returning guest whose single-use DM invite is burned.
+
+    A single-use dm invite's session JWT can outlive the invite's own link (max
+    7d each, minted independently), locking the guest out on a return visit
+    even though nothing about the relationship changed. This mints a FRESH
+    session for the SAME previously-admitted guest - no new seat, no group
+    mutation - when ALL of the following hold against the (never-burning) peek
+    of the presented token:
+
+      * the invite is single-use and its jti is in fact already burned (the
+        only reason ``verify_group_invite(burn_single_use=True)`` just failed);
+      * it names a ``mode="dm"`` group that still exists;
+      * the presenting ``guest_pubkey``'s fingerprint has an ACTIVE (not
+        revoked/expired) ``dm_contacts`` row bound to that exact jti + group;
+      * that contact's guest_id is already a member of the group.
+
+    Returns ``None`` on any mismatch (wrong key, stranger, revoked/expired
+    contact, non-dm group, vanished group/membership) so the caller falls
+    through to the same generic 401 every other invalid presenter gets - no
+    oracle distinguishing "almost, but not quite" from "never valid".
+    """
+    if not peek.get("single_use"):
+        return None
+    from skchat.guest import _is_used
+
+    jti = peek["jti"]
+    if not _is_used(jti):
+        return None  # burn failed for some OTHER reason - not a re-entry case
+
+    from skchat import daemon_proxy_groups as G
+
+    group = G.load_group(peek["group_id"])
+    if group is None or group.metadata.get("mode") != "dm":
+        return None
+
+    fp = GG.pubkey_fingerprint(guest_pubkey)
+    contact = GG.get_dm_contact(fp)
+    if (
+        contact is None
+        or contact.get("invite_jti") != jti
+        or contact.get("group_id") != group.id
+        or contact.get("status") != "active"
+    ):
+        return None
+    expires_at = contact.get("contact_expires_at")
+    if expires_at is not None and float(expires_at) <= time.time():
+        return None
+
+    guest_id = contact["guest_id"]
+    member = group.get_member(guest_id)
+    if member is None:
+        return None
+
+    session = GG.mint_guest_session(
+        group_id=group.id, guest_id=guest_id, name=member.display_name, fp=fp
+    )
+    # Bump last_seen_at only - no group/member mutation, alias/expiry untouched.
+    GG.upsert_dm_contact(fp, guest_id=guest_id, group_id=group.id, invite_jti=jti)
+    call = _mint_guest_call_token(group.id, guest_id, member.display_name, request)
+    bootstrap = _guest_messages(group.id, limit=200, guest_id=guest_id)
+    logger.info("dm re-entry: guest %s resumed via burned jti=%s", guest_id, jti)
+    return JSONResponse(
+        {
+            "ok": True,
+            "session_token": session,
+            "guest_id": guest_id,
+            "display_name": member.display_name,
             "fingerprint": fp,
             "trust": "untrusted",
             "group": {"id": group.id, "name": group.name},
@@ -447,7 +560,7 @@ def _mint_guest_call_token(group_id: str, guest_id: str, display: str, request: 
             livekit_api_secret=secret,
             allow_screenshare=True,  # guests get screenshare in-room
         )
-    except Exception as exc:  # noqa: BLE001 — degrade, never 500 the join
+    except Exception as exc:  # noqa: BLE001 - degrade, never 500 the join
         logger.warning("guest call token mint failed: %s", exc)
         return {"available": False, "room": room}
 
@@ -494,7 +607,7 @@ def _dm_epoch_fence(group_id: str, guest_id: str):
     """Return the epoch-fence cutoff (``added_at``) for a DM guest, else None.
 
     A ``mode="dm"`` guest sees no group history from before it joined (SimpleX
-    "no pre-epoch history"). Non-dm groups are NOT fenced — existing group-invite
+    "no pre-epoch history"). Non-dm groups are NOT fenced - existing group-invite
     history behaviour is unchanged.
     """
     if not guest_id:
@@ -548,7 +661,7 @@ def _guest_messages(group_id: str, limit: int = 200, *, guest_id: str = "") -> l
 
 @router.get("/guest/conversation")
 async def guest_conversation(request: Request):
-    """Return the bound group's thread (token-scoped). No group id is accepted —
+    """Return the bound group's thread (token-scoped). No group id is accepted -
     it is derived from the session token, so a guest can only read their room."""
     _require_flag_guest()
     session = _guest_session(request)
@@ -571,7 +684,7 @@ async def guest_send(request: Request):
     Body: ``{body|content, reply_to_id?, ts?, signature?, group_id?}``. If a
     ``group_id`` is supplied it MUST equal the token's group (else 403). The
     signature (detached ECDSA over the canonical ``{group_id, body, ts}``) is
-    recorded as advisory metadata — it proves same-browser continuity, not
+    recorded as advisory metadata - it proves same-browser continuity, not
     capauth identity.
     """
     _require_flag_guest()
@@ -693,7 +806,7 @@ async def guest_react(request: Request):
 
     hist = _history()
     # Verify the target message is part of THIS group's thread before mutating
-    # it — a guest must not be able to react to a message in another room even
+    # it - a guest must not be able to react to a message in another room even
     # with a guessed id.
     from skchat import daemon_proxy_groups as G
 
@@ -826,7 +939,7 @@ async def guest_file_upload(
 
 @router.get("/guest/file/{transfer_id}")
 async def guest_file_download(transfer_id: str, request: Request):
-    """Download a file — ONLY if it belongs to the guest's bound group.
+    """Download a file - ONLY if it belongs to the guest's bound group.
 
     The transfer→group allowlist is the gate: a guest can never pull a file from
     any other conversation, even with a valid transfer id from elsewhere.
@@ -1045,7 +1158,7 @@ async def mode_c_accept_giftwrapped(request: Request):
     _, priv = kp
     try:
         inner = GW.open_giftwrap(envelope, priv.hex())
-    except Exception as exc:  # noqa: BLE001 — any open failure is a generic reject
+    except Exception as exc:  # noqa: BLE001 - any open failure is a generic reject
         logger.info("mode-c gift-wrapped accept rejected: %s", exc)
         raise HTTPException(401, "invalid gift-wrap envelope") from exc
     return _process_mode_c_accept(inner)
