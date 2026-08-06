@@ -142,9 +142,24 @@ async def operator_create_invite(group_id: str, request: Request, mode: str = "g
 
     if (mode or "group").strip().lower() == "dm":
         # A 1:1 DM invite mints its OWN 2-seat guest group; the path group_id is
-        # not used. DMs default single-use (override via body).
+        # not used. DMs default single-use (override via body). ``alias``/
+        # ``contact_ttl`` are an optional pre-set sidecar applied to each guest's
+        # dm_contacts row on admission (guest-dm S1/S2).
+        alias = (body.get("alias") or "").strip() or None
+        contact_ttl_raw = body.get("contact_ttl")
+        contact_ttl = None
+        if contact_ttl_raw is not None:
+            try:
+                contact_ttl = int(contact_ttl_raw)
+            except (TypeError, ValueError):
+                contact_ttl = None
         try:
-            result = GG.create_dm_invite(single_use=bool(body.get("single_use", True)), ttl=ttl)
+            result = GG.create_dm_invite(
+                single_use=bool(body.get("single_use", True)),
+                ttl=ttl,
+                alias=alias,
+                contact_ttl=contact_ttl,
+            )
         except RuntimeError as exc:  # secret unset
             raise HTTPException(503, str(exc)) from exc
         logger.info(
@@ -311,19 +326,59 @@ async def guest_join(request: Request):
     guest_id = GG.guest_identity(display_name, guest_pubkey)
     fp = GG.pubkey_fingerprint(guest_pubkey)
 
-    # Mode-A DM: a 1:1 is a 2-seat guest group (seat 1 = operator). A NEW guest
-    # that would take a third seat is refused (the DM is full). A returning guest
-    # (same identity) is idempotent and always allowed.
-    if (
-        group.metadata.get("mode") == "dm"
-        and group.get_member(guest_id) is None
-        and group.member_count >= GG.DM_SEAT_CAP
-    ):
-        logger.info("dm join rejected: %s full (%d seats)", group_id, group.member_count)
-        raise HTTPException(403, "direct message is full")
+    # Mode-A DM: a 1:1 is a 2-seat guest group (seat 1 = operator, the invite's
+    # group is the ANCHOR — the first guest fills its second seat). A single-use
+    # invite keeps the original cap-then-403 behaviour (it can only ever admit
+    # one guest anyway — the token is burned above). A REUSABLE invite instead
+    # fans distinct guests out into separate 2-seat groups: ``dm_contacts``
+    # (keyed by the guest's stable browser-key fingerprint) resolves a returning
+    # guest back to ITS OWN group, and a brand-new guest beyond the anchor's
+    # capacity mints a fresh group instead of colliding with whoever is already
+    # there (guest-dm S2).
+    is_dm = group.metadata.get("mode") == "dm"
+    if is_dm:
+        from skchat import guest_dm as DM
+
+        reusable = not info.get("single_use")
+        contact = DM.get_contact(fp) if reusable else None
+        if contact is not None and contact["group_id"] != group.id:
+            target = G.load_group(contact["group_id"])
+            if target is None:
+                raise HTTPException(404, "group not found")
+            group, group_id = target, target.id
+        elif (
+            contact is None
+            and group.get_member(guest_id) is None
+            and group.member_count >= GG.DM_SEAT_CAP
+        ):
+            if not reusable:
+                logger.info("dm join rejected: %s full (%d seats)", group_id, group.member_count)
+                raise HTTPException(403, "direct message is full")
+            try:
+                DM.check_new_contact_rate(info["jti"], anchor_group_id=info["group_id"])
+            except DM.ContactRateLimited as exc:
+                logger.info("dm join rejected (rate limit): %s", exc)
+                raise HTTPException(401, "invalid or expired invite") from exc
+            # Mirror create_dm_invite's group-mint internals: a fresh 2-seat dm
+            # group, operator in seat 1, tagged mode=dm.
+            anchor_operator = group.created_by
+            fresh = G.create_group(name="Direct message", creator_uri=anchor_operator, members=[])
+            fresh.metadata["mode"] = "dm"
+            G.save_group(fresh)
+            group, group_id = fresh, fresh.id
 
     GG.add_untrusted_guest_member(group, guest_id, display)
     G.save_group(group)
+
+    if is_dm:
+        DM.upsert_contact(
+            fp=fp,
+            guest_id=guest_id,
+            group_id=group.id,
+            invite_jti=info["jti"],
+            alias=info.get("alias"),
+            contact_ttl=info.get("contact_ttl"),
+        )
 
     session = GG.mint_guest_session(group_id=group_id, guest_id=guest_id, name=display, fp=fp)
 

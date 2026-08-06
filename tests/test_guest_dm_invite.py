@@ -88,24 +88,19 @@ def test_create_dm_invite_mints_2seat_dm_group(env):
     assert grp.get_member(_OPERATOR) is not None
 
 
-# ── 2-seat cap ───────────────────────────────────────────────────────────────
-def test_dm_join_caps_at_two_seats(env, client):
-    # Multi-use so a second, distinct guest can attempt to join the SAME dm group.
-    inv = GG.create_dm_invite(operator_uri=_OPERATOR, single_use=False)
+# ── 2-seat cap (single-use invite: unchanged from S1) ────────────────────────
+def test_dm_join_caps_at_two_seats_single_use(env, client):
+    # Single-use: burned by the first join, so a second occupant can never reach
+    # the group at all (fails at invite verification, not the seat-cap check).
+    inv = GG.create_dm_invite(operator_uri=_OPERATOR, single_use=True)
 
     r1 = _join(client, inv["token"], name="Alice", pubkey="KEY-A")
     assert r1.status_code == 200, r1.text
     grp = G.load_group(inv["group_id"])
     assert grp.member_count == 2  # operator + first guest
 
-    # A second, distinct guest is the 3rd occupant → the DM is full → 403.
     r2 = _join(client, inv["token"], name="Mallory", pubkey="KEY-M")
-    assert r2.status_code == 403
-
-    # The first guest returning (same key) is idempotent — no new seat, allowed.
-    r3 = _join(client, inv["token"], name="Alice", pubkey="KEY-A")
-    assert r3.status_code == 200
-    assert G.load_group(inv["group_id"]).member_count == 2
+    assert r2.status_code == 401  # invite already burned, not a seat-cap 403
 
 
 # ── epoch fence ──────────────────────────────────────────────────────────────

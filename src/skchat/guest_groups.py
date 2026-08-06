@@ -178,6 +178,8 @@ def create_group_invite(
     mode: str = "group",
     aud: Optional[str] = None,
     scope: Optional[str] = None,
+    alias: Optional[str] = None,
+    contact_ttl: Optional[int] = None,
     now_fn=None,
 ) -> dict:
     """Mint a signed, room-scoped invite token for ``group_id``.
@@ -222,6 +224,13 @@ def create_group_invite(
         payload["aud"] = aud
     if scope:
         payload["scope"] = scope
+    # DM contact sidecar (guest-dm S1/S2): an operator may pre-set a display
+    # alias + contact TTL at mint time; ``guest_dm.upsert_contact`` applies
+    # them the first time a guest is admitted through this invite.
+    if alias:
+        payload["alias"] = alias
+    if contact_ttl:
+        payload["cttl"] = int(contact_ttl)
 
     # Phase-1 PQ additions (flag-gated, fail-closed) — operator-signed identity
     # claims in the token + fragment-only link secret in the URL.
@@ -272,6 +281,8 @@ def create_dm_invite(
     operator_uri: Optional[str] = None,
     ttl: Optional[int] = None,
     single_use: bool = True,
+    alias: Optional[str] = None,
+    contact_ttl: Optional[int] = None,
     now_fn=None,
 ) -> dict:
     """Mint a 1:1 DM invite as a degenerate 2-seat guest group (Mode A DM).
@@ -280,11 +291,18 @@ def create_dm_invite(
     guest group with exactly two seats and ``metadata.mode="dm"``, so the whole
     existing guest-group machinery (invite/join/scoping/isolation) is reused
     unchanged. This mints a fresh DM group with the operator in seat 1, tags it
-    ``mode="dm"``, then issues a (single-use by default) invite for it.
+    ``mode="dm"``, then issues a (single-use by default) invite for it. This
+    minted group is the **anchor group** — the first guest to join fills its
+    second seat; when the invite is reusable (``single_use=False``), each
+    further DISTINCT guest fans out into its own fresh 2-seat group instead of
+    colliding on the anchor's two seats (see ``guest_dm`` + ``guest_group_
+    routes.guest_join``).
 
-    ``operator_uri`` defaults to the running agent's sovereign identity. Returns
-    the :func:`create_group_invite` dict augmented with ``mode="dm"`` (its
-    ``group_id`` is the freshly-minted DM group's id).
+    ``operator_uri`` defaults to the running agent's sovereign identity.
+    ``alias``/``contact_ttl`` are an optional pre-set sidecar applied to the
+    ``dm_contacts`` registry row the first time each guest is admitted through
+    this invite. Returns the :func:`create_group_invite` dict augmented with
+    ``mode="dm"`` (its ``group_id`` is the freshly-minted anchor DM group's id).
     """
     from skchat import daemon_proxy_groups as G
 
@@ -298,7 +316,15 @@ def create_dm_invite(
     grp.metadata["mode"] = "dm"
     G.save_group(grp)
 
-    invite = create_group_invite(grp.id, ttl=ttl, single_use=single_use, mode="dm", now_fn=now_fn)
+    invite = create_group_invite(
+        grp.id,
+        ttl=ttl,
+        single_use=single_use,
+        mode="dm",
+        alias=alias,
+        contact_ttl=contact_ttl,
+        now_fn=now_fn,
+    )
     invite["mode"] = "dm"
     return invite
 
@@ -375,6 +401,8 @@ def verify_group_invite(
         ("op_pub", "operator_pubkey"),
         ("aud", "aud"),
         ("scope", "scope"),
+        ("alias", "alias"),
+        ("cttl", "contact_ttl"),
     ):
         val = payload.get(src)
         if val is not None:
@@ -566,11 +594,15 @@ def add_untrusted_guest_member(group, guest_id: str, display: str):
         existing.role = MemberRole.MEMBER
     # Sidecar guest registry (untrusted markers the GroupMember model lacks).
     guests = dict(group.metadata.get("guests") or {})
+    # Preserve the ORIGINAL added_at across a rejoin — it anchors the epoch
+    # fence (no pre-join DM history); resetting it on every rejoin would keep
+    # shrinking a returning guest's visible history.
+    added_at = (guests.get(guest_id) or {}).get("added_at", time.time())
     guests[guest_id] = {
         "display": display,
         "trust": "untrusted",
         "guest": True,
-        "added_at": time.time(),
+        "added_at": added_at,
     }
     group.metadata["guests"] = guests
     return group
