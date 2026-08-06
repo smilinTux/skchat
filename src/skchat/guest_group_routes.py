@@ -1357,6 +1357,116 @@ async def mode_c_untrust_operator(request: Request):
     return JSONResponse({"ok": True, "untrusted": operator_id})
 
 
+# --------------------------------------------------------------------------- #
+# Operator: dm_contacts management surface (S4) - list / alias-mute-expiry PATCH
+# / revoke. Mounted under /api/v1/guest-dm, which is NOT in
+# dataplane_paths._EXEMPT_PREFIX (segment-boundary anchoring means
+# "/api/v1/guest-dm" does not match the "/api/v1/guest" exemption), so these
+# routes are gated by BOTH the in-route _require_operator check below and the
+# dataplane middleware - see test_gate_middleware / test_guest_dm_contact_routes.
+# --------------------------------------------------------------------------- #
+def _dm_contact_guest_name(group_id: str, guest_id: str) -> str:
+    """Best-effort display name for a dm_contacts row's guest_id."""
+    from skchat import daemon_proxy_groups as G
+
+    group = G.load_group(group_id) if group_id else None
+    member = group.get_member(guest_id) if group is not None and guest_id else None
+    return member.display_name if member is not None else ""
+
+
+@router.get("/guest-dm/contacts")
+async def guest_dm_contacts_list(request: Request):
+    """Operator-only: list every ``dm_contacts`` row.
+
+    Each entry: ``fp``, ``guest_name`` (resolved from the bound group's
+    roster), ``alias``, ``group_id``, ``status``, ``muted``,
+    ``contact_expires_at``, ``created_at``, ``last_seen_at``. The alias is
+    operator-only metadata - never returned by any ``/guest/*`` route.
+    """
+    _require_flag_operator()
+    from skchat.guest import _require_operator
+
+    _require_operator(request)
+
+    contacts = [
+        {
+            "fp": c["fp"],
+            "guest_name": _dm_contact_guest_name(c.get("group_id", ""), c.get("guest_id", "")),
+            "alias": c.get("alias"),
+            "group_id": c.get("group_id"),
+            "status": c.get("status"),
+            "muted": bool(c.get("muted")),
+            "contact_expires_at": c.get("contact_expires_at"),
+            "created_at": c.get("created_at"),
+            "last_seen_at": c.get("last_seen_at"),
+        }
+        for c in GG.list_dm_contacts()
+    ]
+    return JSONResponse({"contacts": contacts})
+
+
+@router.patch("/guest-dm/contacts/{fp}")
+async def guest_dm_contact_patch(fp: str, request: Request):
+    """Operator-only: partial-update a ``dm_contacts`` row.
+
+    Body (all optional, partial update - omitted fields are left untouched):
+    ``alias``, ``contact_ttl`` (seconds from now) or ``contact_expires_at``
+    (absolute epoch seconds; ``contact_ttl`` wins if both are given), ``muted``.
+    404 if no contact row exists for ``fp``.
+    """
+    _require_flag_operator()
+    from skchat.guest import _require_operator
+
+    _require_operator(request)
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    kwargs: dict = {}
+    if "alias" in body:
+        alias_raw = body.get("alias")
+        kwargs["alias"] = (
+            (str(alias_raw).strip() or None) if alias_raw not in (None, "") else None
+        )
+    if body.get("contact_ttl") is not None:
+        try:
+            ttl = int(body["contact_ttl"])
+        except (TypeError, ValueError):
+            raise HTTPException(400, "contact_ttl must be an integer")
+        kwargs["contact_expires_at"] = time.time() + ttl
+    elif "contact_expires_at" in body:
+        expires_raw = body.get("contact_expires_at")
+        kwargs["contact_expires_at"] = float(expires_raw) if expires_raw is not None else None
+    if "muted" in body:
+        kwargs["muted"] = bool(body.get("muted"))
+
+    if not GG.update_dm_contact(fp, **kwargs):
+        raise HTTPException(404, "contact not found")
+    return JSONResponse({"ok": True, "contact": GG.get_dm_contact(fp)})
+
+
+@router.post("/guest-dm/contacts/{fp}/revoke")
+async def guest_dm_contact_revoke(fp: str, request: Request):
+    """Operator-only: revoke a dm contact.
+
+    Sets ``status='revoked'`` and revokes the invite ``jti`` that admitted it
+    (``guest.revoke_invite``) - the S3 chokepoint
+    (``_enforce_dm_contact_status``) then 403s the guest on every subsequent
+    route. 404 if no contact row exists for ``fp``.
+    """
+    _require_flag_operator()
+    from skchat.guest import _require_operator
+
+    _require_operator(request)
+
+    if not GG.revoke_dm_contact(fp):
+        raise HTTPException(404, "contact not found")
+    logger.info("dm contact revoked: fp=%s", fp)
+    return JSONResponse({"ok": True, "revoked_fp": fp})
+
+
 def register_guest_group_routes(app) -> None:
     """Register the guest-group router on the FastAPI app (called from webui.py)."""
     app.include_router(router)
