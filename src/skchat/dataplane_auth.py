@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from typing import Optional
 
 from fastapi import HTTPException, Request
@@ -59,12 +60,199 @@ AUDIENCE_MINT_ENV_FLAG = "SKCHAT_AUDIENCE_MINT"
 #: enforce is Chef-gated on zero divergence over a 7-day window plus fixture replay.
 AUTHZ_PDP_FLAG = "SKCHAT_AUTHZ_PDP"
 
-#: Which capauth capability each protected data-plane endpoint maps to.
-_CAP_BY_PATH = {
-    "/api/send": "skchat.send",
-    "/api/v1/prekey": "skchat.prekey",
-    "/api/v1/inbox": "skchat.inbox",
-}
+# --------------------------------------------------------------------------- #
+# Method-aware route -> capability map (SKWorld Authorization Model L2.3).
+#
+# Replaces the old suffix-only ``_CAP_BY_PATH`` (which mapped only 3 of 30+ gated
+# routes: unmapped routes were invisible in shadow and 403 in enforce, the CR-3.3
+# blocker / incident b). Every gated route now resolves to exactly one class:
+#
+#   * a capability   -> ``_ROUTE_CAPABILITY_RULES`` (below), OR
+#   * self-auth      -> ``_SELF_AUTH_RULES`` (own verifier; the PDP is not consulted), OR
+#   * public         -> ``PUBLIC_ROUTES`` (``dataplane_paths.is_gated`` returns False).
+#
+# The table is ``(method, path_pattern)`` keyed and shares matching semantics with
+# ``dataplane_paths``: patterns are FULL-MATCH, ``{param}`` matches exactly one
+# path segment, so the same rule matches both a concrete runtime path
+# (``/file/abc123``) and the FastAPI ``path_format`` the coverage gate enumerates
+# (``/file/{transfer_id}``). Method awareness is mandatory: ``GET /api/v1/inbox``
+# is the operator reading their own inbox (``skchat.inbox``) while ``POST
+# /api/v1/inbox`` is federation S2S delivery (self-auth, and left OUT of this
+# table on purpose -- it is exempt in ``is_gated``).
+#
+# The completeness gate (``tests/test_dataplane_coverage.py``) enumerates the LIVE
+# route table and fails if any gated route is neither capability-mapped nor
+# self-auth, so a new gated route that skips classification breaks CI the same day.
+
+#: Capability name constants (each equals a rule row in ``capauth.authz.DEFAULT_RULES``).
+CAP_INBOX = "skchat.inbox"
+CAP_STATUS = "skchat.status"
+CAP_PREKEY = "skchat.prekey"
+CAP_MEDIA_WRITE = "skchat.media.write"
+CAP_VOICE = "skchat.voice"
+CAP_SEND = "skchat.send"
+CAP_GROUPS = "skchat.groups"
+CAP_CALLS = "skchat.calls"
+
+#: Ordered ``(method, path_pattern, capability)`` rows for every gated route that
+#: maps to a capability. Order is not significant (patterns are full-match and a
+#: concrete path routes to exactly one FastAPI route); grouped by capability for
+#: review. The ``/members/self`` vs ``/members/{identity}`` pair both resolve to
+#: ``skchat.groups``, so their (only) overlap is harmless.
+_ROUTE_CAPABILITY_RULES: tuple[tuple[str, str, str], ...] = (
+    # --- skchat.inbox (read own message content) ---------------------------- #
+    ("GET", "/api/v1/inbox", CAP_INBOX),
+    ("GET", "/api/v1/conversations", CAP_INBOX),
+    ("GET", "/api/v1/conversations/{peer_id}", CAP_INBOX),  # incident (b) route
+    ("GET", "/api/v1/thread/{thread_id}", CAP_INBOX),
+    ("GET", "/api/v1/groups", CAP_INBOX),  # group READ (mutations -> skchat.groups)
+    ("GET", "/api/v1/groups/{group_id}/members", CAP_INBOX),
+    ("GET", "/file/{transfer_id}", CAP_INBOX),
+    ("GET", "/file/{transfer_id}/thumb", CAP_INBOX),
+    ("GET", "/media/file", CAP_INBOX),
+    ("GET", "/inbox", CAP_INBOX),
+    ("GET", "/messages", CAP_INBOX),
+    ("GET", "/groups", CAP_INBOX),
+    # --- skchat.status (read operational metadata) -------------------------- #
+    ("GET", "/api/v1/status", CAP_STATUS),  # incident (b) route
+    ("GET", "/api/v1/peers", CAP_STATUS),
+    ("GET", "/api/v1/household/agents", CAP_STATUS),
+    ("GET", "/api/v1/geo/units", CAP_STATUS),
+    ("GET", "/api/v1/webrtc/ice-config", CAP_STATUS),
+    ("GET", "/api/v1/webrtc/peers", CAP_STATUS),
+    ("GET", "/api/v1/groups/{group_id}/call/participants", CAP_STATUS),
+    ("GET", "/agent/state", CAP_STATUS),
+    ("GET", "/adapters", CAP_STATUS),
+    ("GET", "/api/board", CAP_STATUS),  # interim; migrates to skboard.read (L1.8)
+    # --- skchat.prekey (publish/sign/delete own prekey bundles) ------------- #
+    ("POST", "/api/v1/prekey", CAP_PREKEY),
+    ("POST", "/api/v1/prekey/sign", CAP_PREKEY),
+    ("DELETE", "/api/v1/prekey/{peer}/{key_id}", CAP_PREKEY),
+    # --- skchat.media.write (upload attachment bytes) ----------------------- #
+    ("POST", "/upload", CAP_MEDIA_WRITE),
+    # --- skchat.voice (STT/TTS compute as the subject) ---------------------- #
+    ("POST", "/api/v1/transcribe", CAP_VOICE),
+    # --- skchat.send (act as the identity on the wire) ---------------------- #
+    ("POST", "/api/send", CAP_SEND),
+    ("POST", "/api/v1/send", CAP_SEND),
+    ("POST", "/api/v1/react", CAP_SEND),
+    ("POST", "/api/v1/edit", CAP_SEND),
+    ("POST", "/api/v1/receipt", CAP_SEND),
+    ("POST", "/api/v1/presence", CAP_SEND),
+    ("POST", "/api/v1/dm/decrypt-failed", CAP_SEND),  # emits a signed re-pull request
+    ("POST", "/send", CAP_SEND),
+    # --- skchat.groups (mutate shared group state) -------------------------- #
+    ("POST", "/api/v1/groups", CAP_GROUPS),
+    ("PUT", "/api/v1/groups/{group_id}", CAP_GROUPS),
+    ("DELETE", "/api/v1/groups/{group_id}", CAP_GROUPS),
+    ("POST", "/api/v1/groups/{group_id}/members", CAP_GROUPS),
+    ("DELETE", "/api/v1/groups/{group_id}/members/self", CAP_GROUPS),
+    ("DELETE", "/api/v1/groups/{group_id}/members/{identity}", CAP_GROUPS),
+    ("POST", "/api/v1/groups/{group_id}/invite", CAP_GROUPS),
+    ("DELETE", "/api/v1/groups/{group_id}/invite/{token}", CAP_GROUPS),
+    # --- skchat.calls (ring peers / join calls / mint LiveKit tokens) ------- #
+    ("POST", "/api/v1/access/token", CAP_CALLS),  # mints a LiveKit token as the identity
+    ("POST", "/api/v1/groups/{group_id}/call/start", CAP_CALLS),
+    ("POST", "/api/v1/groups/{group_id}/call/join", CAP_CALLS),
+)
+
+#: Self-auth registry (L1.4): gated routes that authenticate on their OWN declared
+#: terms and are never routed through the PDP. Each entry is
+#: ``(method, path_pattern, verifier_name, rationale)``. The coverage gate accepts
+#: a gated route via the capability table OR this registry -- never implicitly.
+#: Both entries are token MINTS that call :func:`request_is_authenticated`
+#: unconditionally in-route (they must never mint for an anonymous caller), so the
+#: PDP has nothing to add.
+_SELF_AUTH_RULES: tuple[tuple[str, str, str, str], ...] = (
+    (
+        "POST",
+        "/api/v1/audience-token",
+        "request_is_authenticated",
+        "Mints an audience-scoped token for THIS daemon's own resolved identity; "
+        "in-route self-authentication, gated by SKCHAT_AUDIENCE_MINT.",
+    ),
+    (
+        "POST",
+        "/api/v1/embed-token",
+        "request_is_authenticated",
+        "Mints the Grade-B embed pane token (rw scoped by SKCHAT_EMBED_RW_MODULES); "
+        "in-route self-authentication.",
+    ),
+)
+
+#: Explicit public allowlist (L1.3 / L1.4): routes deliberately served WITHOUT a
+#: capability check, with a written rationale. These are the routes for which
+#: ``dataplane_paths.is_gated`` returns False by design (health, static shell,
+#: credential bootstrap, federation inbound, the public prekey directory, and the
+#: guest/pair/livekit self-auth families). This structure documents the "why" and
+#: lets the coverage gate assert nothing is BOTH public-listed and gated. It is a
+#: curated mirror of ``dataplane_paths``' exempt tables, not an exhaustive
+#: enumeration of every implicitly-public route (see L2.3 for the reclassification
+#: follow-ups, e.g. /call/*, /spaces/*, /federation/status).
+PUBLIC_ROUTES: tuple[tuple[str, str, str], ...] = (
+    ("GET", "/health", "Liveness probe."),
+    ("GET", "/api/health", "Liveness probe."),
+    ("GET", "/favicon.ico", "Static shell asset."),
+    ("GET", "/", "Redirect to /app."),
+    ("GET", "/.well-known/skworld-module.json", "Module manifest served unauthenticated."),
+    ("GET", "/api/v1/shell/modules", "Public multi-manifest discovery aggregate."),
+    ("GET", "/api/v1/identity", "Pre-session UI bootstrap."),
+    ("GET", "/api/v1/capabilities", "Pre-session UI bootstrap."),
+    ("GET", "/api/v1/prekey/{peer}", "Public PQ prekey directory (GET only; POST is gated)."),
+    ("POST", "/api/v1/inbox", "Federation S2S inbound; per-message envelope signature."),
+    ("GET", "/api/v1/auth/challenge", "Credential bootstrap (device-key handshake)."),
+    ("POST", "/api/v1/auth/session", "Credential bootstrap."),
+    ("POST", "/api/v1/auth/enroll", "Credential bootstrap (operator-gated in-route)."),
+    ("POST", "/api/v1/auth/enroll/open", "Credential bootstrap (operator-gated in-route)."),
+)
+
+
+def _compile_pattern(pattern: str) -> "re.Pattern[str]":
+    """Compile a route pattern to a full-match regex, ``{param}`` -> one segment.
+
+    ``{peer_id}`` (and any ``{...}`` placeholder) matches exactly one path segment
+    (``[^/]+``), so one compiled pattern matches both a concrete request path and
+    the FastAPI ``path_format`` string the coverage gate feeds it.
+    """
+    out = ["^"]
+    for seg in re.split(r"(\{[^/}]+\})", pattern):
+        if seg.startswith("{") and seg.endswith("}"):
+            out.append(r"[^/]+")
+        elif seg:
+            out.append(re.escape(seg))
+    out.append("$")
+    return re.compile("".join(out))
+
+
+_COMPILED_CAPABILITY: tuple[tuple[str, "re.Pattern[str]", str], ...] = tuple(
+    (method.upper(), _compile_pattern(pattern), cap)
+    for method, pattern, cap in _ROUTE_CAPABILITY_RULES
+)
+_COMPILED_SELF_AUTH: tuple[tuple[str, "re.Pattern[str]", str, str], ...] = tuple(
+    (method.upper(), _compile_pattern(pattern), verifier, rationale)
+    for method, pattern, verifier, rationale in _SELF_AUTH_RULES
+)
+
+
+def route_capability(method: str, path: str) -> Optional[str]:
+    """Return the capability a gated ``(method, path)`` exercises, or None.
+
+    Method-aware and full-match: the replacement for the suffix-only
+    ``_capability_for_path``. Returns None for public routes, self-auth routes,
+    and any unmapped route (in enforce that None fails closed; the coverage gate
+    guarantees no legitimate gated route stays unmapped).
+    """
+    method = (method or "").upper()
+    for m, rx, cap in _COMPILED_CAPABILITY:
+        if m == method and rx.match(path):
+            return cap
+    return None
+
+
+def is_self_auth_route(method: str, path: str) -> bool:
+    """True iff ``(method, path)`` is a declared self-auth route (own verifier)."""
+    method = (method or "").upper()
+    return any(m == method and rx.match(path) for m, rx, _v, _r in _COMPILED_SELF_AUTH)
 
 
 def authz_pdp_mode() -> str:
@@ -234,9 +422,18 @@ def _extract_credential(request: Request) -> Optional[str]:
 
 
 def _capability_for_path(path: str) -> Optional[str]:
-    """Map a request path to the capauth capability it exercises, or None."""
-    for suffix, cap in _CAP_BY_PATH.items():
-        if path.endswith(suffix):
+    """Back-compat, method-agnostic shim over :func:`route_capability` (deprecated).
+
+    Enforcement now uses the method-aware :func:`route_capability`; this wrapper is
+    retained so callers that only have a path still resolve the historically-mapped
+    capability. It returns the capability of the first HTTP method that maps this
+    path, preserving the pre-method-aware results for the original three endpoints
+    (``/api/send`` -> send, ``/api/v1/inbox`` -> inbox via GET, ``/api/v1/prekey``
+    -> prekey via POST).
+    """
+    for method in ("POST", "GET", "PUT", "DELETE"):
+        cap = route_capability(method, path)
+        if cap is not None:
             return cap
     return None
 
@@ -343,17 +540,38 @@ def enforce_dataplane_auth(request: Request) -> None:
     if not legacy_ok:
         raise HTTPException(status_code=401, detail="capauth authentication required")
 
-    capability = _capability_for_path(request.url.path)
+    method = request.method
+    path = request.url.path
+
+    # Self-auth routes (token mints) authenticate on their own declared terms and
+    # are never routed through the PDP (L1.1 step 1 / L1.4). Legacy auth already
+    # passed above (defense in depth); the route's own verifier governs the rest.
+    # Without this, a self-auth route would 403 under enforce for having no
+    # capability, breaking the audience/embed token mints.
+    if is_self_auth_route(method, path):
+        return
+
+    capability = route_capability(method, path)
     pdp_allow: Optional[bool] = None
     if capability is not None:
         pdp_allow = _pdp_allows(_extract_subject(token), capability, request)
 
     if mode == "shadow":
         # Measure only: log divergence, return the legacy outcome unchanged.
-        if capability is not None and pdp_allow is not None and pdp_allow != legacy_ok:
+        if capability is None:
+            # L1.3: shadow MUST be able to SEE the unmapped-gated class -- the exact
+            # structural blind spot that hid incident (b) until the enforce flip.
+            # One log line turns that enforce surprise into a soak observable.
+            logger.warning(
+                "authz PDP unmapped-route method=%s path=%s subject=%s",
+                method,
+                path,
+                _redact(_extract_subject(token)),
+            )
+        elif pdp_allow is not None and pdp_allow != legacy_ok:
             logger.warning(
                 "authz PDP divergence path=%s cap=%s subject=%s legacy=%s pdp=%s",
-                request.url.path,
+                path,
                 capability,
                 _redact(_extract_subject(token)),
                 legacy_ok,
