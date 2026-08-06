@@ -995,6 +995,50 @@ async def guest_call(request: Request):
 
 
 # --------------------------------------------------------------------------- #
+# Guest: rename self (change display name in the bound group)
+# --------------------------------------------------------------------------- #
+@router.post("/guest/name")
+async def guest_rename(request: Request):
+    """Change the caller's own display name in the bound group.
+
+    Body: ``{name}``. Reserved names are suffixed (``enforce_display_name``,
+    same anti-impersonation as join). The member row is refreshed in place via
+    the idempotent ``add_untrusted_guest_member`` - ``guest_id`` (and so
+    history attribution, the epoch fence, and the ``dm_contacts`` fp mapping)
+    stays exactly as-is; only the display changes. The guest session is then
+    REMINTED, since the display name is baked into the session JWT claims
+    (``GuestSession.name`` - see ``mint_guest_session``): a rename without a
+    remint would silently revert on the guest's very next request. The OLD
+    token keeps working until it naturally expires, but still carries the old
+    name.
+    """
+    _require_flag_guest()
+    session = _guest_session(request)
+    group = _bound_group(session)
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    raw_name = (body.get("name") or "").strip()
+    if not raw_name:
+        raise HTTPException(400, "name is required")
+
+    display = GG.enforce_display_name(raw_name)
+    GG.add_untrusted_guest_member(group, session.guest_id, display)
+
+    from skchat import daemon_proxy_groups as G
+
+    G.save_group(group)
+
+    new_session = GG.mint_guest_session(
+        group_id=session.group_id, guest_id=session.guest_id, name=display, fp=session.fp
+    )
+    logger.info("guest rename: guest=%s group=%s", session.guest_id, session.group_id)
+    return JSONResponse({"ok": True, "display_name": display, "session_token": new_session})
+
+
+# --------------------------------------------------------------------------- #
 # Mode C: non-federated accept/sign (a peer that already has an identity)      #
 # --------------------------------------------------------------------------- #
 # A peer WITH an identity accepts an invite by signing an accept assertion; the
