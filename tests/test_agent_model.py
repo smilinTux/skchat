@@ -8,13 +8,17 @@ import pytest
 
 @pytest.fixture()
 def am(tmp_path, monkeypatch):
-    """agent_model module pointed at a temp state file, default model reset.
+    """agent_model module pointed at temp state, default model reset.
 
-    The SKGateway free-model fetch is stubbed to ``[]`` by default so tests are
-    deterministic and offline (no dependency on a live gateway).  Tests that
-    exercise the merge re-``setattr`` the fetcher to supply fake free models.
+    Both stores are isolated to *tmp_path*: the legacy JSON file
+    (``SKCHAT_AGENT_MODEL_PATH``) and the skmodels registry
+    (``SKMODELS_REGISTRY``) that is now the source of truth. The SKGateway
+    free-model fetch is stubbed to ``[]`` by default so tests are deterministic
+    and offline (no dependency on a live gateway). Tests that exercise the merge
+    re-``setattr`` the fetcher to supply fake free models.
     """
     monkeypatch.setenv("SKCHAT_AGENT_MODEL_PATH", str(tmp_path / "agent_model.json"))
+    monkeypatch.setenv("SKMODELS_REGISTRY", str(tmp_path / "registry.yaml"))
     monkeypatch.delenv("SKCHAT_LLM_MODEL", raising=False)
     import skchat.agent_model as module
 
@@ -31,6 +35,7 @@ def test_default_when_unset(am):
 
 def test_default_honours_env(tmp_path, monkeypatch):
     monkeypatch.setenv("SKCHAT_AGENT_MODEL_PATH", str(tmp_path / "m.json"))
+    monkeypatch.setenv("SKMODELS_REGISTRY", str(tmp_path / "registry.yaml"))
     monkeypatch.setenv("SKCHAT_LLM_MODEL", "qwen3.6-27b-abliterated")
     import skchat.agent_model as module
 
@@ -56,10 +61,13 @@ def test_set_rejects_unknown_model(am):
 
 
 def test_get_falls_back_when_stored_value_invalid(am):
-    # Simulate a stale/invalid stored selection (e.g. model removed from list).
-    am.set_model("lumina", "claude-sonnet-4-6")
-    path = am._state_path()
-    path.write_text('{"lumina": "no-longer-supported"}', encoding="utf-8")
+    # A stale/invalid selection in the registry context (e.g. a model that was
+    # removed from the picker AND is not a registry role/backend) is treated as
+    # unset -> we fall back to the default rather than route somewhere dead.
+    am.set_model("lumina", "claude-sonnet-4-6")  # writes the registry context
+    import skos.models as skm
+
+    skm.set_context("agent:lumina", "no-longer-supported")  # corrupt it
     assert am.get_model("lumina") == am.default_model()
 
 
@@ -268,3 +276,125 @@ def test_set_enabled_models_puts_to_gateway_and_returns_view(am, monkeypatch):
     out = am.set_enabled_models(["ornith-big"])
     assert put_calls == [["ornith-big"]]
     assert out["enabled"] == ["ornith-big"]
+
+
+# --- CR-5.1: registry.yaml is the sole per-agent authority -------------------
+
+import os  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+
+def _seed_registry(yaml_text: str) -> None:
+    """Write a registry fixture at $SKMODELS_REGISTRY and clear skos's cache."""
+    import skos.models as skm
+
+    Path(os.environ["SKMODELS_REGISTRY"]).write_text(yaml_text, encoding="utf-8")
+    skm._invalidate()
+
+
+# A registry with real backends + roles so role targets resolve to a backend.
+_REG_WITH_ROLES = """\
+backends:
+  ornith:
+    url: http://192.168.0.100:8082/v1
+    model: ornith-1.0-9b
+    kind: chat
+  opus:
+    url: http://192.168.0.41:18780/v1
+    model: claude-opus-4-8
+    kind: chat
+roles:
+  ornith-tiny: ornith
+  sk-default: ornith
+  sk-heavy: opus
+defaults:
+  role: sk-default
+"""
+
+
+def test_set_model_writes_registry_context_not_json(am):
+    """set_model persists the selection as the registry `agent:<name>` context;
+    the legacy JSON file is NOT written (registry is the source of truth)."""
+    import skos.models as skm
+
+    am.set_model("lumina", "qwen3.6-27b-abliterated")
+    assert skm.list_contexts().get("agent:lumina") == "qwen3.6-27b-abliterated"
+    # Legacy JSON stays absent (no divergent second copy).
+    assert not am._state_path().exists()
+    assert am.get_model("lumina") == "qwen3.6-27b-abliterated"
+
+
+def test_registry_context_wins_over_legacy_json(am):
+    """When both stores have a value, the registry context wins."""
+    # Legacy JSON says opus; registry says qwen -> registry wins.
+    am._state_path().parent.mkdir(parents=True, exist_ok=True)
+    am._state_path().write_text('{"lumina": "claude-opus-4-8"}', encoding="utf-8")
+    am.set_model("lumina", "qwen3.6-27b-abliterated")
+    assert am.get_model("lumina") == "qwen3.6-27b-abliterated"
+
+
+def test_legacy_json_used_when_registry_context_unset(am):
+    """A pre-migration JSON selection is still honoured when the registry has no
+    `agent:<name>` context (read-fallback), so nothing is lost before migration."""
+    am._state_path().parent.mkdir(parents=True, exist_ok=True)
+    am._state_path().write_text('{"opus": "claude-sonnet-4-6"}', encoding="utf-8")
+    assert am.get_model("opus") == "claude-sonnet-4-6"
+
+
+def test_set_model_accepts_a_registry_role(am):
+    """An operator can pin a logical role (not only a concrete id) as the model;
+    it round-trips and is stored as the context target verbatim."""
+    _seed_registry(_REG_WITH_ROLES)
+    am.set_model("lumina", "sk-default")
+    import skos.models as skm
+
+    assert skm.list_contexts().get("agent:lumina") == "sk-default"
+    assert am.get_model("lumina") == "sk-default"
+
+
+def test_migrate_legacy_agent_models_idempotent(am):
+    """Legacy JSON entries migrate into registry contexts, and re-running skips
+    already-set entries (idempotent) and non-routable values."""
+    _seed_registry(_REG_WITH_ROLES)
+    am._state_path().parent.mkdir(parents=True, exist_ok=True)
+    am._state_path().write_text(
+        '{"lumina": "ornith-tiny", "opus": "sk-heavy", "ghost": "made-up-model"}',
+        encoding="utf-8",
+    )
+
+    first = am.migrate_legacy_agent_models()
+    migrated = dict(first["migrated"])
+    assert migrated == {"lumina": "ornith-tiny", "opus": "sk-heavy"}
+    # non-routable value is reported as skipped, never written
+    assert any(a == "ghost" for a, _ in first["skipped"])
+
+    import skos.models as skm
+
+    ctx = skm.list_contexts()
+    assert ctx.get("agent:lumina") == "ornith-tiny"
+    assert ctx.get("agent:opus") == "sk-heavy"
+
+    # Re-run: everything already set -> nothing migrated again.
+    second = am.migrate_legacy_agent_models()
+    assert second["migrated"] == []
+    assert {a for a, _ in second["skipped"]} >= {"lumina", "opus"}
+
+
+def test_e2e_registry_is_the_shared_resolver(am):
+    """End-to-end (AC-verify): a model set via skchat lands in the registry
+    context, get_model reads it back, and skos.models.resolve() (the SAME
+    resolver the gateway uses) resolves that context to the concrete backend."""
+    _seed_registry(_REG_WITH_ROLES)
+    import skos.models as skm
+
+    # 1. set via skchat -> writes the agent:<name> context
+    am.set_model("lumina", "ornith-tiny")
+    # 2. skchat get_model returns it
+    assert am.get_model("lumina") == "ornith-tiny"
+    # 3. the shared resolver resolves the SAME context to the concrete backend
+    b = skm.resolve(context="agent:lumina")
+    assert b.name == "ornith"
+    assert b.model == "ornith-1.0-9b"
+    # sanity: a heavy role resolves to the opus backend too
+    am.set_model("opus", "sk-heavy")
+    assert skm.resolve(context="agent:opus").model == "claude-opus-4-8"

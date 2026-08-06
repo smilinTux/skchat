@@ -5,14 +5,32 @@ consciousness bridge (``scripts/lumina-bridge.py``).  The picker writes the
 selected model here; the bridge reads it for the next reply and routes the
 request through SKGateway (``SKCHAT_LLM_URL``).
 
-State lives in a tiny JSON file so the two separate processes (daemon + bridge)
-agree without a database:
+**Single source of truth (CR-5.1).**  The per-agent selection lives in the
+Syncthing-synced skmodels registry (``~/.skcapstone/models/registry.yaml``) as
+the ``agent:<name>`` *context*, resolved/written through the ``skos.models``
+API (the SAME registry SKGateway routes from, precedence
+``context > service > role > default``).  This makes the registry the ONE
+per-agent authority: the picker (this module), the gateway per-agent routing,
+and the skcapstone tier router all read the one file.
 
-    ~/.skchat/agent_model.json   ->  {"lumina": "claude-opus-4-8", ...}
+    contexts:
+      agent:lumina: ornith-tiny      # a registry role OR a concrete model id
 
-Override the path with ``SKCHAT_AGENT_MODEL_PATH``.  The default model (used
-when no selection has been made) comes from ``SKCHAT_LLM_MODEL`` or falls back
-to ``claude-opus-4-8``.
+``~/.skchat/agent_model.json`` is retained ONLY as a legacy read-fallback (for
+selections made before the migration / when ``skos.models`` is unavailable) and
+as the seed for the one-shot :func:`migrate_legacy_agent_models`.  New writes go
+to the registry; a stale JSON entry is honoured only when the registry has no
+``agent:<name>`` context.
+
+The registry is read FRESH on every :func:`get_model` (``cache=False``) so a
+selection changed by the daemon process propagates to a long-running bridge
+process immediately (matching the old file-read-every-call behaviour), and
+:func:`set_model` writes through ``skos.models.set_context`` which preserves the
+registry's inline documentation (ruamel round-trip).
+
+Override the JSON path with ``SKCHAT_AGENT_MODEL_PATH`` and the registry path
+with ``SKMODELS_REGISTRY``.  The default model (used when no selection has been
+made) comes from ``SKCHAT_LLM_MODEL`` or falls back to ``claude-opus-4-8``.
 
 In addition to the curated ``AVAILABLE_MODELS`` above, ``list_models()`` merges
 in the FREE models that SKGateway discovers and serves at
@@ -150,6 +168,101 @@ def _state_path() -> Path:
     ).expanduser()
 
 
+# --- skmodels registry (SINGLE SOURCE OF TRUTH for per-agent selection) ------
+# The per-agent selection is the `agent:<name>` context in the skmodels registry.
+# We go through the skos.models API so this module never re-implements the
+# registry format or its precedence rules; the gateway resolves from the SAME
+# file. Every helper is defensive: if skos.models is not importable (or the
+# registry file does not exist) we degrade cleanly to the legacy JSON fallback.
+
+
+def _skos_models():
+    """Return the ``skos.models`` module, or ``None`` if it cannot be imported."""
+    try:
+        import skos.models as _m
+
+        return _m
+    except Exception:
+        return None
+
+
+def _agent_context_key(agent: str) -> str:
+    """Registry context key for *agent* (lowercased to match CapAuth identities)."""
+    return f"agent:{str(agent).strip().lower()}"
+
+
+def _registry_fresh(m):
+    """Load the registry FRESH (no cache) if it exists, else ``None``.
+
+    ``cache=False`` re-reads the file every call so a selection changed in one
+    process (the daemon) is seen immediately by another (a long-running bridge),
+    matching the old JSON read-every-call semantics. Returns ``None`` when the
+    file is absent so we skip the skos "registry not found" warning entirely.
+    """
+    try:
+        p = m.registry_path()
+        if not p.exists():
+            return None
+        return m.load_registry(cache=False)
+    except Exception:
+        return None
+
+
+def _is_selectable_target(target: str, reg=None) -> bool:
+    """True if *target* is something the gateway can route for an agent.
+
+    Accepts a curated/free picker model id (``_valid_ids()``) OR a registry
+    role name (``sk-*``, ``ornith-tiny``, …) OR a concrete backend name. This is
+    a superset of the picker so an operator can pin a logical role (e.g.
+    ``sk-default``) as an agent's model, not only a concrete id.
+    """
+    if not isinstance(target, str) or not target.strip():
+        return False
+    if target in _valid_ids():
+        return True
+    m = _skos_models()
+    if m is None:
+        return False
+    try:
+        r = reg if reg is not None else _registry_fresh(m)
+        if r is None:
+            return False
+        return target in (r.roles or {}) or target in (r.backends or {})
+    except Exception:
+        return False
+
+
+def _registry_get(agent: str) -> str | None:
+    """Return the raw ``agent:<name>`` context target, or ``None`` if unset/invalid.
+
+    Reads the registry fresh and returns the stored TARGET string as-is (a role
+    or a concrete model id) so the picker round-trips exactly what was selected.
+    A target that no longer resolves to anything routable is treated as unset.
+    """
+    m = _skos_models()
+    if m is None:
+        return None
+    reg = _registry_fresh(m)
+    if reg is None:
+        return None
+    target = (reg.contexts or {}).get(_agent_context_key(agent))
+    if target and _is_selectable_target(target, reg):
+        return target
+    return None
+
+
+def _registry_set(agent: str, model: str) -> bool:
+    """Write ``agent:<name> = model`` into the registry. Returns True on success."""
+    m = _skos_models()
+    if m is None:
+        return False
+    try:
+        m.set_context(_agent_context_key(agent), model)
+        return True
+    except Exception:
+        return False
+
+
 def default_model() -> str:
     """The model used when an agent has no explicit selection."""
     return os.environ.get("SKCHAT_LLM_MODEL", "claude-opus-4-8")
@@ -262,29 +375,53 @@ def _read() -> dict:
 def get_model(agent: str) -> str:
     """Return the selected model for *agent*, or the default if unset/invalid.
 
-    Validates against the merged list (curated + gateway free models), so a
-    previously-selected free model keeps routing to itself.  The ~60s last-good
-    gateway cache keeps a fetched free id valid for the process; if the id ever
-    resolves as unknown (gateway never reachable this run) we fall back to the
-    curated default rather than route to a model the gateway can't serve.
+    Resolution order (registry is the single source of truth):
+
+        1. the ``agent:<name>`` context in the skmodels registry (fresh read);
+        2. the legacy ``~/.skchat/agent_model.json`` entry (read-fallback only);
+        3. :func:`default_model`.
+
+    A stored value is validated against the selectable set (curated + gateway
+    free models) OR a registry role/backend, so a previously-selected free model
+    or a pinned logical role keeps routing to itself; anything no longer routable
+    falls through to the default rather than route to a model the gateway can't
+    serve.
     """
-    selected = _read().get(agent)
-    if selected and selected in _valid_ids():
+    # 1. registry context (single source of truth)
+    selected = _registry_get(agent)
+    if selected:
         return selected
+
+    # 2. legacy JSON read-fallback (pre-migration / skos.models unavailable)
+    legacy = _read().get(agent)
+    if legacy and _is_selectable_target(legacy):
+        return legacy
+
+    # 3. default
     return default_model()
 
 
 def set_model(agent: str, model: str) -> str:
-    """Persist *model* as *agent*'s selection.
+    """Persist *model* as *agent*'s selection in the registry ``agent:<name>``
+    context (falling back to the legacy JSON file only if ``skos.models`` is
+    unavailable).
 
     Raises:
-        ValueError: if *model* is not one of the selectable models (curated
-            ``AVAILABLE_MODELS`` or a live SKGateway free model).
+        ValueError: if *model* is not selectable (not a curated
+            ``AVAILABLE_MODELS`` entry, a live SKGateway free model, or a
+            registry role/backend name).
     """
-    valid = _valid_ids()
-    if model not in valid:
-        raise ValueError(f"unknown model {model!r}; valid: {sorted(valid)}")
+    if not _is_selectable_target(model):
+        valid = sorted(_valid_ids())
+        raise ValueError(f"unknown model {model!r}; valid: {valid}")
+
     with _lock:
+        # Registry write is the source of truth. On success we do NOT also write
+        # the legacy JSON (it is a read-fallback only), so the two never diverge.
+        if _registry_set(agent, model):
+            return model
+
+        # skos.models unavailable -> legacy JSON write keeps the picker working.
         path = _state_path()
         data = _read()
         data[agent] = model
@@ -293,3 +430,48 @@ def set_model(agent: str, model: str) -> str:
         tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
         tmp.replace(path)
     return model
+
+
+def migrate_legacy_agent_models(*, dry_run: bool = False) -> dict:
+    """Copy legacy ``agent_model.json`` entries into registry ``agent:<name>``
+    contexts, idempotently.
+
+    This is the one-shot migration for CR-5.1. It is NOT auto-run (calling it is
+    an explicit, documented step) so it never mutates a live box implicitly. It
+    is safe to run repeatedly:
+
+    - an ``agent:<name>`` context that already exists is left untouched (skipped);
+    - a legacy value that is no longer routable is skipped (reported);
+    - otherwise the value is written to the registry via ``set_context``.
+
+    Args:
+        dry_run: If True, report what WOULD be migrated without writing.
+
+    Returns:
+        ``{"migrated": [(agent, model)...], "skipped": [(agent, reason)...]}``.
+
+    Raises:
+        RuntimeError: if ``skos.models`` is not importable (nothing to migrate to).
+    """
+    m = _skos_models()
+    if m is None:
+        raise RuntimeError("skos.models unavailable; cannot migrate to the registry")
+
+    legacy = _read()
+    reg = _registry_fresh(m)
+    existing = (reg.contexts if reg is not None else {}) or {}
+
+    migrated: list = []
+    skipped: list = []
+    for agent, model in legacy.items():
+        key = _agent_context_key(agent)
+        if key in existing:
+            skipped.append((agent, f"already set: {existing[key]}"))
+            continue
+        if not _is_selectable_target(model, reg):
+            skipped.append((agent, f"not routable: {model}"))
+            continue
+        if not dry_run:
+            m.set_context(key, model)
+        migrated.append((agent, model))
+    return {"migrated": migrated, "skipped": skipped}

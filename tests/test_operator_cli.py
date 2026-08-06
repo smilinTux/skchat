@@ -178,11 +178,31 @@ def test_count_outbox_missing_dir_is_zero(tmp_path):
     assert op._count_outbox(tmp_path / "nope") == 0
 
 
+def test_unified_outbox_depth_reflects_persistent_outbox(monkeypatch, tmp_path):
+    # OutboxBounded's depth reads the UNIFIED skcomms PersistentOutbox pending
+    # queue (coord eb659f61 / CR-5.3), not the legacy ~/.skcomms/outbox spool.
+    outbox = tmp_path / "unified-outbox"
+    monkeypatch.setenv("SKCOMMS_OUTBOX_DIR", str(outbox))
+    pending = outbox / "pending"
+    pending.mkdir(parents=True)
+    for i in range(4):
+        (pending / f"{i}.json").write_text("{}")
+    (pending / "skip.txt").write_text("x")  # non-*.json is not a pending entry
+    assert op._unified_outbox_depth() == 4
+
+
+def test_unified_outbox_depth_missing_store_is_zero(monkeypatch, tmp_path):
+    # A missing/empty unified store is drained (0), failing safe to healthy.
+    monkeypatch.setenv("SKCOMMS_OUTBOX_DIR", str(tmp_path / "nonexistent"))
+    assert op._unified_outbox_depth() == 0
+
+
 def test_observe_cli_healthy_when_unreachable(monkeypatch, tmp_path):
     # No daemon, no bridge heartbeat, empty outbox, auth flag on: all healthy.
     monkeypatch.setenv("SKCHAT_DAEMON_HEALTH", "http://127.0.0.1:1/health")
     monkeypatch.setenv("SKCHAT_BRIDGE_HEARTBEAT", str(tmp_path / "absent.ts"))
-    monkeypatch.setenv("SKCOMMS_OUTBOX", str(tmp_path / "empty-outbox"))
+    # Pin the unified skcomms retry store empty so the depth probe is hermetic.
+    monkeypatch.setenv("SKCOMMS_OUTBOX_DIR", str(tmp_path / "empty-outbox"))
     monkeypatch.setenv("SKCHAT_DATAPLANE_AUTH", "1")
     res = CliRunner().invoke(main, ["operator", "observe"])
     assert res.exit_code == 0, res.output
