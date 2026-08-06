@@ -186,3 +186,102 @@ def test_flag_off_no_dm_route(env, client, monkeypatch):
     monkeypatch.setenv("SKCHAT_GUEST_LINKS_ENABLED", "0")
     r = client.post("/api/v1/groups/self/invite?mode=dm", json={}, headers=_OP)
     assert r.status_code == 404
+
+
+# ── S1: reusable my-DM-link ──────────────────────────────────────────────────
+def test_create_dm_invite_reusable_sets_reuse_marker(env):
+    inv = GG.create_dm_invite(operator_uri=_OPERATOR, reusable=True)
+    assert inv["single_use"] is False  # reusable overrides single_use
+    info = GG.verify_group_invite(inv["token"], burn_single_use=False)
+    assert info["dm_reuse"] is True
+    assert info["group_id"] == inv["group_id"]
+
+
+def test_create_dm_invite_default_not_reusable(env):
+    inv = GG.create_dm_invite(operator_uri=_OPERATOR)
+    info = GG.verify_group_invite(inv["token"], burn_single_use=False)
+    assert "dm_reuse" not in info
+
+
+def test_operator_route_reusable_dm_invite(env, client):
+    r = client.post("/api/v1/groups/self/invite?mode=dm", json={"reusable": True}, headers=_OP)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["single_use"] is False
+    info = GG.verify_group_invite(body["token"], burn_single_use=False)
+    assert info["dm_reuse"] is True
+
+
+# ── S1: pre-set alias + contact-expiry TTL sidecar ──────────────────────────
+def test_mint_dm_invite_alias_and_contact_ttl_persist_in_sidecar_only(env, client):
+    r = client.post(
+        "/api/v1/groups/self/invite?mode=dm",
+        json={"alias": "Secret Nickname", "contact_ttl": 3600},
+        headers=_OP,
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+
+    # Never echoed in the mint response.
+    assert "alias" not in body
+    assert "Secret Nickname" not in r.text
+
+    # Never in the JWT payload (base64-decodable by the guest).
+    import jwt as _jwt
+
+    payload = _jwt.decode(body["token"], options={"verify_signature": False})
+    assert "alias" not in payload
+
+    # Persisted server-side, keyed by jti.
+    meta = GG.get_dm_invite_meta(body["jti"])
+    assert meta == {"alias": "Secret Nickname", "contact_ttl": 3600}
+
+    # Never leaked through any /guest/* response either.
+    preview = client.get(f"/api/v1/guest/invite/{body['token']}")
+    assert "alias" not in preview.json()
+    assert "Secret Nickname" not in preview.text
+
+    joined = _join(client, body["token"])
+    assert joined.status_code == 200, joined.text
+    assert "alias" not in joined.json()
+    assert "Secret Nickname" not in joined.text
+
+
+def test_mint_dm_invite_without_alias_stores_no_sidecar_row(env, client):
+    r = client.post("/api/v1/groups/self/invite?mode=dm", json={}, headers=_OP)
+    assert r.status_code == 200, r.text
+    assert GG.get_dm_invite_meta(r.json()["jti"]) is None
+
+
+def test_classic_group_invite_ignores_alias_body(env, client):
+    # Classic (non-dm) mint is byte-for-byte unchanged: no sidecar wiring.
+    grp = G.create_group(name="Ops", creator_uri=daemon_proxy.OPERATOR_ID, members=[])
+    r = client.post(
+        f"/api/v1/groups/{grp.id}/invite", json={"alias": "Nope"}, headers=_OP
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "alias" not in body
+    assert GG.get_dm_invite_meta(body["jti"]) is None
+
+
+# ── S1: dm-aware preview ─────────────────────────────────────────────────────
+def test_guest_invite_preview_dm_mode_and_operator_name(env, client):
+    inv = GG.create_dm_invite(operator_uri=_OPERATOR)
+    r = client.get(f"/api/v1/guest/invite/{inv['token']}")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["valid"] is True
+    assert body["mode"] == "dm"
+    assert body["operator_name"]  # non-empty display name for landing copy
+
+
+def test_guest_invite_preview_classic_group_unchanged(env, client):
+    grp = G.create_group(name="Ops", creator_uri=daemon_proxy.OPERATOR_ID, members=[])
+    inv = GG.create_group_invite(grp.id)
+    r = client.get(f"/api/v1/guest/invite/{inv['token']}")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["valid"] is True
+    assert "mode" not in body
+    assert "operator_name" not in body

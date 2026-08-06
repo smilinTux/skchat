@@ -178,6 +178,7 @@ def create_group_invite(
     mode: str = "group",
     aud: Optional[str] = None,
     scope: Optional[str] = None,
+    dm_reuse: bool = False,
     now_fn=None,
 ) -> dict:
     """Mint a signed, room-scoped invite token for ``group_id``.
@@ -222,6 +223,11 @@ def create_group_invite(
         payload["aud"] = aud
     if scope:
         payload["scope"] = scope
+    # A reusable my-DM-link (S1): the invite is never single-use and carries a
+    # marker so a fresh arrival can be told "this is the standing link" (S2 does
+    # the per-arrival fanout; this just plumbs the claim through mint + verify).
+    if dm_reuse:
+        payload["dm_reuse"] = True
 
     # Phase-1 PQ additions (flag-gated, fail-closed) — operator-signed identity
     # claims in the token + fragment-only link secret in the URL.
@@ -272,6 +278,7 @@ def create_dm_invite(
     operator_uri: Optional[str] = None,
     ttl: Optional[int] = None,
     single_use: bool = True,
+    reusable: bool = False,
     now_fn=None,
 ) -> dict:
     """Mint a 1:1 DM invite as a degenerate 2-seat guest group (Mode A DM).
@@ -281,6 +288,12 @@ def create_dm_invite(
     existing guest-group machinery (invite/join/scoping/isolation) is reused
     unchanged. This mints a fresh DM group with the operator in seat 1, tags it
     ``mode="dm"``, then issues a (single-use by default) invite for it.
+
+    ``reusable=True`` (S1) mints the operator's standing "my-DM-link": it is
+    NEVER single-use (overrides ``single_use``) and carries a ``dm_reuse=true``
+    claim (surfaced by :func:`verify_group_invite`) alongside the anchor
+    ``group_id`` of the 2-seat group minted for the first arrival — per-arrival
+    fanout beyond that first seat lands in S2.
 
     ``operator_uri`` defaults to the running agent's sovereign identity. Returns
     the :func:`create_group_invite` dict augmented with ``mode="dm"`` (its
@@ -298,7 +311,15 @@ def create_dm_invite(
     grp.metadata["mode"] = "dm"
     G.save_group(grp)
 
-    invite = create_group_invite(grp.id, ttl=ttl, single_use=single_use, mode="dm", now_fn=now_fn)
+    eff_single_use = False if reusable else single_use
+    invite = create_group_invite(
+        grp.id,
+        ttl=ttl,
+        single_use=eff_single_use,
+        mode="dm",
+        dm_reuse=reusable,
+        now_fn=now_fn,
+    )
     invite["mode"] = "dm"
     return invite
 
@@ -375,6 +396,7 @@ def verify_group_invite(
         ("op_pub", "operator_pubkey"),
         ("aud", "aud"),
         ("scope", "scope"),
+        ("dm_reuse", "dm_reuse"),
     ):
         val = payload.get(src)
         if val is not None:
@@ -499,6 +521,14 @@ def _connect() -> sqlite3.Connection:
         "  created_at REAL NOT NULL"
         ")"
     )
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS dm_invite_meta ("
+        "  jti TEXT PRIMARY KEY,"
+        "  alias TEXT,"
+        "  contact_ttl INTEGER,"
+        "  created_at REAL NOT NULL"
+        ")"
+    )
     conn.commit()
     return conn
 
@@ -536,6 +566,51 @@ def transfer_group(transfer_id: str) -> Optional[str]:
         finally:
             conn.close()
     return row[0] if row else None
+
+
+# ── DM invite sidecar (pre-set alias + contact-expiry TTL, jti-keyed) ───────
+# SPEC CORRECTION: alias must NEVER go into the JWT payload (the HS256 payload
+# is base64-decodable by the guest) and never into any /guest/* response — it
+# is operator-only metadata, kept server-side in this sidecar table and read
+# back only by operator-gated code paths.
+
+
+def store_dm_invite_meta(
+    jti: str, *, alias: Optional[str] = None, contact_ttl: Optional[int] = None
+) -> None:
+    """Persist an invite's pre-set alias / contact-expiry TTL, keyed by ``jti``."""
+    j = (jti or "").strip()
+    if not j:
+        return
+    with _store_lock:
+        conn = _connect()
+        try:
+            conn.execute(
+                "INSERT OR REPLACE INTO dm_invite_meta (jti, alias, contact_ttl, created_at)"
+                " VALUES (?, ?, ?, ?)",
+                (j, alias, contact_ttl, time.time()),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+
+def get_dm_invite_meta(jti: str) -> Optional[dict]:
+    """Return ``{alias, contact_ttl}`` for an invite's ``jti``, or None if unset."""
+    j = (jti or "").strip()
+    if not j:
+        return None
+    with _store_lock:
+        conn = _connect()
+        try:
+            row = conn.execute(
+                "SELECT alias, contact_ttl FROM dm_invite_meta WHERE jti = ?", (j,)
+            ).fetchone()
+        finally:
+            conn.close()
+    if row is None:
+        return None
+    return {"alias": row[0], "contact_ttl": row[1]}
 
 
 # ── Untrusted-member roster integration ─────────────────────────────────────
