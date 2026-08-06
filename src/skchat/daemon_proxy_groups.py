@@ -580,7 +580,7 @@ def group_to_conversation(
         )
         for m in group.members
     ]
-    return {
+    conversation = {
         "peer_id": group.id,
         "display_name": group.name,
         "last_message": (group.metadata.get("last_message") or ""),
@@ -602,6 +602,36 @@ def group_to_conversation(
         # operator can always tell sealed vs cleartext vs degraded (flag on, not
         # sealing) — no silent state.
         "encryption": group_encryption_status(group),
+    }
+    if group.metadata.get("mode") == "dm":
+        conversation.update(_dm_guest_badge(group))
+    return conversation
+
+
+def _dm_guest_badge(group) -> dict:
+    """Operator-facing guest badge for a ``metadata.mode='dm'`` group (S4).
+
+    Sourced from the ``dm_contacts`` registry so alias edits made via
+    ``PATCH /api/v1/guest-dm/contacts/{fp}`` sync across operator devices for
+    free (the registry lives in the daemon, served over this same listing).
+    The alias/guest identity here are operator-only - this function must only
+    ever be reached from the operator group listing, never a ``/guest/*``
+    response.
+    """
+    from skchat import guest_groups as GG
+
+    contact = GG.get_dm_contact_by_group(group.id)
+    guest_id = contact.get("guest_id") if contact else ""
+    if not guest_id:
+        guests_meta = group.metadata.get("guests") or {}
+        guest_id = next(iter(guests_meta), "")
+    member = group.get_member(guest_id) if guest_id else None
+    return {
+        "guest_dm": True,
+        "guest_name": member.display_name if member is not None else "",
+        "guest_alias": contact.get("alias") if contact else None,
+        "guest_status": (contact.get("status") if contact else None) or "active",
+        "muted": bool(contact.get("muted")) if contact else False,
     }
 
 

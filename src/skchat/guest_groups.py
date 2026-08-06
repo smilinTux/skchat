@@ -740,6 +740,21 @@ def upsert_dm_contact(
             conn.close()
 
 
+_DM_CONTACT_COLUMNS = (
+    "fp",
+    "guest_id",
+    "group_id",
+    "invite_jti",
+    "alias",
+    "contact_expires_at",
+    "status",
+    "muted",
+    "created_at",
+    "last_seen_at",
+)
+_DM_CONTACT_SELECT = "SELECT " + ", ".join(_DM_CONTACT_COLUMNS) + " FROM dm_contacts"
+
+
 def get_dm_contact(fp: str) -> Optional[dict]:
     """Return the ``dm_contacts`` row for ``fp`` as a dict, or None."""
     f = (fp or "").strip()
@@ -748,28 +763,96 @@ def get_dm_contact(fp: str) -> Optional[dict]:
     with _store_lock:
         conn = _connect()
         try:
+            row = conn.execute(_DM_CONTACT_SELECT + " WHERE fp = ?", (f,)).fetchone()
+        finally:
+            conn.close()
+    if row is None:
+        return None
+    return dict(zip(_DM_CONTACT_COLUMNS, row))
+
+
+def list_dm_contacts() -> list[dict]:
+    """Return every ``dm_contacts`` row (S4 operator list), most-recent first."""
+    with _store_lock:
+        conn = _connect()
+        try:
+            rows = conn.execute(
+                _DM_CONTACT_SELECT + " ORDER BY last_seen_at DESC"
+            ).fetchall()
+        finally:
+            conn.close()
+    return [dict(zip(_DM_CONTACT_COLUMNS, row)) for row in rows]
+
+
+def get_dm_contact_by_group(group_id: str) -> Optional[dict]:
+    """Return the ``dm_contacts`` row bound to ``group_id``, or None.
+
+    A ``mode="dm"`` group has exactly one guest contact; used by the operator
+    group listing (S4) to surface the guest_dm badge without needing the
+    guest's fp up front.
+    """
+    gid = (group_id or "").strip()
+    if not gid:
+        return None
+    with _store_lock:
+        conn = _connect()
+        try:
             row = conn.execute(
-                "SELECT fp, guest_id, group_id, invite_jti, alias, contact_expires_at,"
-                " status, muted, created_at, last_seen_at FROM dm_contacts WHERE fp = ?",
-                (f,),
+                _DM_CONTACT_SELECT + " WHERE group_id = ? ORDER BY last_seen_at DESC LIMIT 1",
+                (gid,),
             ).fetchone()
         finally:
             conn.close()
     if row is None:
         return None
-    keys = (
-        "fp",
-        "guest_id",
-        "group_id",
-        "invite_jti",
-        "alias",
-        "contact_expires_at",
-        "status",
-        "muted",
-        "created_at",
-        "last_seen_at",
-    )
-    return dict(zip(keys, row))
+    return dict(zip(_DM_CONTACT_COLUMNS, row))
+
+
+_UNSET = object()
+
+
+def update_dm_contact(
+    fp: str,
+    *,
+    alias=_UNSET,
+    contact_expires_at=_UNSET,
+    muted=_UNSET,
+) -> bool:
+    """Partial-update a ``dm_contacts`` row (S4 operator PATCH).
+
+    Only fields actually passed are written - omit a keyword to leave it
+    untouched; pass ``None`` for ``alias``/``contact_expires_at`` to explicitly
+    clear it. Returns True iff a row existed for ``fp`` (False is a no-op).
+    """
+    f = (fp or "").strip()
+    if not f:
+        return False
+    sets = []
+    params: list = []
+    if alias is not _UNSET:
+        sets.append("alias = ?")
+        params.append(alias)
+    if contact_expires_at is not _UNSET:
+        sets.append("contact_expires_at = ?")
+        params.append(contact_expires_at)
+    if muted is not _UNSET:
+        sets.append("muted = ?")
+        params.append(1 if muted else 0)
+    with _store_lock:
+        conn = _connect()
+        try:
+            row = conn.execute("SELECT 1 FROM dm_contacts WHERE fp = ?", (f,)).fetchone()
+            if row is None:
+                return False
+            if sets:
+                params.append(f)
+                conn.execute(
+                    f"UPDATE dm_contacts SET {', '.join(sets)} WHERE fp = ?", params
+                )
+                conn.commit()
+        finally:
+            conn.close()
+    return True
 
 
 def revoke_dm_contact(fp: str) -> bool:
