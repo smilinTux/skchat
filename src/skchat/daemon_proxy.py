@@ -155,12 +155,17 @@ def _persist(
     thread_id=None,
     content_type: str | None = None,
     rich: dict | None = None,
+    quoted_text: str | None = None,
+    quoted_sender: str | None = None,
+    quoted_id: str | None = None,
 ):
     """Build a ChatMessage (with optional reply/thread linkage) and save it.
 
     ``ChatHistory.add_message`` only takes scalars, so we construct the model
     directly to carry reply_to_id/thread_id (and the optional typed-message
-    ``content_type``/``rich`` payload — P1 contract), then ``save`` it.
+    ``content_type``/``rich`` payload (P1 contract), plus the denormalized
+    reply-quote snippet quoted_text/quoted_sender/quoted_id so OTHER devices can
+    render the quote without local resolution), then ``save`` it.
     """
     from skchat.models import ChatMessage
 
@@ -170,6 +175,9 @@ def _persist(
         "content": content,
         "reply_to_id": reply_to_id or None,
         "thread_id": thread_id or None,
+        "quoted_text": quoted_text or None,
+        "quoted_sender": quoted_sender or None,
+        "quoted_id": quoted_id or None,
     }
     if content_type:
         fields["content_type"] = content_type
@@ -290,6 +298,17 @@ def _iso(ts) -> str | None:
     return ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
 
 
+def _is_sealed_body(body: str) -> bool:
+    """True if *body* is a hybrid-sealed envelope token (``pqdm1:``/``pqdm2:``).
+
+    Used to guard the reply-quote denormalization: a sealed body must never carry
+    a plaintext quoted preview as a cleartext sibling field (that would leak the
+    quoted original). The seal payload today is the body string only, so quoted_*
+    are simply suppressed on a sealed message rather than sealed inside it.
+    """
+    return bool(body) and (body.startswith("pqdm1:") or body.startswith("pqdm2:"))
+
+
 def _msg_to_app(m, *, self_id: str) -> dict:
     """Map a stored ``ChatMessage`` to the app's message JSON.
 
@@ -330,6 +349,19 @@ def _msg_to_app(m, *, self_id: str) -> dict:
     if eh:
         edit_history = [{"body": e.body, "ts": _iso(e.ts)} for e in eh]
 
+    # Reply-quote snippet (cross-device): surface the denormalized quoted_* so a
+    # sibling/recipient device renders the quote without local resolution.
+    # SECURITY: a sealed body (pqdm1:/pqdm2:) must NEVER carry a plaintext quoted
+    # preview as a cleartext sibling field (that would leak the quoted original).
+    # The seal payload is a raw string (the body only), so quoted_* cannot ride
+    # inside the envelope today; we therefore SUPPRESS plaintext quoted_* on any
+    # sealed message. Plaintext messages (the live chef<->lumina path) surface
+    # them as-is. Full in-envelope sealing is a carded follow-up.
+    _sealed = _is_sealed_body(body)
+    q_text = None if _sealed else getattr(m, "quoted_text", None)
+    q_sender = None if _sealed else getattr(m, "quoted_sender", None)
+    q_id = None if _sealed else getattr(m, "quoted_id", None)
+
     return {
         # --- shared message contract (Flutter builds to this exact shape) ---
         "id": getattr(m, "id", ""),
@@ -340,6 +372,9 @@ def _msg_to_app(m, *, self_id: str) -> dict:
         "rich": getattr(m, "rich", None),
         "ts": ts_iso,
         "reply_to_id": getattr(m, "reply_to_id", None),
+        "quoted_text": q_text,
+        "quoted_sender": q_sender,
+        "quoted_id": q_id,
         "thread_id": getattr(m, "thread_id", None),
         "edited_at": _iso(getattr(m, "edited_at", None)),
         "edit_history": edit_history,
@@ -386,6 +421,13 @@ def _group_msg_to_app(m, *, group_id: str) -> dict:
     if eh:
         edit_history = [{"body": e.body, "ts": _iso(e.ts)} for e in eh]
 
+    # Reply-quote snippet parity with _msg_to_app; suppressed on a sealed body so
+    # a sealed group message never leaks a plaintext quoted preview sibling.
+    _sealed = _is_sealed_body(body)
+    q_text = None if _sealed else getattr(m, "quoted_text", None)
+    q_sender = None if _sealed else getattr(m, "quoted_sender", None)
+    q_id = None if _sealed else getattr(m, "quoted_id", None)
+
     return {
         "id": getattr(m, "id", ""),
         "conversation_id": group_id,
@@ -395,6 +437,9 @@ def _group_msg_to_app(m, *, group_id: str) -> dict:
         "rich": getattr(m, "rich", None),
         "ts": ts_iso,
         "reply_to_id": getattr(m, "reply_to_id", None),
+        "quoted_text": q_text,
+        "quoted_sender": q_sender,
+        "quoted_id": q_id,
         "thread_id": getattr(m, "thread_id", None) or group_id,
         "edited_at": _iso(getattr(m, "edited_at", None)),
         "edit_history": edit_history,
@@ -2084,6 +2129,16 @@ async def api_send(request: Request):
     thread_id = body.get("thread_id") or None
     group_id = (body.get("group_id") or "").strip()
 
+    # Reply-quote snippet (cross-device): the composing device denormalizes a
+    # short plaintext preview of the replied-to original and sends it alongside
+    # reply_to_id, so a sibling/recipient device that never decrypted the
+    # original still renders the quote. Threaded into the stored message on the
+    # SAME path as reply_to_id. The app only sends these for a PLAINTEXT body
+    # (never on a sealed pqdm* send), so they never leak a sealed preview.
+    quoted_text = body.get("quoted_text") or None
+    quoted_sender = body.get("quoted_sender") or None
+    quoted_id = body.get("quoted_id") or None
+
     # Typed-message contract (P1): an optional content_type + rich payload.
     # The Golden rule holds — an unknown type still rides its `body`/content.
     content_type = (body.get("content_type") or "").strip() or None
@@ -2208,6 +2263,9 @@ async def api_send(request: Request):
                     thread_id=group.id,
                     content_type=content_type,
                     rich=rich,
+                    quoted_text=quoted_text,
+                    quoted_sender=quoted_sender,
+                    quoted_id=quoted_id,
                 )
             except G.GroupSealNotReadyError as exc:
                 # encryption_required group can't seal to every member: refuse
@@ -2245,6 +2303,9 @@ async def api_send(request: Request):
             thread_id,
             content_type=content_type,
             rich=rich,
+            quoted_text=quoted_text,
+            quoted_sender=quoted_sender,
+            quoted_id=quoted_id,
         )
         return JSONResponse(
             _apply_contract(
@@ -2274,7 +2335,8 @@ async def api_send(request: Request):
             logger.info("api_send: coalesced duplicate send (returning cached reply)")
             return JSONResponse(_apply_contract({**_cached[1], "deduped": True}, caps))
 
-        # 1. Persist the operator's message to Lumina (with reply/thread linkage).
+        # 1. Persist the operator's message to Lumina (with reply/thread linkage
+        #    + the denormalized reply-quote snippet for cross-device rendering).
         user_msg = _persist(
             hist,
             OPERATOR_ID,
@@ -2284,6 +2346,9 @@ async def api_send(request: Request):
             thread_id,
             content_type=content_type,
             rich=rich,
+            quoted_text=quoted_text,
+            quoted_sender=quoted_sender,
+            quoted_id=quoted_id,
         )
 
         # 2. Build the prior-turn history for context (oldest-first role/content).

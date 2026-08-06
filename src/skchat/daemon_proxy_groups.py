@@ -899,6 +899,9 @@ def fan_out_send(
     thread_id: Optional[str] = None,
     content_type: Optional[str] = None,
     rich: Optional[dict] = None,
+    quoted_text: Optional[str] = None,
+    quoted_sender: Optional[str] = None,
+    quoted_id: Optional[str] = None,
 ):
     """Persist a group message keyed by the group id + per-member copies.
 
@@ -1026,6 +1029,12 @@ def fan_out_send(
         content=content,
         thread_id=group.id,
         reply_to_id=reply_to_id or None,
+        # Canonical group-thread copy is CLEARTEXT (operator's own local record),
+        # so the denormalized reply-quote snippet rides it safely for cross-device
+        # rendering, mirroring reply_to_id.
+        quoted_text=quoted_text or None,
+        quoted_sender=quoted_sender or None,
+        quoted_id=quoted_id or None,
         metadata={
             "group_id": group.id,
             "group_name": group.name,
@@ -1064,6 +1073,12 @@ def fan_out_send(
             content=sealed_content if seal else content,
             thread_id=group.id,
             reply_to_id=reply_to_id or None,
+            # SECURITY: a sealed member copy must NOT carry a plaintext quoted
+            # preview sibling (that would leak it to the wire). Only the cleartext
+            # member copy carries the snippet.
+            quoted_text=None if seal else (quoted_text or None),
+            quoted_sender=None if seal else (quoted_sender or None),
+            quoted_id=None if seal else (quoted_id or None),
             metadata={
                 "group_id": group.id,
                 "group_name": group.name,

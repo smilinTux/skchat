@@ -191,6 +191,25 @@ class ChatMessage(BaseModel):
         description="ID of parent message",
         validation_alias=AliasChoices("reply_to_id", "reply_to"),
     )
+    quoted_text: Optional[str] = Field(
+        default=None,
+        description=(
+            "Denormalized plaintext preview of the replied-to original, captured "
+            "on the composing device and carried IN the reply so a sibling/"
+            "recipient device that never decrypted the original can still render "
+            "the quote (cross-device reply-quote). Only ever plaintext for a "
+            "plaintext message body; must NOT ride a sealed message as a "
+            "cleartext sibling (see daemon_proxy._msg_to_app)."
+        ),
+    )
+    quoted_sender: Optional[str] = Field(
+        default=None,
+        description="Display label for the quoted original's author.",
+    )
+    quoted_id: Optional[str] = Field(
+        default=None,
+        description="Id of the quoted original (mirrors reply_to_id).",
+    )
     reactions: list[Reaction] = Field(default_factory=list)
     edited_at: Optional[datetime] = Field(
         default=None, description="When this message was last edited (None = never)"
