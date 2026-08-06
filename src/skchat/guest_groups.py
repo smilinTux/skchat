@@ -1,4 +1,4 @@
-"""Guest GROUP access — one-link, group-scoped, full-in-room, UNTRUSTED guests.
+"""Guest GROUP access - one-link, group-scoped, full-in-room, UNTRUSTED guests.
 
 This is the chat/file sibling of ``guest.py`` (which mints LiveKit-only invites
 for conf *call* rooms). Here a single shareable link drops a recipient into ONE
@@ -6,16 +6,16 @@ specific group as an **untrusted guest** with full *in-room* functionality
 (text, files, call, reactions) but **no admin/expansion powers**.
 
 The whole surface is gated behind ``SKCHAT_GUEST_LINKS_ENABLED`` (default off →
-the routes 404/403). No public ingress is wired — this is private-tailnet first.
+the routes 404/403). No public ingress is wired - this is private-tailnet first.
 
 Two JWTs (both HS256 over ``SKCHAT_GUEST_TOKEN_SECRET``, shared with guest.py):
 
-* **invite token** — the link secret the operator sends out. Claims
+* **invite token** - the link secret the operator sends out. Claims
   ``{jti, tier:"group-invite", group_id, iat, exp, once?}``. Room-scoped to the
   group; revocable (reuses ``guest.revoke_invite``); optional expiry/single-use.
-* **guest session token** — minted on join, carried by the guest browser as a
+* **guest session token** - minted on join, carried by the guest browser as a
   bearer token. Claims ``{jti, tier:"guest-session", group_id, guest_id, name,
-  fp, iat, exp}``. **Scoped to exactly ONE group_id** — the request is pinned to
+  fp, iat, exp}``. **Scoped to exactly ONE group_id** - the request is pinned to
   this group server-side; any other group/conversation/file is 403.
 
 Guest identity = ``guest:<slug>#<fp>`` where ``<fp>`` is the first 16 hex of
@@ -51,7 +51,7 @@ def guest_links_enabled() -> bool:
     """True iff the guest-group-link feature is enabled (default OFF).
 
     Accepts ``1/true/yes/on`` (case-insensitive). Everything guest-group is
-    gated on this — when off the routes 404 (operator) / 403 (guest).
+    gated on this - when off the routes 404 (operator) / 403 (guest).
     """
     return os.getenv(_FLAG_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -154,7 +154,7 @@ def pubkey_fingerprint(guest_pubkey: str) -> str:
 
 
 def guest_identity(name: str, guest_pubkey: str) -> str:
-    """Compose ``guest:<slug>#<fp>`` — the untrusted, self-asserted identity."""
+    """Compose ``guest:<slug>#<fp>`` - the untrusted, self-asserted identity."""
     return f"guest:{_slug(name)}#{pubkey_fingerprint(guest_pubkey)}"
 
 
@@ -191,7 +191,7 @@ def create_group_invite(
     When ``SKCHAT_PQ_INVITES_ENABLED`` is on (Phase 1), the token additionally
     carries the operator-signed identity claims (``idm``, ``bc``, ``mode`` + the
     operator's full inline pubkey and detached signature) and the ``join_url``
-    gains the fragment-only 32-byte link secret ``&k=`` — see
+    gains the fragment-only 32-byte link secret ``&k=`` - see
     :mod:`skchat.pq_invites`. Assembly is fail-closed: if the operator identity /
     signing key / signed prekey cannot be resolved it raises (never emits an
     unsigned or classical-only invite). When the flag is off this function is
@@ -229,7 +229,7 @@ def create_group_invite(
     if dm_reuse:
         payload["dm_reuse"] = True
 
-    # Phase-1 PQ additions (flag-gated, fail-closed) — operator-signed identity
+    # Phase-1 PQ additions (flag-gated, fail-closed) - operator-signed identity
     # claims in the token + fragment-only link secret in the URL.
     fragment_secret = None
     pq_material = None
@@ -249,7 +249,7 @@ def create_group_invite(
     result = {
         "token": token,
         # Point at the Flutter app's guest route (hash-routed under /app/), NOT
-        # /join/<token> — that collided with the old conf `/join/<room>?invite=`
+        # /join/<token> - that collided with the old conf `/join/<room>?invite=`
         # page ("invite parameter is missing"). fullLink() prefixes the origin.
         # Every secret (token + k) stays after '#' (H7).
         "join_url": _pqi.build_join_url(token, fragment_secret),
@@ -292,7 +292,7 @@ def create_dm_invite(
     ``reusable=True`` (S1) mints the operator's standing "my-DM-link": it is
     NEVER single-use (overrides ``single_use``) and carries a ``dm_reuse=true``
     claim (surfaced by :func:`verify_group_invite`) alongside the anchor
-    ``group_id`` of the 2-seat group minted for the first arrival — per-arrival
+    ``group_id`` of the 2-seat group minted for the first arrival - per-arrival
     fanout beyond that first seat lands in S2.
 
     ``operator_uri`` defaults to the running agent's sovereign identity. Returns
@@ -343,11 +343,11 @@ def verify_group_invite(
 
     Raises :class:`InviteInvalid` for any bad/expired/revoked/used token. When
     ``burn_single_use`` is True a ``once`` invite is atomically burned here (so a
-    second join loses the race) — pass False to peek without consuming (preview).
+    second join loses the race) - pass False to peek without consuming (preview).
 
     ``check_used=False`` additionally skips the "already used" rejection for a
     single-use invite (signature/tier/revocation/expiry/audience are still fully
-    enforced) — used by the S3 DM re-entry peek, which needs the invite's
+    enforced) - used by the S3 DM re-entry peek, which needs the invite's
     ``group_id``/``jti`` even though its single-use jti is already burned.
     ``burn_single_use`` still atomically fails on an already-used jti regardless
     of this flag (the primary-key insert is the real guard), so this can never
@@ -596,7 +596,7 @@ def transfer_group(transfer_id: str) -> Optional[str]:
 
 # ── DM invite sidecar (pre-set alias + contact-expiry TTL, jti-keyed) ───────
 # SPEC CORRECTION: alias must NEVER go into the JWT payload (the HS256 payload
-# is base64-decodable by the guest) and never into any /guest/* response — it
+# is base64-decodable by the guest) and never into any /guest/* response - it
 # is operator-only metadata, kept server-side in this sidecar table and read
 # back only by operator-gated code paths.
 
@@ -641,7 +641,7 @@ def get_dm_invite_meta(jti: str) -> Optional[dict]:
 
 # ── Guest contact registry (S2: reusable-link per-guest DM fanout) ──────────
 # ``dm_contacts`` is keyed by ``fp`` (the stable browser-key fingerprint, see
-# ``pubkey_fingerprint``) — one row per distinct guest, regardless of which
+# ``pubkey_fingerprint``) - one row per distinct guest, regardless of which
 # ``mode=dm`` invite it walked in through. This is what lets a returning guest
 # on a reusable my-DM-link find its way back to its own 2-seat group + history,
 # and what a fresh arrival's fanout gets recorded into.
@@ -775,7 +775,7 @@ def get_dm_contact(fp: str) -> Optional[dict]:
 def revoke_dm_contact(fp: str) -> bool:
     """Revoke a guest contact (S3 semantics; the operator-facing route is S4).
 
-    Marks the ``dm_contacts`` row ``status='revoked'`` — the S3 enforcement
+    Marks the ``dm_contacts`` row ``status='revoked'`` - the S3 enforcement
     chokepoint (``guest_group_routes._enforce_dm_contact_status``) then 403s
     every guest route for this fp on its next request, and re-entry via a
     burned single-use jti is blocked (the re-entry check requires an active
@@ -823,7 +823,7 @@ def resolve_dm_admission_group(info: dict, fp: str, *, now_fn=None):
         group = G.load_group(contact["group_id"])
         if group is not None:
             return group
-        # The contact's group vanished — fall through and treat as fresh.
+        # The contact's group vanished - fall through and treat as fresh.
 
     if not check_new_contact_allowed(jti, now_fn=now_fn):
         raise ContactRateLimited(jti)
@@ -872,7 +872,7 @@ def add_untrusted_guest_member(group, guest_id: str, display: str):
         existing.role = MemberRole.MEMBER
     # Sidecar guest registry (untrusted markers the GroupMember model lacks).
     # ``added_at`` is preserved across rejoins (a returning guest keeps its
-    # original epoch-fence cutoff, else a rejoin would hide its own history —
+    # original epoch-fence cutoff, else a rejoin would hide its own history -
     # see ``_dm_epoch_fence`` in guest_group_routes.py).
     guests = dict(group.metadata.get("guests") or {})
     prev_added_at = (guests.get(guest_id) or {}).get("added_at")

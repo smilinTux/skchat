@@ -1,11 +1,11 @@
-"""Tests for guest-dm S3 — burned single-use re-entry + revoke/expiry chokepoint.
+"""Tests for guest-dm S3 - burned single-use re-entry + revoke/expiry chokepoint.
 
 Per task a0b8f930 (epic 8685ede6, depends on S2 a69e7d4e). Covers:
 
   * a single-use dm invite whose jti is already burned still lets the SAME
     previously-admitted guest key back in: fresh session, no new seat, no new
     group. Any other presenter (different key, stranger) gets the existing
-    generic 401 — no oracle.
+    generic 401 - no oracle.
   * the S3 enforcement chokepoint: a revoked ``dm_contacts`` row 403s every
     guest route with ``{"reason": "contact_revoked"}`` and blocks re-entry; an
     expired contact 403s with ``{"reason": "contact_expired"}``.
@@ -81,7 +81,7 @@ def test_reentry_same_key_burned_invite_gets_fresh_session(env, client):
     assert G.load_group(gid).member_count == 2
 
     # The invite's single-use jti is already burned; the SAME browser key
-    # presents it again (e.g. its 7d session JWT expired) — re-admitted.
+    # presents it again (e.g. its 7d session JWT expired) - re-admitted.
     r2 = _join(client, inv["token"], pubkey="KEY-A")
     assert r2.status_code == 200, r2.text
     body2 = r2.json()
@@ -108,7 +108,7 @@ def test_reentry_ignores_display_name_change_no_mutation(env, client):
 
     r2 = _join(client, inv["token"], name="TotallyDifferentName", pubkey="KEY-A")
     assert r2.status_code == 200, r2.text
-    # Re-entry never mutates the group — the roster display name is unchanged.
+    # Re-entry never mutates the group - the roster display name is unchanged.
     assert r2.json()["display_name"] == "Alice"
     member = G.load_group(gid).get_member(r1.json()["guest_id"])
     assert member.display_name == "Alice"
@@ -136,7 +136,7 @@ def test_reentry_stranger_no_oracle_same_generic_error(env, client):
     _join(client, inv["token"], pubkey="KEY-A")  # burns the invite
 
     # A never-before-seen key AND a genuinely bogus token both fail with the
-    # exact same generic body — no distinguishing signal for strangers.
+    # exact same generic body - no distinguishing signal for strangers.
     r_used = _join(client, inv["token"], name="Stranger", pubkey="KEY-NEVER-SEEN")
     r_bogus = client.post(
         "/api/v1/guest/join",
@@ -147,7 +147,7 @@ def test_reentry_stranger_no_oracle_same_generic_error(env, client):
 
 
 def test_reentry_only_applies_to_dm_mode_groups(env, client):
-    """A classic (non-dm) single-use group invite double-join is unchanged —
+    """A classic (non-dm) single-use group invite double-join is unchanged -
     no re-entry semantics leak into ordinary guest-group joins."""
     grp = G.create_group(name="Town Hall", creator_uri=daemon_proxy.OPERATOR_ID, members=[])
     inv = GG.create_group_invite(grp.id, single_use=True)
