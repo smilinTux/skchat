@@ -529,6 +529,20 @@ def _connect() -> sqlite3.Connection:
         "  created_at REAL NOT NULL"
         ")"
     )
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS dm_contacts ("
+        "  fp TEXT PRIMARY KEY,"
+        "  guest_id TEXT,"
+        "  group_id TEXT,"
+        "  invite_jti TEXT,"
+        "  alias TEXT,"
+        "  contact_expires_at REAL,"
+        "  status TEXT,"
+        "  muted INTEGER,"
+        "  created_at REAL NOT NULL,"
+        "  last_seen_at REAL"
+        ")"
+    )
     conn.commit()
     return conn
 
@@ -613,6 +627,178 @@ def get_dm_invite_meta(jti: str) -> Optional[dict]:
     return {"alias": row[0], "contact_ttl": row[1]}
 
 
+# ── Guest contact registry (S2: reusable-link per-guest DM fanout) ──────────
+# ``dm_contacts`` is keyed by ``fp`` (the stable browser-key fingerprint, see
+# ``pubkey_fingerprint``) — one row per distinct guest, regardless of which
+# ``mode=dm`` invite it walked in through. This is what lets a returning guest
+# on a reusable my-DM-link find its way back to its own 2-seat group + history,
+# and what a fresh arrival's fanout gets recorded into.
+
+_DM_CONTACT_RATE_ENV = "SKCHAT_DM_CONTACT_RATE_LIMIT"
+_DEFAULT_DM_CONTACT_RATE = 20
+_DM_CONTACT_RATE_WINDOW = 86400  # 24h
+
+
+class ContactRateLimited(Exception):
+    """Raised when minting another NEW ``dm_contacts`` row for an invite jti
+    would exceed the per-invite rate cap. Callers MUST map this to a generic
+    401 (no oracle distinguishing rate-limit from any other invite failure).
+    """
+
+
+def _dm_contact_rate_limit() -> int:
+    try:
+        v = int(os.getenv(_DM_CONTACT_RATE_ENV, str(_DEFAULT_DM_CONTACT_RATE)))
+    except (TypeError, ValueError):
+        v = _DEFAULT_DM_CONTACT_RATE
+    return max(1, v)
+
+
+def check_new_contact_allowed(jti: str, *, now_fn=None) -> bool:
+    """True iff another NEW ``dm_contacts`` row may be created for ``jti``.
+
+    Counts distinct contacts already created for this invite jti within the
+    rolling 24h window (default cap 20, ``SKCHAT_DM_CONTACT_RATE_LIMIT``). A
+    returning guest (an UPDATE, not an INSERT) never consumes this budget.
+    """
+    j = (jti or "").strip()
+    if not j:
+        return True
+    now = float((now_fn or time.time)())
+    cutoff = now - _DM_CONTACT_RATE_WINDOW
+    with _store_lock:
+        conn = _connect()
+        try:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM dm_contacts WHERE invite_jti = ? AND created_at > ?",
+                (j, cutoff),
+            ).fetchone()
+        finally:
+            conn.close()
+    count = row[0] if row else 0
+    return count < _dm_contact_rate_limit()
+
+
+def upsert_dm_contact(
+    fp: str,
+    *,
+    guest_id: str,
+    group_id: str,
+    invite_jti: str,
+    alias: Optional[str] = None,
+    contact_ttl: Optional[int] = None,
+    now_fn=None,
+) -> None:
+    """Insert or refresh a guest's ``dm_contacts`` row.
+
+    A returning guest (same ``fp``) has ``last_seen_at`` bumped and its
+    ``group_id``/``invite_jti`` refreshed; ``alias``/``contact_expires_at`` are
+    only overwritten when THIS admission's sidecar actually carries them, so a
+    plain rejoin (whose invite has no alias set) never clobbers a
+    previously-recorded one.
+    """
+    f = (fp or "").strip()
+    if not f:
+        return
+    now = float((now_fn or time.time)())
+    new_expires = (now + contact_ttl) if contact_ttl is not None else None
+    with _store_lock:
+        conn = _connect()
+        try:
+            existing = conn.execute(
+                "SELECT alias, contact_expires_at FROM dm_contacts WHERE fp = ?", (f,)
+            ).fetchone()
+            if existing is None:
+                conn.execute(
+                    "INSERT INTO dm_contacts (fp, guest_id, group_id, invite_jti, alias,"
+                    " contact_expires_at, status, muted, created_at, last_seen_at)"
+                    " VALUES (?, ?, ?, ?, ?, ?, 'active', 0, ?, ?)",
+                    (f, guest_id, group_id, invite_jti, alias, new_expires, now, now),
+                )
+            else:
+                final_alias = alias if alias is not None else existing[0]
+                final_expires = new_expires if new_expires is not None else existing[1]
+                conn.execute(
+                    "UPDATE dm_contacts SET guest_id = ?, group_id = ?, invite_jti = ?,"
+                    " alias = ?, contact_expires_at = ?, last_seen_at = ? WHERE fp = ?",
+                    (guest_id, group_id, invite_jti, final_alias, final_expires, now, f),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+
+
+def get_dm_contact(fp: str) -> Optional[dict]:
+    """Return the ``dm_contacts`` row for ``fp`` as a dict, or None."""
+    f = (fp or "").strip()
+    if not f:
+        return None
+    with _store_lock:
+        conn = _connect()
+        try:
+            row = conn.execute(
+                "SELECT fp, guest_id, group_id, invite_jti, alias, contact_expires_at,"
+                " status, muted, created_at, last_seen_at FROM dm_contacts WHERE fp = ?",
+                (f,),
+            ).fetchone()
+        finally:
+            conn.close()
+    if row is None:
+        return None
+    keys = (
+        "fp",
+        "guest_id",
+        "group_id",
+        "invite_jti",
+        "alias",
+        "contact_expires_at",
+        "status",
+        "muted",
+        "created_at",
+        "last_seen_at",
+    )
+    return dict(zip(keys, row))
+
+
+def resolve_dm_admission_group(info: dict, fp: str, *, now_fn=None):
+    """Resolve which 2-seat DM group a guest ``fp`` lands in on a REUSABLE
+    dm invite (``info["dm_reuse"]``): its existing contact's group (a return
+    visit), the anchor group (the invite's own ``group_id``, when a fresh
+    arrival is the first ever), or a freshly minted sibling DM group (mirrors
+    ``create_dm_invite`` internals) for each later distinct arrival.
+
+    Raises :class:`ContactRateLimited` if a brand-new contact for this jti
+    would exceed the per-invite creation rate cap.
+    """
+    from skchat import daemon_proxy_groups as G
+
+    jti = (info.get("jti") or "").strip()
+    contact = get_dm_contact(fp)
+    if contact is not None:
+        group = G.load_group(contact["group_id"])
+        if group is not None:
+            return group
+        # The contact's group vanished — fall through and treat as fresh.
+
+    if not check_new_contact_allowed(jti, now_fn=now_fn):
+        raise ContactRateLimited(jti)
+
+    anchor = G.load_group(info["group_id"])
+    if anchor is not None and anchor.member_count < DM_SEAT_CAP:
+        return anchor
+
+    operator_uri = anchor.admin_uris[0] if anchor is not None and anchor.admin_uris else ""
+    if not operator_uri:
+        from skchat.identity_bridge import get_sovereign_identity
+
+        operator_uri = get_sovereign_identity()
+
+    group = G.create_group(name="Direct message", creator_uri=operator_uri, members=[])
+    group.metadata["mode"] = "dm"
+    G.save_group(group)
+    return group
+
+
 # ── Untrusted-member roster integration ─────────────────────────────────────
 
 
@@ -640,12 +826,16 @@ def add_untrusted_guest_member(group, guest_id: str, display: str):
         existing.display_name = display
         existing.role = MemberRole.MEMBER
     # Sidecar guest registry (untrusted markers the GroupMember model lacks).
+    # ``added_at`` is preserved across rejoins (a returning guest keeps its
+    # original epoch-fence cutoff, else a rejoin would hide its own history —
+    # see ``_dm_epoch_fence`` in guest_group_routes.py).
     guests = dict(group.metadata.get("guests") or {})
+    prev_added_at = (guests.get(guest_id) or {}).get("added_at")
     guests[guest_id] = {
         "display": display,
         "trust": "untrusted",
         "guest": True,
-        "added_at": time.time(),
+        "added_at": prev_added_at if prev_added_at is not None else time.time(),
     }
     group.metadata["guests"] = guests
     return group

@@ -355,19 +355,42 @@ async def guest_join(request: Request):
     guest_id = GG.guest_identity(display_name, guest_pubkey)
     fp = GG.pubkey_fingerprint(guest_pubkey)
 
-    # Mode-A DM: a 1:1 is a 2-seat guest group (seat 1 = operator). A NEW guest
-    # that would take a third seat is refused (the DM is full). A returning guest
-    # (same identity) is idempotent and always allowed.
-    if (
-        group.metadata.get("mode") == "dm"
+    is_dm = group.metadata.get("mode") == "dm"
+    if is_dm and info.get("dm_reuse"):
+        # Reusable my-DM-link (S1 marker): fan out per distinct guest key — a
+        # returning fp resolves to its own existing DM (registry lookup), a
+        # brand-new fp lands in the anchor (first-ever arrival) or a freshly
+        # minted sibling DM (each later arrival), rate-capped per invite jti.
+        try:
+            group = GG.resolve_dm_admission_group(info, fp)
+        except GG.ContactRateLimited:
+            logger.info("dm join rejected: contact rate limit for jti=%s", info["jti"])
+            raise HTTPException(401, "invalid or expired invite")
+        group_id = group.id
+    elif (
+        is_dm
         and group.get_member(guest_id) is None
         and group.member_count >= GG.DM_SEAT_CAP
     ):
+        # Mode-A DM (single-use / non-reusable): a NEW guest that would take a
+        # third seat is refused (the DM is full). A returning guest (same
+        # identity) is idempotent and always allowed.
         logger.info("dm join rejected: %s full (%d seats)", group_id, group.member_count)
         raise HTTPException(403, "direct message is full")
 
     GG.add_untrusted_guest_member(group, guest_id, display)
     G.save_group(group)
+
+    if is_dm:
+        meta = GG.get_dm_invite_meta(info["jti"]) or {}
+        GG.upsert_dm_contact(
+            fp,
+            guest_id=guest_id,
+            group_id=group.id,
+            invite_jti=info["jti"],
+            alias=meta.get("alias"),
+            contact_ttl=meta.get("contact_ttl"),
+        )
 
     session = GG.mint_guest_session(group_id=group_id, guest_id=guest_id, name=display, fp=fp)
 
