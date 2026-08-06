@@ -752,6 +752,42 @@ def _resolve_signer_pubkey(peer: str) -> str | None:
     return None
 
 
+def _unwrap_skq1(plaintext: str) -> tuple[str, dict]:
+    """Unwrap a ``skq1:`` reply-quote envelope from an OPENED sealed plaintext.
+
+    The sealed leg of the cross-device reply-quote (card 5a19f848) carries the
+    quoted snippet INSIDE the encrypted body: ``skq1:`` + ``json({t,q,qs,qi})``.
+    A plaintext with that prefix is parsed into ``(body, {quoted_text,
+    quoted_sender, quoted_id})``; the top-level plaintext quote fields are null
+    for a sealed send, so these become the message's quote. Any string without
+    the prefix (or a parse failure) yields ``(plaintext, {})`` unchanged, so a
+    raw sealed body opens byte-for-byte as before.
+    """
+    if not plaintext.startswith("skq1:"):
+        return plaintext, {}
+    try:
+        import json as _json
+
+        obj = _json.loads(plaintext[len("skq1:") :])
+        if not isinstance(obj, dict):
+            return plaintext, {}
+        body = obj.get("t")
+        if not isinstance(body, str):
+            body = plaintext
+        quoted = {
+            "quoted_text": obj.get("q") or None,
+            "quoted_sender": obj.get("qs") or None,
+            "quoted_id": obj.get("qi") or None,
+        }
+        # Only report a non-empty quote map when something is actually present.
+        if not any(quoted.values()):
+            return body, {}
+        return body, quoted
+    except Exception:
+        logger.debug("skq1 unwrap failed", exc_info=True)
+        return plaintext, {}
+
+
 def _open_hybrid_inbound(token: str, *, sender_short: str) -> str | None:
     """Open a hybrid-sealed inbound token addressed to Lumina.
 
@@ -2162,7 +2198,16 @@ async def api_send(request: Request):
     if content.startswith("pqdm1:") or content.startswith("pqdm2:"):
         opened = _open_hybrid_inbound(content, sender_short="chef")
         if opened is not None:
-            content = opened
+            # Cross-device reply-quote (card 5a19f848 sealed leg): the quote
+            # rides INSIDE the sealed envelope as a `skq1:` wrapper (the
+            # top-level quoted_* fields are null on a sealed send to avoid a
+            # plaintext leak). Unwrap it here so the quote threads through
+            # _persist / _msg_to_app exactly like a plaintext quote would.
+            content, _q = _unwrap_skq1(opened)
+            if _q:
+                quoted_text = _q.get("quoted_text")
+                quoted_sender = _q.get("quoted_sender")
+                quoted_id = _q.get("quoted_id")
             convo_is_hybrid = True
 
     if not content:
