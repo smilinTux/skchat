@@ -605,7 +605,53 @@ def group_to_conversation(
     }
     if group.metadata.get("mode") == "dm":
         conversation.update(_dm_guest_badge(group))
+    elif group.metadata.get("mode") == "gdm":
+        conversation.update(_gdm_roster_fields(group))
+        for participant, member in zip(participants, group.members):
+            participant.update(_guest_member_fields(group, member))
     return conversation
+
+
+def _gdm_roster_fields(group) -> dict:
+    """Group-level roster metadata for a ``metadata.mode='gdm'`` group (G4).
+
+    Unlike the ``dm`` badge below (exactly one guest, one flat badge), a gdm
+    group can hold several untrusted guests at once, so per-guest identity
+    lives on each participant instead (:func:`_guest_member_fields`) - this
+    just carries the group-wide promotion facts the client needs to render a
+    gdm roster header.
+    """
+    return {
+        "mode": "gdm",
+        "seat_cap": group.metadata.get("seat_cap"),
+        "promoted_at": group.metadata.get("promoted_at"),
+    }
+
+
+def _guest_member_fields(group, member) -> dict:
+    """Per-member guest fields for a gdm roster (guest-dm G4): alias-wins per member.
+
+    Empty for trusted members. Sourced from the group's ``guests`` sidecar
+    (name) plus ``dm_contacts``/``dm_contact_memberships`` (alias + this
+    member's per-group status) so alias edits made via
+    ``PATCH /api/v1/guest-dm/contacts/{fp}`` sync for free. Operator-only -
+    this must only ever be reached from the operator group listing, never a
+    ``/guest/*`` response.
+    """
+    from skchat import guest_groups as GG
+
+    guests_meta = group.metadata.get("guests") or {}
+    if member.identity_uri not in guests_meta:
+        return {}
+    fp = member.identity_uri.rsplit("#", 1)[-1]
+    contact = GG.get_dm_contact(fp)
+    membership = GG.get_membership(fp, group.id)
+    return {
+        "guest": True,
+        "guest_name": member.display_name,
+        "guest_alias": contact.get("alias") if contact else None,
+        "membership_status": (membership.get("status") if membership else None) or "active",
+    }
 
 
 def _dm_guest_badge(group) -> dict:

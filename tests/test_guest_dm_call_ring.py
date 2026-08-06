@@ -87,6 +87,19 @@ def _auth(session):
     return {"Authorization": f"Bearer {session}"}
 
 
+def _promote_to_gdm(client, gid):
+    return client.post(f"/api/v1/groups/{gid}/invite?mode=dm", json={}, headers=_OP).json()
+
+
+def _join_second_guest(client, invite_token, name="Bob", pubkey="KEY-B"):
+    r = client.post(
+        "/api/v1/guest/join",
+        json={"invite_token": invite_token, "display_name": name, "guest_pubkey": pubkey},
+    )
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
 def _join_dm(client, name="Alice", pubkey="PUBKEY-A", alias=None):
     inv = GG.create_dm_invite(operator_uri=_OPERATOR)
     if alias is not None:
@@ -177,6 +190,68 @@ def test_muted_contact_never_rings_but_gets_token(client, spies):
 
     assert [b for b in broadcasts if b.get("type") == "guest_call"] == []
     assert alerts == []
+
+
+# ── ring:true on a gdm group (guest-dm G4: dm-family, not just dm) ──────────
+def test_ring_true_on_gdm_group_emits_ws_and_alert_to_operator_only(client, spies):
+    broadcasts, alerts = spies
+    j_alice = _join_dm(client, name="Alice", pubkey="KEY-A")
+    gid = j_alice["group"]["id"]
+    promo = _promote_to_gdm(client, gid)
+    j_bob = _join_second_guest(client, promo["token"])
+
+    r = client.post(
+        "/api/v1/guest/call", json={"ring": True}, headers=_auth(j_bob["session_token"])
+    )
+    assert r.status_code == 200, r.text
+    assert "alias" not in r.json()  # never leaks to the guest response
+
+    guest_calls = [b for b in broadcasts if b.get("type") == "guest_call"]
+    assert len(guest_calls) == 1
+    evt = guest_calls[0]
+    assert evt["group_id"] == gid
+    assert evt["guest_id"] == j_bob["guest_id"]
+    assert evt["display"] == "Bob"
+    assert len(alerts) == 1
+
+
+def test_muted_contact_never_rings_on_gdm_group(client, spies):
+    broadcasts, alerts = spies
+    j_alice = _join_dm(client, name="Alice", pubkey="KEY-A")
+    gid = j_alice["group"]["id"]
+    promo = _promote_to_gdm(client, gid)
+    j_bob = _join_second_guest(client, promo["token"])
+    fp_bob = GG.pubkey_fingerprint("KEY-B")
+    assert GG.update_dm_contact(fp_bob, muted=True)
+
+    r = client.post(
+        "/api/v1/guest/call", json={"ring": True}, headers=_auth(j_bob["session_token"])
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["available"] is True  # still a working room token
+
+    assert [b for b in broadcasts if b.get("type") == "guest_call"] == []
+    assert alerts == []
+
+
+def test_gdm_ring_from_one_guest_does_not_fan_to_other_guests(client, spies):
+    broadcasts, alerts = spies
+    j_alice = _join_dm(client, name="Alice", pubkey="KEY-A")
+    gid = j_alice["group"]["id"]
+    promo = _promote_to_gdm(client, gid)
+    _join_second_guest(client, promo["token"])  # Bob, a second guest in the room
+
+    r = client.post(
+        "/api/v1/guest/call", json={"ring": True}, headers=_auth(j_alice["session_token"])
+    )
+    assert r.status_code == 200, r.text
+
+    guest_calls = [b for b in broadcasts if b.get("type") == "guest_call"]
+    # Exactly one event for the one ringing guest - guests have no ring surface
+    # of their own, so this never fans out per other guest in the room.
+    assert len(guest_calls) == 1
+    assert guest_calls[0]["guest_id"] == j_alice["guest_id"]
+    assert len(alerts) == 1
 
 
 # ── non-dm groups unchanged ────────────────────────────────────────────────────

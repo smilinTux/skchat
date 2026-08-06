@@ -93,6 +93,22 @@ def test_list_contacts_operator_gated(env, client):
     assert "group_id" in c and "created_at" in c and "last_seen_at" in c
 
 
+def test_list_contacts_includes_memberships(env, client):
+    inv1 = GG.create_dm_invite(operator_uri=_OPERATOR)
+    inv2 = GG.create_dm_invite(operator_uri=_OPERATOR)
+    r1 = _join(client, inv1["token"], name="Alice", pubkey="KEY-A")
+    r2 = _join(client, inv2["token"], name="Alice", pubkey="KEY-A")
+    assert r1.status_code == 200, r1.text
+    assert r2.status_code == 200, r2.text
+
+    fp = GG.pubkey_fingerprint("KEY-A")
+    r = client.get("/api/v1/guest-dm/contacts", headers=_OP_HEADERS)
+    contact = next(c for c in r.json()["contacts"] if c["fp"] == fp)
+    memberships = contact["memberships"]
+    assert {m["group_id"] for m in memberships} == {inv1["group_id"], inv2["group_id"]}
+    assert all(m["status"] == "active" and m["added_at"] is not None for m in memberships)
+
+
 def test_list_contacts_rejects_anonymous(env, client):
     r = client.get("/api/v1/guest-dm/contacts")
     assert r.status_code == 401
@@ -179,6 +195,38 @@ def test_revoke_contact_unknown_fp_404(env, client):
     assert r.status_code == 404
 
 
+def test_revoke_with_group_id_revokes_only_that_membership(env, client):
+    inv1 = GG.create_dm_invite(operator_uri=_OPERATOR)
+    inv2 = GG.create_dm_invite(operator_uri=_OPERATOR)
+    r1 = _join(client, inv1["token"], name="Alice", pubkey="KEY-A")
+    r2 = _join(client, inv2["token"], name="Alice", pubkey="KEY-A")
+    assert r1.status_code == 200, r1.text
+    assert r2.status_code == 200, r2.text
+    fp = GG.pubkey_fingerprint("KEY-A")
+
+    r = client.post(
+        f"/api/v1/guest-dm/contacts/{fp}/revoke",
+        json={"group_id": inv1["group_id"]},
+        headers=_OP_HEADERS,
+    )
+    assert r.status_code == 200, r.text
+    assert r.json() == {"ok": True, "revoked_fp": fp, "group_id": inv1["group_id"]}
+
+    assert GG.get_membership(fp, inv1["group_id"])["status"] == "revoked"
+    assert GG.get_membership(fp, inv2["group_id"])["status"] == "active"
+    assert GG.get_dm_contact(fp)["status"] == "active"  # person-level untouched
+
+
+def test_revoke_with_unknown_group_id_404(env, client):
+    _inv, _body, fp = _mint_and_join(client)
+    r = client.post(
+        f"/api/v1/guest-dm/contacts/{fp}/revoke",
+        json={"group_id": "no-such-group"},
+        headers=_OP_HEADERS,
+    )
+    assert r.status_code == 404
+
+
 def test_revoke_contact_rejects_anonymous(env, client):
     _inv, _body, fp = _mint_and_join(client)
     r = client.post(f"/api/v1/guest-dm/contacts/{fp}/revoke")
@@ -238,6 +286,75 @@ def test_group_listing_carries_guest_dm_badge(env, client):
     assert conv["guest_alias"] == "Bestie"
     assert conv["guest_status"] == "active"
     assert conv["muted"] is True
+
+
+def test_gdm_group_listing_carries_mode_seat_cap_and_per_member_guest_fields(env, client):
+    inv = GG.create_dm_invite(operator_uri=_OPERATOR)
+    gid = inv["group_id"]
+    r1 = _join(client, inv["token"], name="Alice", pubkey="KEY-A")
+    assert r1.status_code == 200, r1.text
+
+    promo = client.post(f"/api/v1/groups/{gid}/invite?mode=dm", json={}, headers=_OP_HEADERS).json()
+    r2 = _join(client, promo["token"], name="Bob", pubkey="KEY-B")
+    assert r2.status_code == 200, r2.text
+
+    fp_alice = GG.pubkey_fingerprint("KEY-A")
+    GG.update_dm_contact(fp_alice, alias="Ally")
+
+    group = G.load_group(gid)
+    conv = G.group_to_conversation(group)
+    assert conv["mode"] == "gdm"
+    assert conv["seat_cap"] == GG.gdm_seat_cap_default()
+    assert conv["promoted_at"] is not None
+    assert "guest_dm" not in conv  # gdm rosters use per-member fields, not the flat dm badge
+
+    guest_participants = [p for p in conv["participants"] if p.get("guest")]
+    assert len(guest_participants) == 2
+    by_name = {p["guest_name"]: p for p in guest_participants}
+    assert by_name["Alice"]["guest_alias"] == "Ally"
+    assert by_name["Alice"]["membership_status"] == "active"
+    assert by_name["Bob"]["guest_alias"] is None
+    assert by_name["Bob"]["membership_status"] == "active"
+
+    operator_participants = [p for p in conv["participants"] if not p.get("guest")]
+    assert len(operator_participants) == 1
+    assert "guest_alias" not in operator_participants[0]
+
+
+def test_gdm_per_group_revoke_flips_membership_status_in_roster(env, client):
+    inv = GG.create_dm_invite(operator_uri=_OPERATOR)
+    gid = inv["group_id"]
+    _join(client, inv["token"], name="Alice", pubkey="KEY-A")
+    promo = client.post(f"/api/v1/groups/{gid}/invite?mode=dm", json={}, headers=_OP_HEADERS).json()
+    _join(client, promo["token"], name="Bob", pubkey="KEY-B")
+
+    fp_bob = GG.pubkey_fingerprint("KEY-B")
+    assert GG.revoke_group_membership(fp_bob, gid) is True
+
+    group = G.load_group(gid)
+    conv = G.group_to_conversation(group)
+    # Bob was removed from the roster entirely by the per-group revoke, so no
+    # guest participant for him remains; Alice's membership is unaffected.
+    guest_names = {p["guest_name"] for p in conv["participants"] if p.get("guest")}
+    assert guest_names == {"Alice"}
+
+
+def test_alias_never_leaks_into_gdm_guest_response(env, client):
+    inv = GG.create_dm_invite(operator_uri=_OPERATOR)
+    gid = inv["group_id"]
+    _join(client, inv["token"], name="Alice", pubkey="KEY-A")
+    fp = GG.pubkey_fingerprint("KEY-A")
+    GG.update_dm_contact(fp, alias="SecretNickname")
+
+    promo = client.post(f"/api/v1/groups/{gid}/invite?mode=dm", json={}, headers=_OP_HEADERS).json()
+    body = _join(client, promo["token"], name="Bob", pubkey="KEY-B").json()
+    session = body["session_token"]
+
+    r_conv = client.get(
+        "/api/v1/guest/conversation", headers={"Authorization": f"Bearer {session}"}
+    )
+    assert r_conv.status_code == 200
+    assert "SecretNickname" not in r_conv.text
 
 
 def test_non_dm_group_listing_has_no_guest_dm_badge(env, client):

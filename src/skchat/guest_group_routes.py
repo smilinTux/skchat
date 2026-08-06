@@ -1178,11 +1178,15 @@ async def guest_call(request: Request):
     ``call`` block: publish audio/video/**screen** + subscribe, never
     room_admin.
 
-    ``ring: true`` on a ``metadata.mode="dm"`` group additionally rings the
-    operator - a ``guest_call`` ws event (S4-style ``{type: new}`` nudge
-    pattern) plus a best-effort ``call_observability.alert_operator`` alert -
-    unless the guest's ``dm_contacts`` row is muted. Omitted/false keeps this a
-    silent token remint (unchanged behaviour); non-dm guest groups never ring.
+    ``ring: true`` on a dm-family group (``GG.is_guest_dm_like`` - dm OR gdm,
+    guest-dm G4) additionally rings the operator - a ``guest_call`` ws event
+    (S4-style ``{type: new}`` nudge pattern) plus a best-effort
+    ``call_observability.alert_operator`` alert - unless the guest's
+    ``dm_contacts`` row is muted. Omitted/false keeps this a silent token
+    remint (unchanged behaviour); plain (non-dm-family) guest groups never
+    ring. Guests have no ring surface of their own, so on a multi-guest gdm
+    group this only ever reaches the operator, never fans out to the other
+    guests.
     """
     _require_flag_guest()
     session = _guest_session(request)
@@ -1196,7 +1200,7 @@ async def guest_call(request: Request):
     call = _mint_guest_call_token(group.id, session.guest_id, session.name, request)
     if not call.get("available"):
         raise HTTPException(503, "livekit not configured")
-    if ring and group.metadata.get("mode") == "dm":
+    if ring and GG.is_guest_dm_like(group):
         await _ring_operator_for_guest_call(session, group, call["room"])
     return JSONResponse(call)
 
@@ -1631,7 +1635,10 @@ async def guest_dm_contacts_list(request: Request):
 
     Each entry: ``fp``, ``guest_name`` (resolved from the bound group's
     roster), ``alias``, ``group_id``, ``status``, ``muted``,
-    ``contact_expires_at``, ``created_at``, ``last_seen_at``. The alias is
+    ``contact_expires_at``, ``created_at``, ``last_seen_at``, and
+    ``memberships`` (guest-dm G4) - every ``(fp, group_id)`` row this person
+    holds, as ``[{group_id, status, added_at}]``, so the client can render a
+    person who's in more than one dm-family group at once. The alias is
     operator-only metadata - never returned by any ``/guest/*`` route.
     """
     _require_flag_operator()
@@ -1650,6 +1657,10 @@ async def guest_dm_contacts_list(request: Request):
             "contact_expires_at": c.get("contact_expires_at"),
             "created_at": c.get("created_at"),
             "last_seen_at": c.get("last_seen_at"),
+            "memberships": [
+                {"group_id": m["group_id"], "status": m["status"], "added_at": m["added_at"]}
+                for m in GG.list_memberships(c["fp"])
+            ],
         }
         for c in GG.list_dm_contacts()
     ]
@@ -1700,17 +1711,34 @@ async def guest_dm_contact_patch(fp: str, request: Request):
 
 @router.post("/guest-dm/contacts/{fp}/revoke")
 async def guest_dm_contact_revoke(fp: str, request: Request):
-    """Operator-only: revoke a dm contact.
+    """Operator-only: revoke a dm contact, person-level or per-group.
 
-    Sets ``status='revoked'`` and revokes the invite ``jti`` that admitted it
-    (``guest.revoke_invite``) - the S3 chokepoint
-    (``_enforce_dm_contact_status``) then 403s the guest on every subsequent
-    route. 404 if no contact row exists for ``fp``.
+    Body (optional): ``{"group_id": ...}`` (guest-dm G4). When given,
+    delegates to G3's :func:`GG.revoke_group_membership` - pulls this ``fp``
+    out of that ONE group only, same as the dedicated
+    ``.../contacts/{fp}/groups/{group_id}/revoke`` route (kept for backward
+    compatibility; this is just an alternate entry point). No ``group_id``
+    (unchanged): person-level - sets ``status='revoked'`` and revokes the
+    invite ``jti`` that admitted it (``guest.revoke_invite``) - the S3
+    chokepoint (``_enforce_dm_contact_status``) then 403s the guest on every
+    subsequent route. 404 if no matching row exists.
     """
     _require_flag_operator()
     from skchat.guest import _require_operator
 
     _require_operator(request)
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    group_id = (body.get("group_id") or "").strip() if isinstance(body, dict) else ""
+
+    if group_id:
+        if not GG.revoke_group_membership(fp, group_id):
+            raise HTTPException(404, "membership not found")
+        logger.info("dm membership revoked: fp=%s group=%s", fp, group_id)
+        return JSONResponse({"ok": True, "revoked_fp": fp, "group_id": group_id})
 
     if not GG.revoke_dm_contact(fp):
         raise HTTPException(404, "contact not found")
