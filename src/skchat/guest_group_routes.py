@@ -190,7 +190,9 @@ async def operator_create_invite(group_id: str, request: Request, mode: str = "g
     override on the FIRST promotion only), and a system notice is posted into
     the thread before the invite is returned. A ``group_id`` that is missing
     or not an existing dm/gdm group falls through to the unchanged fresh-mint
-    behaviour above.
+    behaviour above. This promotion/add-person path also accepts
+    ``alias?``/``contact_ttl?`` (guest-dm G2), stored the same jti-keyed,
+    guest-invisible way as the fresh-mint case above.
     """
     _require_flag_operator()
     from skchat.guest import _require_operator
@@ -239,6 +241,24 @@ async def operator_create_invite(group_id: str, request: Request, mode: str = "g
             except RuntimeError as exc:  # secret unset
                 raise HTTPException(503, str(exc)) from exc
             result["mode"] = existing.metadata.get("mode")
+
+            # guest-dm G2: the S1 pre-set alias + contact-expiry TTL sidecar
+            # applies unchanged here (jti-keyed) - wire the mint route body
+            # through for this per-person gdm invite exactly like the fresh
+            # 1:1 DM mint below. Sidecar-only: never in the JWT payload or any
+            # /guest/* response.
+            alias_raw = body.get("alias")
+            alias = (str(alias_raw).strip() or None) if alias_raw not in (None, "") else None
+            contact_ttl_raw = body.get("contact_ttl")
+            contact_ttl = None
+            if contact_ttl_raw is not None:
+                try:
+                    contact_ttl = int(contact_ttl_raw)
+                except (TypeError, ValueError):
+                    contact_ttl = None
+            if alias is not None or contact_ttl is not None:
+                GG.store_dm_invite_meta(result["jti"], alias=alias, contact_ttl=contact_ttl)
+
             logger.info(
                 "guest-group DM promoted to gdm (gid=%s jti=%s first_promotion=%s)",
                 existing.id,
@@ -470,6 +490,8 @@ async def guest_join(request: Request):
     fp = GG.pubkey_fingerprint(guest_pubkey)
 
     is_dm = group.metadata.get("mode") == "dm"
+    is_dm_family = GG.is_guest_dm_like(group)  # dm or gdm
+    new_guest = group.get_member(guest_id) is None
     if is_dm and info.get("dm_reuse"):
         # Reusable my-DM-link (S1 marker): fan out per distinct guest key - a
         # returning fp resolves to its own existing DM (registry lookup), a
@@ -481,11 +503,7 @@ async def guest_join(request: Request):
             logger.info("dm join rejected: contact rate limit for jti=%s", info["jti"])
             raise HTTPException(401, "invalid or expired invite")
         group_id = group.id
-    elif (
-        GG.is_guest_dm_like(group)
-        and group.get_member(guest_id) is None
-        and group.member_count >= GG.guest_seat_cap(group)
-    ):
+    elif is_dm_family and new_guest and group.member_count >= GG.guest_seat_cap(group):
         # A NEW guest that would exceed the seat cap is refused (dm: fixed
         # 2-seat cap; gdm: metadata.seat_cap). A returning guest (same
         # identity) is idempotent and always allowed.
@@ -496,11 +514,23 @@ async def guest_join(request: Request):
             GG.guest_seat_cap(group),
         )
         raise HTTPException(403, "direct message is full")
+    elif is_dm_family and not info.get("single_use") and GG.get_dm_contact(fp) is None:
+        # guest-dm G2: the shared reusable group link is the highest-abuse
+        # surface (one URL admits many strangers) - apply the S2 per-jti rate
+        # limit to NEW contact/member creations here too, mirroring the DM
+        # my-DM-link cap. A returning fp (already has a contact row) never
+        # counts against the budget, same as the DM S2 pattern.
+        if not GG.check_new_contact_allowed(info["jti"]):
+            logger.info("gdm join rejected: contact rate limit for jti=%s", info["jti"])
+            raise HTTPException(401, "invalid or expired invite")
 
     GG.add_untrusted_guest_member(group, guest_id, display)
     G.save_group(group)
 
-    if is_dm:
+    if is_dm_family:
+        # S2 registry, generalized to gdm (G2): alias is a property of the
+        # PERSON (fp), so the same guest carries the same operator alias
+        # across their DM and any gdm rooms they join.
         meta = GG.get_dm_invite_meta(info["jti"]) or {}
         GG.upsert_dm_contact(
             fp,
