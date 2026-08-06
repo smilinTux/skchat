@@ -788,6 +788,33 @@ def _unwrap_skq1(plaintext: str) -> tuple[str, dict]:
         return plaintext, {}
 
 
+def _wrap_skq1(
+    body: str,
+    quoted_text: str | None = None,
+    quoted_sender: str | None = None,
+    quoted_id: str | None = None,
+) -> str:
+    """Wrap a reply body + its quoted snippet into a ``skq1:`` envelope.
+
+    The inverse of :func:`_unwrap_skq1`, for OUTBOUND server-generated replies
+    (Lumina's turn). When her reply denormalizes a quote of the message it
+    answers, the quote must ride INSIDE the encrypted body so it never leaks as
+    a plaintext sidecar next to the ciphertext. Returns ``skq1:`` +
+    ``json({t,q,qs,qi})`` when a quote is present, else the raw body unchanged
+    (byte-for-byte, no wrapper) so non-quote replies are untouched.
+    """
+    if not quoted_text:
+        return body
+    import json as _json
+
+    payload: dict[str, str] = {"t": body, "q": quoted_text}
+    if quoted_sender:
+        payload["qs"] = quoted_sender
+    if quoted_id:
+        payload["qi"] = quoted_id
+    return "skq1:" + _json.dumps(payload, separators=(",", ":"))
+
+
 def _open_hybrid_inbound(token: str, *, sender_short: str) -> str | None:
     """Open a hybrid-sealed inbound token addressed to Lumina.
 
@@ -2108,9 +2135,28 @@ async def _generate_lumina_reply(
     #    PQC Q5: if the conversation negotiated hybrid AND the operator published
     #    a prekey, seal the reply so the app opens it hybrid-pq. Otherwise the
     #    plaintext reply is stored unchanged (classical path).
+    # Denormalize a quote of the user turn this reply answers, so a sibling
+    # device renders "the original message" WITHOUT relying on flaky local
+    # reply_to_id resolution (which showed "Original message" whenever the
+    # target was not in that device's decrypted history). The only viewer of
+    # this DM is the operator, and the quoted original is always the operator's
+    # own turn, so the label is "You". On a hybrid channel the quote rides
+    # INSIDE the sealed envelope (skq1) so it never leaks in plaintext.
+    _q_text = (getattr(user_msg, "content", "") or "").strip()
+    if _q_text.startswith("__") or _q_text.startswith(("pqdm1:", "pqdm2:")):
+        _q_text = ""  # never quote a control frame or an unopened token
+    if len(_q_text) > 120:
+        _q_text = _q_text[:120]
+    _q_text = _q_text or None
+    _q_sender = "You" if _q_text else None
+    _q_id = user_msg.id if _q_text else None
+
     reply_wire = reply_text
     if convo_is_hybrid:
-        sealed = _seal_hybrid_outbound(reply_text, recipient_short="chef")
+        sealed = _seal_hybrid_outbound(
+            _wrap_skq1(reply_text, _q_text, _q_sender, _q_id),
+            recipient_short="chef",
+        )
         if sealed is None:
             # P0.1 (fail closed): the conversation negotiated hybrid-PQ but
             # the reply cannot be sealed (no prekey / KEM backend gone).
@@ -2126,6 +2172,9 @@ async def _generate_lumina_reply(
         reply_wire,
         reply_to_id=user_msg.id,
         thread_id=user_msg.thread_id,
+        quoted_text=_q_text,
+        quoted_sender=_q_sender,
+        quoted_id=_q_id,
     )
 
     result = {

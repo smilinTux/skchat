@@ -207,3 +207,23 @@ def test_unwrap_skq1_wrapper_without_quote_is_body_only():
     body, quoted = daemon_proxy._unwrap_skq1("skq1:" + json.dumps({"t": "hi"}))
     assert body == "hi"
     assert quoted == {}
+
+
+def test_wrap_skq1_round_trips_through_unwrap():
+    """A server-wrapped skq1 reply body unwraps back to body + quoted fields."""
+    from skchat.daemon_proxy import _unwrap_skq1, _wrap_skq1
+
+    wire = _wrap_skq1("Lumina reply body", "the original", "You", "id-123")
+    assert wire.startswith("skq1:")
+    body, quoted = _unwrap_skq1(wire)
+    assert body == "Lumina reply body"
+    assert quoted["quoted_text"] == "the original"
+    assert quoted["quoted_sender"] == "You"
+    assert quoted["quoted_id"] == "id-123"
+
+
+def test_wrap_skq1_no_quote_is_byte_for_byte():
+    """No quote -> raw body unchanged (no wrapper), so non-quote replies are untouched."""
+    from skchat.daemon_proxy import _wrap_skq1
+
+    assert _wrap_skq1("plain reply", None, None, None) == "plain reply"
