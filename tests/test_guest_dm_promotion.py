@@ -254,7 +254,7 @@ def test_gdm_epoch_fence_per_guest(env, client):
         when=datetime.fromtimestamp(1_600.0, tz=timezone.utc),
     )
 
-    # Bob joins AFTER the promotion — a third guest admitted post-flip.
+    # Bob joins AFTER the promotion - a third guest admitted post-flip.
     j_bob = _join(client, promo["token"], name="Bob", pubkey="KEY-B").json()
     bob_id = j_bob["guest_id"]
     _set_guest_added_at(gid, bob_id, 1_700.0)  # Bob's cutoff is after both messages
