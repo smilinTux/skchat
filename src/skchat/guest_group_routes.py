@@ -130,6 +130,34 @@ def _assert_same_group(session: GG.GuestSession, requested_group_id: str) -> Non
         raise HTTPException(403, "guest is scoped to a single group")
 
 
+def _post_promotion_notice(group) -> None:
+    """Post a system notice into ``group``'s thread announcing the dm→gdm flip.
+
+    Uses the same canonical-log write path as ``guest_send`` (save + record the
+    authoritative group event) so it shows up in both the operator's and every
+    guest's view of the thread. Runs BEFORE the promotion invite is minted/
+    returned to the caller.
+    """
+    from skchat.history import ChatHistory
+    from skchat.models import ChatMessage, ContentType
+
+    hist: ChatHistory = _history()
+    notice = ChatMessage(
+        sender="system",
+        recipient=f"group:{group.id}",
+        content=f"{group.name} is now a group conversation.",
+        content_type=ContentType.SYSTEM.value,
+        thread_id=group.id,
+        metadata={
+            "group_id": group.id,
+            "key_version": group.key_version,
+            "system_event": "dm_promoted_to_gdm",
+        },
+    )
+    hist.save(notice)
+    hist.record_event(notice)
+
+
 # --------------------------------------------------------------------------- #
 # Operator: invite mint / list / revoke
 # --------------------------------------------------------------------------- #
@@ -150,6 +178,19 @@ async def operator_create_invite(group_id: str, request: Request, mode: str = "g
     ``alias?``/``contact_ttl?`` (pre-set nickname + contact-expiry TTL for the
     invite, stored server-side keyed by ``jti`` - never in the JWT payload or
     any response).
+
+    **guest-dm G1**: when ``mode=dm`` AND the path ``group_id`` names an
+    EXISTING ``mode`` dm/gdm group, this is instead "invite another guest into
+    THIS conversation": the group is promoted IN PLACE (same ``group_id`` -
+    every group_id-keyed thing, guest session tokens, the transfer allowlist,
+    ``dm_contacts``, the epoch-fence ``metadata.guests`` entries, and
+    ``thread_id`` - keeps working unchanged). ``metadata.mode`` flips
+    ``dm``->``gdm`` (a no-op if already ``gdm``), ``metadata.seat_cap``
+    defaults from ``SKCHAT_GDM_SEAT_CAP`` (accepts a body ``seat_cap``
+    override on the FIRST promotion only), and a system notice is posted into
+    the thread before the invite is returned. A ``group_id`` that is missing
+    or not an existing dm/gdm group falls through to the unchanged fresh-mint
+    behaviour above.
     """
     _require_flag_operator()
     from skchat.guest import _require_operator
@@ -169,6 +210,43 @@ async def operator_create_invite(group_id: str, request: Request, mode: str = "g
             ttl = None
 
     if (mode or "group").strip().lower() == "dm":
+        from skchat import daemon_proxy_groups as G
+
+        existing = G.load_group(group_id) if (group_id or "").strip() else None
+        if existing is not None and GG.is_guest_dm_like(existing):
+            first_promotion = existing.metadata.get("mode") != "gdm"
+            if first_promotion:
+                existing.metadata["mode"] = "gdm"
+                existing.metadata["promoted_from"] = "dm"
+                existing.metadata["promoted_at"] = time.time()
+                seat_cap_raw = body.get("seat_cap")
+                try:
+                    seat_cap = (
+                        int(seat_cap_raw) if seat_cap_raw is not None else GG.gdm_seat_cap_default()
+                    )
+                except (TypeError, ValueError):
+                    seat_cap = GG.gdm_seat_cap_default()
+                existing.metadata["seat_cap"] = seat_cap
+            G.save_group(existing)
+            if first_promotion:
+                _post_promotion_notice(existing)
+
+            single_use = bool(body.get("single_use", True))
+            try:
+                result = GG.create_group_invite(
+                    existing.id, ttl=ttl, single_use=single_use, mode="dm"
+                )
+            except RuntimeError as exc:  # secret unset
+                raise HTTPException(503, str(exc)) from exc
+            result["mode"] = existing.metadata.get("mode")
+            logger.info(
+                "guest-group DM promoted to gdm (gid=%s jti=%s first_promotion=%s)",
+                existing.id,
+                result["jti"],
+                first_promotion,
+            )
+            return JSONResponse(result)
+
         # A 1:1 DM invite mints its OWN 2-seat guest group; the path group_id is
         # not used. DMs default single-use (override via body); ``reusable`` mints
         # the operator's standing my-DM-link instead (never single-use).
@@ -285,8 +363,8 @@ async def guest_invite_preview(token: str):
         "group_name": group.name,
         "expires_at": info["exp"],
     }
-    if group.metadata.get("mode") == "dm":
-        resp["mode"] = "dm"
+    if GG.is_guest_dm_like(group):
+        resp["mode"] = group.metadata.get("mode")
         resp["operator_name"] = _dm_operator_display_name(group)
     # Phase 1: surface the operator-signed material so the joiner can verify the
     # operator signature (under the FULL inline pubkey) and the bundle commitment
@@ -404,14 +482,19 @@ async def guest_join(request: Request):
             raise HTTPException(401, "invalid or expired invite")
         group_id = group.id
     elif (
-        is_dm
+        GG.is_guest_dm_like(group)
         and group.get_member(guest_id) is None
-        and group.member_count >= GG.DM_SEAT_CAP
+        and group.member_count >= GG.guest_seat_cap(group)
     ):
-        # Mode-A DM (single-use / non-reusable): a NEW guest that would take a
-        # third seat is refused (the DM is full). A returning guest (same
+        # A NEW guest that would exceed the seat cap is refused (dm: fixed
+        # 2-seat cap; gdm: metadata.seat_cap). A returning guest (same
         # identity) is idempotent and always allowed.
-        logger.info("dm join rejected: %s full (%d seats)", group_id, group.member_count)
+        logger.info(
+            "dm join rejected: %s full (%d/%d seats)",
+            group_id,
+            group.member_count,
+            GG.guest_seat_cap(group),
+        )
         raise HTTPException(403, "direct message is full")
 
     GG.add_untrusted_guest_member(group, guest_id, display)
@@ -443,7 +526,7 @@ async def guest_join(request: Request):
             "display_name": display,
             "fingerprint": fp,
             "trust": "untrusted",
-            "group": {"id": group.id, "name": group.name},
+            "group": {"id": group.id, "name": group.name, "mode": group.metadata.get("mode")},
             "call": call,
             "messages": bootstrap,
         }
@@ -462,15 +545,17 @@ def _dm_reentry(peek: dict, guest_pubkey: str, request: Request):
 
       * the invite is single-use and its jti is in fact already burned (the
         only reason ``verify_group_invite(burn_single_use=True)`` just failed);
-      * it names a ``mode="dm"`` group that still exists;
+      * it names a dm-family (``mode`` dm or gdm - a dm promoted in place
+        keeps its group_id, so a pre-promotion invite's jti still resolves
+        here) group that still exists;
       * the presenting ``guest_pubkey``'s fingerprint has an ACTIVE (not
         revoked/expired) ``dm_contacts`` row bound to that exact jti + group;
       * that contact's guest_id is already a member of the group.
 
     Returns ``None`` on any mismatch (wrong key, stranger, revoked/expired
-    contact, non-dm group, vanished group/membership) so the caller falls
-    through to the same generic 401 every other invalid presenter gets - no
-    oracle distinguishing "almost, but not quite" from "never valid".
+    contact, non-dm-family group, vanished group/membership) so the caller
+    falls through to the same generic 401 every other invalid presenter gets -
+    no oracle distinguishing "almost, but not quite" from "never valid".
     """
     if not peek.get("single_use"):
         return None
@@ -483,7 +568,7 @@ def _dm_reentry(peek: dict, guest_pubkey: str, request: Request):
     from skchat import daemon_proxy_groups as G
 
     group = G.load_group(peek["group_id"])
-    if group is None or group.metadata.get("mode") != "dm":
+    if not GG.is_guest_dm_like(group):
         return None
 
     fp = GG.pubkey_fingerprint(guest_pubkey)
@@ -520,7 +605,7 @@ def _dm_reentry(peek: dict, guest_pubkey: str, request: Request):
             "display_name": member.display_name,
             "fingerprint": fp,
             "trust": "untrusted",
-            "group": {"id": group.id, "name": group.name},
+            "group": {"id": group.id, "name": group.name, "mode": group.metadata.get("mode")},
             "call": call,
             "messages": bootstrap,
         }
@@ -604,10 +689,16 @@ def _msg_ts_epoch(m) -> float:
 
 
 def _dm_epoch_fence(group_id: str, guest_id: str):
-    """Return the epoch-fence cutoff (``added_at``) for a DM guest, else None.
+    """Return the epoch-fence cutoff (``added_at``) for a dm/gdm guest, else None.
 
-    A ``mode="dm"`` guest sees no group history from before it joined (SimpleX
-    "no pre-epoch history"). Non-dm groups are NOT fenced - existing group-invite
+    A dm-family (``mode`` dm or gdm) guest sees no group history from before it
+    joined (SimpleX "no pre-epoch history"), fenced per-guest off its own
+    ``metadata.guests[guest_id].added_at``. This is history-forward: a dm
+    promoted to gdm in place keeps the original guest's earlier ``added_at``
+    (see ``add_untrusted_guest_member``), so it keeps seeing pre-promotion
+    history, while a guest admitted AFTER the promotion gets an ``added_at``
+    after the flip and never sees anything older - including the promotion
+    notice itself. Non-dm-family groups are NOT fenced - existing group-invite
     history behaviour is unchanged.
     """
     if not guest_id:
@@ -615,7 +706,7 @@ def _dm_epoch_fence(group_id: str, guest_id: str):
     from skchat import daemon_proxy_groups as G
 
     group = G.load_group(group_id)
-    if group is None or group.metadata.get("mode") != "dm":
+    if not GG.is_guest_dm_like(group):
         return None
     entry = (group.metadata.get("guests") or {}).get(guest_id)
     if not entry:
@@ -665,10 +756,11 @@ async def guest_conversation(request: Request):
     it is derived from the session token, so a guest can only read their room."""
     _require_flag_guest()
     session = _guest_session(request)
-    _bound_group(session)  # 404 if the group vanished
+    group = _bound_group(session)  # 404 if the group vanished
     return JSONResponse(
         {
             "group_id": session.group_id,
+            "mode": group.metadata.get("mode"),
             "messages": _guest_messages(session.group_id, guest_id=session.guest_id),
         }
     )

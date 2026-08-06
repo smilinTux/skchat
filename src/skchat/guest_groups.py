@@ -272,6 +272,38 @@ def create_group_invite(
 #: (seat 1 = operator, seat 2 = the single peer guest). Enforced in ``guest_join``.
 DM_SEAT_CAP = 2
 
+# ── guest-dm G1: DM → group promotion (in place, same group_id) ─────────────
+#: A ``mode="gdm"`` group is a DM promoted in place to hold more than one guest
+#: (``metadata.promoted_from="dm"``). Its seat cap is per-group
+#: (``metadata.seat_cap``, minted from :func:`gdm_seat_cap_default`), unlike the
+#: fixed 2-seat ``mode="dm"`` cap.
+_GDM_SEAT_CAP_ENV = "SKCHAT_GDM_SEAT_CAP"
+GDM_SEAT_CAP_DEFAULT = 8
+
+
+def gdm_seat_cap_default() -> int:
+    """Default ``gdm`` seat cap, from ``SKCHAT_GDM_SEAT_CAP`` (shipped default 8)."""
+    try:
+        v = int(os.getenv(_GDM_SEAT_CAP_ENV, str(GDM_SEAT_CAP_DEFAULT)))
+    except (TypeError, ValueError):
+        v = GDM_SEAT_CAP_DEFAULT
+    return max(1, v)
+
+
+def is_guest_dm_like(group) -> bool:
+    """True iff ``group`` is a DM-family guest group (``mode`` in dm/gdm)."""
+    return group is not None and group.metadata.get("mode") in ("dm", "gdm")
+
+
+def guest_seat_cap(group) -> int:
+    """Seat cap for a DM-family guest group: fixed 2 for dm, per-group for gdm."""
+    if group.metadata.get("mode") == "gdm":
+        try:
+            return int(group.metadata.get("seat_cap") or gdm_seat_cap_default())
+        except (TypeError, ValueError):
+            return gdm_seat_cap_default()
+    return DM_SEAT_CAP
+
 
 def create_dm_invite(
     *,
