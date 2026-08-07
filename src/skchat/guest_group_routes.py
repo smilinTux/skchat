@@ -1741,6 +1741,68 @@ async def guest_dm_contact_patch(fp: str, request: Request):
     return JSONResponse({"ok": True, "contact": GG.get_dm_contact(fp)})
 
 
+@router.patch("/guest-dm/groups/{group_id}")
+async def guest_dm_group_patch(group_id: str, request: Request):
+    """Operator-only: set or clear a dm-family room's WHOLE-GROUP expiry.
+
+    Body (partial, mirrors the per-contact idiom above): ``group_ttl``
+    (seconds from now) or ``expires_at`` (absolute epoch seconds, ``null``
+    clears it; ``group_ttl`` wins if both are given).
+
+    The S3 chokepoint (:func:`_enforce_dm_contact_status`) has always ENFORCED
+    ``metadata.expires_at`` - once it passes every guest of the room gets a 403
+    with reason ``group_expired`` - but nothing could write it, so the branch
+    was unreachable. This is the missing writer, and it is deliberately a
+    separate verb from revoking: expiry locks GUESTS out of the room on a
+    schedule without touching any person's contact row, and without deleting
+    anything (the operator keeps their own history).
+
+    Refused with 400 on a non-dm-family group: the chokepoint only consults
+    ``expires_at`` for dm/gdm rooms, so writing it on a plain group would store
+    a field that silently does nothing.
+    """
+    _require_flag_operator()
+    from skchat.guest import _require_operator
+
+    _require_operator(request)
+
+    from skchat import daemon_proxy_groups as G
+
+    group = G.load_group(group_id)
+    if group is None:
+        raise HTTPException(404, "group not found")
+    if not GG.is_guest_dm_like(group):
+        raise HTTPException(400, "group expiry applies to dm-family groups only")
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    if body.get("group_ttl") is not None:
+        try:
+            ttl = int(body["group_ttl"])
+        except (TypeError, ValueError):
+            raise HTTPException(400, "group_ttl must be an integer")
+        expires_at = time.time() + ttl
+    elif "expires_at" in body:
+        raw = body.get("expires_at")
+        try:
+            expires_at = float(raw) if raw is not None else None
+        except (TypeError, ValueError):
+            raise HTTPException(400, "expires_at must be epoch seconds or null")
+    else:
+        raise HTTPException(400, "expected group_ttl or expires_at")
+
+    if expires_at is None:
+        group.metadata.pop("expires_at", None)
+    else:
+        group.metadata["expires_at"] = expires_at
+    G.save_group(group)
+    logger.info("guest-dm group expiry set: group=%s expires_at=%s", group_id, expires_at)
+    return JSONResponse({"ok": True, "group_id": group_id, "expires_at": expires_at})
+
+
 @router.post("/guest-dm/contacts/{fp}/revoke")
 async def guest_dm_contact_revoke(fp: str, request: Request):
     """Operator-only: revoke a dm contact, person-level or per-group.
