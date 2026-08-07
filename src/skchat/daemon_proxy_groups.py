@@ -672,12 +672,18 @@ def _dm_guest_badge(group) -> dict:
         guests_meta = group.metadata.get("guests") or {}
         guest_id = next(iter(guests_meta), "")
     member = group.get_member(guest_id) if guest_id else None
+    fp = contact.get("fp") if contact else ""
+    # guest-dm C5: surface the transient guest-call ring so the poll-only app can
+    # raise an incoming-ring banner (S6 also broadcasts it over ws for ws clients).
+    ring_ts = GG.guest_ring_ts(fp) if fp else None
     return {
         "guest_dm": True,
         "guest_name": member.display_name if member is not None else "",
         "guest_alias": contact.get("alias") if contact else None,
         "guest_status": (contact.get("status") if contact else None) or "active",
         "muted": bool(contact.get("muted")) if contact else False,
+        "ringing": ring_ts is not None,
+        "ring_ts": ring_ts,
     }
 
 
