@@ -813,6 +813,31 @@ def _guest_messages(group_id: str, limit: int = 200, *, guest_id: str = "") -> l
     return out
 
 
+def _guest_visible_roster(group, *, guest_id: str) -> list[dict]:
+    """The room's membership as a GUEST may see it (guest-dm G6).
+
+    A gdm room can hold several guests, so the guest side needs to know who
+    else is present - but only the facts a guest is entitled to: the display
+    name each member chose, whether they are an untrusted guest, and which row
+    is the caller. The operator's private alias, the person/membership status,
+    and every capauth fingerprint are deliberately absent (those live only in
+    the operator payload, ``daemon_proxy_groups._guest_member_fields``).
+
+    A per-group revoke removes the guest from the roster upstream, so a revoked
+    guest simply stops appearing here.
+    """
+    guests_meta = group.metadata.get("guests") or {}
+    return [
+        {
+            "identity_uri": m.identity_uri,
+            "display_name": m.display_name,
+            "guest": m.identity_uri in guests_meta,
+            "self": m.identity_uri == guest_id,
+        }
+        for m in group.members
+    ]
+
+
 @router.get("/guest/conversation")
 async def guest_conversation(request: Request):
     """Return the bound group's thread (token-scoped). No group id is accepted -
@@ -824,6 +849,7 @@ async def guest_conversation(request: Request):
         {
             "group_id": session.group_id,
             "mode": group.metadata.get("mode"),
+            "members": _guest_visible_roster(group, guest_id=session.guest_id),
             "messages": _guest_messages(session.group_id, guest_id=session.guest_id),
         }
     )
