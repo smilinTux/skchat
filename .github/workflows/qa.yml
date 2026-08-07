@@ -32,6 +32,13 @@ jobs:
       - name: Install package + dev deps
         run: |
           pip install -e ".[dev]" || { pip install -e . && pip install pytest pytest-asyncio; }
+      # Published sibling wheels lag their repos (see pytest.yml for the detail);
+      # install from source so CI tests the code that ships together.
+      - name: Install sibling SK* packages from source
+        run: |
+          pip install --force-reinstall --no-deps --no-cache-dir \
+            "capauth @ git+https://github.com/smilinTux/capauth@main" \
+            "skcomms @ git+https://github.com/smilinTux/skcomms@main"
       # Run the bulk of the suite. NOTE: a command-line `-m` OVERRIDES (does not
       # combine with) pyproject's `addopts = -m 'not live'`, so we must re-state
       # `not live` here or the live model-endpoint tests would run. On top of that

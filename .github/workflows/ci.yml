@@ -32,4 +32,10 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: pip install -e ".[dev]"
+      # Published sibling wheels lag their repos (see pytest.yml for the detail);
+      # install from source so CI tests the code that ships together.
+      - run: |
+          pip install --force-reinstall --no-deps --no-cache-dir \
+            "capauth @ git+https://github.com/smilinTux/capauth@main" \
+            "skcomms @ git+https://github.com/smilinTux/skcomms@main"
       - run: python -m pytest tests/ -v --tb=short --cov=src --cov-report=term-missing -m "not live and not integration and not e2e_live and not e2e_3way"
