@@ -87,6 +87,18 @@ def register_operator_auth_routes(app: FastAPI, *, device_store: oa.DeviceStore)
             raise HTTPException(401, "challenge signature invalid")
         token = oa.mint_operator_session(device_fp=fp)
         sess = oa.verify_operator_session(token)
-        return {"session_token": token, "expires_at": sess.exp}
+        resp = {"session_token": token, "expires_at": sess.exp}
+        # CR-3.4 AC1 / Phase 1: ALSO mint a parallel capauth audience token for
+        # operator:<device_fp>, gated by SKCHAT_OPERATOR_AUDIENCE_ISSUE (default
+        # OFF) and NON-FATAL. The HS256 session above stays the primary credential
+        # the client uses; this is additive so today's clients (which read only
+        # session_token) are unaffected. A mint failure returns None and never
+        # breaks the handshake -- the seat cannot be locked out by the audience path.
+        from .operator_audience import issue_operator_audience
+
+        extra = issue_operator_audience(fp)
+        if extra:
+            resp.update(extra)
+        return resp
 
     app.include_router(router)

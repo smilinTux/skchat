@@ -41,6 +41,7 @@ from .dataplane_auth import (
     dataplane_auth_enabled,
     enforce_dataplane_auth,
     request_is_authenticated,
+    request_is_primary_authenticated,
     require_dataplane_auth,
 )
 from .dataplane_paths import is_gated
@@ -912,10 +913,11 @@ async def embed_token_mint(request: Request) -> JSONResponse:
     if not embed_tokens_enabled():
         raise HTTPException(status_code=404, detail="not found")
 
-    # GATE 2: authentication. Always enforced when minting, independent of the
-    # plane-wide gate flag, so we never mint for an anonymous caller. A full
-    # operator credential is required; an embed token cannot satisfy this.
-    if not request_is_authenticated(request):
+    # GATE 2: PRIMARY authentication. Always enforced when minting, independent of
+    # the plane-wide gate flag, so we never mint for an anonymous caller. CR-3.4 P3:
+    # a PRIMARY operator credential (operator session or FQID assertion) is required;
+    # neither an embed token nor an audience token can satisfy this (no laundering).
+    if not request_is_primary_authenticated(request):
         raise HTTPException(status_code=401, detail="capauth authentication required")
 
     try:
@@ -1027,9 +1029,11 @@ async def audience_token_mint(request: Request) -> JSONResponse:
     if not audience_mint_enabled():
         raise HTTPException(status_code=404, detail="not found")
 
-    # GATE 2: authentication. Always enforced when minting, independent of the
-    # plane-wide SKCHAT_DATAPLANE_AUTH gate, so we never mint for an anon caller.
-    if not request_is_authenticated(request):
+    # GATE 2: PRIMARY authentication. Always enforced when minting, independent of
+    # the plane-wide SKCHAT_DATAPLANE_AUTH gate, so we never mint for an anon caller.
+    # CR-3.4 P3: the credential must be PRIMARY (operator session or FQID assertion);
+    # an audience token can never mint another (no renewal laundering).
+    if not request_is_primary_authenticated(request):
         raise HTTPException(status_code=401, detail="capauth authentication required")
 
     # Parse optional body: audience + scopes only. Never a subject/agent.

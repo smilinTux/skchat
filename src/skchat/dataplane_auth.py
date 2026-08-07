@@ -27,6 +27,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import threading
 from typing import Optional
 
 from fastapi import HTTPException, Request
@@ -52,6 +53,13 @@ SKCHAT_AUDIENCE = "skchat"
 #: caller can obtain a fresh audience-scoped token minted for THIS daemon's own
 #: resolved identity (never a subject taken from request input).
 AUDIENCE_MINT_ENV_FLAG = "SKCHAT_AUDIENCE_MINT"
+
+#: Opt-in flag for the server-side issuer shadow (CR-3.4 P5 / Phase 1). Default
+#: OFF, read at call time. When on, an HS256-operator-session-authenticated request
+#: ALSO runs the audience path + PDP on a synthetic per-fingerprint twin and logs any
+#: divergence (subject or decision). It NEVER changes the response, so the plane is
+#: byte-identical whether it is on or off; it is pure observation.
+ISSUER_SHADOW_ENV_FLAG = "SKCHAT_ISSUER_SHADOW"
 
 #: The authz PDP staging flag (spec 3.5). off = authentication only, exactly as
 #: today. shadow = also compute capauth.authz.decide(), log any divergence from
@@ -154,6 +162,8 @@ _ROUTE_CAPABILITY_RULES: tuple[tuple[str, str, str], ...] = (
     # operator-only dm_contacts registry mutations (partial-update, revoke invite jti)
     ("PATCH", "/api/v1/guest-dm/contacts/{fp}", CAP_GROUPS),
     ("POST", "/api/v1/guest-dm/contacts/{fp}/revoke", CAP_GROUPS),
+    # per-group revoke variant (guest-dm G3): operator-only, same bar as above
+    ("POST", "/api/v1/guest-dm/contacts/{fp}/groups/{group_id}/revoke", CAP_GROUPS),
     # --- skchat.calls (ring peers / join calls / mint LiveKit tokens) ------- #
     ("POST", "/api/v1/access/token", CAP_CALLS),  # mints a LiveKit token as the identity
     ("POST", "/api/v1/groups/{group_id}/call/start", CAP_CALLS),
@@ -164,23 +174,24 @@ _ROUTE_CAPABILITY_RULES: tuple[tuple[str, str, str], ...] = (
 #: terms and are never routed through the PDP. Each entry is
 #: ``(method, path_pattern, verifier_name, rationale)``. The coverage gate accepts
 #: a gated route via the capability table OR this registry -- never implicitly.
-#: Both entries are token MINTS that call :func:`request_is_authenticated`
-#: unconditionally in-route (they must never mint for an anonymous caller), so the
-#: PDP has nothing to add.
+#: Both entries are token MINTS that call :func:`request_is_primary_authenticated`
+#: unconditionally in-route (they must never mint for an anonymous caller, and CR-3.4
+#: P3 requires a PRIMARY credential so an audience token can never mint another), so
+#: the PDP has nothing to add.
 _SELF_AUTH_RULES: tuple[tuple[str, str, str, str], ...] = (
     (
         "POST",
         "/api/v1/audience-token",
-        "request_is_authenticated",
+        "request_is_primary_authenticated",
         "Mints an audience-scoped token for THIS daemon's own resolved identity; "
-        "in-route self-authentication, gated by SKCHAT_AUDIENCE_MINT.",
+        "in-route PRIMARY self-authentication, gated by SKCHAT_AUDIENCE_MINT.",
     ),
     (
         "POST",
         "/api/v1/embed-token",
-        "request_is_authenticated",
+        "request_is_primary_authenticated",
         "Mints the Grade-B embed pane token (rw scoped by SKCHAT_EMBED_RW_MODULES); "
-        "in-route self-authentication.",
+        "in-route PRIMARY self-authentication.",
     ),
 )
 
@@ -299,6 +310,16 @@ def audience_mint_enabled() -> bool:
     mints, so the app is byte-identical to before this endpoint existed.
     """
     return os.getenv(AUDIENCE_MINT_ENV_FLAG, "").strip().lower() in _TRUTHY
+
+
+def issuer_shadow_enabled() -> bool:
+    """Return True iff the server-side issuer shadow is switched on.
+
+    Reads ``SKCHAT_ISSUER_SHADOW`` at call time (like :func:`dataplane_auth_enabled`),
+    default OFF. When off, no synthetic twin is minted and no comparison runs, so the
+    request path is byte-identical to before this observability existed.
+    """
+    return os.getenv(ISSUER_SHADOW_ENV_FLAG, "").strip().lower() in _TRUTHY
 
 
 class CapAuthValidator:
@@ -466,6 +487,28 @@ def _extract_subject(token: str) -> Optional[str]:
         return operator_subject(session.device_fp)
     except Exception:
         pass
+    # Audience-token branch (CR-3.4 P1): a valid skchat-audience capauth token
+    # resolves to its payload subject -- ``operator:<device_fp>`` for the seat
+    # (section 4), or the fqid for a daemon-self token, both of which the PDP grant
+    # bundle already covers. Tried after the operator-session branch and before the
+    # FQID-assertion branch, and gated on ``accept_audience_tokens()`` like the
+    # validator's accept branch. Byte-identical to before for any non-audience
+    # credential: ``import_token`` raises structurally on an HS256 JWT (two dots, not
+    # base64url JSON) or an FQID assertion (``{claim, sig}`` has no
+    # ``skcapstone_token`` envelope key), so this branch never shadows them.
+    if accept_audience_tokens():
+        try:
+            import base64
+
+            from capauth import import_token, verify_audience_token
+
+            padded = token + "=" * (-len(token) % 4)
+            token_json = base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8")
+            signed = import_token(token_json)  # raises ValueError if not a capauth token
+            if verify_audience_token(signed, SKCHAT_AUDIENCE):
+                return signed.payload.subject
+        except Exception:
+            pass
     try:
         import base64
         import json
@@ -519,6 +562,153 @@ def request_is_authenticated(request: Request) -> bool:
     return bool(token) and get_validator().validate(token)
 
 
+def _credential_is_audience_token(token: str) -> bool:
+    """True iff ``token`` is (structurally) a capauth audience-scoped token.
+
+    Decodes the credential wire form and checks it is a capauth token whose
+    ``audience`` is set (non-None). Purely structural -- it does NOT verify the
+    signature (the caller has already run the validator for that); it only
+    classifies the credential TYPE so the mint gate can refuse an audience token.
+    Fails closed to False on any parse error (an HS256 JWT / FQID assertion / garbage
+    is not an audience token).
+    """
+    try:
+        import base64
+
+        from capauth import import_token
+
+        padded = token + "=" * (-len(token) % 4)
+        token_json = base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8")
+        signed = import_token(token_json)  # raises ValueError if not a capauth token
+        return signed.payload.audience is not None
+    except Exception:
+        return False
+
+
+def request_is_primary_authenticated(request: Request) -> bool:
+    """Return True iff the request carries a PRIMARY capauth credential.
+
+    A PRIMARY credential is an operator-session JWT or a signed FQID assertion --
+    NOT an audience token. This is the anti-renewal-laundering rule (CR-3.4 P3): the
+    token-mint routes must never mint FROM an audience token, or a short-lived token
+    could re-mint itself forever and a leaked audience token would become effectively
+    non-expiring.
+
+    Implemented as ``request_is_authenticated`` (any accepted credential, via the
+    injectable validator) MINUS the audience-token class, which is exactly
+    {operator-session JWT, signed FQID assertion}. Keeping the injectable-validator
+    seam means the existing mint-route tests (which stub the validator) are
+    unaffected, while a real audience token -- affirmed by the validator -- is refused
+    here.
+    """
+    token = _extract_credential(request)
+    if not token or not get_validator().validate(token):
+        return False
+    # An audience token authenticates but is NOT primary: refuse it at the mint gate.
+    if _credential_is_audience_token(token):
+        return False
+    return True
+
+
+# --------------------------------------------------------------------------- #
+# Server-side issuer shadow (CR-3.4 P5 / Phase 1): prove the audience path would
+# resolve the SAME subject and produce the SAME PDP decision as the live HS256
+# operator session, on real traffic, WITHOUT touching the response. Pure
+# observation, gated by SKCHAT_ISSUER_SHADOW (default OFF).
+# --------------------------------------------------------------------------- #
+#: Per-device-fingerprint cache of the synthetic audience twin wire form:
+#: ``device_fp -> (wire, exp_epoch)``. Refreshed 5 minutes before expiry so PGP
+#: signing is not paid per request (R8).
+_shadow_twins: dict[str, tuple[str, float]] = {}
+_shadow_lock = threading.Lock()
+_shadow_ok_count = 0
+_SHADOW_REFRESH_SKEW = 300  # re-mint the twin 5 min before it expires
+
+
+def _get_shadow_twin(device_fp: str) -> Optional[str]:
+    """Return the cached (or freshly minted) audience-twin wire for ``device_fp``.
+
+    Minting is done outside the lock (PGP signing is slow); the cache holds the
+    exported wire form and its expiry. Returns None if minting fails.
+    """
+    import time
+
+    now = time.time()
+    with _shadow_lock:
+        cached = _shadow_twins.get(device_fp)
+        if cached is not None and cached[1] - _SHADOW_REFRESH_SKEW > now:
+            return cached[0]
+
+    from .operator_audience import mint_operator_audience_token, wire_form
+
+    token = mint_operator_audience_token(device_fp)
+    wire = wire_form(token)
+    exp = token.payload.expires_at
+    exp_epoch = exp.timestamp() if hasattr(exp, "timestamp") else now + 3600
+    with _shadow_lock:
+        _shadow_twins[device_fp] = (wire, exp_epoch)
+    return wire
+
+
+def _issuer_shadow_compare(request: Request, token: str) -> None:
+    """Compare the HS256 operator session against its synthetic audience twin.
+
+    Runs ONLY for a request whose credential verifies as an HS256 operator session.
+    Mints/reuses the per-fingerprint audience twin, runs the full audience accept
+    path on it (wire decode, import, verify_audience_token, revocation via P2), and
+    compares (a) the resolved subject and (b) the PDP decision for the route. Logs one
+    structured divergence line on ANY mismatch, else increments a heartbeat. NEVER
+    raises into the request path and NEVER changes the response.
+    """
+    global _shadow_ok_count
+    try:
+        from .operator_auth import verify_operator_session
+
+        try:
+            session = verify_operator_session(token)
+        except Exception:
+            return  # not an HS256 operator session; the shadow only compares those
+
+        hs_subject = operator_subject(session.device_fp)
+
+        twin_wire = _get_shadow_twin(session.device_fp)
+        aud_authenticated = bool(twin_wire) and _verify_skchat_audience_token(twin_wire)
+        aud_subject = _extract_subject(twin_wire) if aud_authenticated else None
+
+        method = request.method
+        path = request.url.path
+        capability = route_capability(method, path)
+        hs_decision: Optional[bool] = None
+        aud_decision: Optional[bool] = None
+        if capability is not None:
+            hs_decision = _pdp_allows(hs_subject, capability, request)
+            aud_decision = _pdp_allows(aud_subject, capability, request)
+
+        subject_diverges = aud_subject != hs_subject
+        decision_diverges = capability is not None and hs_decision != aud_decision
+
+        if not aud_authenticated or subject_diverges or decision_diverges:
+            logger.warning(
+                "issuer-shadow divergence path=%s cap=%s hs_subject=%s aud_subject=%s "
+                "hs_decision=%s aud_decision=%s aud_authenticated=%s",
+                path,
+                capability,
+                _redact(hs_subject),
+                _redact(aud_subject),
+                hs_decision,
+                aud_decision,
+                aud_authenticated,
+            )
+        else:
+            _shadow_ok_count += 1
+            if _shadow_ok_count % 100 == 1:
+                # Periodic heartbeat so silence is distinguishable from a dead shadow.
+                logger.info("issuer-shadow ok count=%s", _shadow_ok_count)
+    except Exception:
+        # Observation only: any error here must never affect the request.
+        logger.debug("issuer-shadow compare errored (non-fatal)", exc_info=True)
+
+
 def enforce_dataplane_auth(request: Request) -> None:
     """Fail-closed CapAuth gate for a single data-plane request.
 
@@ -534,6 +724,12 @@ def enforce_dataplane_auth(request: Request) -> None:
     token = _extract_credential(request)
     legacy_ok = bool(token) and get_validator().validate(token)
     mode = authz_pdp_mode()
+
+    # Issuer shadow (CR-3.4 P5, default OFF): for an authenticated request, compare
+    # the audience path against the live HS256 session on a synthetic twin. Pure
+    # observation -- never alters legacy_ok, control flow, or the response.
+    if legacy_ok and token and issuer_shadow_enabled():
+        _issuer_shadow_compare(request, token)
 
     if mode == "off":
         if not legacy_ok:
