@@ -1166,6 +1166,12 @@ async def _ring_operator_for_guest_call(session: GG.GuestSession, group, room: s
         return
     alias = contact.get("alias") if contact is not None else None
 
+    # guest-dm C5: stamp the transient ring so the poll-only app can surface an
+    # incoming-ring banner (mirrors the ws broadcast below for clients without a
+    # ws channel). Muted contacts already returned above, so a muted guest never
+    # stamps a ring.
+    GG.mark_guest_ringing(session.fp)
+
     try:
         from skchat import webui as _webui
 

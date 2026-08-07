@@ -1076,6 +1076,47 @@ def update_dm_contact(
     return True
 
 
+# ── guest-dm C5: transient guest-call ring registry (poll fallback) ──────────
+# S6 rings the operator over a ws broadcast, but the app has no ws channel (it
+# polls). So a guest call also stamps a TRANSIENT ring timestamp here, keyed by
+# guest fp; the operator group/conversation payload surfaces it (see
+# daemon_proxy_groups._dm_guest_badge) and the app polls for it, mirroring its
+# existing /call/incoming poll. In-memory on purpose: a ring is ephemeral (a few
+# seconds), never worth a schema migration, and a daemon restart cancelling a
+# stale ring is correct, not a bug.
+_GUEST_RING_TTL_SEC = 45.0
+_guest_ring_ts: dict[str, float] = {}
+
+
+def mark_guest_ringing(fp: str, *, now: float | None = None) -> None:
+    """Record that guest [fp] is ringing the operator right now (S6/C5)."""
+    f = (fp or "").strip()
+    if not f:
+        return
+    _guest_ring_ts[f] = now if now is not None else time.time()
+
+
+def guest_ring_ts(fp: str, *, now: float | None = None) -> float | None:
+    """The active ring timestamp for [fp], or None if not ringing / expired.
+
+    Self-prunes expired entries so the map cannot grow without bound.
+    """
+    f = (fp or "").strip()
+    ts = _guest_ring_ts.get(f)
+    if ts is None:
+        return None
+    cur = now if now is not None else time.time()
+    if cur - ts > _GUEST_RING_TTL_SEC:
+        _guest_ring_ts.pop(f, None)
+        return None
+    return ts
+
+
+def clear_guest_ring(fp: str) -> None:
+    """Cancel any active ring for [fp] (e.g. once the operator answers)."""
+    _guest_ring_ts.pop((fp or "").strip(), None)
+
+
 def revoke_dm_contact(fp: str) -> bool:
     """Revoke a guest contact (S3 semantics; the operator-facing route is S4).
 
