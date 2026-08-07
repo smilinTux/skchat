@@ -637,6 +637,11 @@ def _guest_member_fields(group, member) -> dict:
     ``PATCH /api/v1/guest-dm/contacts/{fp}`` sync for free. Operator-only -
     this must only ever be reached from the operator group listing, never a
     ``/guest/*`` response.
+
+    Both revoke levels are reported because they behave differently on the
+    roster (guest-dm G6): a PER-GROUP revoke pulls the guest off the roster
+    outright, while a PERSON-level revoke leaves them seated - so
+    ``guest_status`` is what lets the app dim a revoked person it can still see.
     """
     from skchat import guest_groups as GG
 
@@ -650,6 +655,7 @@ def _guest_member_fields(group, member) -> dict:
         "guest": True,
         "guest_name": member.display_name,
         "guest_alias": contact.get("alias") if contact else None,
+        "guest_status": (contact.get("status") if contact else None) or "active",
         "membership_status": (membership.get("status") if membership else None) or "active",
     }
 
