@@ -2042,6 +2042,58 @@ async def upload(
     )
 
 
+#: server transfer status -> the client's 'pending|in_progress|completed|failed'
+_FILE_STATUS_MAP = {
+    "complete": "completed",
+    "completed": "completed",
+    "failed": "failed",
+    "sending": "in_progress",
+    "receiving": "in_progress",
+    "preparing": "pending",
+    "pending": "pending",
+}
+
+
+@app.get("/api/v1/file_status")
+def file_status(transfer_id: str) -> JSONResponse:
+    """Poll a file transfer's progress (the file-transfer bubble polls this /2s).
+
+    Reads the persisted ``~/.skchat/transfers/<transfer_id>.json`` and maps it to
+    the client ``FileTransferStatus`` shape. 404 if no such transfer. Path
+    traversal is guarded (``_TID_RE`` + resolve-under-base).
+    """
+    if not _TID_RE.match(transfer_id):
+        raise HTTPException(status_code=404, detail="not found")
+    base = (_skchat_home() / "transfers").resolve()
+    meta_path = (base / f"{transfer_id}.json").resolve()
+    if base not in meta_path.parents or not meta_path.exists():
+        raise HTTPException(status_code=404, detail="not found")
+    try:
+        meta = json.loads(meta_path.read_text())
+    except Exception:
+        raise HTTPException(status_code=404, detail="not found")
+
+    status = _FILE_STATUS_MAP.get(str(meta.get("status", "")).lower(), "pending")
+    file_size = int(meta.get("file_size", 0) or 0)
+    total = int(meta.get("total_chunks", 0) or 0)
+    done = int(meta.get("chunks_sent", 0) or 0)  # outbound; inbound unknown here
+    if status == "completed":
+        bytes_transferred = file_size
+    elif total > 0 and file_size > 0:
+        bytes_transferred = min(file_size, round(file_size * done / total))
+    else:
+        bytes_transferred = 0
+    return JSONResponse({
+        "transfer_id": transfer_id,
+        "status": status,
+        "file_name": meta.get("filename", ""),
+        "file_size": file_size,
+        "bytes_transferred": bytes_transferred,
+        "speed_bps": 0,
+        "error_message": meta.get("error") or meta.get("error_message"),
+    })
+
+
 @app.get("/file/{transfer_id}")
 def download_file(transfer_id: str) -> FileResponse:
     """Download the file for a completed transfer (path-traversal guarded)."""

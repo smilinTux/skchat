@@ -118,6 +118,7 @@ _ROUTE_CAPABILITY_RULES: tuple[tuple[str, str, str], ...] = (
     ("GET", "/file/{transfer_id}", CAP_INBOX),
     ("GET", "/file/{transfer_id}/thumb", CAP_INBOX),
     ("GET", "/media/file", CAP_INBOX),
+    ("GET", "/api/v1/file_status", CAP_INBOX),  # transfer progress poll (read own)
     ("GET", "/inbox", CAP_INBOX),
     ("GET", "/messages", CAP_INBOX),
     ("GET", "/groups", CAP_INBOX),
