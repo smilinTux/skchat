@@ -620,12 +620,57 @@ def _gdm_roster_fields(group) -> dict:
     lives on each participant instead (:func:`_guest_member_fields`) - this
     just carries the group-wide promotion facts the client needs to render a
     gdm roster header.
+
+    guest-dm G7 adds the C5 ring poll fallback here. C5 stamped the ring onto
+    the ``dm`` badge only, so on a promoted room a ws-less operator got nothing
+    and the guest's call rang into silence. Because several guests share one
+    gdm, the flat ``ringing``/``ring_ts`` pair is not enough to answer with -
+    ``ringers`` names WHO is calling, server-resolved (alias-wins, same as the
+    roster) so the banner never renders a name the guest chose for themselves.
+    Only seated members are considered, so a revoked guest stops ringing the
+    moment they leave the roster.
     """
+    ringers = _gdm_ringers(group)
     return {
         "mode": "gdm",
         "seat_cap": group.metadata.get("seat_cap"),
         "promoted_at": group.metadata.get("promoted_at"),
+        "ringing": bool(ringers),
+        "ring_ts": ringers[0]["ring_ts"] if ringers else None,
+        "ringers": ringers,
     }
+
+
+def _gdm_ringers(group) -> list[dict]:
+    """Seated guests with a live call ring, newest first (guest-dm G7).
+
+    The identity is resolved from the operator's own ``dm_contacts`` row, never
+    from anything the guest supplies, and a muted contact never stamps a ring
+    upstream (``guest_group_routes._ring_operator_for_guest_call`` returns
+    before marking), so a muted guest simply never appears here.
+    """
+    from skchat import guest_groups as GG
+
+    guests_meta = group.metadata.get("guests") or {}
+    out = []
+    for member in group.members:
+        if member.identity_uri not in guests_meta:
+            continue
+        fp = member.identity_uri.rsplit("#", 1)[-1]
+        ring_ts = GG.guest_ring_ts(fp)
+        if ring_ts is None:
+            continue
+        contact = GG.get_dm_contact(fp)
+        out.append(
+            {
+                "guest_id": member.identity_uri,
+                "guest_name": member.display_name,
+                "guest_alias": contact.get("alias") if contact else None,
+                "ring_ts": ring_ts,
+            }
+        )
+    out.sort(key=lambda x: x["ring_ts"], reverse=True)
+    return out
 
 
 def _guest_member_fields(group, member) -> dict:
