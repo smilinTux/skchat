@@ -102,9 +102,17 @@ def register_operator_auth_routes(app: FastAPI, *, device_store: oa.DeviceStore)
         ok, _reason = _pairing.check(wnonce)
         if not ok:
             raise HTTPException(401, "enrollment window closed or invalid")
+        # R2: when the client names the device, that name is part of what it
+        # signs, so it cannot be rewritten in transit. A label-less enroll keeps
+        # verifying the original two-field payload, so the shipped web build
+        # (which signs only nonce + pubkey) is not locked out.
+        label = body.get("label")
+        signed_claims = {"nonce": wnonce, "device_pubkey": pub}
+        if isinstance(label, str) and label.strip():
+            signed_claims["label"] = label.strip()[:64]
         if not oa.verify_device_signature(
             device_pubkey_b64=pub,
-            payload=_canon({"nonce": wnonce, "device_pubkey": pub}),
+            payload=_canon(signed_claims),
             sig_b64=sig,
         ):
             raise HTTPException(401, "device signature invalid")
