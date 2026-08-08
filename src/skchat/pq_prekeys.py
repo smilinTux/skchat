@@ -62,9 +62,29 @@ REQUIRE_SIGNED_PREKEYS_ENV = "SKCHAT_REQUIRE_SIGNED_PREKEYS"
 _TRUTHY = {"1", "true", "yes", "on"}
 
 
+def prekey_verify_mode() -> str:
+    """Return the app-path prekey verification mode.
+
+    One of ``'off'`` (default), ``'shadow'``, or ``'enforce'``. Mirrors
+    :func:`skchat.dataplane_auth.authz_pdp_mode` so both rollouts stage the same
+    way. Read at call time so an operator can move a live daemon between modes
+    without a reimport. Anything unrecognized reads as ``'off'``.
+
+    Back-compat: every value in :data:`_TRUTHY` (the historical "flag on" set)
+    reads as ``'enforce'``, so no existing reader changes behaviour.
+    """
+    raw = os.environ.get(REQUIRE_SIGNED_PREKEYS_ENV, "").strip().lower()
+    if raw == "shadow":
+        return "shadow"
+    return "enforce" if raw in _TRUTHY else "off"
+
+
 def require_signed_prekeys() -> bool:
-    """Whether unsigned/invalid app-path prekey bundles must be rejected."""
-    return os.environ.get(REQUIRE_SIGNED_PREKEYS_ENV, "").strip().lower() in _TRUTHY
+    """Whether unsigned/invalid app-path prekey bundles must be rejected.
+
+    True only in ``'enforce'``. Shadow verifies and reports but never rejects.
+    """
+    return prekey_verify_mode() == "enforce"
 
 
 def _pqc_dir() -> Path:
@@ -192,55 +212,111 @@ def store_peer_bundle(peer: str, bundle: dict) -> None:
 
 
 def store_app_prekey_bundle(
-    peer: str, bundle: dict, *, signer_public_armor: Optional[str] = None
+    peer: str,
+    bundle: dict,
+    *,
+    signer_public_armor: Optional[str] = None,
+    signer_source: str = "none",
 ) -> bool:
     """Intake a prekey bundle published over the **app path** (``POST /api/v1/prekey``).
 
-    Fail-closed signature verification is GATED behind
-    ``SKCHAT_REQUIRE_SIGNED_PREKEYS`` (P0.5 / SEAM 7):
+    Behaviour is chosen by :func:`prekey_verify_mode`:
 
-    * flag unset (default) - behaviour is UNCHANGED: the bundle is stored as-is
-      via :func:`store_peer_bundle` (the app publishes unsigned bundles today, so
-      the live app is not locked out).
-    * flag set - the bundle is stored ONLY if it carries a ``signature`` that
-      verifies against ``signer_public_armor`` via
-      :func:`skchat.prekey_sig.verify_prekey_bundle`. A null/missing signature, a
-      missing signer key, or a failed verification (prekey substitution / wrong
-      identity) rejects the bundle and stores nothing - closing the handshake
-      MITM gap.
+    * ``'off'`` (default) - stored as-is, nothing verified, nothing logged.
+      Byte-identical to the historical unflagged path.
+    * ``'shadow'`` - the signature IS verified and the outcome logged, but the
+      bundle is stored either way. This is the soak mode: it answers "who breaks
+      if I enforce" without breaking anyone.
+    * ``'enforce'`` - stored only if the signature verifies. A null/missing
+      signature, a missing signer key, or a failed verification (prekey
+      substitution / wrong identity) rejects the bundle and stores nothing,
+      closing the handshake MITM gap.
 
     Args:
         peer: The publishing peer (short name or URI); keys the stored bundle.
         bundle: The published prekey bundle dict.
         signer_public_armor: ASCII-armored PGP public key of the claimed identity.
-            Required (and used) only when the flag is set.
+            Used in ``shadow`` and ``enforce``.
+        signer_source: Label for WHICH source resolved that key
+            (``daemon-attest`` / ``peer-store`` / ``none``), for the audit line.
 
     Returns:
         ``True`` if the bundle was stored, ``False`` if it was rejected.
     """
-    if require_signed_prekeys() and not _prekey_signature_ok(bundle, signer_public_armor):
-        logger.warning(
-            "PQC: rejecting unsigned/invalid app prekey for %s (%s is set - fail-closed)",
-            _short(peer),
-            REQUIRE_SIGNED_PREKEYS_ENV,
-        )
+    mode = prekey_verify_mode()
+    if mode == "off":
+        store_peer_bundle(peer, bundle)
+        return True
+
+    reason = _prekey_verify_reason(bundle, signer_public_armor)
+    _log_prekey_verify(mode, peer, bundle, signer_source, reason)
+
+    if mode == "enforce" and reason is not None:
         return False
     store_peer_bundle(peer, bundle)
     return True
 
 
-def _prekey_signature_ok(bundle: dict, signer_public_armor: Optional[str]) -> bool:
-    """True iff *bundle* carries a signature that verifies under the signer key.
+def _log_prekey_verify(
+    mode: str, peer: str, bundle: dict, signer_source: str, reason: Optional[str]
+) -> None:
+    """Emit the one-line audit record for a verified intake.
 
-    A null/missing signature or a missing signer key is False (fail-closed) -
-    the ``prekey_sig`` import (and thus PGP verification) only happens once both
-    are present, reusing :func:`skchat.prekey_sig.verify_prekey_bundle`.
+    Stable ``prekey-verify`` prefix so a soak is greppable straight out of
+    journalctl. Carries only the TRUNCATED key_id; never a public key, never a
+    signature.
+
+    Level choice is deliberate, not uniform:
+
+    * ``REJECT`` is always WARNING, in every mode.
+    * ``ACCEPT`` is WARNING in ``shadow`` but INFO in ``enforce``. This is NOT
+      an inconsistency to "clean up". The webui process that serves this route
+      runs ``uvicorn.run(log_level="warning")``, which configures only the
+      ``uvicorn*`` loggers; nothing configures the root logger, so root stays
+      at its default level (WARNING, via ``logging.lastResort``) with no
+      handlers attached. An INFO record from this module is therefore silently
+      DROPPED in production. The whole point of shadow mode is rollout step 4:
+      "every distinct publishing device should appear with result=ACCEPT" -
+      if ACCEPT stayed at INFO, a soak that logged nothing would be
+      indistinguishable from a soak that ran clean, and the flip-to-enforce
+      decision would be unverifiable. So shadow escalates ACCEPT to WARNING to
+      make the soak actually visible. Once in ``enforce`` the signature check
+      is load-bearing (rejects really block the publish), so ACCEPT reverts to
+      INFO for steady-state noise reduction.
     """
-    if not bundle.get("signature") or not signer_public_armor:
-        return False
+    kid = str(bundle.get("key_id") or "?")[:8]
+    line = "prekey-verify mode=%s owner=%s kid=%s signer=%s result=%s" % (
+        mode,
+        _short(peer),
+        kid,
+        signer_source,
+        "ACCEPT" if reason is None else "REJECT",
+    )
+    if reason is not None:
+        logger.warning("%s reason=%s", line, reason)
+    elif mode == "shadow":
+        logger.warning(line)
+    else:
+        logger.info(line)
+
+
+def _prekey_verify_reason(bundle: dict, signer_public_armor: Optional[str]) -> Optional[str]:
+    """``None`` if the bundle's signature verifies, else a short reason code.
+
+    Reason codes are stable strings meant for the audit line and for triage:
+    ``unsigned`` (no signature on the bundle), ``no-signer-key`` (no key resolved
+    for the claimed owner), ``bad-signature`` (present but does not verify:
+    prekey substitution or wrong identity).
+    """
+    if not bundle.get("signature"):
+        return "unsigned"
+    if not signer_public_armor:
+        return "no-signer-key"
     from . import prekey_sig
 
-    return prekey_sig.verify_prekey_bundle(bundle, signer_public_armor)
+    if not prekey_sig.verify_prekey_bundle(bundle, signer_public_armor):
+        return "bad-signature"
+    return None
 
 
 def _slot_sort_key(bundle: dict) -> float:
