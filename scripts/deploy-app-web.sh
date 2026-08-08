@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+# deploy-app-web.sh - build the Flutter web client and deploy it into skchat.
+#
+# WHY THIS SCRIPT EXISTS
+#
+# `src/skchat/static/app/` is TRACKED in git. Deploying by rsyncing a fresh
+# build into it leaves the working tree dirty, and the next `git checkout main`
+# or `git pull` silently reverts every one of those files to the committed
+# bundle. That happened three times in a row on 2026-08-08: each deploy looked
+# successful, the served page kept showing an older build with no Linked Devices
+# section, and nothing anywhere reported a problem.
+#
+# An rsync alone is therefore NOT a deploy. The bundle has to be committed, which
+# is exactly what the repo's own earlier `deploy(app):` commits did. This script
+# makes that the only path: it builds, stamps provenance, and commits, in one go.
+#
+# It also writes `.source_commit`, recording which skworld-app commit the bundle
+# was built from, so "is the deployed client stale?" becomes a question anyone
+# can answer without diffing 5 MB of compiled JavaScript.
+#
+# USAGE
+#   ./scripts/deploy-app-web.sh --check    Report what is deployed vs app main.
+#                                          Touches nothing. Exit 1 if stale.
+#   ./scripts/deploy-app-web.sh            Build, deploy, stamp, commit.
+#   ./scripts/deploy-app-web.sh --restart  ...and restart the webui service.
+#
+# ENV
+#   SKWORLD_APP_DIR   app checkout   (default ~/clawd/skcapstone-repos/skworld-app)
+#   FLUTTER           flutter binary (default ~/flutter/bin/flutter, NON-snap)
+set -euo pipefail
+
+APP_DIR="${SKWORLD_APP_DIR:-$HOME/clawd/skcapstone-repos/skworld-app}"
+FLUTTER="${FLUTTER:-$HOME/flutter/bin/flutter}"
+SKCHAT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DEST="$SKCHAT_DIR/src/skchat/static/app"
+STAMP="$DEST/.source_commit"
+
+# The base href the webui serves the client under. A bundle built without this
+# loads a blank page: every asset resolves against / instead of /app/.
+BASE_HREF="/app/"
+
+die() { echo "deploy-app-web: $*" >&2; exit 1; }
+
+[ -d "$APP_DIR" ] || die "app checkout not found: $APP_DIR"
+
+deployed_commit() { [ -f "$STAMP" ] && head -n1 "$STAMP" || echo "(none recorded)"; }
+
+app_main_commit() {
+  git -C "$APP_DIR" fetch -q origin main 2>/dev/null || true
+  git -C "$APP_DIR" rev-parse origin/main
+}
+
+if [ "${1:-}" = "--check" ]; then
+  have="$(deployed_commit)"
+  want="$(app_main_commit)"
+  echo "deployed from : $have"
+  echo "app main is   : $want"
+  if [ "$have" = "$want" ]; then
+    echo "OK: the committed bundle matches app main."
+    exit 0
+  fi
+  echo "STALE: the deployed client is not built from app main."
+  echo "Run ./scripts/deploy-app-web.sh to rebuild and commit it."
+  exit 1
+fi
+
+command -v "$FLUTTER" >/dev/null 2>&1 || [ -x "$FLUTTER" ] || die "flutter not found: $FLUTTER"
+
+echo "==> building from $APP_DIR"
+git -C "$APP_DIR" fetch -q origin main
+src_commit="$(git -C "$APP_DIR" rev-parse HEAD)"
+if [ -n "$(git -C "$APP_DIR" status --porcelain)" ]; then
+  echo "    NOTE: app checkout has uncommitted changes; the bundle will include them."
+fi
+( cd "$APP_DIR" && "$FLUTTER" build web --release --base-href "$BASE_HREF" )
+
+built="$APP_DIR/build/web"
+[ -f "$built/main.dart.js" ] || die "build produced no main.dart.js"
+grep -q "<base href=\"$BASE_HREF\">" "$built/index.html" \
+  || die "built index.html is missing <base href=\"$BASE_HREF\">; it would load blank"
+
+echo "==> deploying into $DEST"
+rsync -a --delete "$built/" "$DEST/"
+
+{
+  echo "$src_commit"
+  echo "# skworld-app commit this bundle was built from."
+  echo "# Written by scripts/deploy-app-web.sh. Do not hand-edit."
+} > "$STAMP"
+
+echo "==> committing (an uncommitted deploy is reverted by the next checkout)"
+git -C "$SKCHAT_DIR" add "$DEST"
+if git -C "$SKCHAT_DIR" diff --cached --quiet -- "$DEST"; then
+  echo "    nothing changed; bundle already matches."
+else
+  git -C "$SKCHAT_DIR" commit -q -m "deploy(app): rebuild web client from skworld-app ${src_commit:0:12}
+
+Built with --base-href $BASE_HREF and committed, because src/skchat/static/app
+is tracked and an uncommitted bundle is reverted by the next checkout or pull."
+  echo "    committed: $(git -C "$SKCHAT_DIR" rev-parse --short HEAD)"
+fi
+
+if [ "${1:-}" = "--restart" ]; then
+  echo "==> restarting skchat-webui@lumina"
+  systemctl --user restart skchat-webui@lumina.service
+  sleep 5
+  systemctl --user is-active skchat-webui@lumina.service
+fi
+
+echo "==> done. Remember to push."
