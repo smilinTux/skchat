@@ -154,6 +154,26 @@ def touch_throttled(device_fp: str) -> bool:
         return False
 
 
+def set_label(device_fp: str, label: str) -> bool:
+    """Operator-set the row's label. True if a row was found and updated.
+
+    Marks ``label_source`` as ``"operator"``: unlike ``"client"`` (device
+    asserted it) or ``"derived"`` (server guessed from the User-Agent), an
+    operator-set name is one the operator typed themselves, so it is the one
+    label source the UI can treat as trusted.
+    """
+    with _lock:
+        data = _load()
+        row = data.get(device_fp)
+        if row is None:
+            return False
+        row["label"] = label
+        row["label_source"] = "operator"
+        data[device_fp] = row
+        _save(data)
+        return True
+
+
 def get_device(device_fp: str) -> dict | None:
     with _lock:
         return _load().get(device_fp)

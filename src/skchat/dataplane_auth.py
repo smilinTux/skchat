@@ -145,6 +145,7 @@ _ROUTE_CAPABILITY_RULES: tuple[tuple[str, str, str], ...] = (
     # Linked Devices: managing a device means managing its prekey slots, and an
     # enrolled device already holds skchat.prekey, so no new grant is needed.
     ("GET", "/api/v1/operator/devices", CAP_PREKEY),
+    ("PATCH", "/api/v1/operator/devices/{device_fp}", CAP_PREKEY),
     ("DELETE", "/api/v1/operator/devices/{device_fp}", CAP_PREKEY),
     ("POST", "/api/v1/operator/devices/unlink-others", CAP_PREKEY),
     # --- skchat.media.write (upload attachment bytes) ----------------------- #
