@@ -148,6 +148,11 @@ _ROUTE_CAPABILITY_RULES: tuple[tuple[str, str, str], ...] = (
     ("PATCH", "/api/v1/operator/devices/{device_fp}", CAP_PREKEY),
     ("DELETE", "/api/v1/operator/devices/{device_fp}", CAP_PREKEY),
     ("POST", "/api/v1/operator/devices/unlink-others", CAP_PREKEY),
+    # Phase 3 (approval-to-link): approving/denying a device is the same
+    # trust boundary as unlinking one, so it carries the same capability.
+    ("GET", "/api/v1/operator/devices/pending", CAP_PREKEY),
+    ("POST", "/api/v1/operator/devices/{device_fp}/approve", CAP_PREKEY),
+    ("POST", "/api/v1/operator/devices/{device_fp}/deny", CAP_PREKEY),
     # --- skchat.media.write (upload attachment bytes) ----------------------- #
     ("POST", "/upload", CAP_MEDIA_WRITE),
     # --- skchat.voice (STT/TTS compute as the subject) ---------------------- #

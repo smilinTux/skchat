@@ -5689,5 +5689,67 @@ def devices_reset(yes: bool) -> None:
     click.echo("Re-link each device you still use from its own app.")
 
 
+@devices.command("pending")
+def devices_pending() -> None:
+    """List devices awaiting approval.
+
+    Bootstrap path: no operator session required, since shell access to this
+    box already implies control over it -- the same trust boundary as
+    `devices reset`.
+    """
+    import json as _json
+
+    from . import device_registry as _DR
+
+    rows = _DR.list_pending()
+    if not rows:
+        click.echo("No devices pending approval.")
+        return
+    for row in rows:
+        click.echo(
+            f"{row['device_fp']}  {row.get('label', '')}  enrolled_at={row.get('enrolled_at')}"
+        )
+    click.echo(_json.dumps(rows, indent=2))
+
+
+@devices.command("approve")
+@click.argument("device_fp")
+def devices_approve(device_fp: str) -> None:
+    """Approve a pending device so it can mint a session.
+
+    Bootstrap path: no operator session required (see `devices pending`).
+    """
+    from . import device_registry as _DR
+
+    if not _DR.set_approved(device_fp, True):
+        raise click.ClickException(f"no such device: {device_fp}")
+    click.echo(f"Approved {device_fp}.")
+
+
+@devices.command("deny")
+@click.argument("device_fp")
+def devices_deny(device_fp: str) -> None:
+    """Deny a pending device: a full unlink across every store.
+
+    Same primitive as unlinking an already-approved device
+    (:func:`skchat.device_unlink.unlink_device`); the row is kept for audit,
+    filtered out of the default list. Bootstrap path: no operator session
+    required (see `devices pending`).
+    """
+    import json as _json
+
+    from .device_unlink import unlink_device as _unlink_device
+    from .operator_auth import DeviceStore as _DeviceStore
+    from .operator_auth import default_device_store_path as _default_device_store_path
+
+    store = _DeviceStore(_default_device_store_path())
+    try:
+        report = _unlink_device(device_fp, device_store=store)
+    except KeyError:
+        raise click.ClickException(f"no such device: {device_fp}")
+    click.echo(f"Denied {device_fp}.")
+    click.echo(_json.dumps(report, indent=2))
+
+
 if __name__ == "__main__":
     main()

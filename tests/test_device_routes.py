@@ -42,6 +42,10 @@ def _enrol(store, seed: str, key_id: str) -> str:
     pub = base64.b64encode(seed.encode().ljust(32, b"\0")).decode()
     fp = store.enroll(pub)
     DR.record_enroll(fp, label=seed, label_source="client", platform="app", user_agent="UA")
+    # This suite is about list/rename/unlink behavior for already-linked
+    # devices, not the Phase 3 approval gate (see test_device_approval.py), so
+    # approve it the way an operator would.
+    DR.set_approved(fp, True)
     PQ.store_peer_bundle(
         "chef",
         {"suite": "x25519-mlkem768", "hybrid_public_hex": key_id + "00" * 8, "key_id": key_id},

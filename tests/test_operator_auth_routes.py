@@ -78,6 +78,13 @@ def _enroll_and_session(client):
         json={"device_pubkey": pub, "window_nonce": w["window_nonce"], "sig": sig},
     )
     fp = e.json()["device_fp"]
+    # Phase 3: a fresh fp lands pending and cannot mint a session. These tests
+    # are about the session handshake response shape, not the approval gate
+    # itself (see test_device_approval.py), so approve the way an operator
+    # would.
+    from skchat import device_registry as DR
+
+    DR.set_approved(fp, True)
     ch = client.get("/api/v1/auth/challenge").json()
     ssig = _sig(priv, _canon({"nonce": ch["nonce"], "device_fp": fp}))
     return client.post(
@@ -96,6 +103,10 @@ def test_full_enroll_then_session(client):
     )
     assert e.status_code == 200
     fp = e.json()["device_fp"]
+    assert e.json()["approved"] is False  # Phase 3: a fresh fp always lands pending
+    from skchat import device_registry as DR
+
+    DR.set_approved(fp, True)
     ch = client.get("/api/v1/auth/challenge").json()
     ssig = _sig(priv, _canon({"nonce": ch["nonce"], "device_fp": fp}))
     r = client.post(
@@ -193,6 +204,9 @@ def test_session_rejects_replayed_nonce(client):
         },
     )
     fp = oa.device_fingerprint(pub)
+    from skchat import device_registry as DR
+
+    DR.set_approved(fp, True)
     ch = client.get("/api/v1/auth/challenge").json()
     ssig = _sig(priv, _canon({"nonce": ch["nonce"], "device_fp": fp}))
     ok = client.post(

@@ -41,6 +41,9 @@ def _enrol(store, seed: str) -> str:
     pub = base64.b64encode(seed.encode().ljust(32, b"\0")).decode()
     fp = store.enroll(pub)
     DR.record_enroll(fp, label=seed, label_source="client", platform="app", user_agent="UA")
+    # This suite is about rename behavior for an already-linked device, not the
+    # Phase 3 approval gate, so approve it the way an operator would.
+    DR.set_approved(fp, True)
     return fp
 
 

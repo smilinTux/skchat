@@ -167,7 +167,15 @@ def register_operator_auth_routes(app: FastAPI, *, device_store: oa.DeviceStore)
         # inside and never breaks the enrollment response.
         grant_operator_prekey_capability(device_fp, pub)
         _record_enrollment(request, device_fp, label=body.get("label"))
-        return {"device_fp": device_fp}
+        # Tell the caller whether it is pending approval (Phase 3): a missing
+        # registry row (recording failed, best-effort) reads as approved, same
+        # as everywhere else this is checked, so a registry hiccup never tells
+        # an otherwise-fine device it is stuck pending.
+        from . import device_registry as DR
+
+        row = DR.get_device(device_fp)
+        approved = True if row is None else DR.is_approved(row)
+        return {"device_fp": device_fp, "approved": approved}
 
     @router.get("/challenge")
     async def challenge():
@@ -194,7 +202,16 @@ def register_operator_auth_routes(app: FastAPI, *, device_store: oa.DeviceStore)
         ):
             raise HTTPException(401, "challenge signature invalid")
         token = oa.mint_operator_session(device_fp=fp)
-        sess = oa.verify_operator_session(token)
+        # A pending (not-yet-approved) device cannot mint a usable session: the
+        # token above is a valid JWT, but the immediate self-verify below is
+        # exactly what every OTHER route would do to it, so failing here means
+        # this route never hands back a token the device could not actually
+        # use for anything. See device_registry.is_approved and the Phase 3
+        # (approval-to-link) section of the device management design.
+        try:
+            sess = oa.verify_operator_session(token)
+        except oa.OperatorAuthError as exc:
+            raise HTTPException(403, str(exc)) from exc
         resp = {"session_token": token, "expires_at": sess.exp}
         # CR-3.4 AC1 / Phase 1: ALSO mint a parallel capauth audience token for
         # operator:<device_fp>, gated by SKCHAT_OPERATOR_AUDIENCE_ISSUE (default
