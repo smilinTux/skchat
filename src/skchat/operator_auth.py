@@ -147,9 +147,25 @@ class DeviceStore:
         tmp.write_text(json.dumps(self._data))
         os.replace(tmp, self._path)
 
+    def _reload_locked(self) -> None:
+        """Re-read the file from disk (caller holds ``self._lock``).
+
+        Two ``DeviceStore`` instances over the same path (a daemon plus a CLI,
+        or two concurrent unlinks) each cache ``_data`` from their own
+        construction time. Without a reload before every mutation, a later
+        instance's write is a full-map overwrite from that instance's OWN
+        stale snapshot, silently resurrecting a device another instance
+        already removed. Mirrors ``__init__``'s load.
+        """
+        if self._path.exists():
+            self._data = json.loads(self._path.read_text() or "{}")
+        else:
+            self._data = {}
+
     def enroll(self, device_pubkey_b64: str) -> str:
         fp = device_fingerprint(device_pubkey_b64)
         with self._lock:
+            self._reload_locked()
             self._data[fp] = device_pubkey_b64
             self._write()
         return fp
@@ -168,6 +184,7 @@ class DeviceStore:
     def remove(self, device_fp: str) -> bool:
         """Drop a device so no NEW session can be minted for it."""
         with self._lock:
+            self._reload_locked()
             if device_fp not in self._data:
                 return False
             del self._data[device_fp]
@@ -177,6 +194,7 @@ class DeviceStore:
     def clear(self) -> int:
         """Remove every enrolled device (the R1 clean cut). Returns the count."""
         with self._lock:
+            self._reload_locked()
             count = len(self._data)
             self._data = {}
             self._write()
