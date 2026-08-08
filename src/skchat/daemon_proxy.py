@@ -718,38 +718,56 @@ def _short_name(uri: str) -> str:
 
 
 def _resolve_signer_pubkey(peer: str) -> str | None:
-    """Best-effort ASCII-armored PGP public key for the claimed publisher.
+    """ASCII-armored PGP public key that MUST have signed *peer*'s prekey bundle.
 
-    Used only when ``SKCHAT_REQUIRE_SIGNED_PREKEYS`` is set. Two sources, in
-    order:
+    Used when :func:`skchat.pq_prekeys.prekey_verify_mode` is not ``'off'``.
+    Scoped operator attestation: exactly one source per owner, chosen by identity,
+    never a fallthrough.
 
-      1. The peer's own published key from the skcapstone peer store — the right
-         source for a REMOTE peer that self-signed its bundle.
-      2. This daemon's local agent identity key. Bundles published through the
-         operator-authenticated ``POST /api/v1/prekey/sign`` oracle are signed by
-         ``load_agent_crypto`` (the daemon agent's key), NOT a per-peer key, so
-         the operator's own app-published bundles verify only against this key.
-         The oracle is operator-gated, so only operator-attested bundles ever
-         carry this signature — a data-plane peer cannot obtain it.
+      * The OPERATOR (``OPERATOR_ID``) resolves to THIS daemon's agent key, and
+        only that. The Flutter app cannot hold the operator identity key, so it
+        delegates to the operator-gated ``POST /api/v1/prekey/sign`` oracle, which
+        signs with ``load_agent_crypto``. So an operator bundle is an ATTESTATION
+        ("an authenticated operator session vouched for this device"), not a
+        self-signature, and the peer store is deliberately NOT consulted: a
+        ``chef.json`` appearing later must not be able to break the operator path.
+      * Every OTHER owner must self-sign, and resolves to its own published key
+        from the skcapstone peer store. There is no fallback to the daemon key:
+        that would let a bundle published under any unknown owner name verify
+        against an attestation that says nothing about that owner.
 
-    Returns ``None`` if neither resolves — intake then fails closed."""
+    Returns ``None`` if the required key does not resolve. Intake then fails
+    closed in ``'enforce'``, and records ``reason=no-signer-key`` in ``'shadow'``.
+    """
+    if peer == _short_name(OPERATOR_ID):
+        try:
+            from skchat import crypto as _crypto
+
+            cc = _crypto.load_agent_crypto()
+            if cc is not None and getattr(cc, "can_sign", False):
+                return str(cc._private_key.pubkey)
+        except Exception:
+            logger.debug("no local agent attestation key", exc_info=True)
+        return None
+
     try:
         from skchat.crypto import _load_peer_public_key
 
-        armor = _load_peer_public_key(peer)
-        if armor:
-            return armor
+        return _load_peer_public_key(peer) or None
     except Exception:
         logger.debug("no peer-store signer pubkey for %s", peer, exc_info=True)
-    try:
-        from skchat import crypto as _crypto
+        return None
 
-        cc = _crypto.load_agent_crypto()
-        if cc is not None and getattr(cc, "can_sign", False):
-            return str(cc._private_key.pubkey)
-    except Exception:
-        logger.debug("no local agent signer pubkey", exc_info=True)
-    return None
+
+def _signer_source_label(owner: str, signer: str | None) -> str:
+    """Which source produced *signer*, for the ``prekey-verify`` audit line.
+
+    Derivable from the owner alone because :func:`_resolve_signer_pubkey` gives
+    each owner exactly ONE permitted source, so this cannot drift from it.
+    """
+    if signer is None:
+        return "none"
+    return "daemon-attest" if owner == _short_name(OPERATOR_ID) else "peer-store"
 
 
 def _unwrap_skq1(plaintext: str) -> tuple[str, dict]:
