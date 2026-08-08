@@ -1,28 +1,129 @@
 name: Publish to PyPI
 
+# Two entry points, one workflow:
+#
+#   push to main  -> cut the next vX.Y.Z tag, then build + publish it
+#   push of a v*  -> build + publish that tag (manual or historical releases)
+#
+# The tagging lives INSIDE this workflow on purpose, for two reasons that are
+# easy to get wrong:
+#
+#   1. PyPI Trusted Publishing is bound to the workflow FILENAME
+#      (owner=smilinTux workflow=publish.yml environment=pypi). Publishing from
+#      any other workflow file fails OIDC, so the publish step cannot move.
+#   2. A tag pushed with GITHUB_TOKEN does NOT trigger other workflows (GitHub's
+#      recursive-run prevention). So a separate "tag main" workflow would create
+#      the tag and nothing would ever publish it. Keeping both in one run
+#      sidesteps that entirely, and also means the tag push cannot double-fire
+#      this workflow.
+#
+# Card 0c3668a6. Previously the ONLY thing that cut tags was a local pre-push
+# git hook, which fired on ANY branch push, so 5 of 6 consecutive tags were cut
+# off unmerged feature branches and one shipped to PyPI straight from an
+# in-review branch. That hook is now main-only (scripts/hooks/pre-push), and
+# this workflow is the durable server-side path that does not depend on anyone
+# having the hook installed or pushing main from a local clone (main is normally
+# updated by a GitHub squash-merge, where no local push happens at all).
+
 on:
   push:
+    branches: ["main"]
     tags: ["v*"]
   workflow_dispatch:
 
 permissions:
   contents: read
 
-# Trusted Publishing (OIDC) is configured on PyPI for this project:
-#   owner=smilinTux  workflow=publish.yml  environment=pypi
-# No PyPI token is used in the publish path. The full test suite is intentionally
-# NOT a gate here (that lives in ci.yml on PRs); a tagged release only needs to
-# build cleanly and pass `twine check`, so a red/flaky unrelated test never blocks
-# a release again.
+concurrency:
+  # Never let two releases race: a second push to main waits rather than
+  # computing the same "next" tag from a stale view of the tag list.
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
+  # ---------------------------------------------------------------------- #
+  # Cut the release tag. Only on a push to main; skipped on a tag push.
+  # ---------------------------------------------------------------------- #
+  tag:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      tagged: ${{ steps.bump.outputs.tagged }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history + tags, or `git describe` cannot see the latest tag and
+          # every run would compute v0.0.1.
+          fetch-depth: 0
+          fetch-tags: true
+      - id: bump
+        name: Cut the next patch tag if HEAD is not already tagged
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          latest="$(git describe --tags --abbrev=0 --match 'v[0-9]*' 2>/dev/null || echo '')"
+          head_sha="$(git rev-parse HEAD)"
+
+          if [ -n "$latest" ] && [ "$(git rev-list -n1 "$latest")" = "$head_sha" ]; then
+            echo "HEAD is already $latest; nothing to release."
+            echo "tagged=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          base="${latest:-v0.0.0}"
+          ver="${base#v}"
+          IFS='.' read -r major minor patch <<< "$ver"
+          major="${major:-0}"; minor="${minor:-0}"; patch="${patch:-0}"
+          next="v${major}.${minor}.$((patch + 1))"
+          while git rev-parse -q --verify "refs/tags/$next" >/dev/null 2>&1; do
+            patch=$((patch + 1))
+            next="v${major}.${minor}.$((patch + 1))"
+          done
+
+          echo "Cutting $next at ${head_sha:0:8} (previous: ${latest:-none})"
+          git tag -a "$next" -m "release: $next from main"
+          git push origin "$next"
+          echo "tagged=true" >> "$GITHUB_OUTPUT"
+
+  # ---------------------------------------------------------------------- #
+  # Build. Runs for a tag push (tag job skipped) and for a main push that
+  # actually cut a tag. Skipped when main had nothing new to release.
+  # ---------------------------------------------------------------------- #
   build:
+    needs: [tag]
+    # `always()` is required because `needs` on a SKIPPED job would otherwise
+    # skip this one on the tag-push path.
+    if: >-
+      always() && !cancelled() &&
+      (needs.tag.result == 'skipped' || needs.tag.outputs.tagged == 'true')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # setuptools-scm derives the version from the tag, so the tag the job
+          # above just pushed must be visible here or the build would produce a
+          # dev version with a local segment (+g<sha>), which PyPI rejects.
+          fetch-depth: 0
+          fetch-tags: true
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       - run: python -m pip install --upgrade build twine
+      - name: Assert the derived version is a real release, not a dev build
+        # Fail loud rather than uploading a 0.0.0+unknown or a .devN+g<sha>.
+        run: |
+          python -m pip install --upgrade setuptools_scm
+          v="$(python -m setuptools_scm 2>/dev/null || echo unknown)"
+          echo "setuptools-scm derives: $v"
+          case "$v" in
+            *+*|*dev*|unknown|0.0.0*)
+              echo "::error::refusing to publish a non-release version: $v"
+              exit 1 ;;
+          esac
       - run: python -m build
       - run: python -m twine check dist/*
       - uses: actions/upload-artifact@v4
