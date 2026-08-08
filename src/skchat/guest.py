@@ -301,25 +301,18 @@ def is_device_revoked(device_fp: str) -> bool:
 
 
 def is_device_approved(device_fp: str) -> bool:
-    """True if *device_fp* is approved to hold a session.
+    """True if *device_fp* may hold a session.
 
-    A missing fingerprint (no registry row at all -- the device predates the
-    registry, or the registry write failed) reads as approved, the same as a
-    row present but missing the ``approved`` key
-    (:func:`skchat.device_registry.is_approved`): only a row that this
-    feature itself wrote with ``approved: False`` is pending. That is what
-    keeps the operator's 3 pre-Phase-3 devices, which have no registry row at
-    all for some of them and no ``approved`` key for the rest, working
-    exactly as before.
+    Delegates the whole decision, including which way to fail when the registry
+    cannot answer, to :func:`skchat.device_registry.approval_for`. A row with no
+    ``approved`` key reads as approved, which is what keeps devices enrolled
+    before Phase 3 working untouched.
     """
     if not device_fp:
         return True
     from . import device_registry as DR
 
-    row = DR.get_device(device_fp)
-    if row is None:
-        return True
-    return DR.is_approved(row)
+    return DR.approval_for(device_fp)
 
 
 def _is_used(jti: str) -> bool:

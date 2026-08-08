@@ -142,8 +142,13 @@ def register_device_routes(app: FastAPI, *, device_store) -> None:
                 "an operator session is required so only an already-approved "
                 "device can vouch for a new one",
             )
-        if not DR.set_approved(device_fp, True):
+        # A device whose registry write failed has no row, and approval_for
+        # reads that as pending. Approving it must still work, or the only
+        # recovery is hand-editing JSON. But a fingerprint that is not enrolled
+        # AT ALL is a typo, not a recovery case, so that still 404s.
+        if DR.get_device(device_fp) is None and not device_store.is_enrolled(device_fp):
             raise HTTPException(404, "device not found")
+        DR.set_approved(device_fp, True)
         row = dict(DR.get_device(device_fp) or {})
         row.pop("user_agent", None)  # internal detail, not UI data
         row["approved"] = DR.is_approved(row)

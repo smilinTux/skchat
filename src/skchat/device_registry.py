@@ -91,6 +91,40 @@ def _live_slot_ids(owner: str = "chef") -> set[str] | None:
         return None
 
 
+def approval_for(device_fp: str) -> bool:
+    """Whether *device_fp* may hold a session, distinguishing "no row" from
+    "cannot read the registry".
+
+    :func:`_load` degrades a corrupt or unreadable registry to an empty dict, so
+    from the inside "this device has no row" and "I cannot read the file" look
+    identical. They must not be treated the same:
+
+    * **readable, but no row for this fingerprint** -> NOT approved. Phase 3's
+      premise is that holding the pasted operator token is not enough to link a
+      usable device, so a device that never got a row must not be trusted by
+      default. It stays visible and approvable (:func:`set_approved` creates the
+      row), so failing closed never strands it.
+    * **missing or unreadable registry** -> approved. Bricking every device on
+      the node over one corrupt JSON file is a far worse outcome than briefly
+      not enforcing a gate that only bites a caller who already holds the token.
+    """
+    path = registry_path()
+    if not path.exists():
+        return True
+    try:
+        data = json.loads(path.read_text() or "{}")
+    except (ValueError, OSError):
+        logger.warning("device registry unreadable; approval gate open: %s", path)
+        return True
+    if not isinstance(data, dict):
+        logger.warning("device registry is not an object; approval gate open: %s", path)
+        return True
+    row = data.get(device_fp)
+    if row is None:
+        return False
+    return is_approved(row)
+
+
 def record_enroll(
     device_fp: str,
     *,
@@ -263,21 +297,31 @@ def list_devices(*, include_revoked: bool = False) -> list[dict]:
 
 
 def set_approved(device_fp: str, approved: bool) -> bool:
-    """Approve or un-approve a device. True if a row was found and updated.
+    """Approve or un-approve a device. Always True: creates the row if absent.
 
-    An approve lets the device mint sessions (see
-    :func:`skchat.guest.is_device_approved` and
-    :func:`skchat.operator_auth.verify_operator_session`); a False is not
-    currently exercised by any route (deny does a full unlink instead, which
-    both revokes the row via :func:`mark_revoked` and removes it from
-    ``DeviceStore``) but is kept honest/reversible for direct callers.
+    A device whose ``record_enroll`` failed has no row, which
+    :func:`approval_for` reads as pending. Approving it therefore has to work
+    without a pre-existing row, or the only recovery would be hand-editing JSON.
     """
+    if not device_fp:
+        return False
+    now = time.time()
     with _lock:
         data = _load()
         row = data.get(device_fp)
         if row is None:
-            return False
-        row["approved"] = approved
+            row = {
+                "device_fp": device_fp,
+                "label": "Unknown device",
+                "label_source": "derived",
+                "platform": "unknown",
+                "user_agent": "",
+                "enrolled_at": now,
+                "last_seen": now,
+                "key_ids": [],
+                "revoked": False,
+            }
+        row["approved"] = bool(approved)
         data[device_fp] = row
         _save(data)
         return True

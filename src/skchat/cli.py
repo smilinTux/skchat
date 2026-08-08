@@ -5720,9 +5720,15 @@ def devices_approve(device_fp: str) -> None:
     Bootstrap path: no operator session required (see `devices pending`).
     """
     from . import device_registry as _DR
+    from .operator_auth import DeviceStore, default_device_store_path
 
-    if not _DR.set_approved(device_fp, True):
+    # A row-less but ENROLLED device is the recovery case (its registry write
+    # failed), so approving it creates the row. An unknown fingerprint is a
+    # typo and is refused.
+    store = DeviceStore(default_device_store_path())
+    if _DR.get_device(device_fp) is None and not store.is_enrolled(device_fp):
         raise click.ClickException(f"no such device: {device_fp}")
+    _DR.set_approved(device_fp, True)
     click.echo(f"Approved {device_fp}.")
 
 
