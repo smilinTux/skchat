@@ -34,6 +34,29 @@ _TRUTHY = {"1", "true", "yes", "on"}
 #: operator enables it on the webui unit.
 OPERATOR_AUDIENCE_ISSUE_FLAG = "SKCHAT_OPERATOR_AUDIENCE_ISSUE"
 
+#: Seat issuer policy echoed to the client (CR-3.4 PR4 / P6). Read at call time
+#: so a unit env flip drives the client with no app rebuild. `hs256` (default):
+#: client attaches the HS256 session. `prefer-audience`: client attaches the
+#: audience token, HS256 auto-fallback on 401/403. `audience-only`: HS256 no
+#: longer minted (Phase 5). Any unknown value normalizes to the safe hs256
+#: default, so a typo can never silently disable operator auth.
+OPERATOR_ISSUER_POLICY_FLAG = "SKCHAT_OPERATOR_ISSUER_POLICY"
+
+_VALID_ISSUER_POLICIES = frozenset({"hs256", "prefer-audience", "audience-only"})
+
+_DEFAULT_ISSUER_POLICY = "hs256"
+
+
+def operator_issuer_policy() -> str:
+    """Return the operator seat's issuer policy from ``SKCHAT_OPERATOR_ISSUER_POLICY``.
+
+    Read at call time (like every other gate on this plane). An unset, empty, or
+    unrecognized value returns the safe default ``hs256`` so a misconfiguration
+    can never leave the client without a working credential.
+    """
+    value = os.getenv(OPERATOR_ISSUER_POLICY_FLAG, "").strip().lower()
+    return value if value in _VALID_ISSUER_POLICIES else _DEFAULT_ISSUER_POLICY
+
 #: Audience-token TTL in hours. Matches ``operator_auth._DEFAULT_TTL`` (12h) so both
 #: credentials share the seat's re-auth rhythm; refresh is the SAME device
 #: challenge-response handshake (the device key stays the root credential).
@@ -120,8 +143,10 @@ def issue_operator_audience(device_fp: str) -> Optional[dict]:
 
 __all__ = [
     "OPERATOR_AUDIENCE_ISSUE_FLAG",
+    "OPERATOR_ISSUER_POLICY_FLAG",
     "AUDIENCE_TTL_HOURS",
     "operator_audience_issue_enabled",
+    "operator_issuer_policy",
     "mint_operator_audience_token",
     "wire_form",
     "issue_operator_audience",

@@ -94,11 +94,15 @@ def register_operator_auth_routes(app: FastAPI, *, device_store: oa.DeviceStore)
         # the client uses; this is additive so today's clients (which read only
         # session_token) are unaffected. A mint failure returns None and never
         # breaks the handshake -- the seat cannot be locked out by the audience path.
-        from .operator_audience import issue_operator_audience
+        from .operator_audience import issue_operator_audience, operator_issuer_policy
 
         extra = issue_operator_audience(fp)
         if extra:
             resp.update(extra)
+        # CR-3.4 PR4 / P6: echo the seat's issuer policy so the client's choice
+        # of credential is server-driven and reversible with no app rebuild
+        # (hs256 default / prefer-audience / audience-only). Always present.
+        resp["issuer_policy"] = operator_issuer_policy()
         return resp
 
     app.include_router(router)

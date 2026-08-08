@@ -19,7 +19,9 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from skchat import operator_auth as oa
+from skchat import operator_auth_routes as oar
 from skchat.operator_auth_routes import register_operator_auth_routes
+from skchat.pairing_gate import PairingGate
 
 
 def _canon(obj):
@@ -48,6 +50,13 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
     monkeypatch.setenv("SKCHAT_OPERATOR_TOKEN_SECRET", "sec")
     monkeypatch.delenv("SKCHAT_GUEST_OPERATOR_TOKEN", raising=False)  # loopback-allowed operator
+    # The enrollment PairingGate is a MODULE GLOBAL carrying a rolling
+    # accept-attempt rate limit (10 / 60s) shared across every test in the whole
+    # suite. Without a per-test reset, unrelated modules' enrollments accumulate
+    # in the same 60s window and throttle a later test's enroll (device then
+    # never enrolls, and its session 401s). Give each test a fresh gate so the
+    # routes stay isolated.
+    monkeypatch.setattr(oar, "_pairing", PairingGate(max_accepts_per_window=1))
     app = FastAPI()
     register_operator_auth_routes(app, device_store=oa.DeviceStore(tmp_path / "d.json"))
     # _require_operator falls back to loopback/tailnet-only when no shared
@@ -56,6 +65,25 @@ def client(tmp_path, monkeypatch):
     # _require_operator-gated route tests in this suite (e.g.
     # test_join_link.py, test_call_routes.py).
     return TestClient(app, client=("127.0.0.1", 12345))
+
+
+def _enroll_and_session(client):
+    """Run the full enroll -> challenge -> session handshake and return the
+    session route's raw Response (helper for the response-shape tests)."""
+    priv, pub = _kp()
+    w = client.post("/api/v1/auth/enroll/open").json()
+    sig = _sig(priv, _canon({"nonce": w["window_nonce"], "device_pubkey": pub}))
+    e = client.post(
+        "/api/v1/auth/enroll",
+        json={"device_pubkey": pub, "window_nonce": w["window_nonce"], "sig": sig},
+    )
+    fp = e.json()["device_fp"]
+    ch = client.get("/api/v1/auth/challenge").json()
+    ssig = _sig(priv, _canon({"nonce": ch["nonce"], "device_fp": fp}))
+    return client.post(
+        "/api/v1/auth/session",
+        json={"device_fp": fp, "nonce": ch["nonce"], "sig": ssig},
+    )
 
 
 def test_full_enroll_then_session(client):
@@ -75,6 +103,31 @@ def test_full_enroll_then_session(client):
     )
     assert r.status_code == 200
     assert oa.verify_operator_session(r.json()["session_token"]).device_fp == fp
+
+
+def test_session_echoes_default_issuer_policy_hs256(client, monkeypatch):
+    # CR-3.4 PR4/P6: the session response carries an issuer_policy field the
+    # client reads to decide which credential to attach. Default is hs256
+    # (today's behavior; the client attaches the HS256 session).
+    monkeypatch.delenv("SKCHAT_OPERATOR_ISSUER_POLICY", raising=False)
+    r = _enroll_and_session(client)
+    assert r.status_code == 200
+    assert r.json()["issuer_policy"] == "hs256"
+
+
+def test_session_echoes_configured_issuer_policy(client, monkeypatch):
+    # Flipping the unit env to prefer-audience is how Chef drives Phase 3; the
+    # server echoes it so no app rebuild is needed.
+    monkeypatch.setenv("SKCHAT_OPERATOR_ISSUER_POLICY", "prefer-audience")
+    r = _enroll_and_session(client)
+    assert r.json()["issuer_policy"] == "prefer-audience"
+
+
+def test_session_normalizes_unknown_issuer_policy_to_hs256(client, monkeypatch):
+    # A typo must never silently disable auth: unknown -> the safe hs256 default.
+    monkeypatch.setenv("SKCHAT_OPERATOR_ISSUER_POLICY", "banana")
+    r = _enroll_and_session(client)
+    assert r.json()["issuer_policy"] == "hs256"
 
 
 def test_session_rejects_unenrolled_device(client):
