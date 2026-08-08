@@ -5608,6 +5608,8 @@ def devices_reset(yes: bool) -> None:
     from .device_registry import clear_all as _clear_registry
     from .operator_auth import DeviceStore as _DeviceStore
     from .operator_auth import default_device_store_path as _default_device_store_path
+    from .pq_prekeys import _pqc_dir as _pq_pqc_dir
+    from .pq_prekeys import _short as _pq_short
     from .pq_prekeys import load_peer_bundles as _load_peer_bundles
     from .pq_prekeys import remove_peer_bundle as _remove_peer_bundle
 
@@ -5632,6 +5634,22 @@ def devices_reset(yes: bool) -> None:
         key_id = bundle.get("key_id")
         if key_id and _remove_peer_bundle("chef", key_id):
             slot_count += 1
+
+    # load_peer_bundles/remove_peer_bundle only cover the current per-device
+    # slot shape (peers/chef/<key_id>.json). A pre-multislot deployment can
+    # also carry ONE legacy flat bundle at peers/chef.json, which
+    # remove_peer_bundle never looks at. That is correct for a single-device
+    # unlink (destroying a legacy bundle other devices still share would be
+    # wrong there), but this IS the total reset, so the legacy file must go
+    # too or the operator is told the cut was total while a KEM slot stays
+    # live. Path built the same way load_peer_bundles locates it.
+    legacy_path = _pq_pqc_dir() / "peers" / f"{_pq_short('chef')}.json"
+    if legacy_path.is_file():
+        try:
+            legacy_path.unlink()
+            slot_count += 1
+        except OSError as exc:
+            click.echo(f"Warning: could not remove legacy prekey bundle {legacy_path}: {exc}")
 
     registry_count = _clear_registry()
 

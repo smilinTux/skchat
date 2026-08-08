@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import os
 
 import pytest
@@ -59,3 +60,48 @@ def test_reset_reports_what_it_removed():
     result = CliRunner().invoke(cli, ["devices", "reset", "--yes"])
     assert "1" in result.output  # counts are surfaced, not silent
     assert "device" in result.output.lower()
+
+
+def _legacy_bundle_path(skchat_home: "os.PathLike[str]") -> "os.PathLike[str]":
+    """Where a pre-multislot deployment's one flat bundle lives.
+
+    Built the same way ``pq_prekeys.load_peer_bundles`` locates it: written
+    directly here (NOT via ``store_peer_bundle``, which only ever writes the
+    new per-slot shape) so the test actually seeds the legacy shape that
+    ``remove_peer_bundle`` cannot see.
+    """
+    from pathlib import Path
+
+    return Path(skchat_home) / "pqc" / "peers" / "chef.json"
+
+
+def test_reset_with_yes_also_clears_legacy_flat_bundle(tmp_path):
+    legacy_path = _legacy_bundle_path(tmp_path)
+    legacy_path.parent.mkdir(parents=True, exist_ok=True)
+    legacy_path.write_text(
+        json.dumps(
+            {
+                "suite": "x25519-mlkem768",
+                "hybrid_public_hex": "bb" * 16,
+                "key_id": "bbbbbbbbbbbbbbbb",
+            }
+        )
+    )
+
+    result = CliRunner().invoke(cli, ["devices", "reset", "--yes"])
+
+    assert result.exit_code == 0, result.output
+    assert not legacy_path.exists()
+    assert "2" in result.output  # the new-shape slot AND the legacy bundle
+    assert PQ.load_peer_bundles("chef") == []
+
+
+def test_reset_without_yes_leaves_legacy_bundle_untouched(tmp_path):
+    legacy_path = _legacy_bundle_path(tmp_path)
+    legacy_path.parent.mkdir(parents=True, exist_ok=True)
+    legacy_path.write_text(json.dumps({"key_id": "bbbbbbbbbbbbbbbb"}))
+
+    result = CliRunner().invoke(cli, ["devices", "reset"])
+
+    assert result.exit_code != 0
+    assert legacy_path.is_file()
