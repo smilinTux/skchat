@@ -52,6 +52,42 @@ def test_record_publish_for_an_unknown_device_is_a_no_op_not_a_crash():
     assert DR.get_device("ff" * 8) is None
 
 
+def test_reenrolling_an_existing_device_preserves_its_key_ids():
+    DR.record_enroll("11" * 8, label="L", label_source="derived", platform="web", user_agent="UA")
+    DR.record_publish("11" * 8, "f8342853f762fd88")
+    DR.record_enroll("11" * 8, label="L2", label_source="client", platform="web", user_agent="UA2")
+    row = DR.get_device("11" * 8)
+    assert row["key_ids"] == ["f8342853f762fd88"]
+
+
+def test_reenrolling_a_revoked_device_clears_revoked_and_it_reappears():
+    DR.record_enroll("22" * 8, label="L", label_source="derived", platform="web", user_agent="UA")
+    assert DR.mark_revoked("22" * 8) is True
+    assert DR.list_devices() == []
+    DR.record_enroll("22" * 8, label="L", label_source="derived", platform="web", user_agent="UA")
+    row = DR.get_device("22" * 8)
+    assert row["revoked"] is False
+    assert [r["device_fp"] for r in DR.list_devices()] == ["22" * 8]
+
+
+def test_reenrolling_refreshes_the_metadata():
+    DR.record_enroll(
+        "33" * 8, label="Old Label", label_source="derived", platform="web", user_agent="UA"
+    )
+    DR.record_enroll(
+        "33" * 8,
+        label="New Label",
+        label_source="client",
+        platform="android",
+        user_agent="Dart/3.5",
+    )
+    row = DR.get_device("33" * 8)
+    assert row["label"] == "New Label"
+    assert row["label_source"] == "client"
+    assert row["platform"] == "android"
+    assert row["user_agent"] == "Dart/3.5"
+
+
 def test_mark_revoked_hides_the_row_by_default_but_keeps_it_for_audit():
     DR.record_enroll("bb" * 8, label="L", label_source="derived", platform="web", user_agent="UA")
     assert DR.mark_revoked("bb" * 8) is True
