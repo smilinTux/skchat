@@ -124,6 +124,36 @@ def touch(device_fp: str) -> None:
         _save(data)
 
 
+#: Minimum seconds between two ``last_seen`` writes for the same device. The
+#: registry is a whole-file JSON rewrite, so an unthrottled per-request touch
+#: would be a write storm on a busy daemon. Minute resolution is far finer than
+#: the "3 hours ago" the UI renders.
+TOUCH_THROTTLE_SECONDS = 60
+
+_last_touch: dict[str, float] = {}
+
+
+def touch_throttled(device_fp: str) -> bool:
+    """Bump ``last_seen`` at most once per :data:`TOUCH_THROTTLE_SECONDS`.
+
+    Returns True if a write actually happened. Never raises: a failure to record
+    liveness must not affect the request that triggered it.
+    """
+    if not device_fp:
+        return False
+    now = time.time()
+    previous = _last_touch.get(device_fp, 0.0)
+    if now - previous < TOUCH_THROTTLE_SECONDS:
+        return False
+    _last_touch[device_fp] = now
+    try:
+        touch(device_fp)
+        return True
+    except Exception:
+        logger.debug("last_seen touch failed for %s (best-effort)", device_fp, exc_info=True)
+        return False
+
+
 def get_device(device_fp: str) -> dict | None:
     with _lock:
         return _load().get(device_fp)

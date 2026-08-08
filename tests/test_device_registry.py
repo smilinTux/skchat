@@ -123,3 +123,17 @@ def test_the_stored_file_is_valid_json_keyed_by_device_fp():
     DR.record_enroll("0f" * 8, label="L", label_source="derived", platform="web", user_agent="UA")
     data = json.loads(DR.registry_path().read_text())
     assert list(data.keys()) == ["0f" * 8]
+
+
+def test_touch_throttled_writes_at_most_once_per_window(monkeypatch):
+    DR.record_enroll("ab" * 8, label="L", label_source="derived", platform="web", user_agent="UA")
+    DR._last_touch.clear()
+    assert DR.touch_throttled("ab" * 8) is True
+    assert DR.touch_throttled("ab" * 8) is False  # inside the window, no second write
+    DR._last_touch["ab" * 8] = 0.0  # pretend the window elapsed
+    assert DR.touch_throttled("ab" * 8) is True
+
+
+def test_touch_throttled_on_an_unknown_device_is_harmless():
+    DR._last_touch.clear()
+    assert DR.touch_throttled("99" * 8) is False or DR.get_device("99" * 8) is None
