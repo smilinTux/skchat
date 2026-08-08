@@ -109,6 +109,34 @@ jobs:
           # dev version with a local segment (+g<sha>), which PyPI rejects.
           fetch-depth: 0
           fetch-tags: true
+      - name: Refuse to publish a tag that is not on main
+        # Card 0c3668a6, final criterion. The tag job above can only cut tags on
+        # main, but a tag can still ARRIVE from elsewhere: the local pre-push
+        # hook is a symlink into each clone's working tree, so any clone that has
+        # not yet pulled the main-only fix keeps cutting tags at feature-branch
+        # tips and pushing them. That is not hypothetical: v0.14.219 was cut at a
+        # feature-branch commit by a stale clone and published successfully.
+        #
+        # So this is the last line of defence, and it is server-side: it holds no
+        # matter what any developer's clone does.
+        #
+        # Override with ALLOW_OFF_MAIN_RELEASE=1 as a repository variable if a
+        # release ever legitimately needs to come off a maintenance branch.
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          set -euo pipefail
+          if [ "${{ vars.ALLOW_OFF_MAIN_RELEASE }}" = "1" ]; then
+            echo "ALLOW_OFF_MAIN_RELEASE=1 is set; skipping the on-main check."
+            exit 0
+          fi
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          if git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main; then
+            echo "OK: ${GITHUB_REF_NAME} (${GITHUB_SHA:0:8}) is on main."
+            exit 0
+          fi
+          echo "::error::${GITHUB_REF_NAME} points at ${GITHUB_SHA:0:8}, which is NOT on main. Refusing to publish."
+          echo "::error::A tag cut off a feature branch must not become a release. Delete the tag, merge to main, and let the main push cut the release."
+          exit 1
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
