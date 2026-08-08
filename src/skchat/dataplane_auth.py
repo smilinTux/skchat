@@ -165,6 +165,9 @@ _ROUTE_CAPABILITY_RULES: tuple[tuple[str, str, str], ...] = (
     ("POST", "/api/v1/guest-dm/contacts/{fp}/revoke", CAP_GROUPS),
     # per-group revoke variant (guest-dm G3): operator-only, same bar as above
     ("POST", "/api/v1/guest-dm/contacts/{fp}/groups/{group_id}/revoke", CAP_GROUPS),
+    # whole-group expiry: locks every guest of the room out on a schedule, so
+    # it carries the same bar as revoking them individually.
+    ("PATCH", "/api/v1/guest-dm/groups/{group_id}", CAP_GROUPS),
     # --- skchat.calls (ring peers / join calls / mint LiveKit tokens) ------- #
     ("POST", "/api/v1/access/token", CAP_CALLS),  # mints a LiveKit token as the identity
     ("POST", "/api/v1/groups/{group_id}/call/start", CAP_CALLS),

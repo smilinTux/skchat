@@ -60,6 +60,23 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev]" || { pip install -e . && pip install pytest pytest-asyncio; }
 
+      # The sibling SK* packages ship from their own repos, and their PUBLISHED
+      # wheels lag those repos, including at the SAME version number (capauth
+      # 0.2.14 on PyPI carries 3 skchat PDP rule rows where the repo carries 8;
+      # skcomms' pqdm2 API, which several test modules call, was never published
+      # at all). Dev machines never see this because they run editable installs
+      # of the sibling checkouts, so the suite passed locally and collected
+      # ModuleNotFoundError / AttributeError here for 27 tests.
+      #
+      # Installing these two from git makes CI exercise the code that actually
+      # ships together, instead of failing on a gap no contributor can reproduce.
+      # Both repos are public. Drop this step once the wheels catch up.
+      - name: Install sibling SK* packages from source (published wheels lag)
+        run: |
+          pip install --force-reinstall --no-deps --no-cache-dir \
+            "capauth @ git+https://github.com/smilinTux/capauth@main" \
+            "skcomms @ git+https://github.com/smilinTux/skcomms@main"
+
       - name: Run pytest (headless-safe markers only)
         # ONE combined marker expression — see header note on the -m override.
         run: |
