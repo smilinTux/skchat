@@ -753,6 +753,9 @@ from skchat.dataplane_auth import require_dataplane_auth
 def client(tmp_path, monkeypatch):
     monkeypatch.setenv("SKCHAT_OPERATOR_TOKEN_SECRET", "s" * 48)
     monkeypatch.setenv("SKCHAT_GUEST_REVOCATION_DB", str(tmp_path / "rev.db"))
+    # Step 5 wires touch_throttled into the stash, which reads the registry.
+    # Without this the suite would touch the real ~/.skchat.
+    monkeypatch.setenv("SKCHAT_DEVICE_REGISTRY", str(tmp_path / "registry.json"))
     monkeypatch.setenv("SKCHAT_DATAPLANE_AUTH", "1")
     monkeypatch.setenv("SKCHAT_AUTHZ_PDP", "off")
     from skchat import guest as G
