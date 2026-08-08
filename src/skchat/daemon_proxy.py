@@ -1746,16 +1746,50 @@ async def api_group_remove_member(group_id: str, identity: str):
 # --------------------------------------------------------------------------- #
 # Group A/V calls (Phase 3 — on-the-fly group video + screenshare)
 # --------------------------------------------------------------------------- #
+def _local_call_identities() -> list[str]:
+    """The identities this daemon may legitimately mint a call token as.
+
+    Two seat forms exist in the store because two code paths create groups:
+    the app's own group routes seed the operator seat as ``OPERATOR_ID``
+    (``create_group(creator_uri=OPERATOR_ID)``), while the guest-dm mint path
+    (``guest_groups.create_dm_invite``) seeds it from
+    ``identity_bridge.get_sovereign_identity()`` - the RUNNING AGENT's identity
+    (``capauth:lumina@skworld.io`` on the live daemon). Both are "us", so both
+    are candidates; anything else is somebody else and is never impersonated.
+    """
+    ids = [OPERATOR_ID]
+    try:
+        from skchat.identity_bridge import get_sovereign_identity
+
+        sovereign = (get_sovereign_identity() or "").strip()
+    except Exception:  # pragma: no cover - identity bridge is best-effort
+        logger.debug("sovereign identity unavailable for group call caller", exc_info=True)
+        sovereign = ""
+    if sovereign and sovereign not in ids:
+        ids.append(sovereign)
+    return ids
+
+
 def _group_caller_uri(group) -> str:
     """Return the operator's membership URI in *group* (the call caller).
 
-    The app runs as the local operator. The operator joins groups as
-    ``OPERATOR_ID`` (``create_group(creator_uri=OPERATOR_ID)``); if a different
-    membership form was stored we fall back to ``OPERATOR_ID`` so the membership
-    gate is evaluated against the real roster.
+    The app runs as the local operator, but which URI holds the operator's seat
+    depends on the path that created the group (see
+    :func:`_local_call_identities`). Return whichever of OUR OWN identities is
+    actually on the roster, so the membership gate in ``group_call_context`` is
+    evaluated against the seat the group really carries instead of a constant
+    that only matches when the daemon happens to run as ``chef@skworld.io``.
+
+    Deliberately restricted to the local identity set: falling back to "whatever
+    identity holds the group's admin seat" would let this daemon mint a LiveKit
+    token under a REMOTE peer's identity for any group that peer created. When
+    no local identity is a member we return ``OPERATOR_ID`` unchanged so the
+    caller stays a non-member and the gate fails closed (403).
     """
-    if group is not None and group.get_member(OPERATOR_ID) is not None:
-        return OPERATOR_ID
+    if group is not None:
+        for uri in _local_call_identities():
+            if group.get_member(uri) is not None:
+                return uri
     return OPERATOR_ID
 
 
