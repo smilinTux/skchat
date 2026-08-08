@@ -1157,6 +1157,31 @@ def _seal_hybrid_outbound(plaintext: str, *, recipient_short: str) -> str | None
         return None
 
 
+def _record_prekey_publish(request: Request, bundle: dict) -> None:
+    """Attribute a stored prekey slot to the device whose session published it.
+
+    This is the join that makes "unlink this device" able to find the device's
+    prekey slots. Records the SANITIZED slot id (what ``pq_prekeys`` actually
+    named the file), never the raw claimed ``key_id``, so unlink looks for a slot
+    that exists.
+
+    Best-effort by design: with the auth gate off there is no verified session,
+    and a device enrolled before the registry existed has no row. Neither case is
+    an error, and neither may break the publish.
+    """
+    try:
+        session = getattr(request.state, "operator_session", None)
+        device_fp = getattr(session, "device_fp", "")
+        if not device_fp:
+            return
+        from skchat import device_registry as DR
+        from skchat import pq_prekeys as PQ
+
+        DR.record_publish(device_fp, PQ._safe_slot_id(bundle.get("key_id")))
+    except Exception:
+        logger.debug("prekey publish registry record failed (best-effort)", exc_info=True)
+
+
 @router.post("/v1/prekey")
 async def api_publish_prekey(
     request: Request,
@@ -1189,6 +1214,7 @@ async def api_publish_prekey(
     signer = _resolve_signer_pubkey(owner) if PQ.require_signed_prekeys() else None
     if not PQ.store_app_prekey_bundle(owner, body, signer_public_armor=signer):
         raise HTTPException(400, "prekey bundle rejected: unsigned or invalid signature")
+    _record_prekey_publish(request, body)
     return JSONResponse({"ok": True, "stored": owner, "hybrid": PQ.peer_is_hybrid(owner)})
 
 

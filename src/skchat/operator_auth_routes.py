@@ -11,6 +11,7 @@ carry a valid device signature over the canonical challenge payload.
 from __future__ import annotations
 
 import json
+import logging
 
 from fastapi import APIRouter, FastAPI, HTTPException, Request
 
@@ -24,6 +25,61 @@ _pairing = PairingGate(max_accepts_per_window=1)  # operator enroll: 1 device pe
 
 def _canon(obj) -> bytes:
     return json.dumps(obj, sort_keys=True, separators=(",", ":")).encode()
+
+
+def _derive_label(user_agent: str) -> tuple[str, str]:
+    """Best-effort ``(label, platform)`` from a User-Agent string.
+
+    Only used when the client sent no label of its own. Deliberately crude: it
+    exists so a label-less enroll still shows something recognisable, not to be a
+    UA parser. A native Dart client collapses to "App device" here, which is
+    exactly why R2 has the client send its own label.
+    """
+    ua = (user_agent or "").strip()
+    if not ua:
+        return "Unknown device", "unknown"
+    lowered = ua.lower()
+    for needle, name, platform in (
+        ("firefox", "Firefox", "web"),
+        ("edg/", "Edge", "web"),
+        ("chrome", "Chrome", "web"),
+        ("safari", "Safari", "web"),
+        ("dart", "App device", "app"),
+    ):
+        if needle in lowered:
+            return name, platform
+    return ua[:40], "unknown"
+
+
+def _record_enrollment(request: Request, device_fp: str, *, label: object) -> None:
+    """Write the registry row for a freshly enrolled device. Best-effort.
+
+    A re-enroll also clears any prior revocation: re-linking a device you
+    previously unlinked is how you bring it back.
+    """
+    try:
+        from skchat import device_registry as DR
+        from skchat.guest import unrevoke_device
+
+        user_agent = (request.headers.get("user-agent") or "").strip()
+        if isinstance(label, str) and label.strip():
+            text, source = label.strip()[:64], "client"
+            _derived, platform = _derive_label(user_agent)
+        else:
+            text, platform = _derive_label(user_agent)
+            source = "derived"
+        DR.record_enroll(
+            device_fp,
+            label=text,
+            label_source=source,
+            platform=platform,
+            user_agent=user_agent,
+        )
+        unrevoke_device(device_fp)
+    except Exception:  # pragma: no cover - never break enrollment
+        logging.getLogger("skchat.operator_auth_routes").debug(
+            "enrollment registry record failed (best-effort)", exc_info=True
+        )
 
 
 def register_operator_auth_routes(app: FastAPI, *, device_store: oa.DeviceStore) -> None:
@@ -59,6 +115,7 @@ def register_operator_auth_routes(app: FastAPI, *, device_store: oa.DeviceStore)
         # when the authz PDP is enforcing. Best-effort: a grant failure is logged
         # inside and never breaks the enrollment response.
         grant_operator_prekey_capability(device_fp, pub)
+        _record_enrollment(request, device_fp, label=body.get("label"))
         return {"device_fp": device_fp}
 
     @router.get("/challenge")
