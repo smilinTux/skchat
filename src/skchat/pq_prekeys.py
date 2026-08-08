@@ -62,9 +62,29 @@ REQUIRE_SIGNED_PREKEYS_ENV = "SKCHAT_REQUIRE_SIGNED_PREKEYS"
 _TRUTHY = {"1", "true", "yes", "on"}
 
 
+def prekey_verify_mode() -> str:
+    """Return the app-path prekey verification mode.
+
+    One of ``'off'`` (default), ``'shadow'``, or ``'enforce'``. Mirrors
+    :func:`skchat.dataplane_auth.authz_pdp_mode` so both rollouts stage the same
+    way. Read at call time so an operator can move a live daemon between modes
+    without a reimport. Anything unrecognized reads as ``'off'``.
+
+    Back-compat: every value in :data:`_TRUTHY` (the historical "flag on" set)
+    reads as ``'enforce'``, so no existing reader changes behaviour.
+    """
+    raw = os.environ.get(REQUIRE_SIGNED_PREKEYS_ENV, "").strip().lower()
+    if raw == "shadow":
+        return "shadow"
+    return "enforce" if raw in _TRUTHY else "off"
+
+
 def require_signed_prekeys() -> bool:
-    """Whether unsigned/invalid app-path prekey bundles must be rejected."""
-    return os.environ.get(REQUIRE_SIGNED_PREKEYS_ENV, "").strip().lower() in _TRUTHY
+    """Whether unsigned/invalid app-path prekey bundles must be rejected.
+
+    True only in ``'enforce'``. Shadow verifies and reports but never rejects.
+    """
+    return prekey_verify_mode() == "enforce"
 
 
 def _pqc_dir() -> Path:
