@@ -212,55 +212,91 @@ def store_peer_bundle(peer: str, bundle: dict) -> None:
 
 
 def store_app_prekey_bundle(
-    peer: str, bundle: dict, *, signer_public_armor: Optional[str] = None
+    peer: str,
+    bundle: dict,
+    *,
+    signer_public_armor: Optional[str] = None,
+    signer_source: str = "none",
 ) -> bool:
     """Intake a prekey bundle published over the **app path** (``POST /api/v1/prekey``).
 
-    Fail-closed signature verification is GATED behind
-    ``SKCHAT_REQUIRE_SIGNED_PREKEYS`` (P0.5 / SEAM 7):
+    Behaviour is chosen by :func:`prekey_verify_mode`:
 
-    * flag unset (default) - behaviour is UNCHANGED: the bundle is stored as-is
-      via :func:`store_peer_bundle` (the app publishes unsigned bundles today, so
-      the live app is not locked out).
-    * flag set - the bundle is stored ONLY if it carries a ``signature`` that
-      verifies against ``signer_public_armor`` via
-      :func:`skchat.prekey_sig.verify_prekey_bundle`. A null/missing signature, a
-      missing signer key, or a failed verification (prekey substitution / wrong
-      identity) rejects the bundle and stores nothing - closing the handshake
-      MITM gap.
+    * ``'off'`` (default) - stored as-is, nothing verified, nothing logged.
+      Byte-identical to the historical unflagged path.
+    * ``'shadow'`` - the signature IS verified and the outcome logged, but the
+      bundle is stored either way. This is the soak mode: it answers "who breaks
+      if I enforce" without breaking anyone.
+    * ``'enforce'`` - stored only if the signature verifies. A null/missing
+      signature, a missing signer key, or a failed verification (prekey
+      substitution / wrong identity) rejects the bundle and stores nothing,
+      closing the handshake MITM gap.
 
     Args:
         peer: The publishing peer (short name or URI); keys the stored bundle.
         bundle: The published prekey bundle dict.
         signer_public_armor: ASCII-armored PGP public key of the claimed identity.
-            Required (and used) only when the flag is set.
+            Used in ``shadow`` and ``enforce``.
+        signer_source: Label for WHICH source resolved that key
+            (``daemon-attest`` / ``peer-store`` / ``none``), for the audit line.
 
     Returns:
         ``True`` if the bundle was stored, ``False`` if it was rejected.
     """
-    if require_signed_prekeys() and not _prekey_signature_ok(bundle, signer_public_armor):
-        logger.warning(
-            "PQC: rejecting unsigned/invalid app prekey for %s (%s is set - fail-closed)",
-            _short(peer),
-            REQUIRE_SIGNED_PREKEYS_ENV,
-        )
+    mode = prekey_verify_mode()
+    if mode == "off":
+        store_peer_bundle(peer, bundle)
+        return True
+
+    reason = _prekey_verify_reason(bundle, signer_public_armor)
+    _log_prekey_verify(mode, peer, bundle, signer_source, reason)
+
+    if mode == "enforce" and reason is not None:
         return False
     store_peer_bundle(peer, bundle)
     return True
 
 
-def _prekey_signature_ok(bundle: dict, signer_public_armor: Optional[str]) -> bool:
-    """True iff *bundle* carries a signature that verifies under the signer key.
+def _log_prekey_verify(
+    mode: str, peer: str, bundle: dict, signer_source: str, reason: Optional[str]
+) -> None:
+    """Emit the one-line audit record for a verified intake.
 
-    A null/missing signature or a missing signer key is False (fail-closed) -
-    the ``prekey_sig`` import (and thus PGP verification) only happens once both
-    are present, reusing :func:`skchat.prekey_sig.verify_prekey_bundle`.
+    Stable ``prekey-verify`` prefix so a soak is greppable straight out of
+    journalctl. Carries only the TRUNCATED key_id; never a public key, never a
+    signature.
     """
-    if not bundle.get("signature") or not signer_public_armor:
-        return False
+    kid = str(bundle.get("key_id") or "?")[:8]
+    line = "prekey-verify mode=%s owner=%s kid=%s signer=%s result=%s" % (
+        mode,
+        _short(peer),
+        kid,
+        signer_source,
+        "ACCEPT" if reason is None else "REJECT",
+    )
+    if reason is None:
+        logger.info(line)
+    else:
+        logger.warning("%s reason=%s", line, reason)
+
+
+def _prekey_verify_reason(bundle: dict, signer_public_armor: Optional[str]) -> Optional[str]:
+    """``None`` if the bundle's signature verifies, else a short reason code.
+
+    Reason codes are stable strings meant for the audit line and for triage:
+    ``unsigned`` (no signature on the bundle), ``no-signer-key`` (no key resolved
+    for the claimed owner), ``bad-signature`` (present but does not verify:
+    prekey substitution or wrong identity).
+    """
+    if not bundle.get("signature"):
+        return "unsigned"
+    if not signer_public_armor:
+        return "no-signer-key"
     from . import prekey_sig
 
-    return prekey_sig.verify_prekey_bundle(bundle, signer_public_armor)
+    if not prekey_sig.verify_prekey_bundle(bundle, signer_public_armor):
+        return "bad-signature"
+    return None
 
 
 def _slot_sort_key(bundle: dict) -> float:
