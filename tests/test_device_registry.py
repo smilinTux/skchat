@@ -52,7 +52,26 @@ def test_record_publish_for_an_unknown_device_is_a_no_op_not_a_crash():
     assert DR.get_device("ff" * 8) is None
 
 
-def test_reenrolling_an_existing_device_preserves_its_key_ids():
+def test_reenrolling_an_existing_device_preserves_its_key_ids(tmp_path, monkeypatch):
+    """Correlation integrity: a re-enroll must keep ids whose slot is still LIVE.
+
+    This is what lets a later unlink still find the device's prekey slots. The
+    slot file has to actually exist for that to be true: ``record_enroll`` prunes
+    ids with no file on disk, because unlink-then-relink would otherwise carry
+    forward ids unlink had just deleted (see test_registry_stale_key_ids.py).
+    """
+    # pq_prekeys._pqc_dir() reads SKCHAT_HOME, NOT SKCHAT_PQC_DIR (read nowhere).
+    monkeypatch.setenv("SKCHAT_HOME", str(tmp_path))
+    from skchat import pq_prekeys as PQ
+
+    PQ.store_peer_bundle(
+        "chef",
+        {
+            "suite": "x25519-mlkem768",
+            "hybrid_public_hex": "f8342853f762fd88" + "00" * 8,
+            "key_id": "f8342853f762fd88",
+        },
+    )
     DR.record_enroll("11" * 8, label="L", label_source="derived", platform="web", user_agent="UA")
     DR.record_publish("11" * 8, "f8342853f762fd88")
     DR.record_enroll("11" * 8, label="L2", label_source="client", platform="web", user_agent="UA2")
