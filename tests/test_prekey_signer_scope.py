@@ -143,8 +143,6 @@ def test_operator_match_is_case_and_prefix_insensitive(daemon_key, peer_store, o
 
 
 @pytest.mark.parametrize("owner", ["CHEF", "Chef", "chef@skworld.io", "capauth:chef@x"])
-def test_source_label_matches_resolver_for_every_operator_spelling(
-    daemon_key, peer_store, owner
-):
+def test_source_label_matches_resolver_for_every_operator_spelling(daemon_key, peer_store, owner):
     signer = daemon_proxy._resolve_signer_pubkey(owner)
     assert daemon_proxy._signer_source_label(owner, signer) == "daemon-attest"
