@@ -58,6 +58,9 @@ cd ~ && ~/.skenv/bin/skchat daemon start --interval 5
 | `call_routes.py` | **WebRTC calls**: `/call/start` (ring), `/call/answer` (no ring), `/call/incoming` (sig-gated), `/call/peers`, `/connectivity/ice` |
 | `transport.py` | `ChatTransport`: send/receive over SKComms |
 | `mcp_server.py` | FastMCP server: 24 tools exposed to AI agents |
+| `device_registry.py` | **Linked Devices**: the correlation key. One row per `device_fp` tying a device to its prekey `key_ids` + label + approval. Leaf module (no `skchat` imports at module scope) |
+| `device_unlink.py` | **Linked Devices**: revoke a device across all four stores (sessions, prekey slots, DeviceStore, capauth) |
+| `device_routes.py` | **Linked Devices**: operator endpoints (list, rename, unlink, unlink-others, pending, approve, deny) |
 | `models.py` | `ChatMessage`, `Group`, `Peer`, `MessageType` Pydantic models |
 | `history.py` | `ChatHistory`: persistent message store (SQLite) |
 | `outbox.py` | SQLite outbox with retry/backoff for reliable delivery |
@@ -335,6 +338,7 @@ Test files mirror module names: `test_advocacy.py`, `test_daemon.py`, `test_mcp_
 ## Scripts
 | Script | Purpose |
 |--------|---------|
+| `scripts/deploy-app-web.sh` | **The only correct way to deploy the Flutter web client.** See "Deploying the web client" |
 | `scripts/bootstrap.sh` | Single-command dev setup |
 | `scripts/check-health.sh` | GREEN/RED health summary |
 | `scripts/lumina-bridge.py` | Lumina AI polling loop (systemd service) |
@@ -475,6 +479,67 @@ native gets full hybrid via liboqs FFI, the PWA is a documented reduced-assuranc
 unscoped "E2E quantum-resistant," or "CNSA-2.0." AES-256 is **not** quantum-broken.
 Full detail + diagrams: **`docs/crypto-architecture.md`**; master plan
 **`docs/quantum-resistance-architecture.md`**; epic `PQC-MIGRATION` (coord `e1d6ba2a`).
+
+## Deploying the web client (read this before you rsync anything)
+
+`src/skchat/static/app/` is **tracked in git** and the webui serves it directly.
+So an rsync into it is **not** a deploy: it leaves the working tree dirty, and the
+next `git checkout main` or `git pull` silently reverts every file back to the
+committed bundle. On 2026-08-08 three consecutive deploys were undone exactly
+that way. Each looked successful, the operator kept being served an older build
+with a whole feature missing, and nothing anywhere reported a problem.
+
+Always use the script, which builds, verifies, stamps and **commits**:
+
+```bash
+./scripts/deploy-app-web.sh --check     # what is deployed vs skworld-app main (touches nothing)
+./scripts/deploy-app-web.sh             # build + deploy + stamp + commit
+./scripts/deploy-app-web.sh --restart   # ...and bounce skchat-webui@lumina
+git push                                # the commit IS the deploy
+```
+
+It also passes the `--dart-define`s that `lib/core/build_info.dart` reads, so the
+Me header shows the real `vX.Y.Z build <app-sha>-<date>` instead of a hardcoded
+fallback, and writes `.source_commit` recording which skworld-app commit produced
+the bundle. `tests/test_deployed_app_bundle.py` fails on a bundle with the wrong
+`<base href>` (loads a blank page) or with no provenance stamp.
+
+## Linked Devices (device management)
+
+The operator can list every device enrolled under their identity, rename it,
+unlink it, and approve or deny a newly linked one. `skchat devices --help`.
+
+**A device lives in four stores, and leaving it in ANY one is a silent hole:**
+the session revocation set (else its JWTs keep working), its prekey slots on disk
+(else fanout keeps sealing mail it can decrypt, the worst one because nothing
+visibly fails), `DeviceStore` (else it can mint a fresh session), and its capauth
+pairing records (else the PDP keeps granting it capabilities). `unlink_device()`
+does all four, sessions first. Never re-implement it; `devices reset` reuses it.
+
+**Approval-to-link (Phase 3).** A newly enrolled device lands **pending**: it
+cannot mint a session, so it can do nothing, including publishing a prekey. The
+pasted operator token alone is therefore no longer enough to link a usable
+device. Nothing auto-approves, so after a `devices reset` the FIRST device must
+be approved from the box itself:
+
+```bash
+skchat devices pending
+skchat devices approve <device_fp>
+```
+
+A registry row with **no** `approved` key reads as approved (grandfathers devices
+enrolled before this shipped). A readable registry with no row for a fingerprint
+reads as NOT approved; a missing or unreadable registry reads as approved, because
+one corrupt JSON file must not lock every device off the node at once.
+
+**The client-side trap, which caused a live outage.** Adding a route to
+`_ROUTE_CAPABILITY_RULES` makes it **gated**, and the data-plane gate accepts only
+`Authorization: CapAuth/Bearer <session>` or `X-CapAuth-Token`. It does **not**
+recognise `X-Operator-Token`. A client sending only the pasted token gets
+`401 capauth authentication required` before the route's own `_require_operator`
+ever runs, so the feature looks completely dead against a healthy server. Any new
+operator-gated route needs its client to attach `buildOperatorAuthInterceptor`,
+not just the token.
 
 ## Code Style
 - Line length: 99 chars (black + ruff)
