@@ -59,6 +59,19 @@ def _save(data: dict[str, dict]) -> None:
     os.replace(tmp, path)
 
 
+def is_approved(row: dict) -> bool:
+    """Whether a registry row's device is approved to hold a session.
+
+    A row written before Phase 3 (approval-to-link) shipped has no
+    ``approved`` key at all, and those rows belong to devices that were
+    already trusted under the old, no-approval model. Absence MUST read as
+    approved, never as pending: the operator's 3 live devices carry rows with
+    no ``approved`` key, and misreading that as pending locks out every one
+    of them at once with no approved device left to approve from.
+    """
+    return bool(row.get("approved", True))
+
+
 def _live_slot_ids(owner: str = "chef") -> set[str] | None:
     """The slot ids actually present on disk for *owner*, or None if unknowable.
 
@@ -78,6 +91,40 @@ def _live_slot_ids(owner: str = "chef") -> set[str] | None:
         return None
 
 
+def approval_for(device_fp: str) -> bool:
+    """Whether *device_fp* may hold a session, distinguishing "no row" from
+    "cannot read the registry".
+
+    :func:`_load` degrades a corrupt or unreadable registry to an empty dict, so
+    from the inside "this device has no row" and "I cannot read the file" look
+    identical. They must not be treated the same:
+
+    * **readable, but no row for this fingerprint** -> NOT approved. Phase 3's
+      premise is that holding the pasted operator token is not enough to link a
+      usable device, so a device that never got a row must not be trusted by
+      default. It stays visible and approvable (:func:`set_approved` creates the
+      row), so failing closed never strands it.
+    * **missing or unreadable registry** -> approved. Bricking every device on
+      the node over one corrupt JSON file is a far worse outcome than briefly
+      not enforcing a gate that only bites a caller who already holds the token.
+    """
+    path = registry_path()
+    if not path.exists():
+        return True
+    try:
+        data = json.loads(path.read_text() or "{}")
+    except (ValueError, OSError):
+        logger.warning("device registry unreadable; approval gate open: %s", path)
+        return True
+    if not isinstance(data, dict):
+        logger.warning("device registry is not an object; approval gate open: %s", path)
+        return True
+    row = data.get(device_fp)
+    if row is None:
+        return False
+    return is_approved(row)
+
+
 def record_enroll(
     device_fp: str,
     *,
@@ -88,8 +135,12 @@ def record_enroll(
 ) -> None:
     """Create (or refresh) the row for a freshly enrolled device.
 
-    A re-enroll of the same fingerprint refreshes the metadata and clears the
-    revoked flag: re-linking a device is how you undo an unlink.
+    A re-enroll of the same fingerprint refreshes the metadata, clears the
+    revoked flag (re-linking a device is how you undo an unlink), and preserves
+    whatever approval state it already had, including a missing ``approved``
+    key, which :func:`is_approved` reads as approved. A brand NEW fingerprint
+    lands pending (``approved: False``): it must be approved by an
+    already-approved device or the CLI before it can mint a session.
 
     Preserved ``key_ids`` are PRUNED to the slots that still exist on disk. The
     preservation itself is right (a device can re-enroll its same key without
@@ -110,8 +161,9 @@ def record_enroll(
     carried = None
     with _lock:
         data = _load()
-        existing = data.get(device_fp) or {}
-        carried = list(existing.get("key_ids") or [])
+        existing = data.get(device_fp)
+        approved = is_approved(existing) if existing is not None else False
+        carried = list((existing or {}).get("key_ids") or [])
 
     # Guarded at the call site as well as inside: writing the row is far more
     # important than pruning it, so a prekey-store problem must never stop an
@@ -143,6 +195,7 @@ def record_enroll(
             "last_seen": now,
             "key_ids": carried,
             "revoked": False,
+            "approved": approved,
         }
         _save(data)
 
@@ -240,6 +293,45 @@ def list_devices(*, include_revoked: bool = False) -> list[dict]:
         rows = list(_load().values())
     if not include_revoked:
         rows = [r for r in rows if not r.get("revoked")]
+    return sorted(rows, key=lambda r: r.get("enrolled_at") or 0, reverse=True)
+
+
+def set_approved(device_fp: str, approved: bool) -> bool:
+    """Approve or un-approve a device. Always True: creates the row if absent.
+
+    A device whose ``record_enroll`` failed has no row, which
+    :func:`approval_for` reads as pending. Approving it therefore has to work
+    without a pre-existing row, or the only recovery would be hand-editing JSON.
+    """
+    if not device_fp:
+        return False
+    now = time.time()
+    with _lock:
+        data = _load()
+        row = data.get(device_fp)
+        if row is None:
+            row = {
+                "device_fp": device_fp,
+                "label": "Unknown device",
+                "label_source": "derived",
+                "platform": "unknown",
+                "user_agent": "",
+                "enrolled_at": now,
+                "last_seen": now,
+                "key_ids": [],
+                "revoked": False,
+            }
+        row["approved"] = bool(approved)
+        data[device_fp] = row
+        _save(data)
+        return True
+
+
+def list_pending() -> list[dict]:
+    """Rows awaiting approval: not revoked, not yet approved. Newest first."""
+    with _lock:
+        rows = list(_load().values())
+    rows = [r for r in rows if not r.get("revoked") and not is_approved(r)]
     return sorted(rows, key=lambda r: r.get("enrolled_at") or 0, reverse=True)
 
 

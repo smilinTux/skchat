@@ -45,6 +45,9 @@ def env(tmp_path, monkeypatch):
     pub = base64.b64encode(b"alpha".ljust(32, b"\0")).decode()
     fp = store.enroll(pub)
     DR.record_enroll(fp, label="L", label_source="client", platform="app", user_agent="UA")
+    # This suite is about the reset flow for an already-linked device, not the
+    # Phase 3 approval gate, so approve it the way an operator would.
+    DR.set_approved(fp, True)
     PQ.store_peer_bundle(
         "chef",
         {"suite": "x25519-mlkem768", "hybrid_public_hex": "aa" * 16, "key_id": "aaaaaaaaaaaaaaaa"},

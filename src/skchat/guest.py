@@ -294,6 +294,27 @@ def is_device_revoked(device_fp: str) -> bool:
         return False
 
 
+# ── Approval-to-link (Linked Devices Phase 3) ───────────────────────────────
+# Unlike the revocation set above, the registry (not a cache-fronted SQLite
+# table) is already the source of truth for approval state, so this reads it
+# directly -- no separate cache to keep in sync.
+
+
+def is_device_approved(device_fp: str) -> bool:
+    """True if *device_fp* may hold a session.
+
+    Delegates the whole decision, including which way to fail when the registry
+    cannot answer, to :func:`skchat.device_registry.approval_for`. A row with no
+    ``approved`` key reads as approved, which is what keeps devices enrolled
+    before Phase 3 working untouched.
+    """
+    if not device_fp:
+        return True
+    from . import device_registry as DR
+
+    return DR.approval_for(device_fp)
+
+
 def _is_used(jti: str) -> bool:
     """True if a single-use *jti* has already been burned (and not yet TTL'd out)."""
     now = time.time()

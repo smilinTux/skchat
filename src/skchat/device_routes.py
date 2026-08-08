@@ -8,11 +8,21 @@ here.
 Authorization reuses ``guest._require_operator``, which already accepts EITHER
 the shared operator token OR an enrolled-operator session Bearer, so the app's
 existing auth interceptor works unchanged. Self-lockout protection is stricter
-than that, though: both single-device DELETE and unlink-others additionally
-require a resolvable operator SESSION (not just any accepted credential),
-because only a session carries the caller's own device_fp -- without it,
-neither route can tell whether a target fingerprint is the device making the
-call, so both fail closed with 400 rather than risk unlinking the caller.
+than that, though: single-device DELETE, unlink-others, approve, and deny all
+additionally require a resolvable operator SESSION (not just any accepted
+credential), because only a session carries the caller's own device_fp --
+without it, none of those routes can tell whether a target fingerprint is the
+device making the call, so all fail closed with 400 rather than risk acting on
+the caller itself.
+
+Phase 3 (approval-to-link): a new enrollment lands pending (see
+:mod:`skchat.device_registry`) and cannot mint a session at all, so it cannot
+reach any of these routes on its own. ``GET .../pending`` lists rows awaiting
+approval (gated like the plain list, no session required); ``POST
+.../{fp}/approve`` flips it to approved; ``POST .../{fp}/deny`` is a full
+unlink (:func:`skchat.device_unlink.unlink_device`), the row kept for audit.
+No separate quarantine for prekey slots exists or is needed: publishing one is
+itself an authenticated call a pending device can never make.
 """
 
 from __future__ import annotations
@@ -75,6 +85,10 @@ def register_device_routes(app: FastAPI, *, device_store) -> None:
             item = dict(row)
             item.pop("user_agent", None)  # internal detail, not UI data
             item["is_current"] = bool(current) and row["device_fp"] == current
+            # Explicit boolean even for a pre-Phase-3 row with no `approved`
+            # key at all, so the app can render the pending banner off one
+            # field without also knowing the absence-means-approved rule.
+            item["approved"] = DR.is_approved(row)
             rows.append(item)
         return JSONResponse({"devices": rows})
 
@@ -96,7 +110,70 @@ def register_device_routes(app: FastAPI, *, device_store) -> None:
         row.pop("user_agent", None)  # internal detail, not UI data
         current = _current_device_fp(request)
         row["is_current"] = bool(current) and row.get("device_fp") == current
+        row["approved"] = DR.is_approved(row)
         return JSONResponse(row)
+
+    @router.get("/devices/pending")
+    async def pending(request: Request):
+        from skchat.guest import _require_operator
+
+        _require_operator(request)
+        from skchat import device_registry as DR
+
+        rows = []
+        for row in DR.list_pending():
+            item = dict(row)
+            item.pop("user_agent", None)  # internal detail, not UI data
+            item["approved"] = False  # list_pending() only returns unapproved rows
+            rows.append(item)
+        return JSONResponse({"devices": rows})
+
+    @router.post("/devices/{device_fp}/approve")
+    async def approve(device_fp: str, request: Request):
+        from skchat.guest import _require_operator
+
+        _require_operator(request)
+        from skchat import device_registry as DR
+
+        current = _current_device_fp(request)
+        if not current:
+            raise HTTPException(
+                400,
+                "an operator session is required so only an already-approved "
+                "device can vouch for a new one",
+            )
+        # A device whose registry write failed has no row, and approval_for
+        # reads that as pending. Approving it must still work, or the only
+        # recovery is hand-editing JSON. But a fingerprint that is not enrolled
+        # AT ALL is a typo, not a recovery case, so that still 404s.
+        if DR.get_device(device_fp) is None and not device_store.is_enrolled(device_fp):
+            raise HTTPException(404, "device not found")
+        DR.set_approved(device_fp, True)
+        row = dict(DR.get_device(device_fp) or {})
+        row.pop("user_agent", None)  # internal detail, not UI data
+        row["approved"] = DR.is_approved(row)
+        return JSONResponse(row)
+
+    @router.post("/devices/{device_fp}/deny")
+    async def deny(device_fp: str, request: Request):
+        from skchat.guest import _require_operator
+
+        _require_operator(request)
+        from skchat import device_unlink as DU
+
+        current = _current_device_fp(request)
+        if not current:
+            raise HTTPException(
+                400,
+                "an operator session is required so only an already-approved "
+                "device can deny a new one",
+            )
+        if device_fp == current:
+            raise HTTPException(400, "cannot deny the device you are using")
+        try:
+            return JSONResponse(DU.unlink_device(device_fp, device_store=device_store))
+        except KeyError:
+            raise HTTPException(404, "device not found")
 
     @router.delete("/devices/{device_fp}")
     async def unlink(device_fp: str, request: Request):

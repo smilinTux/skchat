@@ -344,7 +344,14 @@ def _enroll_and_fp(client):
         json={"device_pubkey": pub, "window_nonce": w["window_nonce"], "sig": sig},
     )
     assert e.status_code == 200
-    return priv, pub, e.json()["device_fp"]
+    fp = e.json()["device_fp"]
+    # Phase 3: a fresh fp lands pending and cannot mint a session. This suite is
+    # about the dual audience-token mint, not the approval gate itself (see
+    # test_device_approval.py), so approve the way an operator would.
+    from skchat import device_registry as DR
+
+    DR.set_approved(fp, True)
+    return priv, pub, fp
 
 
 def _open_session(client, priv, fp):
