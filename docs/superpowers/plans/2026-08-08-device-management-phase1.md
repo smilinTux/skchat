@@ -956,7 +956,10 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setenv("SKCHAT_GUEST_REVOCATION_DB", str(tmp_path / "rev.db"))
     monkeypatch.setenv("SKCHAT_DATAPLANE_AUTH", "1")
     monkeypatch.setenv("SKCHAT_AUTHZ_PDP", "off")
-    monkeypatch.setenv("SKCHAT_PQC_DIR", str(tmp_path / "pqc"))
+    # pq_prekeys._pqc_dir() reads SKCHAT_HOME, NOT SKCHAT_PQC_DIR (which is read
+    # nowhere). Getting this wrong writes real slot files into the operator's live
+    # ~/.skchat/pqc/peers/chef/ and, in the unlink tests, DELETES real ones.
+    monkeypatch.setenv("SKCHAT_HOME", str(tmp_path))
     from skchat import guest as G
 
     G._reset_revocation_cache()
@@ -1429,7 +1432,10 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setenv("SKCHAT_DEVICE_REGISTRY", str(tmp_path / "registry.json"))
     monkeypatch.setenv("SKCHAT_GUEST_REVOCATION_DB", str(tmp_path / "rev.db"))
     monkeypatch.setenv("SKCHAT_OPERATOR_TOKEN_SECRET", "s" * 48)
-    monkeypatch.setenv("SKCHAT_PQC_DIR", str(tmp_path / "pqc"))
+    # pq_prekeys._pqc_dir() reads SKCHAT_HOME, NOT SKCHAT_PQC_DIR (which is read
+    # nowhere). Getting this wrong writes real slot files into the operator's live
+    # ~/.skchat/pqc/peers/chef/ and, in the unlink tests, DELETES real ones.
+    monkeypatch.setenv("SKCHAT_HOME", str(tmp_path))
     from skchat import guest as G
 
     G._reset_revocation_cache()
@@ -1710,7 +1716,10 @@ def store(tmp_path, monkeypatch):
     monkeypatch.setenv("SKCHAT_GUEST_REVOCATION_DB", str(tmp_path / "rev.db"))
     monkeypatch.setenv("SKCHAT_OPERATOR_TOKEN_SECRET", "s" * 48)
     monkeypatch.setenv("SKCHAT_GUEST_OPERATOR_TOKEN", "op-secret")
-    monkeypatch.setenv("SKCHAT_PQC_DIR", str(tmp_path / "pqc"))
+    # pq_prekeys._pqc_dir() reads SKCHAT_HOME, NOT SKCHAT_PQC_DIR (which is read
+    # nowhere). Getting this wrong writes real slot files into the operator's live
+    # ~/.skchat/pqc/peers/chef/ and, in the unlink tests, DELETES real ones.
+    monkeypatch.setenv("SKCHAT_HOME", str(tmp_path))
     from skchat import guest as G
 
     G._reset_revocation_cache()
@@ -2003,7 +2012,10 @@ from skchat.cli import cli
 @pytest.fixture(autouse=True)
 def env(tmp_path, monkeypatch):
     monkeypatch.setenv("SKCHAT_DEVICE_REGISTRY", str(tmp_path / "registry.json"))
-    monkeypatch.setenv("SKCHAT_PQC_DIR", str(tmp_path / "pqc"))
+    # pq_prekeys._pqc_dir() reads SKCHAT_HOME, NOT SKCHAT_PQC_DIR (which is read
+    # nowhere). Getting this wrong writes real slot files into the operator's live
+    # ~/.skchat/pqc/peers/chef/ and, in the unlink tests, DELETES real ones.
+    monkeypatch.setenv("SKCHAT_HOME", str(tmp_path))
     monkeypatch.setenv("SKCHAT_OPERATOR_DEVICES", str(tmp_path / "devices.json"))
     store = OA.DeviceStore(tmp_path / "devices.json")
     pub = base64.b64encode(b"alpha".ljust(32, b"\0")).decode()
