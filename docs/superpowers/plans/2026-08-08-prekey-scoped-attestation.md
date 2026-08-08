@@ -157,7 +157,7 @@ Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 ### Task 2: Reason codes and the shadow store path
 
 **Files:**
-- Modify: `src/skchat/pq_prekeys.py:193-242` (`store_app_prekey_bundle`, `_prekey_signature_ok`)
+- Modify: `src/skchat/pq_prekeys.py:193-242` (rewrite `store_app_prekey_bundle`, delete `_prekey_signature_ok`, add `_prekey_verify_reason` and `_log_prekey_verify`)
 - Test: `tests/test_prekey_shadow_mode.py` (create)
 
 **Interfaces:**
@@ -458,16 +458,9 @@ def _prekey_verify_reason(bundle: dict, signer_public_armor: Optional[str]) -> O
     if not prekey_sig.verify_prekey_bundle(bundle, signer_public_armor):
         return "bad-signature"
     return None
-
-
-def _prekey_signature_ok(bundle: dict, signer_public_armor: Optional[str]) -> bool:
-    """True iff *bundle* carries a signature that verifies under the signer key.
-
-    Thin wrapper over :func:`_prekey_verify_reason`, kept because existing
-    callers and tests use this name.
-    """
-    return _prekey_verify_reason(bundle, signer_public_armor) is None
 ```
+
+**Delete `_prekey_signature_ok` entirely.** Verified before writing this plan: its only caller is the `store_app_prekey_bundle` line this task replaces, and no test references it by name. `_prekey_verify_reason` fully supersedes it. Keeping it as a wrapper would leave a function with zero callers.
 
 - [ ] **Step 4: Run test to verify it passes**
 
