@@ -294,6 +294,34 @@ def is_device_revoked(device_fp: str) -> bool:
         return False
 
 
+# ── Approval-to-link (Linked Devices Phase 3) ───────────────────────────────
+# Unlike the revocation set above, the registry (not a cache-fronted SQLite
+# table) is already the source of truth for approval state, so this reads it
+# directly -- no separate cache to keep in sync.
+
+
+def is_device_approved(device_fp: str) -> bool:
+    """True if *device_fp* is approved to hold a session.
+
+    A missing fingerprint (no registry row at all -- the device predates the
+    registry, or the registry write failed) reads as approved, the same as a
+    row present but missing the ``approved`` key
+    (:func:`skchat.device_registry.is_approved`): only a row that this
+    feature itself wrote with ``approved: False`` is pending. That is what
+    keeps the operator's 3 pre-Phase-3 devices, which have no registry row at
+    all for some of them and no ``approved`` key for the rest, working
+    exactly as before.
+    """
+    if not device_fp:
+        return True
+    from . import device_registry as DR
+
+    row = DR.get_device(device_fp)
+    if row is None:
+        return True
+    return DR.is_approved(row)
+
+
 def _is_used(jti: str) -> bool:
     """True if a single-use *jti* has already been burned (and not yet TTL'd out)."""
     now = time.time()

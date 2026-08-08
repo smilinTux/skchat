@@ -59,6 +59,19 @@ def _save(data: dict[str, dict]) -> None:
     os.replace(tmp, path)
 
 
+def is_approved(row: dict) -> bool:
+    """Whether a registry row's device is approved to hold a session.
+
+    A row written before Phase 3 (approval-to-link) shipped has no
+    ``approved`` key at all, and those rows belong to devices that were
+    already trusted under the old, no-approval model. Absence MUST read as
+    approved, never as pending: the operator's 3 live devices carry rows with
+    no ``approved`` key, and misreading that as pending locks out every one
+    of them at once with no approved device left to approve from.
+    """
+    return bool(row.get("approved", True))
+
+
 def record_enroll(
     device_fp: str,
     *,
@@ -69,15 +82,20 @@ def record_enroll(
 ) -> None:
     """Create (or refresh) the row for a freshly enrolled device.
 
-    A re-enroll of the same fingerprint refreshes the metadata and clears the
-    revoked flag: re-linking a device is how you undo an unlink.
+    A re-enroll of the same fingerprint refreshes the metadata, clears the
+    revoked flag (re-linking a device is how you undo an unlink), and
+    preserves whatever approval state it already had -- including a missing
+    ``approved`` key, which :func:`is_approved` reads as approved. A brand
+    NEW fingerprint lands pending (``approved: False``): it must be approved
+    by an already-approved device or the CLI before it can mint a session.
     """
     if not device_fp:
         return
     now = time.time()
     with _lock:
         data = _load()
-        existing = data.get(device_fp) or {}
+        existing = data.get(device_fp)
+        approved = is_approved(existing) if existing is not None else False
         data[device_fp] = {
             "device_fp": device_fp,
             "label": label,
@@ -86,8 +104,9 @@ def record_enroll(
             "user_agent": user_agent,
             "enrolled_at": now,
             "last_seen": now,
-            "key_ids": list(existing.get("key_ids") or []),
+            "key_ids": list((existing or {}).get("key_ids") or []),
             "revoked": False,
+            "approved": approved,
         }
         _save(data)
 
@@ -185,6 +204,35 @@ def list_devices(*, include_revoked: bool = False) -> list[dict]:
         rows = list(_load().values())
     if not include_revoked:
         rows = [r for r in rows if not r.get("revoked")]
+    return sorted(rows, key=lambda r: r.get("enrolled_at") or 0, reverse=True)
+
+
+def set_approved(device_fp: str, approved: bool) -> bool:
+    """Approve or un-approve a device. True if a row was found and updated.
+
+    An approve lets the device mint sessions (see
+    :func:`skchat.guest.is_device_approved` and
+    :func:`skchat.operator_auth.verify_operator_session`); a False is not
+    currently exercised by any route (deny does a full unlink instead, which
+    both revokes the row via :func:`mark_revoked` and removes it from
+    ``DeviceStore``) but is kept honest/reversible for direct callers.
+    """
+    with _lock:
+        data = _load()
+        row = data.get(device_fp)
+        if row is None:
+            return False
+        row["approved"] = approved
+        data[device_fp] = row
+        _save(data)
+        return True
+
+
+def list_pending() -> list[dict]:
+    """Rows awaiting approval: not revoked, not yet approved. Newest first."""
+    with _lock:
+        rows = list(_load().values())
+    rows = [r for r in rows if not r.get("revoked") and not is_approved(r)]
     return sorted(rows, key=lambda r: r.get("enrolled_at") or 0, reverse=True)
 
 

@@ -76,7 +76,8 @@ def verify_operator_session(token: str) -> OperatorSession:
         raise OperatorAuthError(f"invalid operator session: {e}") from e
     if claims.get("tier") != _TIER:
         raise OperatorAuthError("wrong tier")
-    from .guest import _is_revoked, is_device_revoked  # reuse the guest revocation store
+    # reuse the guest revocation store / device-registry approval check
+    from .guest import _is_revoked, is_device_approved, is_device_revoked
 
     if _is_revoked(claims["jti"]):
         raise OperatorAuthError("revoked")
@@ -84,6 +85,13 @@ def verify_operator_session(token: str) -> OperatorSession:
     # invalidates every session it holds without needing to know their jtis.
     if is_device_revoked(claims["device_fp"]):
         raise OperatorAuthError("device revoked")
+    # Approval-to-link: a device that is not yet approved cannot hold a
+    # verified session, so it cannot authenticate for anything, including
+    # publishing a prekey. A missing registry row or a missing `approved` key
+    # reads as approved (see is_device_approved), so this never locks out a
+    # device enrolled before this check existed.
+    if not is_device_approved(claims["device_fp"]):
+        raise OperatorAuthError("device pending approval")
     return OperatorSession(jti=claims["jti"], device_fp=claims["device_fp"], exp=claims["exp"])
 
 

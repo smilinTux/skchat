@@ -83,6 +83,13 @@ def _enroll_and_session(client) -> str:
     )
     assert e.status_code == 200, e.text
     fp = e.json()["device_fp"]
+    assert e.json()["approved"] is False  # Phase 3: a fresh fp always lands pending
+    # Simulate the operator approving from the CLI (or another already-linked
+    # device): this suite is about the prekey-publish grant, not the approval
+    # gate itself (see test_device_approval.py).
+    from skchat import device_registry as DR
+
+    DR.set_approved(fp, True)
     ch = client.get("/api/v1/auth/challenge").json()
     ssig = _sig(priv, _canon({"nonce": ch["nonce"], "device_fp": fp}))
     r = client.post(

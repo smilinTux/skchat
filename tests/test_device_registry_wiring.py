@@ -39,6 +39,10 @@ def client(env):
 def test_publish_attributes_the_slot_to_the_session_that_published_it(client):
     fp = "a1b2c3d4e5f60718"
     DR.record_enroll(fp, label="L", label_source="derived", platform="web", user_agent="UA")
+    # This suite is about publish-attribution wiring for an already-linked
+    # device, not the Phase 3 approval gate, so approve it the way an operator
+    # would.
+    DR.set_approved(fp, True)
     token = OA.mint_operator_session(device_fp=fp)
 
     r = client.post(
@@ -59,6 +63,7 @@ def test_two_devices_publishing_land_on_their_own_registry_rows(client):
     one, two = "aa" * 8, "bb" * 8
     for fp in (one, two):
         DR.record_enroll(fp, label="L", label_source="derived", platform="web", user_agent="UA")
+        DR.set_approved(fp, True)
 
     for fp, key_id in ((one, "1111111111111111"), (two, "2222222222222222")):
         token = OA.mint_operator_session(device_fp=fp)
@@ -99,6 +104,10 @@ def test_the_recorded_key_id_is_the_sanitized_slot_id_not_the_raw_claim(client):
     # the raw claim, unlink would hunt for a slot file that does not exist.
     fp = "dd" * 8
     DR.record_enroll(fp, label="L", label_source="derived", platform="web", user_agent="UA")
+    # This suite is about publish-attribution wiring for an already-linked
+    # device, not the Phase 3 approval gate, so approve it the way an operator
+    # would.
+    DR.set_approved(fp, True)
     token = OA.mint_operator_session(device_fp=fp)
     r = client.post(
         "/api/v1/prekey",
