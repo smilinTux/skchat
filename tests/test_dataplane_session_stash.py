@@ -50,9 +50,7 @@ def test_two_devices_are_told_apart_by_their_own_sessions(client):
     assert second.json()["device_fp"] == "bb" * 8
 
 
-def test_with_the_gate_off_there_is_no_session_and_that_is_not_an_error(
-    client, monkeypatch
-):
+def test_with_the_gate_off_there_is_no_session_and_that_is_not_an_error(client, monkeypatch):
     # Gate off is the default in dev/tests: no credential is verified, so no
     # session exists. Routes must treat this as "unknown device", not a failure.
     monkeypatch.setenv("SKCHAT_DATAPLANE_AUTH", "")

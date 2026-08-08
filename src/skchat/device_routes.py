@@ -124,9 +124,7 @@ def register_device_routes(app: FastAPI, *, device_store) -> None:
                 report = DU.unlink_device(fp, device_store=device_store)
             except KeyError:
                 skipped.append(fp)
-                logger.warning(
-                    "unlink-others: %s vanished before it could be unlinked", fp
-                )
+                logger.warning("unlink-others: %s vanished before it could be unlinked", fp)
                 continue
             unlinked.append(fp)
             reports[fp] = report
