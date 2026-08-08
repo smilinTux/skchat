@@ -147,8 +147,30 @@ def _safe_slot_id(key_id: str) -> str:
 
 
 def _peer_dir(peer: str) -> Path:
-    """The per-peer slot directory ``peers/<short>/`` (created on demand)."""
-    d = _pqc_dir() / "peers" / _short(peer)
+    """The per-peer slot directory ``peers/<short>/`` (created on demand).
+
+    Raises:
+        ValueError: if *peer* normalises to an empty short name.
+
+    Card c5bbb20d: ``_short("@x")`` is ``""``, and ``peers/`` joined with ``""``
+    is ``peers/`` itself. A slot written there lands at ``peers/<key_id>.json``,
+    which is exactly the legacy flat-file path :func:`load_peer_bundles` folds in
+    for back-compat. A publisher choosing ``owner="@x"`` and
+    ``key_id="<victim>"`` could therefore plant a bundle that
+    ``load_peer_bundle("<victim>")`` serves as the victim's newest slot: prekey
+    substitution against another identity. The fold-in's key_id dedup does not
+    help, because a real device key_id is 16 hex chars and never collides with a
+    short name.
+
+    So this is the chokepoint: every slot write resolves its directory here, and
+    an empty short name is refused rather than silently collapsing to the root.
+    """
+    short = _short(peer).strip()
+    if not short:
+        raise ValueError(
+            f"refusing prekey slot for an owner that normalises to an empty short name: {peer!r}"
+        )
+    d = _pqc_dir() / "peers" / short
     d.mkdir(parents=True, exist_ok=True)
     return d
 
