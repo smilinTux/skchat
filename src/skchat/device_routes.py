@@ -78,6 +78,26 @@ def register_device_routes(app: FastAPI, *, device_store) -> None:
             rows.append(item)
         return JSONResponse({"devices": rows})
 
+    @router.patch("/devices/{device_fp}")
+    async def rename(device_fp: str, request: Request):
+        from skchat.guest import _require_operator
+
+        _require_operator(request)
+        from skchat import device_registry as DR
+
+        body = await request.json()
+        label = body.get("label")
+        if not isinstance(label, str) or not label.strip():
+            raise HTTPException(400, "label must be a non-empty string")
+        text = label.strip()[:64]
+        if not DR.set_label(device_fp, text):
+            raise HTTPException(404, "device not found")
+        row = dict(DR.get_device(device_fp) or {})
+        row.pop("user_agent", None)  # internal detail, not UI data
+        current = _current_device_fp(request)
+        row["is_current"] = bool(current) and row.get("device_fp") == current
+        return JSONResponse(row)
+
     @router.delete("/devices/{device_fp}")
     async def unlink(device_fp: str, request: Request):
         from skchat.guest import _require_operator
