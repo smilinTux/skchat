@@ -128,9 +128,7 @@ def test_flag_on_signed_sig_field_accepted_200(client, monkeypatch, alice_crypto
     assert slots[0]["hybrid_public_hex"] == signed["hybrid_public_hex"]
 
 
-def test_flag_on_signature_field_also_accepted_200(
-    client, monkeypatch, alice_crypto, alice_keys
-):
+def test_flag_on_signature_field_also_accepted_200(client, monkeypatch, alice_crypto, alice_keys):
     """Back-compat: a bundle carrying the verifier's native ``signature`` field -> 200."""
     _, alice_pub = alice_keys
     monkeypatch.setenv("SKCHAT_REQUIRE_SIGNED_PREKEYS", "1")

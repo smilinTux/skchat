@@ -242,9 +242,7 @@ def test_act_restart_telegram_bridge_uses_agent_unit():
     result = op.act("restart-telegram-bridge", runner=runner, agent="opus")
     assert result["performed"] is True
     assert result["unit"] == "skchat-telegram-opus.service"
-    assert calls == [
-        ["systemctl", "--user", "restart", "skchat-telegram-opus.service"]
-    ]
+    assert calls == [["systemctl", "--user", "restart", "skchat-telegram-opus.service"]]
 
 
 def test_act_purge_outbox_refuses_and_escalates():

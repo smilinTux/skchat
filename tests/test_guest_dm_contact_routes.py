@@ -117,9 +117,7 @@ def test_list_contacts_rejects_anonymous(env, client):
 def test_list_contacts_rejects_guest_authed_caller(env, client):
     _inv, body, _fp = _mint_and_join(client)
     session = body["session_token"]
-    r = client.get(
-        "/api/v1/guest-dm/contacts", headers={"Authorization": f"Bearer {session}"}
-    )
+    r = client.get("/api/v1/guest-dm/contacts", headers={"Authorization": f"Bearer {session}"})
     assert r.status_code in (401, 403)
 
 
@@ -248,16 +246,11 @@ def test_routes_404_when_flag_off(env, client, monkeypatch):
     monkeypatch.setenv("SKCHAT_GUEST_LINKS_ENABLED", "0")
     assert client.get("/api/v1/guest-dm/contacts", headers=_OP_HEADERS).status_code == 404
     assert (
-        client.patch(
-            "/api/v1/guest-dm/contacts/x", json={}, headers=_OP_HEADERS
-        ).status_code
+        client.patch("/api/v1/guest-dm/contacts/x", json={}, headers=_OP_HEADERS).status_code
         == 404
     )
     assert (
-        client.post(
-            "/api/v1/guest-dm/contacts/x/revoke", headers=_OP_HEADERS
-        ).status_code
-        == 404
+        client.post("/api/v1/guest-dm/contacts/x/revoke", headers=_OP_HEADERS).status_code == 404
     )
 
 
@@ -294,7 +287,9 @@ def test_gdm_group_listing_carries_mode_seat_cap_and_per_member_guest_fields(env
     r1 = _join(client, inv["token"], name="Alice", pubkey="KEY-A")
     assert r1.status_code == 200, r1.text
 
-    promo = client.post(f"/api/v1/groups/{gid}/invite?mode=dm", json={}, headers=_OP_HEADERS).json()
+    promo = client.post(
+        f"/api/v1/groups/{gid}/invite?mode=dm", json={}, headers=_OP_HEADERS
+    ).json()
     r2 = _join(client, promo["token"], name="Bob", pubkey="KEY-B")
     assert r2.status_code == 200, r2.text
 
@@ -325,7 +320,9 @@ def test_gdm_per_group_revoke_flips_membership_status_in_roster(env, client):
     inv = GG.create_dm_invite(operator_uri=_OPERATOR)
     gid = inv["group_id"]
     _join(client, inv["token"], name="Alice", pubkey="KEY-A")
-    promo = client.post(f"/api/v1/groups/{gid}/invite?mode=dm", json={}, headers=_OP_HEADERS).json()
+    promo = client.post(
+        f"/api/v1/groups/{gid}/invite?mode=dm", json={}, headers=_OP_HEADERS
+    ).json()
     _join(client, promo["token"], name="Bob", pubkey="KEY-B")
 
     fp_bob = GG.pubkey_fingerprint("KEY-B")
@@ -346,7 +343,9 @@ def test_alias_never_leaks_into_gdm_guest_response(env, client):
     fp = GG.pubkey_fingerprint("KEY-A")
     GG.update_dm_contact(fp, alias="SecretNickname")
 
-    promo = client.post(f"/api/v1/groups/{gid}/invite?mode=dm", json={}, headers=_OP_HEADERS).json()
+    promo = client.post(
+        f"/api/v1/groups/{gid}/invite?mode=dm", json={}, headers=_OP_HEADERS
+    ).json()
     body = _join(client, promo["token"], name="Bob", pubkey="KEY-B").json()
     session = body["session_token"]
 
@@ -369,7 +368,9 @@ def test_alias_never_leaks_into_guest_response(env, client):
 
     assert "SecretNickname" not in body.__repr__()
 
-    r_conv = client.get("/api/v1/guest/conversation", headers={"Authorization": f"Bearer {session}"})
+    r_conv = client.get(
+        "/api/v1/guest/conversation", headers={"Authorization": f"Bearer {session}"}
+    )
     assert r_conv.status_code == 200
     assert "SecretNickname" not in r_conv.text
 

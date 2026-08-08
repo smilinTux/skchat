@@ -90,6 +90,8 @@ def format_relative_time(iso_ts: str | None, now_iso: str | None) -> str:
     if delta < 604800:
         return f"{int(delta // 86400)}d"
     return ts.strftime("%b %d")
+
+
 def humanize_duration(seconds: int | float) -> str:
     """Format a seconds count as a compact human string, e.g. ``'1h 1m'``.
 

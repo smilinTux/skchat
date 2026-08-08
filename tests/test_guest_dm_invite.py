@@ -256,9 +256,7 @@ def test_mint_dm_invite_without_alias_stores_no_sidecar_row(env, client):
 def test_classic_group_invite_ignores_alias_body(env, client):
     # Classic (non-dm) mint is byte-for-byte unchanged: no sidecar wiring.
     grp = G.create_group(name="Ops", creator_uri=daemon_proxy.OPERATOR_ID, members=[])
-    r = client.post(
-        f"/api/v1/groups/{grp.id}/invite", json={"alias": "Nope"}, headers=_OP
-    )
+    r = client.post(f"/api/v1/groups/{grp.id}/invite", json={"alias": "Nope"}, headers=_OP)
     assert r.status_code == 200, r.text
     body = r.json()
     assert "alias" not in body

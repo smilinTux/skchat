@@ -88,9 +88,7 @@ def test_no_dead_capability_mappings():
     served = _served_routes()
     dead: list[str] = []
     for method, rx, cap in _COMPILED_CAPABILITY:
-        hit = any(
-            m == method and rx.match(path) and is_gated(m, path) for m, path in served
-        )
+        hit = any(m == method and rx.match(path) and is_gated(m, path) for m, path in served)
         if not hit:
             dead.append(f"{method} {rx.pattern} -> {cap}")
     assert not dead, "capability rules matching no served gated route:\n  " + "\n  ".join(dead)
@@ -101,9 +99,7 @@ def test_no_dead_self_auth_mappings():
     served = _served_routes()
     dead: list[str] = []
     for method, rx, verifier, _rationale in _COMPILED_SELF_AUTH:
-        hit = any(
-            m == method and rx.match(path) and is_gated(m, path) for m, path in served
-        )
+        hit = any(m == method and rx.match(path) and is_gated(m, path) for m, path in served)
         if not hit:
             dead.append(f"{method} {rx.pattern} ({verifier})")
     assert not dead, "self-auth rules matching no served gated route:\n  " + "\n  ".join(dead)

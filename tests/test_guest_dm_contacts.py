@@ -102,9 +102,7 @@ def test_reusable_dm_fanout_same_key_returns_to_own_group(env, client):
     # group (not a third fresh group), and sees her own history.
     hist = daemon_proxy._get_history()
     session_a = r1.json()["session_token"]
-    client.post(
-        "/api/v1/guest/send", json={"body": "hi it's me"}, headers=_auth(session_a)
-    )
+    client.post("/api/v1/guest/send", json={"body": "hi it's me"}, headers=_auth(session_a))
 
     r3 = _join(client, inv["token"], name="Alice", pubkey="KEY-A")
     assert r3.status_code == 200, r3.text
@@ -128,9 +126,7 @@ def test_reusable_dm_fanout_third_distinct_key_gets_third_group(env, client):
 
 # ── dm_contacts registry upsert ──────────────────────────────────────────────
 def test_dm_admission_upserts_contact_row(env, client):
-    inv = GG.create_dm_invite(
-        operator_uri=_OPERATOR, reusable=True
-    )
+    inv = GG.create_dm_invite(operator_uri=_OPERATOR, reusable=True)
     GG.store_dm_invite_meta(inv["jti"], alias="Bestie", contact_ttl=3600)
 
     r = _join(client, inv["token"], name="Alice", pubkey="KEY-A")
@@ -203,9 +199,7 @@ def test_rate_limit_helper_function(env):
     os.environ["SKCHAT_DM_CONTACT_RATE_LIMIT"] = "1"
     try:
         assert GG.check_new_contact_allowed("jti-x") is True
-        GG.upsert_dm_contact(
-            "fp1", guest_id="guest:x#fp1", group_id="g1", invite_jti="jti-x"
-        )
+        GG.upsert_dm_contact("fp1", guest_id="guest:x#fp1", group_id="g1", invite_jti="jti-x")
         assert GG.check_new_contact_allowed("jti-x") is False
         # A different jti has its own independent budget.
         assert GG.check_new_contact_allowed("jti-y") is True

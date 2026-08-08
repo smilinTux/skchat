@@ -51,6 +51,7 @@ SLOT_CAP = 10
 class SlotCapExceeded(Exception):
     """Raised when publishing a NEW device slot would exceed :data:`SLOT_CAP`."""
 
+
 #: Env flag (P0.5 / SEAM 7): when truthy, the **app-path** prekey intake
 #: (``store_app_prekey_bundle`` behind ``POST /api/v1/prekey``) fails closed -
 #: only a bundle carrying a signature that verifies under the claimed identity's

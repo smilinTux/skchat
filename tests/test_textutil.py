@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
-from skchat.textutil import format_relative_time, humanize_bytes, truncate_middle
-from skchat.textutil import humanize_duration, truncate_middle
+from skchat.textutil import (
+    format_relative_time,
+    humanize_bytes,
+    humanize_duration,
+    truncate_middle,
+)
 
 
 class TestTruncateMiddle:
@@ -203,6 +207,8 @@ class TestFormatRelativeTime:
     def test_empty_string_ts_returns_empty(self) -> None:
         """An empty-string iso_ts never raises and returns ''."""
         assert format_relative_time("", self.NOW) == ""
+
+
 class TestHumanizeDuration:
     """Tests for humanize_duration."""
 

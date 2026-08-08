@@ -82,8 +82,7 @@ def test_list_models_includes_required(am):
 def _fake_free(*ids_providers):
     """Build a picker-shaped free-model list for monkeypatching the fetcher."""
     return [
-        {"id": mid, "label": mid, "provider": prov, "local": False}
-        for mid, prov in ids_providers
+        {"id": mid, "label": mid, "provider": prov, "local": False} for mid, prov in ids_providers
     ]
 
 

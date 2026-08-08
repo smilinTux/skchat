@@ -230,9 +230,7 @@ class TestMintEndpoint:
         )
         assert resp.status_code == 403
 
-    def test_rw_mint_denied_when_module_removed_from_allowlist(
-        self, client, monkeypatch
-    ):
+    def test_rw_mint_denied_when_module_removed_from_allowlist(self, client, monkeypatch):
         """Emptying SKCHAT_EMBED_RW_MODULES makes even skdashboard rw-ineligible."""
         monkeypatch.setenv(embed_auth.EMBED_MINT_ENV_FLAG, "1")
         monkeypatch.setenv("SKCHAT_EMBED_RW_MODULES", "")

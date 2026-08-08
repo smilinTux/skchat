@@ -12,6 +12,7 @@ Two payloads, two audiences, one hard rule between them:
   person-level ``guest_status`` so a person-revoked guest - who stays on the
   roster, unlike a per-group revoke which removes them - can be dimmed.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -127,9 +128,12 @@ def test_guest_roster_never_leaks_operator_private_fields(client):
     _join(client, promo["token"], name="Bob", pubkey="KEY-B")
     # Operator aliases Bob privately.
     fp_b = GG.pubkey_fingerprint("KEY-B")
-    assert client.patch(
-        f"/api/v1/guest-dm/contacts/{fp_b}", json={"alias": "Work Bob"}, headers=_OP
-    ).status_code == 200
+    assert (
+        client.patch(
+            f"/api/v1/guest-dm/contacts/{fp_b}", json={"alias": "Work Bob"}, headers=_OP
+        ).status_code
+        == 200
+    )
 
     conv = _conversation(client, a["session_token"])
     blob = repr(conv)

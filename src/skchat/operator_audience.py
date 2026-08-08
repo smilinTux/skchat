@@ -57,6 +57,7 @@ def operator_issuer_policy() -> str:
     value = os.getenv(OPERATOR_ISSUER_POLICY_FLAG, "").strip().lower()
     return value if value in _VALID_ISSUER_POLICIES else _DEFAULT_ISSUER_POLICY
 
+
 #: Audience-token TTL in hours. Matches ``operator_auth._DEFAULT_TTL`` (12h) so both
 #: credentials share the seat's re-auth rhythm; refresh is the SAME device
 #: challenge-response handshake (the device key stays the root credential).
@@ -108,9 +109,7 @@ def wire_form(token) -> str:
     from capauth import export_token
 
     return (
-        base64.urlsafe_b64encode(export_token(token).encode("utf-8"))
-        .decode("ascii")
-        .rstrip("=")
+        base64.urlsafe_b64encode(export_token(token).encode("utf-8")).decode("ascii").rstrip("=")
     )
 
 

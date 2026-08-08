@@ -55,7 +55,9 @@ class _FakeValidator:
         return self.ok
 
 
-def _agent_home(tmp_path: Path, fingerprint: str = "AABBCCDDEE1122334455AABBCCDDEE1122334455") -> Path:
+def _agent_home(
+    tmp_path: Path, fingerprint: str = "AABBCCDDEE1122334455AABBCCDDEE1122334455"
+) -> Path:
     """Create a minimal agent home with an identity file (mirrors capauth tests)."""
     home = tmp_path / ".skcapstone"
     (home / "identity").mkdir(parents=True)
@@ -272,14 +274,31 @@ def _gen_gpg_key(gnupghome: Path) -> str | None:
     env = {"GNUPGHOME": str(gnupghome)}
     try:
         subprocess.run(
-            ["gpg", "--batch", "--yes", "--passphrase", "", "--pinentry-mode",
-             "loopback", "--quick-generate-key", "skchat-mint-test@local", "ed25519",
-             "sign", "0"],
-            capture_output=True, text=True, timeout=30, env={**_os_environ(), **env},
+            [
+                "gpg",
+                "--batch",
+                "--yes",
+                "--passphrase",
+                "",
+                "--pinentry-mode",
+                "loopback",
+                "--quick-generate-key",
+                "skchat-mint-test@local",
+                "ed25519",
+                "sign",
+                "0",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env={**_os_environ(), **env},
         )
         out = subprocess.run(
             ["gpg", "--batch", "--with-colons", "--list-secret-keys"],
-            capture_output=True, text=True, timeout=15, env={**_os_environ(), **env},
+            capture_output=True,
+            text=True,
+            timeout=15,
+            env={**_os_environ(), **env},
         )
         for line in out.stdout.splitlines():
             if line.startswith("fpr:"):
@@ -321,6 +340,6 @@ class TestMintRealSignature:
 
         tok = _decode_wire(body["token"])
         assert tok.signature, "token should have been really signed"
-        assert verify_audience_token(tok, "skchat") is True     # real signature + audience
-        assert verify_audience_token(tok, "skcode") is False    # wrong audience
+        assert verify_audience_token(tok, "skchat") is True  # real signature + audience
+        assert verify_audience_token(tok, "skcode") is False  # wrong audience
         assert tok.payload.subject == subject

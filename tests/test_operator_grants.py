@@ -3,6 +3,7 @@ least-sensitive skchat.inbox capability, non-expiring, so the authz PDP agrees
 with the legitimate legacy allow for the operator seat's own inbox polling
 (CR-3.1: closes the 227k-hit shadow divergence that blocked the enforce flip).
 """
+
 from __future__ import annotations
 
 from pathlib import Path

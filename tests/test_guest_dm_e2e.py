@@ -39,12 +39,11 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from skchat import daemon_proxy
+from skchat import daemon_proxy, livekit_routes
 from skchat import daemon_proxy_groupcall as GC
 from skchat import daemon_proxy_groups as G
 from skchat import guest_group_routes as GGR
 from skchat import guest_groups as GG
-from skchat import livekit_routes
 from skchat import webui as _webui
 
 _KEY, _SECRET = "test-key", "test-secret-0123456789"
@@ -294,9 +293,7 @@ def test_e2e_single_use_rename_persists(env, client):
     j = _join(client, inv["token"], name="Alice", pubkey="KEY-A").json()
     session = j["session_token"]
 
-    r = client.post(
-        "/api/v1/guest/name", json={"name": "Alicia"}, headers=_auth(session)
-    )
+    r = client.post("/api/v1/guest/name", json={"name": "Alicia"}, headers=_auth(session))
     assert r.status_code == 200, r.text
     new_session = r.json()["session_token"]
     assert r.json()["display_name"] == "Alicia"
@@ -325,9 +322,7 @@ def test_e2e_single_use_revoke_locks_out_with_reason_and_kills_reentry(env, clie
     assert r.status_code == 403
     assert r.json()["detail"]["reason"] == "contact_revoked"
 
-    r_send = client.post(
-        "/api/v1/guest/send", json={"body": "hi"}, headers=_auth(session)
-    )
+    r_send = client.post("/api/v1/guest/send", json={"body": "hi"}, headers=_auth(session))
     assert r_send.status_code == 403
     assert r_send.json()["detail"]["reason"] == "contact_revoked"
 
@@ -389,9 +384,7 @@ def test_e2e_reusable_link_disable_blocks_new_not_existing_contacts(env, client)
     session_a = r_a.json()["session_token"]
     session_m = r_m.json()["session_token"]
 
-    revoke = client.delete(
-        f"/api/v1/groups/{inv['group_id']}/invite/{inv['token']}", headers=_OP
-    )
+    revoke = client.delete(f"/api/v1/groups/{inv['group_id']}/invite/{inv['token']}", headers=_OP)
     assert revoke.status_code == 200, revoke.text
 
     # A brand-new key can no longer walk in through the disabled link.
@@ -434,9 +427,7 @@ def test_e2e_alias_never_appears_in_any_guest_or_preview_response(env, client):
     responses.append(up)
     tid = up.json()["transfer_id"]
     responses.append(client.get(f"/api/v1/guest/file/{tid}", headers=_auth(session)))
-    rename = client.post(
-        "/api/v1/guest/name", json={"name": "Alicia"}, headers=_auth(session)
-    )
+    rename = client.post("/api/v1/guest/name", json={"name": "Alicia"}, headers=_auth(session))
     responses.append(rename)
     responses.append(
         client.get("/api/v1/guest/conversation", headers=_auth(rename.json()["session_token"]))
@@ -455,14 +446,10 @@ def test_e2e_muted_contact_ring_skipped_token_still_minted(env, client, spies):
     j = _join(client, inv["token"], name="Alice", pubkey="KEY-A").json()
     fp = j["fingerprint"]
 
-    mute = client.patch(
-        f"/api/v1/guest-dm/contacts/{fp}", json={"muted": True}, headers=_OP
-    )
+    mute = client.patch(f"/api/v1/guest-dm/contacts/{fp}", json={"muted": True}, headers=_OP)
     assert mute.status_code == 200, mute.text
 
-    r = client.post(
-        "/api/v1/guest/call", json={"ring": True}, headers=_auth(j["session_token"])
-    )
+    r = client.post("/api/v1/guest/call", json={"ring": True}, headers=_auth(j["session_token"]))
     assert r.status_code == 200, r.text
     assert r.json()["available"] is True
     assert r.json().get("token")
