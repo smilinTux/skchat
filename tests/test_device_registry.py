@@ -1,0 +1,89 @@
+"""Device registry store: the join table between device_fp, key_id and metadata."""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from skchat import device_registry as DR
+
+
+@pytest.fixture(autouse=True)
+def _registry(tmp_path, monkeypatch):
+    monkeypatch.setenv("SKCHAT_DEVICE_REGISTRY", str(tmp_path / "registry.json"))
+    yield tmp_path
+
+
+def test_record_enroll_creates_a_row_with_metadata():
+    DR.record_enroll(
+        "a1b2c3d4e5f60718",
+        label="Pixel 8",
+        label_source="client",
+        platform="android",
+        user_agent="Dart/3.5 (dart:io)",
+    )
+    rows = DR.list_devices()
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["device_fp"] == "a1b2c3d4e5f60718"
+    assert row["label"] == "Pixel 8"
+    assert row["label_source"] == "client"
+    assert row["platform"] == "android"
+    assert row["key_ids"] == []
+    assert row["revoked"] is False
+    assert row["enrolled_at"] > 0
+    assert row["last_seen"] >= row["enrolled_at"]
+
+
+def test_record_publish_attaches_a_key_id_without_duplicating():
+    DR.record_enroll("aa" * 8, label="L", label_source="derived", platform="web", user_agent="UA")
+    DR.record_publish("aa" * 8, "f8342853f762fd88")
+    DR.record_publish("aa" * 8, "f8342853f762fd88")  # republish, same slot
+    DR.record_publish("aa" * 8, "1111111111111111")  # a second slot
+    row = DR.get_device("aa" * 8)
+    assert row["key_ids"] == ["f8342853f762fd88", "1111111111111111"]
+
+
+def test_record_publish_for_an_unknown_device_is_a_no_op_not_a_crash():
+    # A publish can arrive from a device enrolled before the registry existed,
+    # or with the auth gate off. It must never 500 the publish route.
+    DR.record_publish("ff" * 8, "abc")
+    assert DR.get_device("ff" * 8) is None
+
+
+def test_mark_revoked_hides_the_row_by_default_but_keeps_it_for_audit():
+    DR.record_enroll("bb" * 8, label="L", label_source="derived", platform="web", user_agent="UA")
+    assert DR.mark_revoked("bb" * 8) is True
+    assert DR.list_devices() == []
+    kept = DR.list_devices(include_revoked=True)
+    assert len(kept) == 1 and kept[0]["revoked"] is True
+    assert DR.mark_revoked("nosuchdevice") is False
+
+
+def test_a_corrupt_registry_degrades_to_empty_never_raises():
+    DR.registry_path().parent.mkdir(parents=True, exist_ok=True)
+    DR.registry_path().write_text("{not json at all")
+    assert DR.list_devices() == []
+
+
+def test_clear_all_empties_the_store_and_reports_the_count():
+    DR.record_enroll("cc" * 8, label="L", label_source="derived", platform="web", user_agent="UA")
+    DR.record_enroll("dd" * 8, label="L", label_source="derived", platform="web", user_agent="UA")
+    assert DR.clear_all() == 2
+    assert DR.list_devices(include_revoked=True) == []
+
+
+def test_touch_bumps_last_seen_only():
+    DR.record_enroll("ee" * 8, label="L", label_source="derived", platform="web", user_agent="UA")
+    before = DR.get_device("ee" * 8)
+    DR.touch("ee" * 8)
+    after = DR.get_device("ee" * 8)
+    assert after["last_seen"] >= before["last_seen"]
+    assert after["enrolled_at"] == before["enrolled_at"]
+
+
+def test_the_stored_file_is_valid_json_keyed_by_device_fp():
+    DR.record_enroll("0f" * 8, label="L", label_source="derived", platform="web", user_agent="UA")
+    data = json.loads(DR.registry_path().read_text())
+    assert list(data.keys()) == ["0f" * 8]
