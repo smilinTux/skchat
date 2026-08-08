@@ -35,6 +35,14 @@ def _current_device_fp(request: Request) -> str:
     400: without a known current device neither route can tell whether a target
     fingerprint IS the caller, so both refuse rather than risk stranding the
     operator by unlinking the device it is using.
+
+    The manual ``verify_operator_session`` fallback below is not test-only
+    scaffolding: ``request.state.operator_session`` is only ever populated by
+    ``enforce_dataplane_auth`` when ``SKCHAT_DATAPLANE_AUTH=1``. With the gate
+    off (the default outside the live daemon), that attribute is never set, so
+    this fallback is the ONLY thing that can resolve a caller's device_fp from
+    its Bearer token. Removing it would make both DELETE and unlink-others 400
+    for every caller whenever the gate is off, not just in tests.
     """
     session = getattr(request.state, "operator_session", None)
     if session is not None and getattr(session, "device_fp", ""):
@@ -112,12 +120,20 @@ def register_device_routes(app: FastAPI, *, device_store) -> None:
         # ``unlinked`` keeps its original bare-fp shape (the app client depends on
         # it); ``reports``/``skipped``/``degraded`` add the visibility Task 7's
         # report fields exist for, so a partial unlink is never silent here either.
+        #
+        # The union of the registry's fingerprints and the DeviceStore's own is
+        # required, not just the registry: DR.list_devices() is registry-only,
+        # and a device enrolled before this feature existed (or enrolled with
+        # SKCHAT_DATAPLANE_AUTH off, so nothing was ever recorded) has a live
+        # DeviceStore entry and prekey slot but no registry row. Iterating the
+        # registry alone makes that device invisible here, so it survives
+        # "unlink all other devices" while the response reports a clean 200.
         unlinked: list[str] = []
         reports: dict[str, dict] = {}
         skipped: list[str] = []
         degraded: list[str] = []
-        for row in DR.list_devices():
-            fp = row["device_fp"]
+        all_fps = {row["device_fp"] for row in DR.list_devices()} | set(device_store.list_fps())
+        for fp in all_fps:
             if fp == current:
                 continue
             try:

@@ -178,7 +178,7 @@ def unlink_device(device_fp: str, *, device_store, owner: str = "chef") -> dict:
     store_removed = device_store.remove(device_fp)
 
     # 4. Best-effort: revoke every capauth pairing record behind the PDP grant.
-    capauth_revoked, capauth_records_failed = _revoke_capauth_subject(device_fp)
+    capauth_revoked, capauth_records_failed = revoke_capauth_subject(device_fp)
 
     # 5. Keep the row for audit, hidden from the default list. Never raises:
     #    an OSError from the registry's file write must not swallow the report
@@ -212,8 +212,13 @@ def unlink_device(device_fp: str, *, device_store, owner: str = "chef") -> dict:
     }
 
 
-def _revoke_capauth_subject(device_fp: str) -> tuple[bool, int]:
+def revoke_capauth_subject(device_fp: str) -> tuple[bool, int]:
     """Revoke every capauth pairing device record for ``operator:<device_fp>``.
+
+    Public (not underscore-prefixed) so ``skchat devices reset`` (R1) can call
+    it directly for every device being reset, the same way :func:`unlink_device`
+    calls it for a single device: the reset path must close the same capauth
+    hole a single unlink already closes, not a parallel, weaker mechanism.
 
     Never raises. Returns ``(revoked_any, records_failed)``:
 

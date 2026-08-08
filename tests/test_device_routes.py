@@ -167,6 +167,36 @@ def test_unlink_others_surfaces_a_degraded_report(client, store):
     assert body["reports"][no_slot_fp]["registry_had_no_slots"] is True
 
 
+def test_unlink_others_also_unlinks_a_store_only_device_with_no_registry_row(client, store):
+    """Important 2: DR.list_devices() is registry-only. A device enrolled
+    before this feature existed (or enrolled with the auth gate off) has a
+    live DeviceStore entry and prekey slot but no registry row, and was
+    invisible to the old registry-only loop. unlink-others must still reach
+    it and report it, not silently return a clean, empty result."""
+    me = _enrol(store, "mydevice", "1111111111111111")
+    pub = base64.b64encode(b"legacydev".ljust(32, b"\0")).decode()
+    legacy_fp = store.enroll(pub)  # store-enrolled only, never DR.record_enroll'd
+    PQ.store_peer_bundle(
+        "chef",
+        {
+            "suite": "x25519-mlkem768",
+            "hybrid_public_hex": "legacyslot000001" + "00" * 8,
+            "key_id": "legacyslot000001",
+        },
+    )
+    assert DR.get_device(legacy_fp) is None
+
+    r = client.post("/api/v1/operator/devices/unlink-others", headers=_as(me))
+
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert legacy_fp in body["unlinked"]
+    assert legacy_fp not in body["skipped"]
+    assert body["reports"][legacy_fp]["registry_had_no_slots"] is True
+    assert store.is_enrolled(legacy_fp) is False
+    assert store.is_enrolled(me) is True
+
+
 def test_unlink_others_reports_a_vanished_device_as_skipped(client, store, monkeypatch):
     me = _enrol(store, "mydevice", "1111111111111111")
     ghost = _enrol(store, "ghostdev", "9999999999999999")

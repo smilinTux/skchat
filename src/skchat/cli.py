@@ -5595,7 +5595,8 @@ def devices() -> None:
 @devices.command("reset")
 @click.option("--yes", is_flag=True, help="Confirm: this unlinks every device.")
 def devices_reset(yes: bool) -> None:
-    """Clear every enrolled device, its prekey slots, and the registry.
+    """Clear every enrolled device, its prekey slots, the registry, its
+    sessions, and its capauth grants.
 
     The clean cut. A device enrolled before the registry existed has no
     recorded prekey slots, so unlinking it individually would be silently
@@ -5604,8 +5605,18 @@ def devices_reset(yes: bool) -> None:
     so every device can re-link clean. Deliberately manual, never automatic:
     running it on upgrade would lock out every device the moment the new code
     deployed.
+
+    Reuses :func:`skchat.device_unlink.revoke_capauth_subject` and
+    :func:`skchat.guest.revoke_device` rather than reimplementing the session-
+    and capauth-revocation logic here: a "reset" is functionally an unlink of
+    every device at once, and must close the same four holes a single unlink
+    already closes, not a parallel, weaker mechanism that only clears the
+    store and slots and leaves live sessions and PDP grants behind.
     """
+    from . import device_registry as _DR
+    from . import guest as _G
     from .device_registry import clear_all as _clear_registry
+    from .device_unlink import revoke_capauth_subject as _revoke_capauth_subject
     from .operator_auth import DeviceStore as _DeviceStore
     from .operator_auth import default_device_store_path as _default_device_store_path
     from .pq_prekeys import _pqc_dir as _pq_pqc_dir
@@ -5627,12 +5638,29 @@ def devices_reset(yes: bool) -> None:
         "device will need to re-link."
     )
 
+    # Sessions and capauth grants die FIRST, before any store/registry row is
+    # touched, mirroring unlink_device's ordering: nothing a device does
+    # during the rest of the reset is authorized. The union of the store's
+    # fingerprints and the registry's covers every device enrolled before the
+    # registry existed too (it would otherwise be invisible to this loop, and
+    # its session/capauth revocation would be silently skipped).
+    target_fps = set(pending_devices) | {
+        row["device_fp"] for row in _DR.list_devices(include_revoked=True)
+    }
+    sessions_revoked = 0
+    capauth_subjects_revoked = 0
+    for fp in target_fps:
+        _G.revoke_device(fp)
+        sessions_revoked += 1
+        revoked_any, _failed = _revoke_capauth_subject(fp)
+        if revoked_any:
+            capauth_subjects_revoked += 1
+
     device_count = store.clear()
 
     slot_count = 0
     for bundle in pending_slots:
-        key_id = bundle.get("key_id")
-        if key_id and _remove_peer_bundle("chef", key_id):
+        if _remove_peer_bundle("chef", bundle.get("key_id")):
             slot_count += 1
 
     # load_peer_bundles/remove_peer_bundle only cover the current per-device
@@ -5655,7 +5683,8 @@ def devices_reset(yes: bool) -> None:
 
     click.echo(
         f"Cleared {device_count} enrolled device(s), {slot_count} prekey slot(s), "
-        f"{registry_count} registry row(s)."
+        f"{registry_count} registry row(s), {sessions_revoked} session(s) revoked, "
+        f"{capauth_subjects_revoked} capauth subject(s) revoked."
     )
     click.echo("Re-link each device you still use from its own app.")
 
