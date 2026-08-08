@@ -4,6 +4,7 @@ S6 rings the operator over a ws broadcast, but skworld-app polls (no ws). So a
 guest call also stamps a transient ring the operator group/conversation payload
 surfaces (``ringing``/``ring_ts``), which the app polls. Muted guests never ring.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -11,11 +12,10 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from skchat import call_observability as CO
-from skchat import daemon_proxy
+from skchat import daemon_proxy, livekit_routes
 from skchat import daemon_proxy_groups as G
 from skchat import guest_group_routes as GGR
 from skchat import guest_groups as GG
-from skchat import livekit_routes
 from skchat import webui as _webui
 
 _KEY, _SECRET = "test-key", "test-secret-0123456789"

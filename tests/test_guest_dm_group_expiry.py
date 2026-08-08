@@ -162,6 +162,54 @@ def test_expiry_only_applies_to_dm_family_rooms(client, room):
     assert G.load_group(gid).metadata.get("expires_at") is None
 
 
+def test_the_expiry_is_readable_back_off_the_operator_group_payload(client, room):
+    """A write-only schedule is untrustworthy: the operator must be able to SEE
+    what they set. The group listing carries `expires_at` so the roster can
+    render the current setting rather than an unlabelled button."""
+    gid, _session = room
+    grp = G.load_group(gid)
+
+    assert G.group_to_conversation(grp)["expires_at"] is None
+
+    _patch_expiry(client, gid, {"group_ttl": 3600})
+    payload = G.group_to_conversation(G.load_group(gid))
+    assert payload["expires_at"] == pytest.approx(time.time() + 3600, abs=30)
+
+
+def test_a_promoted_room_reads_its_expiry_back_too(client, room):
+    gid, _session = room
+    grp = G.load_group(gid)
+    grp.metadata["mode"] = "gdm"  # promoted in place (G1)
+    G.save_group(grp)
+
+    _patch_expiry(client, gid, {"group_ttl": 7200})
+    payload = G.group_to_conversation(G.load_group(gid))
+    assert payload["mode"] == "gdm"
+    assert payload["expires_at"] == pytest.approx(time.time() + 7200, abs=30)
+
+
+def test_a_junk_expiry_reads_back_as_no_expiry_not_a_broken_listing(client, room):
+    """Whatever put a non-numeric value in metadata, one bad room must not take
+    the operator's whole group list down with it."""
+    gid, _session = room
+    grp = G.load_group(gid)
+    grp.metadata["expires_at"] = "next friday"
+    G.save_group(grp)
+
+    assert G.group_to_conversation(G.load_group(gid))["expires_at"] is None
+
+
+def test_the_expiry_never_leaks_into_a_guest_facing_payload(client, room):
+    """`expires_at` rides the OPERATOR listing. The guest conversation route is
+    a different shape built by guest_group_routes, and must stay that way."""
+    gid, session = room
+    _patch_expiry(client, gid, {"group_ttl": 3600})
+
+    r = client.get("/api/v1/guest/conversation", headers=_auth(session))
+    assert r.status_code == 200
+    assert "expires_at" not in r.json()
+
+
 def test_the_operator_keeps_their_own_history_after_expiry(client, room):
     """Expiry locks GUESTS out; it is not a delete. The operator's own view of
     the room must survive, or an expiry would quietly destroy their record."""

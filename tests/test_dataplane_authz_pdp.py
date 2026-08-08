@@ -67,7 +67,9 @@ def test_off_mode_never_calls_pdp(monkeypatch):
     monkeypatch.delenv("SKCHAT_AUTHZ_PDP", raising=False)
     dataplane_auth.set_validator(_Stub(True))
     called = []
-    monkeypatch.setattr("capauth.authz.decide", lambda *a, **k: called.append(1) or _decision(False))
+    monkeypatch.setattr(
+        "capauth.authz.decide", lambda *a, **k: called.append(1) or _decision(False)
+    )
     dataplane_auth.enforce_dataplane_auth(_req())  # auth ok -> proceeds
     assert called == []  # PDP never consulted when off
 

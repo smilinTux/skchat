@@ -17,6 +17,7 @@ is an independent test so a failure localizes to exactly what broke.
   4. revoke: per-group revoke kills only that membership (a separate DM keeps
      working); person-level revoke kills everything.
 """
+
 from __future__ import annotations
 
 import io
@@ -26,11 +27,10 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from skchat import call_observability as CO
-from skchat import daemon_proxy
+from skchat import daemon_proxy, livekit_routes
 from skchat import daemon_proxy_groups as G
 from skchat import guest_group_routes as GGR
 from skchat import guest_groups as GG
-from skchat import livekit_routes
 from skchat import webui as _webui
 
 _KEY, _SECRET = "test-key", "test-secret-0123456789"
@@ -172,9 +172,12 @@ def test_disabling_shared_link_blocks_new_joins_not_admitted(client, spies):
     # A new key is blocked...
     assert _join(client, link["token"], name="Eve", pubkey="KEY-E").status_code != 200
     # ...but the already-admitted guest keeps working.
-    assert client.get(
-        "/api/v1/guest/conversation", headers=_auth(admitted["session_token"])
-    ).status_code == 200
+    assert (
+        client.get(
+            "/api/v1/guest/conversation", headers=_auth(admitted["session_token"])
+        ).status_code
+        == 200
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -227,7 +230,8 @@ def test_gdm_both_guests_get_call_token_same_room_ring_and_mute(client, spies):
     # Mute Bob -> his ring is silent (no new guest_call broadcast).
     client.patch(
         f"/api/v1/guest-dm/contacts/{GG.pubkey_fingerprint('KEY-B')}",
-        json={"muted": True}, headers=_OP,
+        json={"muted": True},
+        headers=_OP,
     )
     before = len(broadcasts)
     client.post("/api/v1/guest/call", json={"ring": True}, headers=_auth(b["session_token"]))
@@ -256,9 +260,10 @@ def test_per_group_revoke_kills_only_that_membership(client, spies):
     assert rg.status_code == 403
     assert rg.json()["detail"]["reason"] == "membership_revoked"
     # ...but Alice's separate 1:1 DM is untouched.
-    assert client.get(
-        "/api/v1/guest/conversation", headers=_auth(a_dm["session_token"])
-    ).status_code == 200
+    assert (
+        client.get("/api/v1/guest/conversation", headers=_auth(a_dm["session_token"])).status_code
+        == 200
+    )
 
 
 def test_person_revoke_kills_everything(client, spies):

@@ -79,9 +79,7 @@ def test_repull_bypasses_ttl_staleness(client, monkeypatch):
     from skchat import daemon_proxy, prekey_exchange
 
     calls: list[str] = []
-    monkeypatch.setattr(
-        prekey_exchange, "fetch_peer_prekey", lambda p, **k: calls.append(p)
-    )
+    monkeypatch.setattr(prekey_exchange, "fetch_peer_prekey", lambda p, **k: calls.append(p))
     # Force "not stale": the TTL gate would skip, the NACK must not.
     monkeypatch.setattr(daemon_proxy, "_peer_bundle_is_stale", lambda *a, **k: False)
 
@@ -98,9 +96,7 @@ def test_non_operator_is_rejected_and_no_repull(client, monkeypatch):
     from skchat import prekey_exchange
 
     calls: list[str] = []
-    monkeypatch.setattr(
-        prekey_exchange, "fetch_peer_prekey", lambda p, **k: calls.append(p)
-    )
+    monkeypatch.setattr(prekey_exchange, "fetch_peer_prekey", lambda p, **k: calls.append(p))
 
     r = client.post("/api/v1/dm/decrypt-failed", json={"peer": "chef"})
     assert r.status_code in (401, 403), r.text
@@ -111,9 +107,7 @@ def test_idempotent_within_window_collapses_to_one_repull(client, monkeypatch):
     from skchat import prekey_exchange
 
     calls: list[str] = []
-    monkeypatch.setattr(
-        prekey_exchange, "fetch_peer_prekey", lambda p, **k: calls.append(p)
-    )
+    monkeypatch.setattr(prekey_exchange, "fetch_peer_prekey", lambda p, **k: calls.append(p))
 
     first = client.post(
         "/api/v1/dm/decrypt-failed",

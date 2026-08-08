@@ -49,7 +49,9 @@ def _wire(token) -> str:
     return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
 
 
-def _agent_home(tmp_path: Path, fingerprint: str = "AABBCCDDEE1122334455AABBCCDDEE1122334455") -> Path:
+def _agent_home(
+    tmp_path: Path, fingerprint: str = "AABBCCDDEE1122334455AABBCCDDEE1122334455"
+) -> Path:
     """Create a minimal agent home with an identity file (mirrors capauth tests)."""
     home = tmp_path / ".skcapstone"
     (home / "identity").mkdir(parents=True)
@@ -84,8 +86,11 @@ class TestAudiencePathMocked:
     def test_valid_skchat_token_accepted_when_flag_on(self, tmp_path, monkeypatch):
         home = _agent_home(tmp_path)
         token = mint_audience_token(
-            home=home, subject="chef-session", audience="skchat",
-            scopes=["chat.send"], sign=False,
+            home=home,
+            subject="chef-session",
+            audience="skchat",
+            scopes=["chat.send"],
+            sign=False,
         )
         # Isolate the audience gate: stub the signature/validity half (as
         # capauth/tests/test_audience_tokens.py does) so the real audience-match
@@ -97,8 +102,11 @@ class TestAudiencePathMocked:
     def test_wrong_audience_rejected_when_flag_on(self, tmp_path, monkeypatch):
         home = _agent_home(tmp_path)
         token = mint_audience_token(
-            home=home, subject="s", audience="skcode",
-            scopes=["skcode.stream"], sign=False,
+            home=home,
+            subject="s",
+            audience="skcode",
+            scopes=["skcode.stream"],
+            sign=False,
         )
         monkeypatch.setattr("capauth.tokens.verify_token", lambda t, h=None: True)
         monkeypatch.setenv(dataplane_auth.ACCEPT_AUDIENCE_ENV_FLAG, "1")
@@ -108,7 +116,10 @@ class TestAudiencePathMocked:
     def test_unscoped_token_rejected_when_flag_on(self, tmp_path, monkeypatch):
         home = _agent_home(tmp_path)
         token = issue_token(
-            home=home, subject="s", capabilities=["chat.send"], sign=False,
+            home=home,
+            subject="s",
+            capabilities=["chat.send"],
+            sign=False,
         )
         assert token.payload.audience is None
         monkeypatch.setattr("capauth.tokens.verify_token", lambda t, h=None: True)
@@ -126,8 +137,11 @@ class TestAudiencePathMocked:
     def test_valid_token_not_accepted_when_flag_off(self, tmp_path, monkeypatch):
         home = _agent_home(tmp_path)
         token = mint_audience_token(
-            home=home, subject="s", audience="skchat",
-            scopes=["chat.send"], sign=False,
+            home=home,
+            subject="s",
+            audience="skchat",
+            scopes=["chat.send"],
+            sign=False,
         )
         # Signature half would pass, flag is OFF -> the audience path is never
         # consulted, so the otherwise-valid audience token is NOT accepted.
@@ -139,8 +153,11 @@ class TestAudiencePathMocked:
         """With the flag off, verify_audience_token is never even called."""
         home = _agent_home(tmp_path)
         token = mint_audience_token(
-            home=home, subject="s", audience="skchat",
-            scopes=["chat.send"], sign=False,
+            home=home,
+            subject="s",
+            audience="skchat",
+            scopes=["chat.send"],
+            sign=False,
         )
         called = {"n": 0}
 
@@ -166,14 +183,31 @@ def _gen_gpg_key(gnupghome: Path) -> str | None:
     env = {"GNUPGHOME": str(gnupghome)}
     try:
         subprocess.run(
-            ["gpg", "--batch", "--yes", "--passphrase", "", "--pinentry-mode",
-             "loopback", "--quick-generate-key", "skchat-test@local", "ed25519",
-             "sign", "0"],
-            capture_output=True, text=True, timeout=30, env={**_os_environ(), **env},
+            [
+                "gpg",
+                "--batch",
+                "--yes",
+                "--passphrase",
+                "",
+                "--pinentry-mode",
+                "loopback",
+                "--quick-generate-key",
+                "skchat-test@local",
+                "ed25519",
+                "sign",
+                "0",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env={**_os_environ(), **env},
         )
         out = subprocess.run(
             ["gpg", "--batch", "--with-colons", "--list-secret-keys"],
-            capture_output=True, text=True, timeout=15, env={**_os_environ(), **env},
+            capture_output=True,
+            text=True,
+            timeout=15,
+            env={**_os_environ(), **env},
         )
         for line in out.stdout.splitlines():
             if line.startswith("fpr:"):
@@ -199,24 +233,33 @@ class TestAudiencePathRealSignature:
         home = _agent_home(tmp_path, fingerprint=fp)
 
         good = mint_audience_token(
-            home=home, subject="chef-session", audience="skchat",
-            scopes=["chat.send"], sign=True,
+            home=home,
+            subject="chef-session",
+            audience="skchat",
+            scopes=["chat.send"],
+            sign=True,
         )
         assert good.signature, "token should have been really signed"
 
         wrong = mint_audience_token(
-            home=home, subject="chef-session", audience="skcode",
-            scopes=["skcode.stream"], sign=True,
+            home=home,
+            subject="chef-session",
+            audience="skcode",
+            scopes=["skcode.stream"],
+            sign=True,
         )
         unscoped = issue_token(
-            home=home, subject="chef-session", capabilities=["chat.send"], sign=True,
+            home=home,
+            subject="chef-session",
+            capabilities=["chat.send"],
+            sign=True,
         )
 
         monkeypatch.setenv(dataplane_auth.ACCEPT_AUDIENCE_ENV_FLAG, "1")
         v = dataplane_auth.CapAuthValidator()
-        assert v.validate(_wire(good)) is True          # real signature + audience
-        assert v.validate(_wire(wrong)) is False         # wrong audience
-        assert v.validate(_wire(unscoped)) is False      # unscoped
+        assert v.validate(_wire(good)) is True  # real signature + audience
+        assert v.validate(_wire(wrong)) is False  # wrong audience
+        assert v.validate(_wire(unscoped)) is False  # unscoped
 
         # Same real, valid token is NOT accepted once the flag goes off.
         monkeypatch.delenv(dataplane_auth.ACCEPT_AUDIENCE_ENV_FLAG)

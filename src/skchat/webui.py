@@ -630,9 +630,9 @@ def _skcode_ws_url(upstream: str, path: str, query: str) -> str:
     cannot set headers on a WebSocket), so the host's own gate still decides."""
     base = upstream.rstrip("/")
     if base.startswith("https://"):
-        ws_base = "wss://" + base[len("https://"):]
+        ws_base = "wss://" + base[len("https://") :]
     elif base.startswith("http://"):
-        ws_base = "ws://" + base[len("http://"):]
+        ws_base = "ws://" + base[len("http://") :]
     else:
         ws_base = base
     url = f"{ws_base}/{path.lstrip('/')}"
@@ -737,9 +737,7 @@ async def skcode_ws_proxy(websocket: WebSocket, path: str) -> None:
         if e is not None
     ) or (Exception,)
 
-    upstream_url = _skcode_ws_url(
-        _skcode_upstream(), path, websocket.url.query
-    )
+    upstream_url = _skcode_ws_url(_skcode_upstream(), path, websocket.url.query)
     await websocket.accept()
 
     try:
@@ -780,9 +778,7 @@ async def skcode_ws_proxy(websocket: WebSocket, path: str) -> None:
     down = asyncio.create_task(_client_to_upstream())
     try:
         # When either side closes, tear down both.
-        done, pending = await asyncio.wait(
-            {up, down}, return_when=asyncio.FIRST_COMPLETED
-        )
+        done, pending = await asyncio.wait({up, down}, return_when=asyncio.FIRST_COMPLETED)
         for task in pending:
             task.cancel()
     finally:
@@ -940,9 +936,7 @@ async def embed_token_mint(request: Request) -> JSONResponse:
     # else is a bad request rather than a silent downgrade.
     mode = body.get("mode", MODE_RO)
     if mode not in (MODE_RO, MODE_RW):
-        raise HTTPException(
-            status_code=400, detail=f"mode must be one of {[MODE_RO, MODE_RW]}"
-        )
+        raise HTTPException(status_code=400, detail=f"mode must be one of {[MODE_RO, MODE_RW]}")
     # rw is only mintable for the trusted-module allowlist. Deny (403) for any
     # other module so an embedded write surface stays scoped to skdashboard.
     if mode == MODE_RW and module not in _embed_rw_modules():
@@ -2086,15 +2080,17 @@ def file_status(transfer_id: str) -> JSONResponse:
         bytes_transferred = min(file_size, round(file_size * done / total))
     else:
         bytes_transferred = 0
-    return JSONResponse({
-        "transfer_id": transfer_id,
-        "status": status,
-        "file_name": meta.get("filename", ""),
-        "file_size": file_size,
-        "bytes_transferred": bytes_transferred,
-        "speed_bps": 0,
-        "error_message": meta.get("error") or meta.get("error_message"),
-    })
+    return JSONResponse(
+        {
+            "transfer_id": transfer_id,
+            "status": status,
+            "file_name": meta.get("filename", ""),
+            "file_size": file_size,
+            "bytes_transferred": bytes_transferred,
+            "speed_bps": 0,
+            "error_message": meta.get("error") or meta.get("error_message"),
+        }
+    )
 
 
 @app.get("/file/{transfer_id}")

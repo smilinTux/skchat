@@ -30,13 +30,17 @@ from skchat import webui
 # --------------------------------------------------------------------------- #
 def test_ws_url_mapping_http_and_https_and_query():
     # http -> ws, query preserved verbatim (the token rides here).
-    assert webui._skcode_ws_url(
-        "http://100.108.59.57:9394", "api/v1/sessions/abc/stream", "token=xyz"
-    ) == "ws://100.108.59.57:9394/api/v1/sessions/abc/stream?token=xyz"
+    assert (
+        webui._skcode_ws_url(
+            "http://100.108.59.57:9394", "api/v1/sessions/abc/stream", "token=xyz"
+        )
+        == "ws://100.108.59.57:9394/api/v1/sessions/abc/stream?token=xyz"
+    )
     # https -> wss, no query.
-    assert webui._skcode_ws_url(
-        "https://host:443", "api/v1/sessions/abc/stream", ""
-    ) == "wss://host:443/api/v1/sessions/abc/stream"
+    assert (
+        webui._skcode_ws_url("https://host:443", "api/v1/sessions/abc/stream", "")
+        == "wss://host:443/api/v1/sessions/abc/stream"
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -74,9 +78,7 @@ def test_get_proxy_forwards_path_and_authorization(monkeypatch):
     monkeypatch.setenv("SKCODE_HOSTD_URL", "http://10.0.0.9:9394")
 
     client = TestClient(webui.app)
-    r = client.get(
-        "/skcode/api/v1/sessions", headers={"Authorization": "Bearer op-token"}
-    )
+    r = client.get("/skcode/api/v1/sessions", headers={"Authorization": "Bearer op-token"})
     assert r.status_code == 200
     assert r.json() == {"sessions": []}
     # Proxied under the host base with the /skcode prefix stripped.
@@ -128,9 +130,7 @@ def test_ws_proxy_bridges_stream_and_forwards_token(monkeypatch):
     monkeypatch.setenv("SKCODE_HOSTD_URL", "http://10.0.0.9:9394")
 
     client = TestClient(webui.app)
-    with client.websocket_connect(
-        "/skcode/api/v1/sessions/sid1/stream?token=abc"
-    ) as ws:
+    with client.websocket_connect("/skcode/api/v1/sessions/sid1/stream?token=abc") as ws:
         first = ws.receive_json()
         second = ws.receive_json()
 
@@ -157,8 +157,6 @@ def test_ws_proxy_relays_host_rejection_as_1008(monkeypatch):
     from starlette.websockets import WebSocketDisconnect
 
     with pytest.raises(WebSocketDisconnect) as excinfo:
-        with client.websocket_connect(
-            "/skcode/api/v1/sessions/sid1/stream?token=bad"
-        ) as ws:
+        with client.websocket_connect("/skcode/api/v1/sessions/sid1/stream?token=bad") as ws:
             ws.receive_text()
     assert excinfo.value.code == 1008

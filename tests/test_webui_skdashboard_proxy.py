@@ -41,9 +41,7 @@ def test_rewrite_prefixes_static_and_assets_hrefs_and_srcs():
 
 
 def test_rewrite_is_idempotent_no_double_prefix():
-    once = webui._rewrite_html_asset_prefix(
-        b'<link href="/static/css/board.css">', "/skdashboard"
-    )
+    once = webui._rewrite_html_asset_prefix(b'<link href="/static/css/board.css">', "/skdashboard")
     twice = webui._rewrite_html_asset_prefix(once, "/skdashboard")
     assert once == twice
     assert b"/skdashboard/skdashboard" not in twice

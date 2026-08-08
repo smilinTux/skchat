@@ -68,9 +68,7 @@ def client(tmp_path, monkeypatch, operator_crypto):
     monkeypatch.setenv("SKCHAT_HOME", str(tmp_path))
     monkeypatch.delenv("SKCHAT_DATAPLANE_AUTH", raising=False)
     monkeypatch.setenv("SKCHAT_GUEST_OPERATOR_TOKEN", OPERATOR_TOKEN)
-    monkeypatch.setattr(
-        "skchat.crypto.load_agent_crypto", lambda *a, **k: operator_crypto
-    )
+    monkeypatch.setattr("skchat.crypto.load_agent_crypto", lambda *a, **k: operator_crypto)
     app = FastAPI()
     app.include_router(daemon_proxy.router)
     return TestClient(app)
@@ -126,9 +124,10 @@ def test_sign_covers_exact_canonical_bytes(client, alice_keys):
         sort_keys=True,
         separators=(",", ":"),
     ).encode("utf-8")
-    assert _canonical_signed_bytes(
-        {"hybrid_public_hex": PUB_HEX, "key_id": KEY_ID, "suite": SUITE}
-    ) == expected
+    assert (
+        _canonical_signed_bytes({"hybrid_public_hex": PUB_HEX, "key_id": KEY_ID, "suite": SUITE})
+        == expected
+    )
 
     tampered = {
         "suite": SUITE,

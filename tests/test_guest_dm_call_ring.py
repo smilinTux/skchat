@@ -17,11 +17,10 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from skchat import call_observability as CO
-from skchat import daemon_proxy
+from skchat import daemon_proxy, livekit_routes
 from skchat import daemon_proxy_groups as G
 from skchat import guest_group_routes as GGR
 from skchat import guest_groups as GG
-from skchat import livekit_routes
 from skchat import webui as _webui
 
 _KEY, _SECRET = "test-key", "test-secret-0123456789"

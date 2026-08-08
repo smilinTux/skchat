@@ -12,6 +12,7 @@ The file half is a smoke test of the sharing rules a promoted room implies: a
 guest's upload is readable by the room's other guest and by the operator, and a
 revoked guest is refused honestly rather than silently served.
 """
+
 from __future__ import annotations
 
 import io
@@ -21,11 +22,10 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from skchat import call_observability as CO
-from skchat import daemon_proxy
+from skchat import daemon_proxy, livekit_routes
 from skchat import daemon_proxy_groups as G
 from skchat import guest_group_routes as GGR
 from skchat import guest_groups as GG
-from skchat import livekit_routes
 from skchat import webui as _webui
 
 _KEY, _SECRET = "test-key", "test-secret-0123456789"
@@ -117,9 +117,7 @@ def test_a_quiet_gdm_reports_no_ring(client, gdm):
 
 def test_a_guest_call_on_a_gdm_reaches_a_ws_less_operator(client, gdm):
     gid, _a, b = gdm
-    r = client.post(
-        "/api/v1/guest/call", json={"ring": True}, headers=_auth(b["session_token"])
-    )
+    r = client.post("/api/v1/guest/call", json={"ring": True}, headers=_auth(b["session_token"]))
     assert r.status_code == 200, r.text
 
     conv = G.group_to_conversation(G.load_group(gid))
@@ -137,9 +135,12 @@ def test_the_ringer_identity_is_server_resolved_alias_wins(client, gdm):
     picked as if the operator had approved it."""
     gid, _a, b = gdm
     fp_b = GG.pubkey_fingerprint("KEY-B")
-    assert client.patch(
-        f"/api/v1/guest-dm/contacts/{fp_b}", json={"alias": "Work Bob"}, headers=_OP
-    ).status_code == 200
+    assert (
+        client.patch(
+            f"/api/v1/guest-dm/contacts/{fp_b}", json={"alias": "Work Bob"}, headers=_OP
+        ).status_code
+        == 200
+    )
     client.post("/api/v1/guest/call", json={"ring": True}, headers=_auth(b["session_token"]))
 
     ringer = _ringers(gid)[0]
@@ -163,9 +164,7 @@ def test_a_muted_guest_never_stamps_a_ring_on_a_gdm(client, gdm):
     fp_b = GG.pubkey_fingerprint("KEY-B")
     client.patch(f"/api/v1/guest-dm/contacts/{fp_b}", json={"muted": True}, headers=_OP)
 
-    r = client.post(
-        "/api/v1/guest/call", json={"ring": True}, headers=_auth(b["session_token"])
-    )
+    r = client.post("/api/v1/guest/call", json={"ring": True}, headers=_auth(b["session_token"]))
     # The token still mints (the call works); it just rings nobody.
     assert r.status_code == 200
     assert _ringers(gid) == []

@@ -133,7 +133,11 @@ _ROUTE_CAPABILITY_RULES: tuple[tuple[str, str, str], ...] = (
     ("GET", "/agent/state", CAP_STATUS),
     ("GET", "/adapters", CAP_STATUS),
     ("GET", "/api/board", CAP_STATUS),  # interim; migrates to skboard.read (L1.8)
-    ("GET", "/api/v1/guest-dm/contacts", CAP_STATUS),  # operator-only: read the dm_contacts registry
+    (
+        "GET",
+        "/api/v1/guest-dm/contacts",
+        CAP_STATUS,
+    ),  # operator-only: read the dm_contacts registry
     # --- skchat.prekey (publish/sign/delete own prekey bundles) ------------- #
     ("POST", "/api/v1/prekey", CAP_PREKEY),
     ("POST", "/api/v1/prekey/sign", CAP_PREKEY),

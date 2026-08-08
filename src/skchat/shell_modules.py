@@ -193,7 +193,7 @@ def _rewrite_prefix(manifest: dict, from_prefix: str, to_prefix: str) -> None:
 
     def _swap(value):
         if isinstance(value, str) and value.startswith(from_prefix):
-            return to_prefix.rstrip("/") + value[len(from_prefix):]
+            return to_prefix.rstrip("/") + value[len(from_prefix) :]
         return value
 
     if "health" in manifest:

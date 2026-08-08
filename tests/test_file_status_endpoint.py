@@ -23,11 +23,19 @@ def _seed(tmp_path, tid, meta):
 
 def test_outbound_in_progress(tmp_path, monkeypatch):
     monkeypatch.setenv("SKCHAT_HOME", str(tmp_path))
-    _seed(tmp_path, "tid-1", {
-        "transfer_id": "tid-1", "filename": "report.pdf", "file_size": 1000,
-        "status": "sending", "direction": "outbound", "total_chunks": 4,
-        "chunks_sent": 2,
-    })
+    _seed(
+        tmp_path,
+        "tid-1",
+        {
+            "transfer_id": "tid-1",
+            "filename": "report.pdf",
+            "file_size": 1000,
+            "status": "sending",
+            "direction": "outbound",
+            "total_chunks": 4,
+            "chunks_sent": 2,
+        },
+    )
     r = TestClient(webui.app).get("/api/v1/file_status", params={"transfer_id": "tid-1"})
     assert r.status_code == 200
     j = r.json()
@@ -40,11 +48,19 @@ def test_outbound_in_progress(tmp_path, monkeypatch):
 
 def test_completed_reports_full_bytes(tmp_path, monkeypatch):
     monkeypatch.setenv("SKCHAT_HOME", str(tmp_path))
-    _seed(tmp_path, "tid-2", {
-        "transfer_id": "tid-2", "filename": "a.bin", "file_size": 2048,
-        "status": "complete", "direction": "outbound", "total_chunks": 8,
-        "chunks_sent": 8,
-    })
+    _seed(
+        tmp_path,
+        "tid-2",
+        {
+            "transfer_id": "tid-2",
+            "filename": "a.bin",
+            "file_size": 2048,
+            "status": "complete",
+            "direction": "outbound",
+            "total_chunks": 8,
+            "chunks_sent": 8,
+        },
+    )
     j = TestClient(webui.app).get("/api/v1/file_status", params={"transfer_id": "tid-2"}).json()
     assert j["status"] == "completed"
     assert j["bytes_transferred"] == 2048
@@ -52,10 +68,18 @@ def test_completed_reports_full_bytes(tmp_path, monkeypatch):
 
 def test_failed_carries_error(tmp_path, monkeypatch):
     monkeypatch.setenv("SKCHAT_HOME", str(tmp_path))
-    _seed(tmp_path, "tid-3", {
-        "transfer_id": "tid-3", "filename": "x", "file_size": 10,
-        "status": "failed", "direction": "outbound", "error": "chunk hash mismatch",
-    })
+    _seed(
+        tmp_path,
+        "tid-3",
+        {
+            "transfer_id": "tid-3",
+            "filename": "x",
+            "file_size": 10,
+            "status": "failed",
+            "direction": "outbound",
+            "error": "chunk hash mismatch",
+        },
+    )
     j = TestClient(webui.app).get("/api/v1/file_status", params={"transfer_id": "tid-3"}).json()
     assert j["status"] == "failed"
     assert j["error_message"] == "chunk hash mismatch"
@@ -63,9 +87,12 @@ def test_failed_carries_error(tmp_path, monkeypatch):
 
 def test_unknown_transfer_is_404(tmp_path, monkeypatch):
     monkeypatch.setenv("SKCHAT_HOME", str(tmp_path))
-    assert TestClient(webui.app).get(
-        "/api/v1/file_status", params={"transfer_id": "nope"}
-    ).status_code == 404
+    assert (
+        TestClient(webui.app)
+        .get("/api/v1/file_status", params={"transfer_id": "nope"})
+        .status_code
+        == 404
+    )
 
 
 def test_missing_param_is_422(tmp_path, monkeypatch):
