@@ -72,6 +72,43 @@ def test_a_non_operator_is_refused(client, store):
     assert client.get("/api/v1/operator/devices").status_code in (401, 403)
 
 
+def test_a_non_operator_is_refused_on_delete(client, store):
+    me = _enrol(store, "mydevice", "1111111111111111")
+    assert client.delete(f"/api/v1/operator/devices/{me}").status_code in (401, 403)
+    assert store.is_enrolled(me) is True
+
+
+def test_a_non_operator_is_refused_on_unlink_others(client, store):
+    _enrol(store, "mydevice", "1111111111111111")
+    assert client.post("/api/v1/operator/devices/unlink-others").status_code in (401, 403)
+
+
+def test_delete_refuses_a_shared_token_caller_with_no_session(client, store):
+    # A caller authenticated with the shared operator token (not a session
+    # Bearer) passes _require_operator but has no resolvable device_fp, so
+    # _current_device_fp returns "". Before the Critical-1 fix this let a
+    # shared-token caller DELETE any device, including looping over every one.
+    me = _enrol(store, "mydevice", "1111111111111111")
+    r = client.delete(
+        f"/api/v1/operator/devices/{me}",
+        headers={"Authorization": "Bearer op-secret"},
+    )
+    assert r.status_code == 400
+    assert store.is_enrolled(me) is True
+
+
+def test_delete_refuses_a_loopback_caller_with_no_session(client, store, monkeypatch):
+    # With no shared operator token configured, _require_operator falls back to
+    # trusting the loopback/tailnet caller outright -- no auth headers at all.
+    # That caller still has no resolvable device_fp, so DELETE must 400 rather
+    # than silently treat it as authorized to unlink anything.
+    me = _enrol(store, "mydevice", "1111111111111111")
+    monkeypatch.delenv("SKCHAT_GUEST_OPERATOR_TOKEN", raising=False)
+    r = client.delete(f"/api/v1/operator/devices/{me}")
+    assert r.status_code == 400
+    assert store.is_enrolled(me) is True
+
+
 def test_unlink_removes_the_other_device_and_its_slot(client, store):
     me = _enrol(store, "mydevice", "1111111111111111")
     other = _enrol(store, "otherdev", "2222222222222222")
@@ -107,6 +144,50 @@ def test_unlink_others_spares_the_caller(client, store):
     assert store.is_enrolled(me) is True
     assert store.is_enrolled(a) is False and store.is_enrolled(b) is False
     assert [d["device_fp"] for d in DR.list_devices()] == [me]
+
+
+def test_unlink_others_surfaces_a_degraded_report(client, store):
+    # A device whose registry row has no key_ids (never published, or predates
+    # the registry) makes unlink_device() report registry_had_no_slots=True.
+    # Task 7's report fields exist precisely so that is visible, not silently
+    # folded into a bare success -- assert unlink-others actually surfaces it.
+    me = _enrol(store, "mydevice", "1111111111111111")
+    pub = base64.b64encode(b"noslotdev".ljust(32, b"\0")).decode()
+    no_slot_fp = store.enroll(pub)
+    DR.record_enroll(
+        no_slot_fp, label="noslot", label_source="client", platform="app", user_agent="UA"
+    )
+
+    r = client.post("/api/v1/operator/devices/unlink-others", headers=_as(me))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert no_slot_fp in body["unlinked"]
+    assert no_slot_fp in body["degraded"]
+    assert body["skipped"] == []
+    assert body["reports"][no_slot_fp]["registry_had_no_slots"] is True
+
+
+def test_unlink_others_reports_a_vanished_device_as_skipped(client, store, monkeypatch):
+    me = _enrol(store, "mydevice", "1111111111111111")
+    ghost = _enrol(store, "ghostdev", "9999999999999999")
+
+    from skchat import device_unlink as DU
+
+    real_unlink_device = DU.unlink_device
+
+    def _flaky(fp, *, device_store, owner="chef"):
+        if fp == ghost:
+            raise KeyError(fp)
+        return real_unlink_device(fp, device_store=device_store, owner=owner)
+
+    monkeypatch.setattr(DU, "unlink_device", _flaky)
+
+    r = client.post("/api/v1/operator/devices/unlink-others", headers=_as(me))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert ghost in body["skipped"]
+    assert ghost not in body["unlinked"]
+    assert ghost not in body["reports"]
 
 
 def test_every_new_route_is_capability_mapped_for_the_enforcing_pdp():

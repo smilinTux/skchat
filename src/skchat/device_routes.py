@@ -7,7 +7,12 @@ here.
 
 Authorization reuses ``guest._require_operator``, which already accepts EITHER
 the shared operator token OR an enrolled-operator session Bearer, so the app's
-existing auth interceptor works unchanged.
+existing auth interceptor works unchanged. Self-lockout protection is stricter
+than that, though: both single-device DELETE and unlink-others additionally
+require a resolvable operator SESSION (not just any accepted credential),
+because only a session carries the caller's own device_fp -- without it,
+neither route can tell whether a target fingerprint is the device making the
+call, so both fail closed with 400 rather than risk unlinking the caller.
 """
 
 from __future__ import annotations
@@ -24,9 +29,12 @@ def _current_device_fp(request: Request) -> str:
     """The fingerprint of the device making this call, or "" if unknown.
 
     Read from the caller's own operator session. A caller presenting the shared
-    operator token instead of a session has no device identity, which simply
-    means no row is marked current and self-unlink cannot be detected. That is
-    why unlink-others refuses to run without a known current device.
+    operator token, or an unauthenticated loopback/tailnet caller (the two other
+    paths ``guest._require_operator`` accepts), has no device identity, so this
+    returns "". Both single-device DELETE and unlink-others treat that as a hard
+    400: without a known current device neither route can tell whether a target
+    fingerprint IS the caller, so both refuse rather than risk stranding the
+    operator by unlinking the device it is using.
     """
     session = getattr(request.state, "operator_session", None)
     if session is not None and getattr(session, "device_fp", ""):
@@ -69,7 +77,15 @@ def register_device_routes(app: FastAPI, *, device_store) -> None:
         _require_operator(request)
         from skchat import device_unlink as DU
 
-        if device_fp == _current_device_fp(request):
+        current = _current_device_fp(request)
+        if not current:
+            raise HTTPException(
+                400,
+                "an operator session is required so this route can tell whether "
+                "you are unlinking the device you are using; if you have no "
+                "enrolled device to authenticate with, use `skchat devices reset`",
+            )
+        if device_fp == current:
             raise HTTPException(
                 400,
                 "cannot unlink the device you are using; unlink it from another "
@@ -93,16 +109,37 @@ def register_device_routes(app: FastAPI, *, device_store) -> None:
             raise HTTPException(
                 400, "unlink-others requires an operator session so this device can be spared"
             )
-        unlinked = []
+        # ``unlinked`` keeps its original bare-fp shape (the app client depends on
+        # it); ``reports``/``skipped``/``degraded`` add the visibility Task 7's
+        # report fields exist for, so a partial unlink is never silent here either.
+        unlinked: list[str] = []
+        reports: dict[str, dict] = {}
+        skipped: list[str] = []
+        degraded: list[str] = []
         for row in DR.list_devices():
             fp = row["device_fp"]
             if fp == current:
                 continue
             try:
-                DU.unlink_device(fp, device_store=device_store)
-                unlinked.append(fp)
+                report = DU.unlink_device(fp, device_store=device_store)
             except KeyError:
+                skipped.append(fp)
+                logger.warning(
+                    "unlink-others: %s vanished before it could be unlinked", fp
+                )
                 continue
-        return JSONResponse({"unlinked": unlinked})
+            unlinked.append(fp)
+            reports[fp] = report
+            is_degraded = (
+                bool(report.get("slots_failed"))
+                or bool(report.get("registry_had_no_slots"))
+                or (report.get("capauth_records_failed") or 0) > 0
+            )
+            if is_degraded:
+                degraded.append(fp)
+                logger.warning("unlink-others: %s unlinked with a degraded report: %s", fp, report)
+        return JSONResponse(
+            {"unlinked": unlinked, "reports": reports, "skipped": skipped, "degraded": degraded}
+        )
 
     app.include_router(router)
