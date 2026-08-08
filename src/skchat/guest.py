@@ -140,6 +140,12 @@ def _connect() -> sqlite3.Connection:
         "  expires_at REAL NOT NULL"
         ")"
     )
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS revoked_device_fps ("
+        "  device_fp TEXT PRIMARY KEY,"
+        "  revoked_at REAL NOT NULL"
+        ")"
+    )
     conn.commit()
     return conn
 
@@ -201,6 +207,89 @@ def _is_revoked(jti: str) -> bool:
             conn.close()
         if row is not None:
             _revoked_cache.add(jti)
+            return True
+        return False
+
+
+# ── Revocation by device fingerprint (Linked Devices) ───────────────────────
+# Session kill for a whole DEVICE rather than a single jti. Operator sessions
+# are stateless JWTs with no server-side registry, so there is no way to
+# enumerate the jtis a device currently holds. Keying revocation on the
+# ``device_fp`` claim instead means one write kills every session that device
+# has ever been issued, including any minted a second before the unlink.
+# Same cache-fronts-SQLite shape as the jti set above.
+
+_revoked_devices: set[str] = set()
+_revoked_devices_loaded = False
+
+
+def _reset_device_revocation_cache() -> None:
+    """Drop the in-memory device cache so the next check re-reads the DB."""
+    global _revoked_devices_loaded
+    with _store_lock:
+        _revoked_devices.clear()
+        _revoked_devices_loaded = False
+
+
+def _load_revoked_devices(conn: sqlite3.Connection) -> None:
+    global _revoked_devices_loaded
+    rows = conn.execute("SELECT device_fp FROM revoked_device_fps").fetchall()
+    _revoked_devices.clear()
+    _revoked_devices.update(r[0] for r in rows)
+    _revoked_devices_loaded = True
+
+
+def revoke_device(device_fp: str) -> None:
+    """Revoke every session belonging to *device_fp*. Idempotent."""
+    if not device_fp:
+        return
+    with _store_lock:
+        conn = _connect()
+        try:
+            conn.execute(
+                "INSERT OR IGNORE INTO revoked_device_fps (device_fp, revoked_at) VALUES (?, ?)",
+                (device_fp, time.time()),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        _revoked_devices.add(device_fp)
+
+
+def unrevoke_device(device_fp: str) -> None:
+    """Clear a device revocation, so re-enrolling the same key works again."""
+    if not device_fp:
+        return
+    with _store_lock:
+        conn = _connect()
+        try:
+            conn.execute("DELETE FROM revoked_device_fps WHERE device_fp = ?", (device_fp,))
+            conn.commit()
+        finally:
+            conn.close()
+        _revoked_devices.discard(device_fp)
+
+
+def is_device_revoked(device_fp: str) -> bool:
+    """True if *device_fp* is revoked. Cache-first; the DB is the source of truth."""
+    if not device_fp:
+        return False
+    with _store_lock:
+        if device_fp in _revoked_devices:
+            return True
+        conn = _connect()
+        try:
+            if not _revoked_devices_loaded:
+                _load_revoked_devices(conn)
+                if device_fp in _revoked_devices:
+                    return True
+            row = conn.execute(
+                "SELECT 1 FROM revoked_device_fps WHERE device_fp = ?", (device_fp,)
+            ).fetchone()
+        finally:
+            conn.close()
+        if row is not None:
+            _revoked_devices.add(device_fp)
             return True
         return False
 

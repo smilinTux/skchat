@@ -73,10 +73,14 @@ def verify_operator_session(token: str) -> OperatorSession:
         raise OperatorAuthError(f"invalid operator session: {e}") from e
     if claims.get("tier") != _TIER:
         raise OperatorAuthError("wrong tier")
-    from .guest import _is_revoked  # reuse the guest revocation set
+    from .guest import _is_revoked, is_device_revoked  # reuse the guest revocation store
 
     if _is_revoked(claims["jti"]):
         raise OperatorAuthError("revoked")
+    # Device-level kill: unlinking a device revokes its fingerprint once, which
+    # invalidates every session it holds without needing to know their jtis.
+    if is_device_revoked(claims["device_fp"]):
+        raise OperatorAuthError("device revoked")
     return OperatorSession(jti=claims["jti"], device_fp=claims["device_fp"], exp=claims["exp"])
 
 
