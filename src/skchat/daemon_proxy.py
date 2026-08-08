@@ -1242,6 +1242,13 @@ async def api_publish_prekey(
     if body.get("sig") and not body.get("signature"):
         body["signature"] = body["sig"]
     owner = _short_name((body.get("owner") or OPERATOR_ID))
+    # Card c5bbb20d: an owner like "@x" normalises to an EMPTY short name, which
+    # used to collapse the slot directory to the peers/ root and let a publish
+    # land on another identity's legacy flat-file path. pq_prekeys._peer_dir is
+    # the hard chokepoint and now refuses it, but reject here too so the caller
+    # gets a 400 instead of a 500 from an uncaught ValueError.
+    if not owner.strip():
+        raise HTTPException(400, "prekey bundle rejected: empty owner")
     # Verification is staged by SKCHAT_REQUIRE_SIGNED_PREKEYS (off/shadow/enforce).
     # Resolve the claimed identity's signer key whenever we are NOT off: shadow
     # needs it too, otherwise every bundle would report no-signer-key and the
