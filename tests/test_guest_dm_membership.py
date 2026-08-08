@@ -19,7 +19,6 @@ Per task 2a45f549 (epic 8685ede6, depends on S2/S3/S4/G1). Covers:
 
 from __future__ import annotations
 
-import sqlite3
 import time
 
 import pytest
@@ -96,8 +95,7 @@ def test_membership_table_created(env):
     conn = GG._connect()
     try:
         tables = {
-            row[0]
-            for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
         }
     finally:
         conn.close()
@@ -113,8 +111,18 @@ def test_migration_backfills_legacy_dm_contacts_row(env):
             "INSERT INTO dm_contacts (fp, guest_id, group_id, invite_jti, alias,"
             " contact_expires_at, status, muted, created_at, last_seen_at)"
             " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            ("legacyfp", "guest:x#legacyfp", "legacy-group", "legacy-jti", None, None,
-             "active", 0, 1000.0, 1000.0),
+            (
+                "legacyfp",
+                "guest:x#legacyfp",
+                "legacy-group",
+                "legacy-jti",
+                None,
+                None,
+                "active",
+                0,
+                1000.0,
+                1000.0,
+            ),
         )
         conn.commit()
     finally:
@@ -135,8 +143,18 @@ def test_migration_carries_revoked_status(env):
             "INSERT INTO dm_contacts (fp, guest_id, group_id, invite_jti, alias,"
             " contact_expires_at, status, muted, created_at, last_seen_at)"
             " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            ("revfp", "guest:x#revfp", "rev-group", "rev-jti", None, None,
-             "revoked", 0, 500.0, 500.0),
+            (
+                "revfp",
+                "guest:x#revfp",
+                "rev-group",
+                "rev-jti",
+                None,
+                None,
+                "revoked",
+                0,
+                500.0,
+                500.0,
+            ),
         )
         conn.commit()
     finally:
@@ -277,9 +295,7 @@ def test_per_group_revoke_route(env, client):
 
 
 def test_per_group_revoke_route_404_for_unknown(env, client):
-    r = client.post(
-        "/api/v1/guest-dm/contacts/nope/groups/no-group/revoke", headers=_OP
-    )
+    r = client.post("/api/v1/guest-dm/contacts/nope/groups/no-group/revoke", headers=_OP)
     assert r.status_code == 404
 
 
@@ -406,18 +422,14 @@ def test_reason_codes_are_distinct(env, client):
     r1 = _join(client, inv1["token"], pubkey="KEY-M")
     fp1 = GG.pubkey_fingerprint("KEY-M")
     GG.revoke_group_membership(fp1, gid1)
-    resp1 = client.get(
-        "/api/v1/guest/conversation", headers=_auth(r1.json()["session_token"])
-    )
+    resp1 = client.get("/api/v1/guest/conversation", headers=_auth(r1.json()["session_token"]))
 
     # contact_revoked
     inv2 = GG.create_dm_invite(operator_uri=_OPERATOR)
     r2 = _join(client, inv2["token"], pubkey="KEY-P")
     fp2 = GG.pubkey_fingerprint("KEY-P")
     GG.revoke_dm_contact(fp2)
-    resp2 = client.get(
-        "/api/v1/guest/conversation", headers=_auth(r2.json()["session_token"])
-    )
+    resp2 = client.get("/api/v1/guest/conversation", headers=_auth(r2.json()["session_token"]))
 
     # group_expired
     inv3 = GG.create_dm_invite(operator_uri=_OPERATOR)
@@ -426,9 +438,7 @@ def test_reason_codes_are_distinct(env, client):
     grp3 = G.load_group(gid3)
     grp3.metadata["expires_at"] = time.time() - 10
     G.save_group(grp3)
-    resp3 = client.get(
-        "/api/v1/guest/conversation", headers=_auth(r3.json()["session_token"])
-    )
+    resp3 = client.get("/api/v1/guest/conversation", headers=_auth(r3.json()["session_token"]))
 
     reasons = {
         resp1.json()["detail"]["reason"],

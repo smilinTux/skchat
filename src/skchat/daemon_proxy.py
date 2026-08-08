@@ -885,6 +885,8 @@ def _slot_is_sealable(slot: dict) -> bool:
         return True
     except Exception:
         return False
+
+
 def _open_pqdm2_inbound(token: str, *, sender_short: str) -> str | None:
     """Open a `pqdm2:` fanout token by unwrapping THIS device's own slot.
 
@@ -1068,9 +1070,7 @@ def _force_repull_peer(short: str) -> bool:
         prekey_exchange.fetch_peer_prekey(fqid, http_get=_urllib_get_json)
     except Exception:
         # Best-effort only: a failed re-pull must never 500 the NACK.
-        logger.debug(
-            "decrypt-failure re-pull for %s failed (best-effort)", short, exc_info=True
-        )
+        logger.debug("decrypt-failure re-pull for %s failed (best-effort)", short, exc_info=True)
     return True
 
 

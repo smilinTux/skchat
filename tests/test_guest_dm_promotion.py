@@ -120,9 +120,7 @@ def test_mint_mode_dm_with_seat_cap_override_on_first_promotion(env, client):
     inv = GG.create_dm_invite(operator_uri=_OPERATOR)
     gid = inv["group_id"]
 
-    r = client.post(
-        f"/api/v1/groups/{gid}/invite?mode=dm", json={"seat_cap": 4}, headers=_OP
-    )
+    r = client.post(f"/api/v1/groups/{gid}/invite?mode=dm", json={"seat_cap": 4}, headers=_OP)
     assert r.status_code == 200, r.text
     grp = G.load_group(gid)
     assert grp.metadata.get("seat_cap") == 4
@@ -241,7 +239,9 @@ def test_gdm_epoch_fence_per_guest(env, client):
 
     # A message posted after Alice joined but before the promotion.
     _save_group_msg(
-        hist, gid, "after-alice-before-promo",
+        hist,
+        gid,
+        "after-alice-before-promo",
         when=datetime.fromtimestamp(1_500.0, tz=timezone.utc),
     )
 
@@ -250,7 +250,9 @@ def test_gdm_epoch_fence_per_guest(env, client):
 
     # A message posted after the promotion but before Bob (the 3rd guest) joins.
     _save_group_msg(
-        hist, gid, "after-promo-before-bob",
+        hist,
+        gid,
+        "after-promo-before-bob",
         when=datetime.fromtimestamp(1_600.0, tz=timezone.utc),
     )
 
@@ -267,9 +269,7 @@ def test_gdm_epoch_fence_per_guest(env, client):
     assert "after-promo-before-bob" not in bob_bodies
 
     # Original member (Alice) keeps full history, including pre-promotion msgs.
-    alice_conv = client.get(
-        "/api/v1/guest/conversation", headers=_auth(alice_session)
-    ).json()
+    alice_conv = client.get("/api/v1/guest/conversation", headers=_auth(alice_session)).json()
     alice_bodies = [m["body"] for m in alice_conv["messages"]]
     assert "after-alice-before-promo" in alice_bodies
     assert "after-promo-before-bob" in alice_bodies

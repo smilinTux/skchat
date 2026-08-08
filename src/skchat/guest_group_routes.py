@@ -247,7 +247,9 @@ async def operator_create_invite(group_id: str, request: Request, mode: str = "g
                 seat_cap_raw = body.get("seat_cap")
                 try:
                     seat_cap = (
-                        int(seat_cap_raw) if seat_cap_raw is not None else GG.gdm_seat_cap_default()
+                        int(seat_cap_raw)
+                        if seat_cap_raw is not None
+                        else GG.gdm_seat_cap_default()
                     )
                 except (TypeError, ValueError):
                     seat_cap = GG.gdm_seat_cap_default()
@@ -1721,9 +1723,7 @@ async def guest_dm_contact_patch(fp: str, request: Request):
     kwargs: dict = {}
     if "alias" in body:
         alias_raw = body.get("alias")
-        kwargs["alias"] = (
-            (str(alias_raw).strip() or None) if alias_raw not in (None, "") else None
-        )
+        kwargs["alias"] = (str(alias_raw).strip() or None) if alias_raw not in (None, "") else None
     if body.get("contact_ttl") is not None:
         try:
             ttl = int(body["contact_ttl"])

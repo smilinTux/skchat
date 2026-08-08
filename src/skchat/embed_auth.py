@@ -165,9 +165,7 @@ def _secret() -> str:
         return explicit
     operator = os.environ.get(_OPERATOR_SECRET_ENV, "")
     if not operator:
-        raise EmbedAuthError(
-            f"neither {_EMBED_SECRET_ENV} nor {_OPERATOR_SECRET_ENV} is set"
-        )
+        raise EmbedAuthError(f"neither {_EMBED_SECRET_ENV} nor {_OPERATOR_SECRET_ENV} is set")
     return hashlib.sha256(_DERIVE_TAG + operator.encode("utf-8")).hexdigest()
 
 
@@ -252,12 +250,8 @@ def verify_embed_token(token: str, module: str) -> EmbedToken:
     if mode not in _MODES:
         raise EmbedAuthError(f"unknown mode {mode!r}")
     if claims.get("module") != module:
-        raise EmbedAuthError(
-            f"embed token scoped to {claims.get('module')!r}, not {module!r}"
-        )
-    return EmbedToken(
-        jti=claims["jti"], module=claims["module"], exp=claims["exp"], mode=mode
-    )
+        raise EmbedAuthError(f"embed token scoped to {claims.get('module')!r}, not {module!r}")
+    return EmbedToken(jti=claims["jti"], module=claims["module"], exp=claims["exp"], mode=mode)
 
 
 def _token_from_request(request: Request, module: str) -> str | None:

@@ -997,9 +997,7 @@ def list_dm_contacts() -> list[dict]:
     with _store_lock:
         conn = _connect()
         try:
-            rows = conn.execute(
-                _DM_CONTACT_SELECT + " ORDER BY last_seen_at DESC"
-            ).fetchall()
+            rows = conn.execute(_DM_CONTACT_SELECT + " ORDER BY last_seen_at DESC").fetchall()
         finally:
             conn.close()
     return [dict(zip(_DM_CONTACT_COLUMNS, row)) for row in rows]
@@ -1067,9 +1065,7 @@ def update_dm_contact(
                 return False
             if sets:
                 params.append(f)
-                conn.execute(
-                    f"UPDATE dm_contacts SET {', '.join(sets)} WHERE fp = ?", params
-                )
+                conn.execute(f"UPDATE dm_contacts SET {', '.join(sets)} WHERE fp = ?", params)
                 conn.commit()
         finally:
             conn.close()

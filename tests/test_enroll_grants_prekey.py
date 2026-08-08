@@ -25,7 +25,8 @@ from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from skchat import daemon_proxy, operator_auth as oa
+from skchat import daemon_proxy
+from skchat import operator_auth as oa
 from skchat.operator_auth_routes import register_operator_auth_routes
 
 

@@ -92,9 +92,7 @@ def test_dedupe_live_wins_over_static(monkeypatch, tmp_path):
     monkeypatch.setattr(
         shell_modules,
         "_fetch_json",
-        _fake_fetch(
-            {"http://100.108.59.57:9394/.well-known/skworld-module.json": live_skcode}
-        ),
+        _fake_fetch({"http://100.108.59.57:9394/.well-known/skworld-module.json": live_skcode}),
     )
     # A stale static file for the SAME id must lose to the live-served one.
     (tmp_path / "skcode.skworld-module.json").write_text(
@@ -187,9 +185,7 @@ def test_operator_block_stripped_from_public_aggregate(monkeypatch, tmp_path):
     monkeypatch.setattr(
         shell_modules,
         "_fetch_json",
-        _fake_fetch(
-            {"http://100.108.59.57:9394/.well-known/skworld-module.json": skcode}
-        ),
+        _fake_fetch({"http://100.108.59.57:9394/.well-known/skworld-module.json": skcode}),
     )
     monkeypatch.setattr(shell_modules, "_shell_modules_dir", lambda: tmp_path)
 
@@ -270,9 +266,7 @@ def test_enforce_on_drops_failed_and_disabled(monkeypatch, tmp_path):
     monkeypatch.setattr(
         shell_modules,
         "_fetch_json",
-        _fake_fetch(
-            {"http://127.0.0.1:7778/.well-known/skworld-module.json": dashboard}
-        ),
+        _fake_fetch({"http://127.0.0.1:7778/.well-known/skworld-module.json": dashboard}),
     )
     (tmp_path / "skos.skworld-module.json").write_text(
         json.dumps({"id": "skos", "name": "OS", "grade": "B"})

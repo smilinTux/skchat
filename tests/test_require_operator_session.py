@@ -41,9 +41,7 @@ def test_exact_shared_secret_still_accepted(monkeypatch):
     monkeypatch.setenv(guest._OPERATOR_TOKEN_ENV, "the-shared-secret")
     guest._require_operator(_Req(_bearer("the-shared-secret"), host="203.0.113.9"))
     # X-Operator-Token header form too.
-    guest._require_operator(
-        _Req({"X-Operator-Token": "the-shared-secret"}, host="203.0.113.9")
-    )
+    guest._require_operator(_Req({"X-Operator-Token": "the-shared-secret"}, host="203.0.113.9"))
 
 
 def test_random_bearer_is_rejected(monkeypatch):

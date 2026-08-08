@@ -87,9 +87,7 @@ def test_rename_returns_fresh_session_with_new_name(client):
     old_session = joined["session_token"]
     guest_id = joined["guest_id"]
 
-    r = client.post(
-        "/api/v1/guest/name", json={"name": "Alicia"}, headers=_auth(old_session)
-    )
+    r = client.post("/api/v1/guest/name", json={"name": "Alicia"}, headers=_auth(old_session))
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["ok"] is True
@@ -143,9 +141,7 @@ def test_rename_preserves_guest_id_fp_epoch_fence_and_attribution(client):
     assert member.identity_uri == guest_id
 
     # Message attribution (sender = guest_id) is untouched by the rename.
-    conv = client.get(
-        "/api/v1/guest/conversation", headers=_auth(new_session)
-    ).json()
+    conv = client.get("/api/v1/guest/conversation", headers=_auth(new_session)).json()
     msgs = [m for m in conv["messages"] if m.get("content") == "hi before rename"]
     assert len(msgs) == 1
     assert msgs[0]["sender"] == guest_id

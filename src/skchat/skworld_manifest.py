@@ -44,9 +44,7 @@ def skchat_module_manifest(base_url: str) -> dict:
         "name": "Chats",
         # Grade A: a native Flutter module the shell mounts directly.
         "grade": "A",
-        "entry": {
-            "flutter_package": {"path": "packages/skchat_ui", "package": "skchat_ui"}
-        },
+        "entry": {"flutter_package": {"path": "packages/skchat_ui", "package": "skchat_ui"}},
         "nav": {"icon": "chat", "order": 20, "label": "Chats"},
         "deeplinkPrefix": "skworld://skchat/",
         "auth": {

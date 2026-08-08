@@ -32,7 +32,9 @@ from skchat import dataplane_auth
 # --------------------------------------------------------------------------- #
 # Helpers
 # --------------------------------------------------------------------------- #
-def _agent_home(tmp_path: Path, fingerprint: str = "AABBCCDDEE1122334455AABBCCDDEE1122334455") -> Path:
+def _agent_home(
+    tmp_path: Path, fingerprint: str = "AABBCCDDEE1122334455AABBCCDDEE1122334455"
+) -> Path:
     home = tmp_path / ".skcapstone"
     (home / "identity").mkdir(parents=True, exist_ok=True)
     (home / "security").mkdir(parents=True, exist_ok=True)
@@ -52,7 +54,9 @@ def _agent_home(tmp_path: Path, fingerprint: str = "AABBCCDDEE1122334455AABBCCDD
 def _wire(token) -> str:
     from capauth.tokens import export_token
 
-    return base64.urlsafe_b64encode(export_token(token).encode("utf-8")).decode("ascii").rstrip("=")
+    return (
+        base64.urlsafe_b64encode(export_token(token).encode("utf-8")).decode("ascii").rstrip("=")
+    )
 
 
 class _FakeHeaders(dict):
@@ -66,7 +70,9 @@ class _FakeURL:
 
 
 class _FakeRequest:
-    def __init__(self, headers=None, method: str = "POST", path: str = "/api/v1/audience-token") -> None:
+    def __init__(
+        self, headers=None, method: str = "POST", path: str = "/api/v1/audience-token"
+    ) -> None:
         self.headers = _FakeHeaders({k.lower(): v for k, v in (headers or {}).items()})
         self.method = method
         self.url = _FakeURL(path)
@@ -99,8 +105,11 @@ class TestExtractSubjectAudienceBranch:
 
         home = _agent_home(tmp_path)
         tok = mint_audience_token(
-            home=home, subject="operator:abc123def456", audience="skchat",
-            scopes=["chat.read", "chat.send"], sign=False,
+            home=home,
+            subject="operator:abc123def456",
+            audience="skchat",
+            scopes=["chat.read", "chat.send"],
+            sign=False,
         )
         monkeypatch.setattr("capauth.tokens.verify_token", lambda t, h=None: True)
         monkeypatch.setenv(dataplane_auth.ACCEPT_AUDIENCE_ENV_FLAG, "1")
@@ -111,8 +120,11 @@ class TestExtractSubjectAudienceBranch:
 
         home = _agent_home(tmp_path)
         tok = mint_audience_token(
-            home=home, subject="lumina@chef.skworld", audience="skchat",
-            scopes=["chat.send"], sign=False,
+            home=home,
+            subject="lumina@chef.skworld",
+            audience="skchat",
+            scopes=["chat.send"],
+            sign=False,
         )
         monkeypatch.setattr("capauth.tokens.verify_token", lambda t, h=None: True)
         monkeypatch.setenv(dataplane_auth.ACCEPT_AUDIENCE_ENV_FLAG, "1")
@@ -124,8 +136,11 @@ class TestExtractSubjectAudienceBranch:
 
         home = _agent_home(tmp_path)
         tok = mint_audience_token(
-            home=home, subject="operator:abc123", audience="skchat",
-            scopes=["chat.send"], sign=False,
+            home=home,
+            subject="operator:abc123",
+            audience="skchat",
+            scopes=["chat.send"],
+            sign=False,
         )
         called = {"n": 0}
 
@@ -142,8 +157,11 @@ class TestExtractSubjectAudienceBranch:
 
         home = _agent_home(tmp_path)
         tok = mint_audience_token(
-            home=home, subject="operator:abc123", audience="skcode",
-            scopes=["skcode.stream"], sign=False,
+            home=home,
+            subject="operator:abc123",
+            audience="skcode",
+            scopes=["skcode.stream"],
+            sign=False,
         )
         monkeypatch.setattr("capauth.tokens.verify_token", lambda t, h=None: True)
         monkeypatch.setenv(dataplane_auth.ACCEPT_AUDIENCE_ENV_FLAG, "1")
@@ -181,8 +199,11 @@ class TestPrimaryCredentialRule:
 
         home = _agent_home(tmp_path)
         tok = mint_audience_token(
-            home=home, subject="operator:abc123", audience="skchat",
-            scopes=["chat.send"], sign=False,
+            home=home,
+            subject="operator:abc123",
+            audience="skchat",
+            scopes=["chat.send"],
+            sign=False,
         )
         monkeypatch.setattr("capauth.tokens.verify_token", lambda t, h=None: True)
         monkeypatch.setenv(dataplane_auth.ACCEPT_AUDIENCE_ENV_FLAG, "1")
@@ -387,10 +408,15 @@ class TestIssuerShadow:
         hs = oa.mint_operator_session(device_fp="fpSHADOW1", ttl=60)
         home = _agent_home(tmp_path)
         twin = mint_audience_token(
-            home=home, subject=twin_subject, audience="skchat",
-            scopes=["chat.send"], sign=False,
+            home=home,
+            subject=twin_subject,
+            audience="skchat",
+            scopes=["chat.send"],
+            sign=False,
         )
-        monkeypatch.setattr("skchat.operator_audience.mint_operator_audience_token", lambda fp: twin)
+        monkeypatch.setattr(
+            "skchat.operator_audience.mint_operator_audience_token", lambda fp: twin
+        )
         monkeypatch.setattr("capauth.tokens.verify_token", lambda t, h=None: True)
         monkeypatch.setenv(dataplane_auth.ACCEPT_AUDIENCE_ENV_FLAG, "1")
         return hs

@@ -17,7 +17,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install ruff
+      # Pinned: an unpinned ruff lets a new release re-drift the format/lint
+      # rules and turn main red with zero code changes (the "chronically red"
+      # cause). Bump deliberately.
+      - run: pip install ruff==0.15.4
       - run: ruff check src/ tests/
       - run: ruff format --check src/ tests/
 

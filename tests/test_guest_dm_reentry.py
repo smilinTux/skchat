@@ -173,9 +173,7 @@ def test_revoked_contact_403s_every_guest_route(env, client):
     assert r_conv.status_code == 403
     assert r_conv.json()["detail"]["reason"] == "contact_revoked"
 
-    r_send = client.post(
-        "/api/v1/guest/send", json={"body": "hi"}, headers=_auth(session)
-    )
+    r_send = client.post("/api/v1/guest/send", json={"body": "hi"}, headers=_auth(session))
     assert r_send.status_code == 403
     assert r_send.json()["detail"]["reason"] == "contact_revoked"
 
