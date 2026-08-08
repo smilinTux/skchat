@@ -638,7 +638,28 @@ def _gdm_roster_fields(group) -> dict:
         "ringing": bool(ringers),
         "ring_ts": ringers[0]["ring_ts"] if ringers else None,
         "ringers": ringers,
+        # Whole-group expiry (the writer landed in the G7 follow-up: PATCH
+        # /guest-dm/groups/{id}). Emitted so the operator's roster can render
+        # the CURRENT setting instead of a write-only control - a schedule you
+        # cannot read back is a schedule you cannot trust.
+        "expires_at": _group_expires_at(group),
     }
+
+
+def _group_expires_at(group) -> Optional[float]:
+    """The room's whole-group expiry as epoch seconds, or ``None`` if unset.
+
+    Tolerant of a junk value in metadata: a room whose ``expires_at`` cannot be
+    read as a number reports ``None`` (no expiry) rather than breaking the whole
+    group listing, which is what the S3 chokepoint effectively does too.
+    """
+    raw = group.metadata.get("expires_at")
+    if raw is None:
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
 
 
 def _gdm_ringers(group) -> list[dict]:
@@ -735,6 +756,11 @@ def _dm_guest_badge(group) -> dict:
         "muted": bool(contact.get("muted")) if contact else False,
         "ringing": ring_ts is not None,
         "ring_ts": ring_ts,
+        # A 1:1 guest DM is dm-family too, so the S3 chokepoint enforces a
+        # whole-group expiry here exactly as it does on a gdm. Emit it so the
+        # setting is never invisible on this side either, even though the 1:1
+        # UI reaches for the per-CONTACT expiry first.
+        "expires_at": _group_expires_at(group),
     }
 
 
