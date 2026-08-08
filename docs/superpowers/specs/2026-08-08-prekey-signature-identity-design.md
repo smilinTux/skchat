@@ -192,8 +192,15 @@ Bypass invariant:
 - `publish_self_prekey` stores successfully in `enforce` mode, since lumina's
   unsigned self-published slot must keep working
 
-Live evidence, pinned as a fixture test:
-- the 6 real chef slots verify under the daemon attestation key
+End-to-end, synthesized (NOT pinned from live state):
+- an operator bundle signed through the real signing path is accepted by
+  `POST /api/v1/prekey` under `enforce`
+
+Deliberately **not** committing the 6 live chef slots as a fixture. They are real
+operator key material, and a fixture cut from live machine state rots the moment
+a device republishes. The live simulation stays what it is: read-only evidence
+recorded in this spec, reproducible on demand. `test_prekey_armored_interop.py`
+already covers the same path synthetically.
 
 ### 6. Rollout
 
