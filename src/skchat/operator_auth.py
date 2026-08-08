@@ -131,6 +131,28 @@ def verify_device_signature(*, device_pubkey_b64: str, payload: bytes, sig_b64: 
         return False
 
 
+#: Override the enrolled-device store location (tests point this at tmp_path;
+#: an operator can also override it, same as SKCHAT_DEVICE_REGISTRY in
+#: device_registry.py). Mirrored by webui.py and the CLI so there is one
+#: source of truth for the path instead of a literal repeated in each caller.
+OPERATOR_DEVICES_PATH_ENV = "SKCHAT_OPERATOR_DEVICES"
+_DEFAULT_OPERATOR_DEVICES = "~/.skchat/state/operator_devices.json"
+
+
+def default_device_store_path() -> Path:
+    """Resolve the enrolled-device store path.
+
+    Reads :data:`OPERATOR_DEVICES_PATH_ENV` first so tests can point the store
+    at an isolated tmp path and so an operator can relocate it; falls back to
+    the historical default under ``~/.skchat/state``. Before this existed the
+    path was a literal hardcoded in webui.py with nothing reading an env
+    override, so any test claiming isolation via that env var was actually
+    operating on the operator's real device store.
+    """
+    raw = os.getenv(OPERATOR_DEVICES_PATH_ENV, "").strip() or _DEFAULT_OPERATOR_DEVICES
+    return Path(raw).expanduser()
+
+
 class DeviceStore:
     def __init__(self, path: Path):
         self._path = Path(path)

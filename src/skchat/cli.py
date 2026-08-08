@@ -5587,5 +5587,60 @@ def operator_act(action: str, unit: Optional[str]) -> None:
     click.echo(_json.dumps(result, indent=2))
 
 
+@main.group("devices")
+def devices() -> None:
+    """Manage linked operator devices."""
+
+
+@devices.command("reset")
+@click.option("--yes", is_flag=True, help="Confirm: this unlinks every device.")
+def devices_reset(yes: bool) -> None:
+    """Clear every enrolled device, its prekey slots, and the registry.
+
+    The clean cut. A device enrolled before the registry existed has no
+    recorded prekey slots, so unlinking it individually would be silently
+    partial: its sessions would die while its KEM slot stayed live and kept
+    receiving mail. Rather than carry that ambiguity forever, this wipes once
+    so every device can re-link clean. Deliberately manual, never automatic:
+    running it on upgrade would lock out every device the moment the new code
+    deployed.
+    """
+    from .device_registry import clear_all as _clear_registry
+    from .operator_auth import DeviceStore as _DeviceStore
+    from .operator_auth import default_device_store_path as _default_device_store_path
+    from .pq_prekeys import load_peer_bundles as _load_peer_bundles
+    from .pq_prekeys import remove_peer_bundle as _remove_peer_bundle
+
+    if not yes:
+        raise click.ClickException(
+            "This unlinks EVERY device and they must all re-link. Re-run with --yes."
+        )
+
+    store = _DeviceStore(_default_device_store_path())
+    pending_devices = store.list_fps()
+    pending_slots = _load_peer_bundles("chef")
+    click.echo(
+        f"About to clear {len(pending_devices)} enrolled device(s) and "
+        f"{len(pending_slots)} prekey slot(s). This cannot be undone; every "
+        "device will need to re-link."
+    )
+
+    device_count = store.clear()
+
+    slot_count = 0
+    for bundle in pending_slots:
+        key_id = bundle.get("key_id")
+        if key_id and _remove_peer_bundle("chef", key_id):
+            slot_count += 1
+
+    registry_count = _clear_registry()
+
+    click.echo(
+        f"Cleared {device_count} enrolled device(s), {slot_count} prekey slot(s), "
+        f"{registry_count} registry row(s)."
+    )
+    click.echo("Re-link each device you still use from its own app.")
+
+
 if __name__ == "__main__":
     main()

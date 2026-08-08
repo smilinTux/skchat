@@ -242,13 +242,12 @@ except ImportError as _e:
 # is added in a later task.
 try:
     from .operator_auth import DeviceStore as _DeviceStore
+    from .operator_auth import default_device_store_path as _default_device_store_path
     from .operator_auth_routes import (
         register_operator_auth_routes as _register_operator_auth_routes,
     )
 
-    _operator_device_store = _DeviceStore(
-        os.path.expanduser("~/.skchat/state/operator_devices.json")
-    )
+    _operator_device_store = _DeviceStore(_default_device_store_path())
     _register_operator_auth_routes(app, device_store=_operator_device_store)
 
     from .device_routes import register_device_routes as _register_device_routes
