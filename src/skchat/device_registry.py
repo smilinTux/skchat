@@ -72,6 +72,25 @@ def is_approved(row: dict) -> bool:
     return bool(row.get("approved", True))
 
 
+def _live_slot_ids(owner: str = "chef") -> set[str] | None:
+    """The slot ids actually present on disk for *owner*, or None if unknowable.
+
+    Imported lazily to keep this module a leaf (no ``skchat`` imports at module
+    scope), so route handlers can import it without a circular import.
+
+    Returning None on any failure is deliberate: the caller then keeps whatever
+    it had rather than pruning on incomplete information, since wrongly dropping
+    a LIVE id would leave a real prekey slot that unlink can never find.
+    """
+    try:
+        from skchat import pq_prekeys as PQ
+
+        return {p.stem for p in (PQ._pqc_dir() / "peers" / PQ._short(owner)).glob("*.json")}
+    except Exception:
+        logger.debug("live slot ids unavailable; keeping key_ids as-is", exc_info=True)
+        return None
+
+
 def record_enroll(
     device_fp: str,
     *,
@@ -83,19 +102,55 @@ def record_enroll(
     """Create (or refresh) the row for a freshly enrolled device.
 
     A re-enroll of the same fingerprint refreshes the metadata, clears the
-    revoked flag (re-linking a device is how you undo an unlink), and
-    preserves whatever approval state it already had -- including a missing
-    ``approved`` key, which :func:`is_approved` reads as approved. A brand
-    NEW fingerprint lands pending (``approved: False``): it must be approved
-    by an already-approved device or the CLI before it can mint a session.
+    revoked flag (re-linking a device is how you undo an unlink), and preserves
+    whatever approval state it already had, including a missing ``approved``
+    key, which :func:`is_approved` reads as approved. A brand NEW fingerprint
+    lands pending (``approved: False``): it must be approved by an
+    already-approved device or the CLI before it can mint a session.
+
+    Preserved ``key_ids`` are PRUNED to the slots that still exist on disk. The
+    preservation itself is right (a device can re-enroll its same key without
+    ever having been unlinked, and its slots are still live, and a later unlink
+    has to be able to find them). But it is wrong for the unlink-then-relink
+    flow, which is the common one: unlink is what DELETED those slots, so every
+    id it would carry forward is guaranteed dangling.
+
+    A dangling id is not merely untidy. It keeps ``registry_had_no_slots`` False,
+    which suppresses the loud "this device's prekey slots cannot be located and
+    may survive unlink" warning for a device that genuinely has none, and it
+    reports the device as having published a prekey when fanout in fact has
+    nowhere to send.
     """
     if not device_fp:
         return
     now = time.time()
+    carried = None
     with _lock:
         data = _load()
         existing = data.get(device_fp)
         approved = is_approved(existing) if existing is not None else False
+        carried = list((existing or {}).get("key_ids") or [])
+
+    # Guarded at the call site as well as inside: writing the row is far more
+    # important than pruning it, so a prekey-store problem must never stop an
+    # enrollment from being recorded.
+    try:
+        live = _live_slot_ids() if carried else None
+    except Exception:
+        logger.debug("slot-id pruning skipped; keeping key_ids as-is", exc_info=True)
+        live = None
+    if carried and live is not None:
+        kept = [k for k in carried if k in live]
+        if len(kept) != len(carried):
+            logger.info(
+                "device %s re-enrolled: dropped %d prekey slot id(s) with no file on disk",
+                device_fp,
+                len(carried) - len(kept),
+            )
+        carried = kept
+
+    with _lock:
+        data = _load()
         data[device_fp] = {
             "device_fp": device_fp,
             "label": label,
@@ -104,7 +159,7 @@ def record_enroll(
             "user_agent": user_agent,
             "enrolled_at": now,
             "last_seen": now,
-            "key_ids": list((existing or {}).get("key_ids") or []),
+            "key_ids": carried,
             "revoked": False,
             "approved": approved,
         }
