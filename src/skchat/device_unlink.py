@@ -30,7 +30,15 @@ reliable way to tell one device's slot from another's, and removing the wrong
 slot would silently break a device that is still linked. A publish landing
 mid-unlink (the app path is not yet closed by step 1 alone; in production
 ``SKCHAT_DATAPLANE_AUTH=1`` bounds this to requests already in flight) is swept
-by re-reading the registry row after each removal pass, capped at 3 passes.
+by re-reading the registry row after each removal pass, capped at
+:data:`_MAX_SLOT_SWEEP_PASSES`. If the cap is reached while a publish is still
+racing ahead of the sweep, whatever is left unswept is appended to
+``slots_failed`` with a WARNING, so the cap cannot turn into a silent hole of
+its own. A ``remove_peer_bundle`` call that returns False (rather than
+raising) only counts as a failure when the slot file is confirmed still on
+disk afterward: the row keeps a device's ``key_ids`` after unlink, so a
+second, idempotent unlink of the same device would otherwise report a false
+``slots_failed`` for a slot that is genuinely already gone.
 
 Inherited limitation: :func:`skchat.pq_prekeys.remove_peer_bundle` only removes
 the per-device slot file (``peers/<short>/<key_id>.json``); it cannot remove a
@@ -43,6 +51,7 @@ one.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 logger = logging.getLogger("skchat.device_unlink")
 
@@ -51,6 +60,19 @@ logger = logging.getLogger("skchat.device_unlink")
 #: keeps publishing new slots for the whole unlink; 3 is generous for a single
 #: in-flight-request race and cannot spin.
 _MAX_SLOT_SWEEP_PASSES = 3
+
+
+def _slot_path(owner: str, key_id: str) -> Path:
+    """The on-disk path a slot's ``key_id`` would live at, for existence checks.
+
+    Uses :mod:`skchat.pq_prekeys`'s own path-building (``_peer_dir`` /
+    ``_safe_slot_id``) so this can never diverge from where
+    :func:`skchat.pq_prekeys.remove_peer_bundle` actually looks; there is no
+    public accessor for it.
+    """
+    from skchat import pq_prekeys as PQ
+
+    return PQ._peer_dir(owner) / f"{PQ._safe_slot_id(key_id)}.json"
 
 
 def unlink_device(device_fp: str, *, device_store, owner: str = "chef") -> dict:
@@ -64,10 +86,12 @@ def unlink_device(device_fp: str, *, device_store, owner: str = "chef") -> dict:
     Returns:
         dict: ``device_fp``, ``sessions_revoked`` (always True on return),
         ``slots_removed`` (key_ids actually deleted from disk),
-        ``slots_failed`` (key_ids the registry claimed existed but whose
-        removal raised or returned False), ``registry_had_no_slots`` (True
-        when the registry row was missing or had no ``key_ids``, meaning slot
-        removal could not even be attempted), ``store_removed``,
+        ``slots_failed`` (key_ids the registry claimed existed whose removal
+        raised, whose slot file was confirmed still on disk after a False
+        return, or that could not be swept before
+        :data:`_MAX_SLOT_SWEEP_PASSES` was reached), ``registry_had_no_slots``
+        (True when the registry row was missing or had no ``key_ids``,
+        meaning slot removal could not even be attempted), ``store_removed``,
         ``capauth_revoked`` (True only if at least one capauth pairing record
         was revoked this call), ``capauth_records_failed`` (count of matching
         records whose revoke call raised), and ``registry_marked``.
@@ -97,11 +121,11 @@ def unlink_device(device_fp: str, *, device_store, owner: str = "chef") -> dict:
         )
 
     # 2. Drop its prekey slots so the next fanout cannot seal to it. A key_id
-    #    failure (raise, or a False "no such slot" from a swallowed OSError)
-    #    is recorded rather than silently treated as removed. After each pass,
-    #    re-read the registry row: a publish landing mid-unlink adds a new
-    #    key_id that the initial snapshot could not have known about, and
-    #    without the sweep it would survive forever.
+    #    failure (raise, or a False return whose slot file is confirmed still
+    #    on disk) is recorded rather than silently treated as removed. After
+    #    each pass, re-read the registry row: a publish landing mid-unlink
+    #    adds a new key_id that the initial snapshot could not have known
+    #    about, and without the sweep it would survive forever.
     slots_removed: list[str] = []
     slots_failed: list[str] = []
     seen_key_ids: set[str] = set()
@@ -113,20 +137,42 @@ def unlink_device(device_fp: str, *, device_store, owner: str = "chef") -> dict:
         for key_id in new_this_pass:
             seen_key_ids.add(key_id)
             try:
-                if PQ.remove_peer_bundle(owner, key_id):
-                    slots_removed.append(key_id)
-                else:
-                    slots_failed.append(key_id)
-                    logger.warning(
-                        "unlink: prekey slot %s already absent for %s", key_id, device_fp
-                    )
+                removed = PQ.remove_peer_bundle(owner, key_id)
             except Exception:
                 slots_failed.append(key_id)
                 logger.warning(
                     "unlink: prekey slot %s not removed for %s", key_id, device_fp, exc_info=True
                 )
+                continue
+            if removed:
+                slots_removed.append(key_id)
+                continue
+            # A False return means "no slot file found" today, which covers
+            # both a genuinely already-absent slot (a second, idempotent
+            # unlink of the same device: the registry row keeps its key_ids
+            # after the first unlink, so a re-run would otherwise report a
+            # false slots_failed) and a swallowed OSError mid-delete inside
+            # remove_peer_bundle. Only the latter is a real hole, so check
+            # the actual file rather than trusting the bool alone.
+            if _slot_path(owner, key_id).exists():
+                slots_failed.append(key_id)
+                logger.warning("unlink: prekey slot %s not removed for %s", key_id, device_fp)
         latest_row = DR.get_device(device_fp)
         pending = list((latest_row or {}).get("key_ids") or [])
+
+    # The sweep is capped so a persistently racing publisher cannot spin
+    # forever; whatever is still unseen when the cap is reached is a real,
+    # still-live slot that must not disappear from the report silently.
+    unswept = [k for k in pending if k not in seen_key_ids]
+    if unswept:
+        slots_failed.extend(unswept)
+        logger.warning(
+            "unlink: %d prekey slot(s) unswept after %d passes for %s: %s",
+            len(unswept),
+            _MAX_SLOT_SWEEP_PASSES,
+            device_fp,
+            unswept,
+        )
 
     # 3. Remove the auth key so no NEW session can be minted.
     store_removed = device_store.remove(device_fp)

@@ -11,6 +11,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import logging
 import os
 import secrets
 import threading
@@ -24,6 +25,8 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
+
+logger = logging.getLogger("skchat.operator_auth")
 
 _TIER = "operator-session"
 _DEFAULT_TTL = 12 * 3600
@@ -150,17 +153,37 @@ class DeviceStore:
     def _reload_locked(self) -> None:
         """Re-read the file from disk (caller holds ``self._lock``).
 
-        Two ``DeviceStore`` instances over the same path (a daemon plus a CLI,
-        or two concurrent unlinks) each cache ``_data`` from their own
-        construction time. Without a reload before every mutation, a later
-        instance's write is a full-map overwrite from that instance's OWN
-        stale snapshot, silently resurrecting a device another instance
-        already removed. Mirrors ``__init__``'s load.
+        Two ``DeviceStore`` instances over the same path each cache ``_data``
+        from their own construction time. Without a reload before every
+        mutation, a later instance's write is a full-map overwrite from that
+        instance's OWN stale snapshot, silently resurrecting a device another
+        instance already removed WITHIN THIS PROCESS (e.g. two sequential
+        unlinks sharing one daemon's store). This does not close a
+        cross-process race: reload-then-mutate-then-write is still an
+        unlocked read-modify-write once two OS processes are involved, since
+        ``threading.Lock`` only serialises callers inside this process.
+        Closing that residual race would need a file lock (``flock``) held
+        for the whole reload-mutate-write span, not just the write.
+
+        A read or parse failure degrades rather than raises, mirroring
+        :func:`skchat.device_registry._load`: this keeps the current
+        in-memory ``self._data`` instead of clobbering it with ``{}``, so a
+        file corrupted by something else after this instance started does not
+        turn every subsequent ``enroll``/``remove``/``clear`` into a hard
+        failure (before this reload existed, only ``__init__`` ever parsed
+        the file, so a post-startup corruption self-healed on the next
+        write; a raising reload would have made that a permanent failure
+        instead).
         """
-        if self._path.exists():
-            self._data = json.loads(self._path.read_text() or "{}")
-        else:
+        if not self._path.exists():
             self._data = {}
+            return
+        try:
+            self._data = json.loads(self._path.read_text() or "{}")
+        except (ValueError, OSError):
+            logger.warning(
+                "operator device store unreadable, keeping in-memory state: %s", self._path
+            )
 
     def enroll(self, device_pubkey_b64: str) -> str:
         fp = device_fingerprint(device_pubkey_b64)

@@ -210,6 +210,57 @@ def test_publish_landing_mid_unlink_is_swept(store, monkeypatch):
     assert PQ.load_peer_bundles("chef") == []
 
 
+def test_persistent_racing_publisher_leaves_visible_unswept_slots(store, monkeypatch):
+    """Small 1 (residual edge of Critical 3): the sweep is capped at
+    _MAX_SLOT_SWEEP_PASSES so it cannot spin forever against a publisher that
+    keeps racing ahead of it. Whatever the cap leaves unswept must still be
+    visible in the report, not a success-shaped dict hiding a live slot."""
+    fp = _enrol(store, "persistent", "0000000000000000")
+
+    original_remove = PQ.remove_peer_bundle
+    counter = {"n": 0}
+
+    def racing_remove(owner, key_id):
+        counter["n"] += 1
+        # Every single removal triggers ANOTHER publish, so the sweep never
+        # reaches a stable (nothing-new) pass within the cap.
+        new_key_id = f"{counter['n']:016d}"
+        PQ.store_peer_bundle(
+            "chef",
+            {
+                "suite": "x25519-mlkem768",
+                "hybrid_public_hex": new_key_id + "00" * 8,
+                "key_id": new_key_id,
+            },
+        )
+        DR.record_publish(fp, new_key_id)
+        return original_remove(owner, key_id)
+
+    monkeypatch.setattr(PQ, "remove_peer_bundle", racing_remove)
+
+    result = DU.unlink_device(fp, device_store=store)
+
+    remaining_on_disk = [b["key_id"] for b in PQ.load_peer_bundles("chef")]
+    assert remaining_on_disk, "expected the cap to leave a live slot behind"
+    # The still-live slot must be visibly reported, not silently dropped.
+    assert set(remaining_on_disk) <= set(result["slots_failed"])
+
+
+def test_idempotent_reunlink_does_not_false_positive_slots_failed(store):
+    """Small 2: remove_peer_bundle returns False both for "already absent"
+    and for a swallowed OSError, and the registry row keeps its key_ids after
+    unlink. A second, idempotent unlink of an already-unlinked device must
+    not report a false slots_failed for a slot that is genuinely gone."""
+    fp = _enrol(store, "alpha", "1111111111111111")
+
+    first = DU.unlink_device(fp, device_store=store)
+    assert first["slots_removed"] == ["1111111111111111"]
+    assert first["slots_failed"] == []
+
+    second = DU.unlink_device(fp, device_store=store)
+    assert second["slots_failed"] == []
+
+
 def test_mark_revoked_raising_does_not_propagate(store, monkeypatch):
     """Important 4: step 5 must never raise, or the caller loses the report
     for steps 1-3 that already succeeded."""

@@ -46,10 +46,13 @@ def test_clear_empties_the_store_and_reports_the_count(tmp_path):
 
 
 def test_two_instances_do_not_resurrect_a_removed_device(tmp_path):
-    """A daemon plus a CLI, or two concurrent unlinks, open two DeviceStore
-    instances over the same file. A later instance's mutation must not flush
-    its stale in-memory snapshot back to disk and resurrect a device an
-    earlier instance already removed."""
+    """Two DeviceStore instances over the same file within ONE process (e.g.
+    two sequential unlinks sharing one daemon's store) must not let a later
+    instance's stale in-memory snapshot flush back to disk and resurrect a
+    device an earlier instance already removed. This closes the permanent,
+    same-process resurrection; it does not by itself make the file safe to
+    share across separate OS processes (that would need a file lock held for
+    the whole reload-mutate-write span, not just the final write)."""
     path = tmp_path / "devices.json"
     first = DeviceStore(path)
     a = first.enroll(_pub("alpha"))
@@ -69,3 +72,27 @@ def test_two_instances_do_not_resurrect_a_removed_device(tmp_path):
     reread = DeviceStore(path)
     assert reread.is_enrolled(a) is False
     assert reread.is_enrolled(b) is True
+
+
+def test_reload_degrades_on_corrupt_file_instead_of_raising(tmp_path, caplog):
+    """A file corrupted after construction (a torn write from something else,
+    manual tampering) must not turn a mutation into a hard failure. Before the
+    reload-before-mutate fix, only __init__ ever parsed the file, so a
+    post-startup corruption self-healed on the next write; the reload must
+    keep that self-healing property rather than raising."""
+    path = tmp_path / "devices.json"
+    store = DeviceStore(path)
+    a = store.enroll(_pub("alpha"))
+
+    path.write_text("{not valid json")
+
+    with caplog.at_level("WARNING"):
+        # remove() must not raise; it keeps operating on its last-known-good
+        # in-memory state rather than clobbering it with an empty map.
+        assert store.remove(a) is True
+    assert any("unreadable" in rec.message for rec in caplog.records)
+
+    # The store persisted sanely afterward: the write went through and
+    # overwrote the corrupt content with valid JSON.
+    reread = DeviceStore(path)
+    assert reread.is_enrolled(a) is False
