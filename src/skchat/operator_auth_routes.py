@@ -27,27 +27,70 @@ def _canon(obj) -> bytes:
     return json.dumps(obj, sort_keys=True, separators=(",", ":")).encode()
 
 
+#: Browser needles, MOST specific first. Order is load-bearing: an Edge UA also
+#: contains "Chrome" and "Safari", and a Chrome UA also contains "Safari", so a
+#: naive scan mislabels both.
+_UA_BROWSERS: tuple[tuple[str, str], ...] = (
+    ("edg/", "Edge"),
+    ("firefox", "Firefox"),
+    ("chrome", "Chrome"),
+    ("safari", "Safari"),
+)
+
+#: OS needles, MOST specific first, mapping to ``(display, platform)``. Order is
+#: load-bearing here too: an Android UA also contains "Linux", and an iOS UA also
+#: contains "like Mac OS X".
+_UA_SYSTEMS: tuple[tuple[str, str, str], ...] = (
+    ("android", "Android", "android"),
+    ("iphone", "iOS", "ios"),
+    ("ipad", "iOS", "ios"),
+    ("cros", "ChromeOS", "chromeos"),
+    ("windows", "Windows", "windows"),
+    ("macintosh", "macOS", "macos"),
+    ("mac os x", "macOS", "macos"),
+    ("linux", "Linux", "linux"),
+)
+
+
 def _derive_label(user_agent: str) -> tuple[str, str]:
     """Best-effort ``(label, platform)`` from a User-Agent string.
 
-    Only used when the client sent no label of its own. Deliberately crude: it
-    exists so a label-less enroll still shows something recognisable, not to be a
-    UA parser. A native Dart client collapses to "App device" here, which is
-    exactly why R2 has the client send its own label.
+    Used when the client sent no label of its own, which is the COMMON case and
+    not an edge case: the Flutter web build has no ``dart:io``, so it cannot read
+    a hostname and correctly sends no label at all. Every browser device
+    therefore lands here.
+
+    That makes this the only thing keeping the operator's device list readable,
+    so it names the operating system as well as the browser. Naming only the
+    browser is what the first live cutover did, and it produced two rows both
+    reading "Chrome": a phone and a Linux desktop, indistinguishable. Telling
+    devices apart is the entire point of the feature.
+
+    A native client is still named "App device" with no invented OS: its UA
+    carries neither, which is exactly why R2 has such a client send its own
+    signed label.
     """
     ua = (user_agent or "").strip()
     if not ua:
         return "Unknown device", "unknown"
     lowered = ua.lower()
-    for needle, name, platform in (
-        ("firefox", "Firefox", "web"),
-        ("edg/", "Edge", "web"),
-        ("chrome", "Chrome", "web"),
-        ("safari", "Safari", "web"),
-        ("dart", "App device", "app"),
-    ):
-        if needle in lowered:
-            return name, platform
+
+    browser = next((name for needle, name in _UA_BROWSERS if needle in lowered), "")
+    system = next(
+        ((display, platform) for needle, display, platform in _UA_SYSTEMS if needle in lowered),
+        None,
+    )
+
+    if browser and system:
+        return f"{browser} on {system[0]}", system[1]
+    if system:
+        # An unrecognised browser on a known OS: the OS alone still tells the
+        # operator which physical device this is, which is what they need.
+        return system[0], system[1]
+    if browser:
+        return browser, "web"
+    if "dart" in lowered:
+        return "App device", "app"
     return ua[:40], "unknown"
 
 
