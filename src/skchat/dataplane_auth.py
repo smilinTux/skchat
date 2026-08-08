@@ -138,6 +138,11 @@ _ROUTE_CAPABILITY_RULES: tuple[tuple[str, str, str], ...] = (
     ("POST", "/api/v1/prekey", CAP_PREKEY),
     ("POST", "/api/v1/prekey/sign", CAP_PREKEY),
     ("DELETE", "/api/v1/prekey/{peer}/{key_id}", CAP_PREKEY),
+    # Linked Devices: managing a device means managing its prekey slots, and an
+    # enrolled device already holds skchat.prekey, so no new grant is needed.
+    ("GET", "/api/v1/operator/devices", CAP_PREKEY),
+    ("DELETE", "/api/v1/operator/devices/{device_fp}", CAP_PREKEY),
+    ("POST", "/api/v1/operator/devices/unlink-others", CAP_PREKEY),
     # --- skchat.media.write (upload attachment bytes) ----------------------- #
     ("POST", "/upload", CAP_MEDIA_WRITE),
     # --- skchat.voice (STT/TTS compute as the subject) ---------------------- #

@@ -250,6 +250,10 @@ try:
         os.path.expanduser("~/.skchat/state/operator_devices.json")
     )
     _register_operator_auth_routes(app, device_store=_operator_device_store)
+
+    from .device_routes import register_device_routes as _register_device_routes
+
+    _register_device_routes(app, device_store=_operator_device_store)
 except ImportError as _e:
     logger.warning("operator auth routes not registered: %s", _e)
 
