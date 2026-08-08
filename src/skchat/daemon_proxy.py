@@ -1201,11 +1201,16 @@ async def api_publish_prekey(
     if body.get("sig") and not body.get("signature"):
         body["signature"] = body["sig"]
     owner = _short_name((body.get("owner") or OPERATOR_ID))
-    # P0.5 / SEAM 7: fail closed on unsigned/invalid bundles when the operator
-    # opts in via SKCHAT_REQUIRE_SIGNED_PREKEYS. Resolve the claimed identity's
-    # PGP public key best-effort (only needed when the flag is on).
-    signer = _resolve_signer_pubkey(owner) if PQ.require_signed_prekeys() else None
-    if not PQ.store_app_prekey_bundle(owner, body, signer_public_armor=signer):
+    # Verification is staged by SKCHAT_REQUIRE_SIGNED_PREKEYS (off/shadow/enforce).
+    # Resolve the claimed identity's signer key whenever we are NOT off: shadow
+    # needs it too, otherwise every bundle would report no-signer-key and the
+    # soak would measure nothing.
+    mode = PQ.prekey_verify_mode()
+    signer = _resolve_signer_pubkey(owner) if mode != "off" else None
+    source = _signer_source_label(owner, signer)
+    if not PQ.store_app_prekey_bundle(
+        owner, body, signer_public_armor=signer, signer_source=source
+    ):
         raise HTTPException(400, "prekey bundle rejected: unsigned or invalid signature")
     return JSONResponse({"ok": True, "stored": owner, "hybrid": PQ.peer_is_hybrid(owner)})
 
