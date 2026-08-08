@@ -142,6 +142,11 @@ _ROUTE_CAPABILITY_RULES: tuple[tuple[str, str, str], ...] = (
     ("POST", "/api/v1/prekey", CAP_PREKEY),
     ("POST", "/api/v1/prekey/sign", CAP_PREKEY),
     ("DELETE", "/api/v1/prekey/{peer}/{key_id}", CAP_PREKEY),
+    # Linked Devices: managing a device means managing its prekey slots, and an
+    # enrolled device already holds skchat.prekey, so no new grant is needed.
+    ("GET", "/api/v1/operator/devices", CAP_PREKEY),
+    ("DELETE", "/api/v1/operator/devices/{device_fp}", CAP_PREKEY),
+    ("POST", "/api/v1/operator/devices/unlink-others", CAP_PREKEY),
     # --- skchat.media.write (upload attachment bytes) ----------------------- #
     ("POST", "/upload", CAP_MEDIA_WRITE),
     # --- skchat.voice (STT/TTS compute as the subject) ---------------------- #
@@ -717,6 +722,29 @@ def _issuer_shadow_compare(request: Request, token: str) -> None:
         logger.debug("issuer-shadow compare errored (non-fatal)", exc_info=True)
 
 
+def _stash_operator_session(request: Request, token: str) -> None:
+    """Record the verified operator session on ``request.state`` for routes.
+
+    The gate verifies the credential and then throws the result away, so a route
+    that needs to know WHICH device authenticated it (the prekey publish, which
+    must attribute the slot to a device) had no way to find out. Stashing it here
+    keeps that knowledge on the one code path that already proved it.
+
+    Best-effort: a non-operator credential (guest/peer/audience token) simply
+    leaves the attribute unset, and callers treat that as "unknown device".
+    """
+    try:
+        from .operator_auth import verify_operator_session
+
+        request.state.operator_session = verify_operator_session(token)
+        from .device_registry import touch_throttled
+
+        touch_throttled(request.state.operator_session.device_fp)
+    except Exception:
+        # Not an operator session (or an unverifiable one). Nothing to stash.
+        pass
+
+
 def enforce_dataplane_auth(request: Request) -> None:
     """Fail-closed CapAuth gate for a single data-plane request.
 
@@ -731,6 +759,10 @@ def enforce_dataplane_auth(request: Request) -> None:
         return
     token = _extract_credential(request)
     legacy_ok = bool(token) and get_validator().validate(token)
+
+    if legacy_ok and token:
+        _stash_operator_session(request, token)
+
     mode = authz_pdp_mode()
 
     # Issuer shadow (CR-3.4 P5, default OFF): for an authenticated request, compare

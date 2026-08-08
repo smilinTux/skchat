@@ -11,6 +11,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import logging
 import os
 import secrets
 import threading
@@ -24,6 +25,8 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
+
+logger = logging.getLogger("skchat.operator_auth")
 
 _TIER = "operator-session"
 _DEFAULT_TTL = 12 * 3600
@@ -73,10 +76,14 @@ def verify_operator_session(token: str) -> OperatorSession:
         raise OperatorAuthError(f"invalid operator session: {e}") from e
     if claims.get("tier") != _TIER:
         raise OperatorAuthError("wrong tier")
-    from .guest import _is_revoked  # reuse the guest revocation set
+    from .guest import _is_revoked, is_device_revoked  # reuse the guest revocation store
 
     if _is_revoked(claims["jti"]):
         raise OperatorAuthError("revoked")
+    # Device-level kill: unlinking a device revokes its fingerprint once, which
+    # invalidates every session it holds without needing to know their jtis.
+    if is_device_revoked(claims["device_fp"]):
+        raise OperatorAuthError("device revoked")
     return OperatorSession(jti=claims["jti"], device_fp=claims["device_fp"], exp=claims["exp"])
 
 
@@ -124,6 +131,28 @@ def verify_device_signature(*, device_pubkey_b64: str, payload: bytes, sig_b64: 
         return False
 
 
+#: Override the enrolled-device store location (tests point this at tmp_path;
+#: an operator can also override it, same as SKCHAT_DEVICE_REGISTRY in
+#: device_registry.py). Mirrored by webui.py and the CLI so there is one
+#: source of truth for the path instead of a literal repeated in each caller.
+OPERATOR_DEVICES_PATH_ENV = "SKCHAT_OPERATOR_DEVICES"
+_DEFAULT_OPERATOR_DEVICES = "~/.skchat/state/operator_devices.json"
+
+
+def default_device_store_path() -> Path:
+    """Resolve the enrolled-device store path.
+
+    Reads :data:`OPERATOR_DEVICES_PATH_ENV` first so tests can point the store
+    at an isolated tmp path and so an operator can relocate it; falls back to
+    the historical default under ``~/.skchat/state``. Before this existed the
+    path was a literal hardcoded in webui.py with nothing reading an env
+    override, so any test claiming isolation via that env var was actually
+    operating on the operator's real device store.
+    """
+    raw = os.getenv(OPERATOR_DEVICES_PATH_ENV, "").strip() or _DEFAULT_OPERATOR_DEVICES
+    return Path(raw).expanduser()
+
+
 class DeviceStore:
     def __init__(self, path: Path):
         self._path = Path(path)
@@ -132,18 +161,58 @@ class DeviceStore:
         if self._path.exists():
             self._data = json.loads(self._path.read_text() or "{}")
 
+    def _write(self) -> None:
+        """Atomic write of the current map (caller holds ``self._lock``)."""
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        # Atomic write: temp file in the same directory, then os.replace()
+        # onto the target, so a crash mid-write never leaves a torn file
+        # (either the old contents are intact or the new ones are, never
+        # a half-written mix).
+        tmp = self._path.with_suffix(self._path.suffix + f".tmp-{os.getpid()}")
+        tmp.write_text(json.dumps(self._data))
+        os.replace(tmp, self._path)
+
+    def _reload_locked(self) -> None:
+        """Re-read the file from disk (caller holds ``self._lock``).
+
+        Two ``DeviceStore`` instances over the same path each cache ``_data``
+        from their own construction time. Without a reload before every
+        mutation, a later instance's write is a full-map overwrite from that
+        instance's OWN stale snapshot, silently resurrecting a device another
+        instance already removed WITHIN THIS PROCESS (e.g. two sequential
+        unlinks sharing one daemon's store). This does not close a
+        cross-process race: reload-then-mutate-then-write is still an
+        unlocked read-modify-write once two OS processes are involved, since
+        ``threading.Lock`` only serialises callers inside this process.
+        Closing that residual race would need a file lock (``flock``) held
+        for the whole reload-mutate-write span, not just the write.
+
+        A read or parse failure degrades rather than raises, mirroring
+        :func:`skchat.device_registry._load`: this keeps the current
+        in-memory ``self._data`` instead of clobbering it with ``{}``, so a
+        file corrupted by something else after this instance started does not
+        turn every subsequent ``enroll``/``remove``/``clear`` into a hard
+        failure (before this reload existed, only ``__init__`` ever parsed
+        the file, so a post-startup corruption self-healed on the next
+        write; a raising reload would have made that a permanent failure
+        instead).
+        """
+        if not self._path.exists():
+            self._data = {}
+            return
+        try:
+            self._data = json.loads(self._path.read_text() or "{}")
+        except (ValueError, OSError):
+            logger.warning(
+                "operator device store unreadable, keeping in-memory state: %s", self._path
+            )
+
     def enroll(self, device_pubkey_b64: str) -> str:
         fp = device_fingerprint(device_pubkey_b64)
         with self._lock:
+            self._reload_locked()
             self._data[fp] = device_pubkey_b64
-            self._path.parent.mkdir(parents=True, exist_ok=True)
-            # Atomic write: temp file in the same directory, then os.replace()
-            # onto the target, so a crash mid-write never leaves a torn file
-            # (either the old contents are intact or the new ones are, never
-            # a half-written mix).
-            tmp = self._path.with_suffix(self._path.suffix + f".tmp-{os.getpid()}")
-            tmp.write_text(json.dumps(self._data))
-            os.replace(tmp, self._path)
+            self._write()
         return fp
 
     def is_enrolled(self, device_fp: str) -> bool:
@@ -151,3 +220,27 @@ class DeviceStore:
 
     def pubkey_for(self, device_fp: str) -> str | None:
         return self._data.get(device_fp)
+
+    def list_fps(self) -> list[str]:
+        """Every enrolled device fingerprint."""
+        with self._lock:
+            return list(self._data.keys())
+
+    def remove(self, device_fp: str) -> bool:
+        """Drop a device so no NEW session can be minted for it."""
+        with self._lock:
+            self._reload_locked()
+            if device_fp not in self._data:
+                return False
+            del self._data[device_fp]
+            self._write()
+            return True
+
+    def clear(self) -> int:
+        """Remove every enrolled device (the R1 clean cut). Returns the count."""
+        with self._lock:
+            self._reload_locked()
+            count = len(self._data)
+            self._data = {}
+            self._write()
+            return count

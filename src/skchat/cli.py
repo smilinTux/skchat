@@ -5587,5 +5587,107 @@ def operator_act(action: str, unit: Optional[str]) -> None:
     click.echo(_json.dumps(result, indent=2))
 
 
+@main.group("devices")
+def devices() -> None:
+    """Manage linked operator devices."""
+
+
+@devices.command("reset")
+@click.option("--yes", is_flag=True, help="Confirm: this unlinks every device.")
+def devices_reset(yes: bool) -> None:
+    """Clear every enrolled device, its prekey slots, the registry, its
+    sessions, and its capauth grants.
+
+    The clean cut. A device enrolled before the registry existed has no
+    recorded prekey slots, so unlinking it individually would be silently
+    partial: its sessions would die while its KEM slot stayed live and kept
+    receiving mail. Rather than carry that ambiguity forever, this wipes once
+    so every device can re-link clean. Deliberately manual, never automatic:
+    running it on upgrade would lock out every device the moment the new code
+    deployed.
+
+    Reuses :func:`skchat.device_unlink.revoke_capauth_subject` and
+    :func:`skchat.guest.revoke_device` rather than reimplementing the session-
+    and capauth-revocation logic here: a "reset" is functionally an unlink of
+    every device at once, and must close the same four holes a single unlink
+    already closes, not a parallel, weaker mechanism that only clears the
+    store and slots and leaves live sessions and PDP grants behind.
+    """
+    from . import device_registry as _DR
+    from . import guest as _G
+    from .device_registry import clear_all as _clear_registry
+    from .device_unlink import revoke_capauth_subject as _revoke_capauth_subject
+    from .operator_auth import DeviceStore as _DeviceStore
+    from .operator_auth import default_device_store_path as _default_device_store_path
+    from .pq_prekeys import _pqc_dir as _pq_pqc_dir
+    from .pq_prekeys import _short as _pq_short
+    from .pq_prekeys import load_peer_bundles as _load_peer_bundles
+    from .pq_prekeys import remove_peer_bundle as _remove_peer_bundle
+
+    if not yes:
+        raise click.ClickException(
+            "This unlinks EVERY device and they must all re-link. Re-run with --yes."
+        )
+
+    store = _DeviceStore(_default_device_store_path())
+    pending_devices = store.list_fps()
+    pending_slots = _load_peer_bundles("chef")
+    click.echo(
+        f"About to clear {len(pending_devices)} enrolled device(s) and "
+        f"{len(pending_slots)} prekey slot(s). This cannot be undone; every "
+        "device will need to re-link."
+    )
+
+    # Sessions and capauth grants die FIRST, before any store/registry row is
+    # touched, mirroring unlink_device's ordering: nothing a device does
+    # during the rest of the reset is authorized. The union of the store's
+    # fingerprints and the registry's covers every device enrolled before the
+    # registry existed too (it would otherwise be invisible to this loop, and
+    # its session/capauth revocation would be silently skipped).
+    target_fps = set(pending_devices) | {
+        row["device_fp"] for row in _DR.list_devices(include_revoked=True)
+    }
+    sessions_revoked = 0
+    capauth_subjects_revoked = 0
+    for fp in target_fps:
+        _G.revoke_device(fp)
+        sessions_revoked += 1
+        revoked_any, _failed = _revoke_capauth_subject(fp)
+        if revoked_any:
+            capauth_subjects_revoked += 1
+
+    device_count = store.clear()
+
+    slot_count = 0
+    for bundle in pending_slots:
+        if _remove_peer_bundle("chef", bundle.get("key_id")):
+            slot_count += 1
+
+    # load_peer_bundles/remove_peer_bundle only cover the current per-device
+    # slot shape (peers/chef/<key_id>.json). A pre-multislot deployment can
+    # also carry ONE legacy flat bundle at peers/chef.json, which
+    # remove_peer_bundle never looks at. That is correct for a single-device
+    # unlink (destroying a legacy bundle other devices still share would be
+    # wrong there), but this IS the total reset, so the legacy file must go
+    # too or the operator is told the cut was total while a KEM slot stays
+    # live. Path built the same way load_peer_bundles locates it.
+    legacy_path = _pq_pqc_dir() / "peers" / f"{_pq_short('chef')}.json"
+    if legacy_path.is_file():
+        try:
+            legacy_path.unlink()
+            slot_count += 1
+        except OSError as exc:
+            click.echo(f"Warning: could not remove legacy prekey bundle {legacy_path}: {exc}")
+
+    registry_count = _clear_registry()
+
+    click.echo(
+        f"Cleared {device_count} enrolled device(s), {slot_count} prekey slot(s), "
+        f"{registry_count} registry row(s), {sessions_revoked} session(s) revoked, "
+        f"{capauth_subjects_revoked} capauth subject(s) revoked."
+    )
+    click.echo("Re-link each device you still use from its own app.")
+
+
 if __name__ == "__main__":
     main()

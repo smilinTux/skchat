@@ -152,6 +152,7 @@ def _isolate_guest_revocation_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
         from skchat import guest as _guest
 
         _guest._reset_revocation_cache()
+        _guest._reset_device_revocation_cache()
     except Exception:  # pragma: no cover — guest module import-time guard
         pass
     yield
@@ -159,6 +160,36 @@ def _isolate_guest_revocation_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
         from skchat import guest as _guest
 
         _guest._reset_revocation_cache()
+        _guest._reset_device_revocation_cache()
+    except Exception:  # pragma: no cover
+        pass
+
+
+@pytest.fixture(autouse=True)
+def _isolate_device_registry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Point the device registry at a per-test tmp file and clear its throttle map.
+
+    ``touch_throttled()`` runs on every authenticated dataplane request (Task 4's
+    session stash calls it), and it reads/writes the device registry. Without
+    this fixture, any test that authenticates with a real operator session under
+    ``SKCHAT_DATAPLANE_AUTH=1`` but does not set ``SKCHAT_DEVICE_REGISTRY`` itself
+    would stat the developer's real ``~/.skchat/state/operator_device_registry.json``.
+    Also clears the in-memory throttle map so a warm entry from an earlier test
+    cannot suppress a touch a later test expects.
+    """
+    registry = tmp_path / "operator_device_registry.json"
+    monkeypatch.setenv("SKCHAT_DEVICE_REGISTRY", str(registry))
+    try:
+        from skchat import device_registry as _device_registry
+
+        _device_registry._last_touch.clear()
+    except Exception:  # pragma: no cover (device_registry module import-time guard)
+        pass
+    yield
+    try:
+        from skchat import device_registry as _device_registry
+
+        _device_registry._last_touch.clear()
     except Exception:  # pragma: no cover
         pass
 
