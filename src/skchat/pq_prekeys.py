@@ -264,6 +264,24 @@ def _log_prekey_verify(
     Stable ``prekey-verify`` prefix so a soak is greppable straight out of
     journalctl. Carries only the TRUNCATED key_id; never a public key, never a
     signature.
+
+    Level choice is deliberate, not uniform:
+
+    * ``REJECT`` is always WARNING, in every mode.
+    * ``ACCEPT`` is WARNING in ``shadow`` but INFO in ``enforce``. This is NOT
+      an inconsistency to "clean up". The webui process that serves this route
+      runs ``uvicorn.run(log_level="warning")``, which configures only the
+      ``uvicorn*`` loggers; nothing configures the root logger, so root stays
+      at its default level (WARNING, via ``logging.lastResort``) with no
+      handlers attached. An INFO record from this module is therefore silently
+      DROPPED in production. The whole point of shadow mode is rollout step 4:
+      "every distinct publishing device should appear with result=ACCEPT" -
+      if ACCEPT stayed at INFO, a soak that logged nothing would be
+      indistinguishable from a soak that ran clean, and the flip-to-enforce
+      decision would be unverifiable. So shadow escalates ACCEPT to WARNING to
+      make the soak actually visible. Once in ``enforce`` the signature check
+      is load-bearing (rejects really block the publish), so ACCEPT reverts to
+      INFO for steady-state noise reduction.
     """
     kid = str(bundle.get("key_id") or "?")[:8]
     line = "prekey-verify mode=%s owner=%s kid=%s signer=%s result=%s" % (
@@ -273,10 +291,12 @@ def _log_prekey_verify(
         signer_source,
         "ACCEPT" if reason is None else "REJECT",
     )
-    if reason is None:
-        logger.info(line)
-    else:
+    if reason is not None:
         logger.warning("%s reason=%s", line, reason)
+    elif mode == "shadow":
+        logger.warning(line)
+    else:
+        logger.info(line)
 
 
 def _prekey_verify_reason(bundle: dict, signer_public_armor: Optional[str]) -> Optional[str]:

@@ -717,6 +717,20 @@ def _short_name(uri: str) -> str:
     return s.split("@")[0]
 
 
+def _is_operator(peer: str) -> bool:
+    """True when *peer* names the operator identity, case- and prefix-insensitive.
+
+    ``crypto._load_peer_public_key`` lowercases its input internally, so an owner
+    string like ``"CHEF"`` would otherwise skip the operator branch below (a raw,
+    case-sensitive compare) and fall through to the peer-store lookup, which then
+    lowercases and resolves ``chef.json`` anyway. Both sides here are shortened
+    AND lowercased so the two code paths cannot drift apart. A single helper used
+    by both :func:`_resolve_signer_pubkey` and :func:`_signer_source_label` keeps
+    "is this the operator" defined in exactly one place.
+    """
+    return _short_name(peer).lower() == _short_name(OPERATOR_ID).lower()
+
+
 def _resolve_signer_pubkey(peer: str) -> str | None:
     """ASCII-armored PGP public key that MUST have signed *peer*'s prekey bundle.
 
@@ -739,7 +753,7 @@ def _resolve_signer_pubkey(peer: str) -> str | None:
     Returns ``None`` if the required key does not resolve. Intake then fails
     closed in ``'enforce'``, and records ``reason=no-signer-key`` in ``'shadow'``.
     """
-    if peer == _short_name(OPERATOR_ID):
+    if _is_operator(peer):
         try:
             from skchat import crypto as _crypto
 
@@ -763,11 +777,13 @@ def _signer_source_label(owner: str, signer: str | None) -> str:
     """Which source produced *signer*, for the ``prekey-verify`` audit line.
 
     Derivable from the owner alone because :func:`_resolve_signer_pubkey` gives
-    each owner exactly ONE permitted source, so this cannot drift from it.
+    each owner exactly ONE permitted source, so this cannot drift from it. Uses
+    the identical :func:`_is_operator` predicate as the resolver, so the label
+    and the actual resolution can never disagree.
     """
     if signer is None:
         return "none"
-    return "daemon-attest" if owner == _short_name(OPERATOR_ID) else "peer-store"
+    return "daemon-attest" if _is_operator(owner) else "peer-store"
 
 
 def _unwrap_skq1(plaintext: str) -> tuple[str, dict]:
