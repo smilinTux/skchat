@@ -122,3 +122,29 @@ def test_source_label_peer():
 @pytest.mark.parametrize("owner", ["chef", "opus"])
 def test_source_label_none_when_unresolved(owner):
     assert daemon_proxy._signer_source_label(owner, None) == "none"
+
+
+# --------------------------------------------------------------------------- #
+# case- and prefix-insensitive operator match
+#
+# crypto._load_peer_public_key lowercases its input internally. Before the fix,
+# _resolve_signer_pubkey compared the raw peer argument against
+# _short_name(OPERATOR_ID) ("chef"), so an owner spelled "CHEF" skipped the
+# operator branch, fell into the peer-store lookup, and resolved out of
+# chef.json instead -- the exact "peer store can win for the operator" landmine
+# this branch exists to close. Both _resolve_signer_pubkey and
+# _signer_source_label must agree on every spelling below.
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("owner", ["CHEF", "Chef", "chef@skworld.io", "capauth:chef@x"])
+def test_operator_match_is_case_and_prefix_insensitive(daemon_key, peer_store, owner):
+    assert daemon_proxy._resolve_signer_pubkey(owner) == daemon_key
+
+
+@pytest.mark.parametrize("owner", ["CHEF", "Chef", "chef@skworld.io", "capauth:chef@x"])
+def test_source_label_matches_resolver_for_every_operator_spelling(
+    daemon_key, peer_store, owner
+):
+    signer = daemon_proxy._resolve_signer_pubkey(owner)
+    assert daemon_proxy._signer_source_label(owner, signer) == "daemon-attest"

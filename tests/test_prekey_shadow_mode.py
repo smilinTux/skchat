@@ -184,3 +184,63 @@ def test_off_mode_logs_nothing(PQ, monkeypatch, caplog, unsigned_bundle):
         PQ.store_app_prekey_bundle("chef", unsigned_bundle)
 
     assert not [r for r in caplog.records if "prekey-verify" in r.getMessage()]
+
+
+# --------------------------------------------------------------------------- #
+# ACCEPT log level: shadow escalates to WARNING, enforce stays at INFO
+#
+# uvicorn.run(log_level="warning") in the webui process only configures the
+# uvicorn* loggers; the root logger is left at WARNING with no handlers, so an
+# INFO record from this module is silently dropped in production. Shadow mode
+# escalates ACCEPT to WARNING so the rollout soak (step 4: "every distinct
+# publishing device should appear with result=ACCEPT") is actually visible.
+# --------------------------------------------------------------------------- #
+
+
+def test_shadow_accept_is_logged_at_warning(
+    PQ, monkeypatch, caplog, alice_crypto, alice_keys, unsigned_bundle
+):
+    """A valid bundle's ACCEPT record must be WARNING in shadow, or it is invisible
+
+    to a production webui process (uvicorn configures only uvicorn* loggers, so
+    root stays at WARNING with no handlers). Pinning the level, not just the
+    message text, is the point: a future "tidy this back to info" edit must fail
+    this test.
+    """
+    _, alice_pub = alice_keys
+    signed = sign_prekey_bundle(alice_crypto, unsigned_bundle)
+    monkeypatch.setenv(ENV, "shadow")
+
+    with caplog.at_level(logging.INFO, logger="skchat.pq_prekeys"):
+        PQ.store_app_prekey_bundle(
+            "chef", signed, signer_public_armor=alice_pub, signer_source="daemon-attest"
+        )
+
+    record = next(r for r in caplog.records if "prekey-verify" in r.getMessage())
+    assert "result=ACCEPT" in record.getMessage()
+    assert record.levelno == logging.WARNING
+    assert record.levelname == "WARNING"
+
+
+def test_enforce_accept_is_logged_at_info(
+    PQ, monkeypatch, caplog, alice_crypto, alice_keys, unsigned_bundle
+):
+    """Same valid bundle, but in enforce: ACCEPT stays at INFO (steady-state).
+
+    Pinned alongside the shadow test above so the shadow/enforce distinction
+    itself, not just each mode in isolation, is guarded against drifting back
+    to a single uniform level.
+    """
+    _, alice_pub = alice_keys
+    signed = sign_prekey_bundle(alice_crypto, unsigned_bundle)
+    monkeypatch.setenv(ENV, "1")
+
+    with caplog.at_level(logging.INFO, logger="skchat.pq_prekeys"):
+        PQ.store_app_prekey_bundle(
+            "chef", signed, signer_public_armor=alice_pub, signer_source="daemon-attest"
+        )
+
+    record = next(r for r in caplog.records if "prekey-verify" in r.getMessage())
+    assert "result=ACCEPT" in record.getMessage()
+    assert record.levelno == logging.INFO
+    assert record.levelname == "INFO"
