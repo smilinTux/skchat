@@ -136,18 +136,22 @@ class DeviceStore:
         if self._path.exists():
             self._data = json.loads(self._path.read_text() or "{}")
 
+    def _write(self) -> None:
+        """Atomic write of the current map (caller holds ``self._lock``)."""
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        # Atomic write: temp file in the same directory, then os.replace()
+        # onto the target, so a crash mid-write never leaves a torn file
+        # (either the old contents are intact or the new ones are, never
+        # a half-written mix).
+        tmp = self._path.with_suffix(self._path.suffix + f".tmp-{os.getpid()}")
+        tmp.write_text(json.dumps(self._data))
+        os.replace(tmp, self._path)
+
     def enroll(self, device_pubkey_b64: str) -> str:
         fp = device_fingerprint(device_pubkey_b64)
         with self._lock:
             self._data[fp] = device_pubkey_b64
-            self._path.parent.mkdir(parents=True, exist_ok=True)
-            # Atomic write: temp file in the same directory, then os.replace()
-            # onto the target, so a crash mid-write never leaves a torn file
-            # (either the old contents are intact or the new ones are, never
-            # a half-written mix).
-            tmp = self._path.with_suffix(self._path.suffix + f".tmp-{os.getpid()}")
-            tmp.write_text(json.dumps(self._data))
-            os.replace(tmp, self._path)
+            self._write()
         return fp
 
     def is_enrolled(self, device_fp: str) -> bool:
@@ -155,3 +159,25 @@ class DeviceStore:
 
     def pubkey_for(self, device_fp: str) -> str | None:
         return self._data.get(device_fp)
+
+    def list_fps(self) -> list[str]:
+        """Every enrolled device fingerprint."""
+        with self._lock:
+            return list(self._data.keys())
+
+    def remove(self, device_fp: str) -> bool:
+        """Drop a device so no NEW session can be minted for it."""
+        with self._lock:
+            if device_fp not in self._data:
+                return False
+            del self._data[device_fp]
+            self._write()
+            return True
+
+    def clear(self) -> int:
+        """Remove every enrolled device (the R1 clean cut). Returns the count."""
+        with self._lock:
+            count = len(self._data)
+            self._data = {}
+            self._write()
+            return count
