@@ -124,7 +124,11 @@ def _isolate_capauth_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     wrote a real pairing record into the operator's live peer store. The
     live-state guard below is what surfaced it.
     """
-    root = tmp_path / "skcapstone"
+    # NOTE the leading dot: tests that isolate capauth by pinning Path.home()
+    # (e.g. test_operator_grants.py) resolve to tmp_path/".skcapstone". Using the
+    # same path means the two strategies agree instead of writing to one dir and
+    # reading from the other.
+    root = tmp_path / ".skcapstone"
     root.mkdir(parents=True, exist_ok=True)
     # pq_prekeys._pqc_dir() resolves off SKCHAT_HOME. Unisolated, any test that
     # exercises the daemon's prekey sync rewrites the operator's REAL peer slots.
@@ -136,6 +140,27 @@ def _isolate_capauth_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
             continue
         if hasattr(mod, "default_base_dir"):
             monkeypatch.setattr(mod, "default_base_dir", lambda root=root: root, raising=False)
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _reset_enrollment_pairing_gate():
+    """Give every test a fresh operator-enrollment pairing gate.
+
+    ``operator_auth_routes._pairing`` is a module-level singleton carrying a rate
+    limiter (10 attempts per 60s) and a single-accept window. Enrollment tests
+    therefore share one budget: once enough tests in a process have enrolled, the
+    next one gets "enrollment window closed or invalid" for reasons that have
+    nothing to do with what it is testing. It passes locally and fails in CI,
+    purely because CI runs more of the suite in one process.
+    """
+    try:
+        from skchat import operator_auth_routes as _oar
+        from skchat.pairing_gate import PairingGate
+
+        _oar._pairing = PairingGate(max_accepts_per_window=1)
+    except Exception:  # pragma: no cover - module optional in some envs
+        pass
     yield
 
 
