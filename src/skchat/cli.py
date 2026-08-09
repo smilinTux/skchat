@@ -5686,7 +5686,24 @@ def devices_reset(yes: bool) -> None:
         f"{registry_count} registry row(s), {sessions_revoked} session(s) revoked, "
         f"{capauth_subjects_revoked} capauth subject(s) revoked."
     )
+    # Approval-to-link means nothing auto-approves, so with zero approved
+    # devices there is nobody to approve the first one from. Opening a short
+    # single-use window here removes the second terminal command WITHOUT
+    # weakening the gate: this command already required shell access, which is
+    # stronger evidence than holding the operator token.
+    from . import bootstrap_window as _BW
+
+    _BW.open_window()
+    minutes = _BW.DEFAULT_TTL_SECONDS // 60
+    click.echo(
+        f"Auto-approve window OPEN for {minutes} minutes: the NEXT device to link "
+        "is approved automatically."
+    )
     click.echo("Re-link each device you still use from its own app.")
+    click.echo(
+        "After the window closes, approve the rest from an already-linked device, "
+        "or with: skchat devices approve <device_fp>"
+    )
 
 
 @devices.command("pending")

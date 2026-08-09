@@ -94,6 +94,36 @@ def _derive_label(user_agent: str) -> tuple[str, str]:
     return ua[:40], "unknown"
 
 
+def _claim_bootstrap_window(device_fp: str) -> bool:
+    """Auto-approve this device if a reset-opened bootstrap window is standing.
+
+    Right after ``skchat devices reset`` there are no approved devices, so there
+    is nobody to approve the first one from. The reset opens a short single-use
+    window instead of sending the operator back to the terminal.
+
+    This is not a hole in approval-to-link: opening the window requires a command
+    ON THE BOX, which is stronger evidence than holding the (long-lived,
+    plaintext) operator token, and it is bounded and single-use. Best-effort, so
+    a window problem can never break an enrollment.
+    """
+    try:
+        from skchat import bootstrap_window as BW
+        from skchat import device_registry as DR
+
+        if not BW.consume():
+            return False
+        DR.set_approved(device_fp, True)
+        logging.getLogger("skchat.operator_auth_routes").info(
+            "device %s auto-approved via the bootstrap window", device_fp
+        )
+        return True
+    except Exception:  # pragma: no cover - never break enrollment
+        logging.getLogger("skchat.operator_auth_routes").debug(
+            "bootstrap window claim failed (best-effort)", exc_info=True
+        )
+        return False
+
+
 def _record_enrollment(request: Request, device_fp: str, *, label: object) -> None:
     """Write the registry row for a freshly enrolled device. Best-effort.
 
@@ -167,6 +197,7 @@ def register_operator_auth_routes(app: FastAPI, *, device_store: oa.DeviceStore)
         # inside and never breaks the enrollment response.
         grant_operator_prekey_capability(device_fp, pub)
         _record_enrollment(request, device_fp, label=body.get("label"))
+        _claim_bootstrap_window(device_fp)
         # Tell the caller whether it is pending approval (Phase 3): a missing
         # registry row (recording failed, best-effort) reads as approved, same
         # as everywhere else this is checked, so a registry hiccup never tells

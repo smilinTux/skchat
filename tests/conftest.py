@@ -179,6 +179,12 @@ def _isolate_device_registry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """
     registry = tmp_path / "operator_device_registry.json"
     monkeypatch.setenv("SKCHAT_DEVICE_REGISTRY", str(registry))
+    # Same hazard, same fix: `devices reset` opens a bootstrap auto-approve
+    # window, and an enrollment CONSUMES one. Unisolated, a CLI test writes a
+    # real window into the developer's ~/.skchat/state and a later enrollment
+    # test silently rides it, changing that test's outcome and leaving live
+    # auto-approve state behind. Observed exactly that on 2026-08-08.
+    monkeypatch.setenv("SKCHAT_BOOTSTRAP_WINDOW", str(tmp_path / "bootstrap_window.json"))
     try:
         from skchat import device_registry as _device_registry
 
