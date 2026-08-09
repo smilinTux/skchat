@@ -157,6 +157,7 @@ markers = [
     "integration: mark test as an integration test requiring live external services",
     "e2e_live: end-to-end tests using file-based transport (no daemon or network required)",
     "e2e_3way: 3-way group chat E2E tests (Chef + Opus + Lumina in skworld-team)",
+    "touches_real_home: opts out of the live-state guard; the test genuinely writes to the real ~/.skchat (there are none today)",
 ]
 addopts = "-v --tb=short -m 'not live'"
 asyncio_mode = "auto"

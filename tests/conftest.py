@@ -5,6 +5,7 @@ from __future__ import annotations
 # skmemory is resolved via the editable install in the project venv.
 # No sys.path manipulation needed — see [tool.pytest.ini_options] pythonpath
 # in pyproject.toml and `pip install -e` in the dev environment.
+import builtins
 import os
 
 # Suppress REAL desktop notifications during the test suite. Several code paths
@@ -112,6 +113,168 @@ def sample_thread() -> Thread:
     )
 
 
+@pytest.fixture(autouse=True)
+def _isolate_capauth_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Point capauth's storage root at tmp_path for every test.
+
+    ``capauth.pairing.default_base_dir()`` is hardcoded to ``~/.skcapstone``:
+    there is no env override, and callers are expected to inject ``base_dir``.
+    skchat's enrollment path does not (``grant_operator_prekey_capability`` and
+    the unlink revoke both call capauth without one), so every enrollment test
+    wrote a real pairing record into the operator's live peer store. The
+    live-state guard below is what surfaced it.
+    """
+    # NOTE the leading dot: tests that isolate capauth by pinning Path.home()
+    # (e.g. test_operator_grants.py) resolve to tmp_path/".skcapstone". Using the
+    # same path means the two strategies agree instead of writing to one dir and
+    # reading from the other.
+    root = tmp_path / ".skcapstone"
+    root.mkdir(parents=True, exist_ok=True)
+    # pq_prekeys._pqc_dir() resolves off SKCHAT_HOME. Unisolated, any test that
+    # exercises the daemon's prekey sync rewrites the operator's REAL peer slots.
+    monkeypatch.setenv("SKCHAT_HOME", str(tmp_path / "skchat-home"))
+    for name in ("pairing", "authz"):
+        try:
+            mod = __import__(f"capauth.{name}", fromlist=["default_base_dir"])
+        except Exception:  # pragma: no cover - capauth optional in some envs
+            continue
+        if hasattr(mod, "default_base_dir"):
+            monkeypatch.setattr(mod, "default_base_dir", lambda root=root: root, raising=False)
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _reset_enrollment_pairing_gate():
+    """Give every test a fresh operator-enrollment pairing gate.
+
+    ``operator_auth_routes._pairing`` is a module-level singleton carrying a rate
+    limiter (10 attempts per 60s) and a single-accept window. Enrollment tests
+    therefore share one budget: once enough tests in a process have enrolled, the
+    next one gets "enrollment window closed or invalid" for reasons that have
+    nothing to do with what it is testing. It passes locally and fails in CI,
+    purely because CI runs more of the suite in one process.
+    """
+    try:
+        from skchat import operator_auth_routes as _oar
+        from skchat.pairing_gate import PairingGate
+
+        _oar._pairing = PairingGate(max_accepts_per_window=1)
+    except Exception:  # pragma: no cover - module optional in some envs
+        pass
+    yield
+
+
+# ---------------------------------------------------------------------------
+# Live-state guard: no test may write to the operator's REAL home
+# ---------------------------------------------------------------------------
+#: Roots holding device, key and revocation state. A test that writes under one
+#: of these is operating on the operator's live node instead of tmp_path.
+#: Scoped to the DEVICE/KEY state that has actually been corrupted, not all of
+#: ~/.skchat. The wider net catches ~79 pre-existing offenders (history, media,
+#: outbox) whose isolation debt is real but is a separate piece of work; a guard
+#: that reds the suite on day one gets reverted instead of fixed.
+_LIVE_STATE_ROOTS = (
+    "~/.skchat/state",
+    "~/.skchat/pqc",
+    "~/.skcapstone/peers",
+    "~/.skcapstone/pairing",
+)
+
+
+def _is_live_state(target: object) -> str | None:
+    """The offending absolute path if *target* is under a guarded root, else None."""
+    try:
+        path = Path(os.fspath(target)).expanduser()
+    except (TypeError, ValueError):
+        return None
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    resolved = os.path.normpath(str(path))
+    for root in _LIVE_STATE_ROOTS:
+        base = os.path.normpath(str(Path(root).expanduser()))
+        if resolved == base or resolved.startswith(base + os.sep):
+            return resolved
+    return None
+
+
+@pytest.fixture(autouse=True)
+def _no_writes_to_the_real_home(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch):
+    """Fail any test that WRITES into the operator's real ~/.skchat or ~/.skcapstone.
+
+    Twice a new on-disk store shipped without a matching isolation fixture and
+    the tests silently operated on the developer's real home: once overwriting a
+    genuine signed prekey slot, once leaving a live auto-approve window on the
+    box. Both were caught by a human noticing, not by the suite.
+
+    This intercepts the write primitives IN THIS PROCESS rather than diffing the
+    filesystem. That distinction matters on a developer box, where the real
+    skchat daemon is running and writing to the same directories continuously: a
+    before/after diff cannot tell a test's write from the daemon's and false-fails
+    at random. Interception attributes the write to the code that made it.
+
+    Per-store isolation fixtures remain the fix; this is the backstop that makes
+    forgetting one loud and immediate.
+
+    Opt out with ``@pytest.mark.touches_real_home`` (nothing does today).
+    """
+    if request.node.get_closest_marker("touches_real_home"):
+        yield
+        return
+
+    def _refuse(path: str, how: str):
+        raise AssertionError(
+            f"this test tried to {how} the operator's REAL live state: {path}\n"
+            "Point the relevant setting at tmp_path. Note pq_prekeys resolves off "
+            "SKCHAT_HOME (there is no SKCHAT_PQC_DIR), the registry uses "
+            "SKCHAT_DEVICE_REGISTRY, and capauth's base dir is patched by "
+            "_isolate_capauth_store."
+        )
+
+    real_open = builtins.open
+    real_replace = os.replace
+    real_write_text = Path.write_text
+    real_write_bytes = Path.write_bytes
+    real_mkdir = Path.mkdir
+
+    def guarded_open(file, mode="r", *a, **kw):
+        if any(c in mode for c in ("w", "a", "x", "+")):
+            hit = _is_live_state(file)
+            if hit:
+                _refuse(hit, "open for writing")
+        return real_open(file, mode, *a, **kw)
+
+    def guarded_replace(src, dst, *a, **kw):
+        hit = _is_live_state(dst)
+        if hit:
+            _refuse(hit, "os.replace onto")
+        return real_replace(src, dst, *a, **kw)
+
+    def guarded_write_text(self, *a, **kw):
+        hit = _is_live_state(self)
+        if hit:
+            _refuse(hit, "write_text")
+        return real_write_text(self, *a, **kw)
+
+    def guarded_write_bytes(self, *a, **kw):
+        hit = _is_live_state(self)
+        if hit:
+            _refuse(hit, "write_bytes")
+        return real_write_bytes(self, *a, **kw)
+
+    def guarded_mkdir(self, *a, **kw):
+        hit = _is_live_state(self)
+        if hit:
+            _refuse(hit, "mkdir under")
+        return real_mkdir(self, *a, **kw)
+
+    monkeypatch.setattr(builtins, "open", guarded_open)
+    monkeypatch.setattr(os, "replace", guarded_replace)
+    monkeypatch.setattr(Path, "write_text", guarded_write_text)
+    monkeypatch.setattr(Path, "write_bytes", guarded_write_bytes)
+    monkeypatch.setattr(Path, "mkdir", guarded_mkdir)
+    yield
+
+
 # ---------------------------------------------------------------------------
 # Guest revocation/single-use store isolation
 # ---------------------------------------------------------------------------
@@ -179,6 +342,12 @@ def _isolate_device_registry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """
     registry = tmp_path / "operator_device_registry.json"
     monkeypatch.setenv("SKCHAT_DEVICE_REGISTRY", str(registry))
+    # Same hazard, same fix: `devices reset` opens a bootstrap auto-approve
+    # window, and an enrollment CONSUMES one. Unisolated, a CLI test writes a
+    # real window into the developer's ~/.skchat/state and a later enrollment
+    # test silently rides it, changing that test's outcome and leaving live
+    # auto-approve state behind. Observed exactly that on 2026-08-08.
+    monkeypatch.setenv("SKCHAT_BOOTSTRAP_WINDOW", str(tmp_path / "bootstrap_window.json"))
     try:
         from skchat import device_registry as _device_registry
 

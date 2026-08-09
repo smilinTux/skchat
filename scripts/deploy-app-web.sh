@@ -72,7 +72,17 @@ src_commit="$(git -C "$APP_DIR" rev-parse HEAD)"
 if [ -n "$(git -C "$APP_DIR" status --porcelain)" ]; then
   echo "    NOTE: app checkout has uncommitted changes; the bundle will include them."
 fi
-( cd "$APP_DIR" && "$FLUTTER" build web --release --base-href "$BASE_HREF" )
+# The app renders its version + build id from compile-time dart-defines
+# (lib/core/build_info.dart). Omitting them silently ships the hardcoded
+# fallback, so the UI claims a version that has nothing to do with this build,
+# which is precisely the "is what I am looking at current?" question this whole
+# script exists to answer. Mirrors scripts/build-web-lumina.sh in the app repo.
+app_version="$(grep -m1 '^version:' "$APP_DIR/pubspec.yaml" | awk '{print $2}')"
+build_id="${src_commit:0:7}-$(date +%m%d-%H%M)"
+echo "    stamping v$app_version build $build_id"
+( cd "$APP_DIR" && "$FLUTTER" build web --release --base-href "$BASE_HREF" \
+    --dart-define="APP_VERSION=$app_version" \
+    --dart-define="BUILD_ID=$build_id" )
 
 built="$APP_DIR/build/web"
 [ -f "$built/main.dart.js" ] || die "build produced no main.dart.js"
