@@ -164,6 +164,35 @@ def _reset_enrollment_pairing_gate():
     yield
 
 
+@pytest.fixture(autouse=True)
+def _isolate_import_time_home_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Repoint module-level paths that were bound to the real home at IMPORT time.
+
+    ``daemon.DAEMON_PID_FILE`` and ``cli._READ_STATE_PATH`` are computed once when
+    the module is imported, so setting ``SKCHAT_HOME`` from a fixture is too late:
+    the constants already point at ``~/.skchat``. The result was measurable, not
+    theoretical: every full suite run DELETED the operator's live
+    ``~/.skchat/daemon.pid``, which is the file systemd's ``PIDFile=`` tracks for
+    the running daemon.
+    """
+    home = tmp_path / "skchat-home"
+    home.mkdir(parents=True, exist_ok=True)
+    try:
+        from skchat import daemon as _daemon
+
+        monkeypatch.setattr(_daemon, "_DAEMON_HOME", home, raising=False)
+        monkeypatch.setattr(_daemon, "DAEMON_PID_FILE", home / "daemon.pid", raising=False)
+    except Exception:  # pragma: no cover - module optional in some envs
+        pass
+    try:
+        from skchat import cli as _cli
+
+        monkeypatch.setattr(_cli, "_READ_STATE_PATH", home / "read-state.json", raising=False)
+    except Exception:  # pragma: no cover
+        pass
+    yield
+
+
 # ---------------------------------------------------------------------------
 # Live-state guard: no test may write to the operator's REAL home
 # ---------------------------------------------------------------------------
@@ -176,6 +205,8 @@ def _reset_enrollment_pairing_gate():
 _LIVE_STATE_ROOTS = (
     "~/.skchat/state",
     "~/.skchat/pqc",
+    "~/.skchat/daemon.pid",
+    "~/.skchat/read-state.json",
     "~/.skcapstone/peers",
     "~/.skcapstone/pairing",
 )
