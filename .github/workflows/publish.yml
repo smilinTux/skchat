@@ -171,26 +171,32 @@ jobs:
           path: dist/
 
   pypi-publish:
-    needs: build
-    # Two separate bugs are fixed by this condition; both are load-bearing.
+    needs: [build, tag]
+    # `always()` is required for the same reason `build` above needs it. A skip
+    # propagates all the way DOWN a needs chain, not just one level: this job
+    # needs `build`, which needs `tag`, and on the tag-push path `tag` is
+    # skipped. Without an opt-out this job inherited that skip and completed
+    # with ZERO steps while the run still reported success. That is how PyPI
+    # stalled at 0.14.227 while tags marched on past v0.14.233: `build` really
+    # did build and upload a correctly versioned dist, and nothing published it.
     #
-    # 1. `always()`, for the same reason `build` above needs it. A skip
-    #    propagates all the way DOWN a needs chain, not just one level: this
-    #    job needs `build`, which needs `tag`, and on the tag-push path (the
-    #    only path where `build` actually runs) `tag` is skipped. Without an
-    #    opt-out this job inherited that skip and completed with ZERO steps
-    #    while the run still reported success. That is why PyPI stalled at
-    #    0.14.227 while tags marched on to v0.14.231: `build` really did build
-    #    and upload the dist, and nothing ever published it.
+    # Publish on EITHER path, which matters more than it looks:
     #
-    # 2. The tag-ref guard. Pushing to main cuts a tag, so BOTH the main-push
-    #    run and the resulting tag-push run reach `build` with tagged == true.
-    #    Once (1) is fixed, both would publish the identical setuptools-scm
-    #    version and whichever lost the race would fail on a duplicate file.
-    #    Publishing only from the tag ref keeps exactly one publisher.
+    #   * refs/tags/v*        a tag pushed by a human (the local pre-push hook
+    #                         uses their credentials, so it triggers a run).
+    #   * main + tagged==true the `tag` job just cut the tag itself. That tag is
+    #                         pushed with GITHUB_TOKEN, and GitHub deliberately
+    #                         does NOT trigger workflow runs from GITHUB_TOKEN
+    #                         pushes, so NO tag-push run will ever follow it.
+    #
+    # Gating on the tag ref alone therefore makes the automated path unable to
+    # publish at all: it waits for a run that cannot exist. The main-path run
+    # has the right artifact anyway, because `tag` pushes the tag before `build`
+    # runs, so setuptools-scm derives the real release version (the "Assert the
+    # derived version is a real release" step in `build` proves it).
     if: >-
       always() && !cancelled() && needs.build.result == 'success' &&
-      startsWith(github.ref, 'refs/tags/v')
+      (startsWith(github.ref, 'refs/tags/v') || needs.tag.outputs.tagged == 'true')
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
@@ -201,3 +207,9 @@ jobs:
           name: dist
           path: dist/
       - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          # Both paths above can fire for one version if someone pushes a tag
+          # by hand that the workflow would also have cut. Re-uploading an
+          # existing file is a hard 400 from PyPI, which would turn a duplicate
+          # into a red release. The upload is idempotent instead.
+          skip-existing: true
