@@ -172,6 +172,25 @@ jobs:
 
   pypi-publish:
     needs: build
+    # Two separate bugs are fixed by this condition; both are load-bearing.
+    #
+    # 1. `always()`, for the same reason `build` above needs it. A skip
+    #    propagates all the way DOWN a needs chain, not just one level: this
+    #    job needs `build`, which needs `tag`, and on the tag-push path (the
+    #    only path where `build` actually runs) `tag` is skipped. Without an
+    #    opt-out this job inherited that skip and completed with ZERO steps
+    #    while the run still reported success. That is why PyPI stalled at
+    #    0.14.227 while tags marched on to v0.14.231: `build` really did build
+    #    and upload the dist, and nothing ever published it.
+    #
+    # 2. The tag-ref guard. Pushing to main cuts a tag, so BOTH the main-push
+    #    run and the resulting tag-push run reach `build` with tagged == true.
+    #    Once (1) is fixed, both would publish the identical setuptools-scm
+    #    version and whichever lost the race would fail on a duplicate file.
+    #    Publishing only from the tag ref keeps exactly one publisher.
+    if: >-
+      always() && !cancelled() && needs.build.result == 'success' &&
+      startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
