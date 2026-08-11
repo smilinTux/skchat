@@ -52,12 +52,37 @@ class SlotCapExceeded(Exception):
     """Raised when publishing a NEW device slot would exceed :data:`SLOT_CAP`."""
 
 
+class InsecureKeyPermissionsError(Exception):
+    """Raised when the root hybrid private key is group/world-readable.
+
+    Only raised under :data:`STRICT_KEY_PERMS_ENV` - see :func:`_check_key_perms`.
+    """
+
+
 #: Env flag (P0.5 / SEAM 7): when truthy, the **app-path** prekey intake
 #: (``store_app_prekey_bundle`` behind ``POST /api/v1/prekey``) fails closed -
 #: only a bundle carrying a signature that verifies under the claimed identity's
 #: key is stored. Default OFF so the live app (which publishes UNSIGNED bundles
 #: today) is not locked out; behaviour is UNCHANGED when unset.
 REQUIRE_SIGNED_PREKEYS_ENV = "SKCHAT_REQUIRE_SIGNED_PREKEYS"
+
+#: Env flag (arch review section 3 / root-key protection): when truthy, loading
+#: the plaintext root hybrid private key refuses a file that is group- or
+#: world-readable (``mode & 0o077``) instead of silently reading it. Default OFF
+#: so the historical plaintext-0600 file keeps loading unchanged for operators
+#: who haven't opted in yet.
+STRICT_KEY_PERMS_ENV = "SKCHAT_STRICT_KEY_PERMS"
+
+#: Env-selected private-key backend for :func:`ensure_agent_keypair`. ``"keyring"``
+#: tries the OS keyring (via the optional ``keyring`` package) first and falls
+#: back to the plaintext file when no sealed entry is present - see
+#: :func:`_load_sealed_private`. Default (unset/anything else) is the historical
+#: plaintext-file-only behaviour.
+KEY_BACKEND_ENV = "SKCHAT_KEY_BACKEND"
+
+#: Service name the sealed backend stores/looks up the root hybrid private key
+#: under, keyed by ``<agent>_hybrid`` (mirrors the plaintext filename stem).
+_KEYRING_SERVICE = "skchat-pqc-hybrid"
 
 _TRUTHY = {"1", "true", "yes", "on"}
 
@@ -435,6 +460,64 @@ def available() -> bool:
         return False
 
 
+def _strict_key_perms() -> bool:
+    """Whether :data:`STRICT_KEY_PERMS_ENV` is set (truthy)."""
+    return os.environ.get(STRICT_KEY_PERMS_ENV, "").strip().lower() in _TRUTHY
+
+
+def _check_key_perms(path: Path) -> None:
+    """Refuse ``path`` if it is group/world-readable and strict perms are on.
+
+    No-op unless :func:`_strict_key_perms` is true, so the historical
+    plaintext-0600 file keeps loading unchanged when the flag is unset. When the
+    flag is on, any bit in ``mode & 0o077`` (group or world read/write/execute)
+    raises :class:`InsecureKeyPermissionsError` rather than reading the key.
+    """
+    if not _strict_key_perms():
+        return
+    mode = os.stat(path).st_mode & 0o777
+    if mode & 0o077:
+        raise InsecureKeyPermissionsError(
+            f"refusing to load {path}: mode {oct(mode)} is group/world-readable "
+            f"(chmod 0600 it, or unset {STRICT_KEY_PERMS_ENV} to override)"
+        )
+
+
+def _key_backend() -> str:
+    """The configured private-key backend: ``'keyring'`` or ``'plaintext'``."""
+    raw = os.environ.get(KEY_BACKEND_ENV, "").strip().lower()
+    return "keyring" if raw == "keyring" else "plaintext"
+
+
+def _load_sealed_private(agent: str) -> Optional[bytes]:
+    """Best-effort load of ``agent``'s hybrid private key from the OS keyring.
+
+    Returns ``None`` (never raises) when the keyring backend isn't selected via
+    :data:`KEY_BACKEND_ENV`, the optional ``keyring`` package isn't installed, or
+    no sealed entry exists for this agent - callers fall back to the plaintext
+    file in that case, so this path is strictly additive and never breaks the
+    existing plaintext-0600 load.
+    """
+    if _key_backend() != "keyring":
+        return None
+    try:
+        import keyring
+    except ImportError:
+        return None
+    try:
+        hex_priv = keyring.get_password(_KEYRING_SERVICE, f"{agent}_hybrid")
+    except Exception:
+        logger.warning("keyring lookup failed for %s hybrid key", agent, exc_info=True)
+        return None
+    if not hex_priv:
+        return None
+    try:
+        return bytes.fromhex(hex_priv)
+    except ValueError:
+        logger.warning("corrupt sealed %s hybrid key in keyring", agent)
+        return None
+
+
 def ensure_agent_keypair(agent: Optional[str] = None) -> Optional[tuple[bytes, bytes]]:
     """Load-or-generate the resident agent's hybrid keypair.
 
@@ -446,6 +529,12 @@ def ensure_agent_keypair(agent: Optional[str] = None) -> Optional[tuple[bytes, b
     on-disk keys and the published bundle stay byte-identical); other agents use
     ``<agent>_hybrid.*``.
 
+    Private-key load order: (1) the sealed/keyring backend when
+    :data:`KEY_BACKEND_ENV` selects it and an entry is present (see
+    :func:`_load_sealed_private`); (2) the plaintext ``.key`` file, refused under
+    :data:`STRICT_KEY_PERMS_ENV` if it is group/world-readable (see
+    :func:`_check_key_perms`); (3) generate a fresh keypair.
+
     Returns ``(public, private)`` or ``None`` if no PQ backend is available
     (honest classical fallback - never a silent failure).
     """
@@ -455,7 +544,16 @@ def ensure_agent_keypair(agent: Optional[str] = None) -> Optional[tuple[bytes, b
     d = _pqc_dir()
     priv_path = d / f"{agent}_hybrid.key"
     pub_path = d / f"{agent}_hybrid.pub"
+
+    sealed_priv = _load_sealed_private(agent)
+    if sealed_priv is not None and pub_path.exists():
+        try:
+            return (bytes.fromhex(pub_path.read_text().strip()), sealed_priv)
+        except Exception:
+            logger.warning("corrupt %s hybrid pub key - regenerating", agent, exc_info=True)
+
     if priv_path.exists() and pub_path.exists():
+        _check_key_perms(priv_path)
         try:
             return (
                 bytes.fromhex(pub_path.read_text().strip()),
