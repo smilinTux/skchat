@@ -5592,6 +5592,102 @@ def devices() -> None:
     """Manage linked operator devices."""
 
 
+@main.group("operator-token")
+def operator_token_group():
+    """Inspect and rotate the operator token."""
+
+
+@operator_token_group.command("show")
+@click.option("--agent", default=None, help="Only this agent (default: all).")
+def operator_token_show(agent: str | None) -> None:
+    """Show which env files carry a token, and whether the running units match.
+
+    Prints fingerprints, never the token itself: the point is to identify it and
+    prove a rotation landed, not to put a secret in your scrollback.
+    """
+    from . import operator_token as _OT
+
+    files = _OT.env_files(agent=agent)
+    if not files:
+        click.echo("No env file carries an operator token.")
+        return
+    for path in files:
+        who = _OT.agent_of(path)
+        tok = _OT.read_token(path) or ""
+        click.echo(f"{who}: {path}")
+        click.echo(f"  file    {_OT.fingerprint(tok)}")
+        for unit in _OT.consumers(who):
+            running = _OT.running_token_fingerprint(unit)
+            if running is None:
+                click.echo(f"  {unit}: not running")
+            elif running == _OT.fingerprint(tok):
+                click.echo(f"  {unit}: {running} (matches)")
+            else:
+                click.echo(f"  {unit}: {running} (STALE, restart to pick up the file)")
+
+
+@operator_token_group.command("rotate")
+@click.option("--agent", default=None, help="Only this agent (default: all).")
+@click.option("--yes", is_flag=True, help="Confirm: this restarts the consuming units.")
+@click.option("--show", "show_it", is_flag=True, help="Print the new token (avoid if you can).")
+def operator_token_rotate(agent: str | None, yes: bool, show_it: bool) -> None:
+    """Generate a new token, update the env file, and restart its consumers.
+
+    Deliberately manual rather than on a timer: the token is presented BY
+    services, so rotating it means coordinated restarts, and an unattended
+    failed restart breaks the plane with nobody watching.
+
+    You rarely need this now. `skchat devices link` mints a short-lived code for
+    linking devices, so the token no longer has to leave the box; rotate when it
+    may have been exposed, not on a schedule.
+    """
+    import subprocess
+
+    from . import operator_token as _OT
+
+    files = _OT.env_files(agent=agent)
+    if not files:
+        raise click.ClickException("no env file carries an operator token")
+
+    units = [u for p in files for u in _OT.consumers(_OT.agent_of(p))]
+    if not yes:
+        click.echo("Rotating would change:")
+        for p in files:
+            click.echo(f"  {p}")
+        click.echo("and restart:")
+        for u in units:
+            click.echo(f"  {u}")
+        raise click.ClickException("Re-run with --yes to proceed.")
+
+    for path in files:
+        who = _OT.agent_of(path)
+        new = _OT.generate()
+        backup = _OT.write_token(path, new, backup=True)
+        click.echo(f"{who}: {path.name} -> {_OT.fingerprint(new)} (backup {backup.name})")
+        if show_it:
+            click.echo(f"  new token: {new}")
+        for unit in _OT.consumers(who):
+            r = subprocess.run(
+                ["systemctl", "--user", "restart", unit], capture_output=True, text=True
+            )
+            if r.returncode != 0:
+                # Say so loudly: a unit still holding the OLD token will fail its
+                # own authenticated calls, and that is confusing to debug later.
+                click.echo(f"  {unit}: RESTART FAILED ({r.stderr.strip()[:80]})")
+                continue
+            running = _OT.running_token_fingerprint(unit)
+            if running == _OT.fingerprint(new):
+                click.echo(f"  {unit}: restarted, running the new token")
+            elif running is None:
+                click.echo(f"  {unit}: restarted (not running, or no token in its env)")
+            else:
+                click.echo(f"  {unit}: restarted but still shows {running}, check it")
+
+    click.echo("")
+    click.echo("Anything that had the old token pasted in must be re-linked:")
+    click.echo("  skchat devices link")
+
+
 @devices.command("link")
 @click.option("--ttl", default=600, show_default=True, help="Seconds the code stays valid.")
 @click.option("--qr/--no-qr", default=True, help="Render a QR to scan from the phone.")

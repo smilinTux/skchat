@@ -555,6 +555,24 @@ Only `sha256(code)` is stored, so the state file is not a source of working
 codes. The device still signs the window with its own key and still lands
 pending approval, so a leaked code alone links nothing usable.
 
+**Rotating the operator token.**
+
+```bash
+skchat operator-token show              # fingerprints only, never the secret
+skchat operator-token rotate --yes      # new token, env file, restart consumers
+```
+
+Deliberately manual, not on a timer. The token is presented BY services
+(`skchat-call-answerer@<agent>` holds it), so rotating means coordinated
+restarts, and an unattended failed restart breaks the plane with nobody
+watching. `show` reports the fingerprint of the running unit's env as well as
+the file, which is what proves a restart actually picked the new value up rather
+than merely that the file changed. Rotation backs the file up first, keeps it
+owner-only, and refuses a file with no token line rather than inventing one.
+
+Rotate when the token may have been exposed, not on a schedule: link codes mean
+it no longer has to leave the box in normal use.
+
 **The client-side trap, which caused a live outage.** Adding a route to
 `_ROUTE_CAPABILITY_RULES` makes it **gated**, and the data-plane gate accepts only
 `Authorization: CapAuth/Bearer <session>` or `X-CapAuth-Token`. It does **not**
