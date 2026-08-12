@@ -135,6 +135,7 @@ _ROUTE_CAPABILITY_RULES: tuple[tuple[str, str, str], ...] = (
     ("GET", "/api/board", CAP_STATUS),  # interim; migrates to skboard.read (L1.8)
     ("GET", "/api/kanban", CAP_STATUS),  # interim; migrates to skboard.read (L1.8)
     ("GET", "/api/card/{card_id}", CAP_STATUS),  # interim; migrates to skboard.read
+    ("GET", "/api/card/{card_id}/ai-suggestions", CAP_STATUS),  # AI next-step options
     # Kanban card mutation (move/assign/priority/label/note). A WRITE, so it must
     # be gated (an ungated route is public over the funnel). Interim CAP_STATUS
     # to avoid shipping an ungranted new cap that would lock the board off; must

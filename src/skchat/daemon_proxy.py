@@ -53,12 +53,12 @@ _AGENT_HOME = os.environ.get(
 )
 
 
-def _proxy(url: str) -> dict | list:
+def _proxy(url: str, timeout: float = 5) -> dict | list:
     import json
     import urllib.request
 
     try:
-        r = urllib.request.urlopen(url, timeout=5)
+        r = urllib.request.urlopen(url, timeout=timeout)
         return json.loads(r.read())
     except Exception as exc:
         logger.debug("daemon_proxy: %s failed: %s", url, exc)
@@ -1523,11 +1523,27 @@ async def api_card(card_id: str):
     return _proxy(f"{_DASHBOARD}/api/card/{quote(card_id, safe='')}")
 
 
+@router.get("/card/{card_id}/ai-suggestions")
+async def api_card_ai_suggestions(card_id: str, request: "Request"):
+    """Proxy the AI next-step SUGGESTIONS for a card ({suggestions:[{text,mode}],
+    source}). Forwards the ?llm=0/1 query and uses a long timeout because the LLM
+    path (auto-routed, thinking-on) can take ~15-35s. Gated (read) via the
+    /api/card prefix in dataplane_paths."""
+    from urllib.parse import quote
+
+    url = f"{_DASHBOARD}/api/card/{quote(card_id, safe='')}/ai-suggestions"
+    if request.url.query:
+        url = f"{url}?{request.url.query}"
+    return _proxy(url, timeout=40)
+
+
 @router.post("/card/{card_id}/{action}")
 async def api_card_mutate(card_id: str, action: str, request: "Request"):
-    """Proxy a kanban card MUTATION (move / assign / priority / label / note) to
-    the dashboard so the native app can drive the board. GATED as a write in
-    dataplane_auth (only an authenticated operator reaches it)."""
+    """Proxy a kanban card MUTATION (move / assign / priority / label / note) OR
+    the privileged 'queue-ai' execute (dispatch an agent to work the card) to the
+    dashboard so the native app can drive the board and push the AI. GATED as a
+    write via the /api/card prefix (only an authenticated operator reaches it);
+    queue-ai additionally hits the dashboard's own SKAI_QUEUE_TOKEN gate."""
     from urllib.parse import quote
 
     return await _proxy_post(
