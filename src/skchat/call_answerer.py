@@ -110,6 +110,11 @@ def poll_and_answer(api, seen: set) -> Optional[dict]:
         "room": joinable["room"],
         "token": joinable["token"],
         "livekit_url": joinable["livekit_url"],
+        # Carry the caller through. /call/incoming has already cross-checked this
+        # against the signed envelope sender, so it is the trustworthy identity
+        # for choosing the conversational mode. Without it a derived room name
+        # (call-<hash>) silently demotes Chef to the group register.
+        "peer_fqid": invite["from_fqid"],
     }
 
 
@@ -235,6 +240,47 @@ async def _join_and_publish(joinable: dict, hold_s: float = 0.0) -> None:
         logger.info("answerer left room=%s", room.name)
 
 
+async def _run_call(joinable: dict) -> None:
+    """Run one answered call: an engine-backed session, or silence as fallback.
+
+    The answerer has always joined the RIGHT room (the one the signed invite
+    names) but published only silence, while the one process that could actually
+    converse sat in a different, fixed room. This closes that gap by handing the
+    answered room straight to the VoiceEngine LiveKit transport.
+
+    Gated on SKCHAT_ANSWERER_ENGINE so the silence loop remains the fallback: if
+    the engine or the RTC extras are missing on this host, a call still connects
+    and holds rather than dropping. Losing the voice is bad; losing the call is
+    worse.
+
+    The peer identity comes from the invite, which /call/incoming has already
+    signature-verified, and decides the conversational mode. Passing it matters:
+    a derived room name alone would silently demote Chef to the group register.
+    """
+    if os.getenv("SKCHAT_ANSWERER_ENGINE", "").strip().lower() not in ("1", "true", "yes", "on"):
+        await _join_and_publish(joinable)
+        return
+    try:
+        from skchat.transports.livekit import build_room_session  # noqa: PLC0415
+    except Exception as exc:  # pragma: no cover - env dependent
+        logger.warning("engine transport unavailable (%s); holding the call with silence", exc)
+        await _join_and_publish(joinable)
+        return
+    try:
+        await build_room_session(
+            joinable["room"],
+            url=joinable["livekit_url"],
+            token=joinable["token"],
+            agent_name=os.getenv("SKAGENT", "lumina"),
+            peer_fqid=joinable.get("peer_fqid") or joinable.get("from_fqid"),
+        )
+    except Exception:
+        logger.exception(
+            "engine session failed for room=%s; falling back to silence", joinable["room"]
+        )
+        await _join_and_publish(joinable)
+
+
 def run_answerer(
     base_url: Optional[str] = None,
     operator_token: Optional[str] = None,
@@ -280,7 +326,7 @@ def run_answerer(
                 "answering call -> room=%s via %s", joinable["room"], joinable["livekit_url"]
             )
             try:
-                asyncio.run(_join_and_publish(joinable))
+                asyncio.run(_run_call(joinable))
             except Exception as e:
                 logger.error("join/publish failed for room=%s: %s", joinable["room"], e)
         time.sleep(interval)

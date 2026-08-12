@@ -40,6 +40,7 @@ engine via :class:`skchat.voice_engine.config.VoiceConfig`):
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
 import os
@@ -51,6 +52,9 @@ log = logging.getLogger("skchat.transports.livekit")
 
 # ─── Audio / VAD tuning (ported verbatim from lumina-call.py) ───────────────
 STT_SAMPLE_RATE = 16000  # whisper-friendly, 16 kHz mono int16
+#: Sample rate we PUBLISH at. Piper renders 22.05 kHz but the engine's TTS
+#: client resamples to this, so the capture frames stay a single rate.
+TTS_SAMPLE_RATE = int(os.getenv("LUMINA_TTS_SAMPLE_RATE", "16000"))
 VAD_FRAME_MS = 20
 RMS_VOICE_THRESHOLD = int(os.getenv("LUMINA_VAD_RMS", "1200"))
 SILENCE_HANGOVER_MS = 800  # trailing silence that ends an utterance
@@ -500,12 +504,29 @@ def _require_livekit():
         ) from exc
 
 
-def mode_ceiling(room_name: str) -> str:
-    """Room name sets the *maximum* mode; a stranger joining still forces group.
+def mode_ceiling(room_name: str, peer_fqid: str | None = None) -> str:
+    """The *maximum* mode for a call; a stranger joining still forces group.
 
-    Unknown rooms default to 'group' for safety (ported from
-    ``lumina-call.py:_room_mode_ceiling``).
+    Prefer the verified peer identity, fall back to the room name.
+
+    The room-name form is a trap inherited from ``lumina-call.py`` and kept only
+    for the legacy fixed room. skchat summons calls into rooms named by
+    :func:`skchat.call_session.derive_room`, which are opaque hashes like
+    ``call-e4qj4kxvef2dxmxq``. Keying "sacred" off a literal name therefore
+    downgrades EVERY real 1:1 with Chef to the group register, and any
+    Chef-only tool authorisation keyed on mode misfires with it.
+
+    So when the caller knows who it is actually talking to (the answerer does:
+    the invite is signature-verified and carries ``from_fqid``), pass it and the
+    identity decides. ``peer_fqid`` accepts a bare short name or a full FQID.
+
+    Unknown peers and unknown rooms both default to 'group', which is the safe
+    direction: a wrong 'group' loses warmth, a wrong 'sacred' leaks it.
     """
+    if peer_fqid:
+        if is_chef_identity(str(peer_fqid).split("@")[0]):
+            return "sacred"
+        return "group"
     ceilings = {"lumina-and-chef": "sacred"}
     return ceilings.get((room_name or "").strip(), "group")
 
@@ -518,7 +539,175 @@ __all__ = [
     "rms16",
     "is_chef_identity",
     "mode_ceiling",
+    "build_room_session",
+    "run_agent",
     "default_engine_factory",
     "run_turn",
     "ADDRESS_TRIGGERS",
 ]
+
+
+# ─── Room session (the loop the module docstring promised) ──────────────────
+async def build_room_session(
+    room_name: str,
+    *,
+    url: str,
+    token: str,
+    agent_name: str = "lumina",
+    peer_fqid: str | None = None,
+    engine_factory: Callable[[str], object] | None = None,
+):
+    """Join *room_name* and converse until the room closes.
+
+    This is the piece that was missing. Everything above it (VAD, barge-in,
+    addressing, dedup, ``run_turn``) was already here and unit-tested, and
+    ``skchat`` already knew which room to be in via
+    :func:`skchat.call_session.derive_room`. What did not exist was anything
+    that put the brain *in* that room, so the process that joined
+    (``call_answerer``) published silence while the process that could talk
+    (``lumina-call.py``) sat in a different, fixed room.
+
+    The mode is decided by *peer_fqid* when the caller knows it. The answerer
+    does: the invite is signature-verified. See :func:`mode_ceiling` for why the
+    room name alone is the wrong key.
+
+    Returns when the room disconnects. Raises RuntimeError if the livekit SDK is
+    absent, so a host without the RTC stack fails loudly here rather than
+    silently importing.
+    """
+    rtc = _require_livekit()
+    engine = (engine_factory or default_engine_factory())(agent_name)
+    mode = mode_ceiling(room_name, peer_fqid)
+
+    room = rtc.Room()
+    history: list[dict] = []
+    gate = AddressingGate()
+    dedup = TranscriptDedup()
+    segmenters: dict[str, VADSegmenter] = {}
+    speaking = asyncio.Event()  # set while we are playing TTS
+
+    source = rtc.AudioSource(TTS_SAMPLE_RATE, 1)
+    track = rtc.LocalAudioTrack.create_audio_track(f"{agent_name}-voice", source)
+
+    async def say(text: str) -> None:
+        """Synthesize and publish one reply, guarding against overlap."""
+        if not text.strip():
+            return
+        speaking.set()
+        gate.note_own_speech()
+        try:
+            pcm = await engine.tts.synthesize(text)
+            if not pcm:
+                log.warning("TTS returned no audio; reply dropped: %s", text[:60])
+                return
+            # 20 ms frames at 16-bit mono.
+            step = int(TTS_SAMPLE_RATE * 0.02) * 2
+            for i in range(0, len(pcm), step):
+                chunk = pcm[i : i + step]
+                if len(chunk) < step:
+                    chunk = chunk + b"\x00" * (step - len(chunk))
+                await source.capture_frame(
+                    rtc.AudioFrame(chunk, TTS_SAMPLE_RATE, 1, len(chunk) // 2)
+                )
+        finally:
+            speaking.clear()
+
+    async def handle_utterance(speaker_id: str, pcm: bytes) -> None:
+        transcript = (await engine.stt.transcribe(pcm) or "").strip()
+        if not transcript or not dedup.seen(speaker_id, transcript):
+            return
+        if not gate.should_reply(speaker_id, transcript, mode=mode):
+            log.debug("not addressed, staying quiet: %s: %s", speaker_id, transcript[:60])
+            return
+        log.info("%s: %s", speaker_id, transcript[:100])
+        reply = await run_turn(
+            engine,
+            history,
+            transcript,
+            mode=mode,
+            speaker_id=speaker_id,
+            is_operator=is_chef_identity(speaker_id),
+        )
+        gate.note_reply_to(speaker_id)
+        await say(reply)
+
+    async def pump(stream, speaker_id: str) -> None:
+        """Drain one participant's audio into their VAD segmenter."""
+        seg = segmenters.setdefault(speaker_id, VADSegmenter())
+        try:
+            async for ev in stream:
+                frame = getattr(ev, "frame", ev)
+                pcm = bytes(frame.data)
+                # While we speak, keep feeding the segmenter (barge-in) but do
+                # not let our own playback close an utterance.
+                utt = seg.push(pcm, gated=speaking.is_set())
+                if utt:
+                    await handle_utterance(speaker_id, utt)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.debug("audio pump ended for %s", speaker_id, exc_info=True)
+
+    tasks: list[asyncio.Task] = []
+
+    @room.on("track_subscribed")
+    def _on_track(track_, publication, participant):  # noqa: ANN001
+        if getattr(track_, "kind", None) != rtc.TrackKind.KIND_AUDIO:
+            return
+        who = getattr(participant, "identity", "") or "peer"
+        log.info("subscribed to audio from %s", who)
+        stream = rtc.AudioStream(track_, sample_rate=STT_SAMPLE_RATE, num_channels=1)
+        tasks.append(asyncio.create_task(pump(stream, who)))
+
+    closed = asyncio.Event()
+
+    @room.on("disconnected")
+    def _on_disconnected(*_a):  # noqa: ANN001
+        closed.set()
+
+    await room.connect(url, token)
+    await room.local_participant.publish_track(track)
+    log.info(
+        "voice session live: room=%s agent=%s mode=%s peer=%s",
+        room_name,
+        agent_name,
+        mode,
+        peer_fqid or "?",
+    )
+    try:
+        await closed.wait()
+    finally:
+        for t in tasks:
+            t.cancel()
+        try:
+            await room.disconnect()
+        except Exception:  # pragma: no cover - already gone
+            pass
+        log.info("voice session ended: room=%s", room_name)
+
+
+async def run_agent(
+    room_name: str | None = None,
+    *,
+    url: str | None = None,
+    token: str | None = None,
+    agent_name: str | None = None,
+    peer_fqid: str | None = None,
+) -> int:
+    """Entry point: mint a token if one was not supplied, then run the session.
+
+    Kept thin on purpose; the room model belongs to skchat's call routes, so a
+    caller that already holds an answered invite (the answerer does) passes its
+    room/url/token straight through and no minting happens here.
+    """
+    room_name = room_name or os.getenv("SKCHAT_LIVEKIT_DEFAULT_ROOM", "lumina-and-chef")
+    agent_name = agent_name or os.getenv("LUMINA_IDENTITY", "lumina")
+    if not (url and token):
+        raise RuntimeError(
+            "run_agent needs an SFU url + token; mint via POST /livekit/token "
+            "(operator-gated) or pass the values from an answered invite."
+        )
+    await build_room_session(
+        room_name, url=url, token=token, agent_name=agent_name, peer_fqid=peer_fqid
+    )
+    return 0

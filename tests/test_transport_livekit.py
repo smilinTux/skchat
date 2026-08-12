@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import struct
 
+import pytest
+
 from skchat.transports.livekit import (
     AddressingGate,
     BargeInDetector,
@@ -267,3 +269,61 @@ def test_whisper_repetition_filter():
     assert TranscriptDedup.is_whisper_repetition("If If If If If if if if If")
     assert TranscriptDedup.is_whisper_repetition("Bye. Bye. Bye. Bye. Bye. Bye.")
     assert not TranscriptDedup.is_whisper_repetition("this is a normal sentence here")
+
+
+# ─── mode ceiling: identity-first (the derived-room trap) ───────────────────
+def test_mode_ceiling_uses_peer_identity_over_room_name():
+    """A derived room must not downgrade Chef to the group register.
+
+    skchat summons calls into rooms named by derive_room(), e.g.
+    "call-e4qj4kxvef2dxmxq". Keying "sacred" off the literal string
+    "lumina-and-chef" therefore silently demoted EVERY real 1:1 with Chef, and
+    any Chef-only tool auth keyed on mode misfired with it.
+    """
+    derived = "call-e4qj4kxvef2dxmxq"
+    assert mode_ceiling(derived) == "group", "unknown room alone is still group"
+    assert mode_ceiling(derived, "chef@skworld.io") == "sacred"
+    assert mode_ceiling(derived, "chef") == "sacred"
+
+
+def test_mode_ceiling_strangers_never_reach_sacred():
+    for peer in ("mallory@evil.io", "opus@skworld.io", "", None):
+        room = "lumina-and-chef"  # even the legacy sacred room
+        if peer:
+            assert mode_ceiling(room, peer) == "group", peer
+
+
+def test_mode_ceiling_legacy_room_still_works_without_a_peer():
+    """Back-compat: the fixed room keeps its ceiling when no identity is known."""
+    assert mode_ceiling("lumina-and-chef") == "sacred"
+    assert mode_ceiling("some-other-room") == "group"
+
+
+# ─── the room loop exists and is import-safe ────────────────────────────────
+def test_room_session_api_is_importable_without_the_livekit_sdk():
+    """The loop that was missing must exist, and importing must not need RTC.
+
+    Regression for the actual outage: skchat joined the right room but could not
+    converse, because build_room_session/run_agent were never written despite
+    the module docstring promising them.
+    """
+    from skchat.transports import livekit as lk
+
+    assert callable(lk.build_room_session)
+    assert callable(lk.run_agent)
+    assert "build_room_session" in lk.__all__
+    assert "run_agent" in lk.__all__
+
+
+def test_run_agent_refuses_without_credentials():
+    """It must fail loudly rather than silently joining nothing."""
+    import asyncio as _asyncio
+
+    with pytest.raises(RuntimeError, match="url \\+ token"):
+        _asyncio.run(lk_run_agent_missing_creds())
+
+
+async def lk_run_agent_missing_creds():
+    from skchat.transports.livekit import run_agent
+
+    await run_agent("call-abc", url=None, token=None)
