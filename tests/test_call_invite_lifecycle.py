@@ -14,8 +14,6 @@ from __future__ import annotations
 
 import time
 
-import pytest
-
 
 def test_invite_ttl_is_configurable_and_bounded():
     from skchat.call_routes import INVITE_TTL_S
