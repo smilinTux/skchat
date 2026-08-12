@@ -47,6 +47,10 @@ dependencies = [
 cli = [
     "click>=8.1",
     "rich>=13.0",
+    # Renders the scannable QR for `skchat devices link`. Optional on purpose:
+    # the command degrades to printing the code and URL when it is absent, so a
+    # missing QR library can never stop an operator linking a device.
+    "segno>=1.5",
 ]
 skcapstone = [
     # Optional integration backbone (ADR-optional-integration-backbone).

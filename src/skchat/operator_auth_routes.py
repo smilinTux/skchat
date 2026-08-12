@@ -52,6 +52,42 @@ _UA_SYSTEMS: tuple[tuple[str, str, str], ...] = (
 )
 
 
+def _require_operator_or_link_code(request: Request) -> None:
+    """Authorize opening an enrollment window, or raise 401/403.
+
+    Accepts everything :func:`skchat.guest._require_operator` accepts, plus a
+    live single-use device link code presented in the SAME header. That header
+    reuse is deliberate: the app already has a paste field wired to it, so a
+    short-lived code drops into the existing linking flow with no client change.
+
+    Scoped to THIS route on purpose. ``_require_operator`` also guards guest
+    invites, prekey signing and the call routes; a code that opened those would
+    be a strictly worse operator token rather than a better one. Here it only
+    opens an enrollment window, and the device still has to sign the window
+    nonce with its own key, and (Phase 3) still lands pending approval.
+
+    The code is checked FIRST and burns on use, so presenting one always spends
+    it even on a caller who would have passed on loopback anyway. That is the
+    honest reading of intent: someone who typed a code meant to use it.
+    """
+    from fastapi import HTTPException
+
+    from skchat import link_codes as LC
+
+    headers = getattr(request, "headers", {}) or {}
+    presented = (headers.get("x-operator-token") or "").strip()
+    if not presented:
+        auth = (headers.get("authorization") or "").strip()
+        if auth.lower().startswith("bearer "):
+            presented = auth[7:].strip()
+    if presented and LC.verify(presented):
+        return
+    try:
+        _require_operator(request)
+    except HTTPException:
+        raise
+
+
 def _derive_label(user_agent: str) -> tuple[str, str]:
     """Best-effort ``(label, platform)`` from a User-Agent string.
 
@@ -160,7 +196,7 @@ def register_operator_auth_routes(app: FastAPI, *, device_store: oa.DeviceStore)
 
     @router.post("/enroll/open")
     async def enroll_open(request: Request):
-        _require_operator(request)  # loopback/tailnet or operator token
+        _require_operator_or_link_code(request)
         window = _pairing.open_window()
         return {"window_nonce": window["nonce"], "exp": window["expires_at"]}
 

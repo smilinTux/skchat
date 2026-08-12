@@ -884,9 +884,7 @@ async def skos_proxy(path: str, request: Request):
     how = _authorize_module_proxy(request, "skos")
     upstream = os.environ.get("SKOS_URL", "http://127.0.0.1:7781")
     embed_tok = (
-        request.query_params.get("embed_token")
-        or request.cookies.get(cookie_name("skos"))
-        or ""
+        request.query_params.get("embed_token") or request.cookies.get(cookie_name("skos")) or ""
     ).strip()
     resp = await _reverse_proxy(
         request,
