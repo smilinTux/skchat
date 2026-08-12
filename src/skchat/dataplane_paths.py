@@ -72,6 +72,7 @@ _GATED_PREFIX = (
 _GATED_EXACT = {
     "/api/board",
     "/api/kanban",  # coord kanban board snapshot (read), gated like /api/board
+    "/api/gtd",  # GTD list view (read), gated like /api/kanban
     "/media/file",
 }
 

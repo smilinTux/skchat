@@ -1515,6 +1515,18 @@ async def api_kanban():
     return _proxy(f"{_DASHBOARD}/api/kanban")
 
 
+@router.get("/gtd")
+async def api_gtd(request: "Request"):
+    """Proxy a GTD list (next-actions/inbox/waiting-for/...) from the dashboard.
+    Each item carries card_id=gtd-<id>, so the native app drives the SAME
+    /api/card/{id}/ai-suggestions + queue-ai routes for GTD. Forwards ?list=.
+    Gated (read) via the /api/gtd exact path in dataplane_paths."""
+    url = f"{_DASHBOARD}/api/gtd"
+    if request.url.query:
+        url = f"{url}?{request.url.query}"
+    return _proxy(url)
+
+
 @router.get("/card/{card_id}")
 async def api_card(card_id: str):
     """Proxy a single kanban card's detail from the dashboard."""
