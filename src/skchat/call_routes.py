@@ -8,6 +8,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import time
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -159,6 +162,64 @@ async def _peer_arg(request: Request) -> str:
     return peer
 
 
+#: How long an unanswered CALL_INVITE stays ringable. Without a ceiling a
+#: never-answered invite rings forever, because /call/incoming is a pure read of
+#: the inbox. Matches a reasonable "did you miss the call" window.
+INVITE_TTL_S = int(os.getenv("SKCHAT_CALL_INVITE_TTL_S", "120"))
+
+
+def _invite_dir():
+    """The mailbox directory the CALL_INVITE envelopes physically live in."""
+    from skcomms.mailbox import scaffold  # noqa: PLC0415
+
+    agent = os.getenv("SKAGENT") or os.getenv("SKCAPSTONE_AGENT") or "lumina"
+    return Path(scaffold(agent=agent)["inbox"])
+
+
+def _consume_invites(*, from_fqid: str | None = None, nonce: str | None = None) -> int:
+    """Retire CALL_INVITE envelopes so they stop ringing. Returns how many.
+
+    Moves rather than deletes: an answered call is not a reason to destroy a
+    signed envelope, and a wrongly-consumed invite should be recoverable. Best
+    effort throughout, since failing to tidy up must never fail the call itself.
+    """
+    try:
+        inbox = _invite_dir()
+        if not inbox.is_dir():
+            return 0
+        spent = inbox.parent / (inbox.name + ".consumed")
+        spent.mkdir(parents=True, exist_ok=True)
+    except Exception:  # pragma: no cover - defensive
+        logger.debug("could not resolve the invite dir", exc_info=True)
+        return 0
+
+    moved = 0
+    for env, verify in _read_inbox():
+        if getattr(env, "subject", None) != CALL_INVITE_SUBJECT:
+            continue
+        try:
+            inv = parse_invite_body(env.body)
+        except ValueError:
+            continue
+        if from_fqid and inv.get("from_fqid") != from_fqid:
+            continue
+        if nonce and inv.get("nonce") != nonce:
+            continue
+        src = getattr(env, "path", None) or getattr(env, "source_path", None)
+        if not src:
+            continue
+        try:
+            sp = Path(src)
+            if sp.is_file():
+                sp.rename(spent / sp.name)
+                moved += 1
+        except Exception:  # pragma: no cover - racing another consumer
+            logger.debug("could not retire invite %s", src, exc_info=True)
+    if moved:
+        logger.info("retired %d CALL_INVITE envelope(s) from=%s", moved, from_fqid or "*")
+    return moved
+
+
 def register_call_routes(app: FastAPI) -> None:
     @app.post("/call/start")
     async def call_start(request: Request) -> JSONResponse:
@@ -177,6 +238,12 @@ def register_call_routes(app: FastAPI) -> None:
             body = {}
         topic = (body.get("topic") or "").strip()
         ctx = _prepare_call(peer)
+        # A self-addressed invite is never a real call, and it is not harmless:
+        # /call/incoming re-reads the inbox every poll, so one self-invite rings
+        # the operator forever. Observed live as 15 stuck envelopes with
+        # from_fqid == to_fqid == lumina@chef.skworld.io.
+        if ctx["identity"] == ctx["peer_fqid"]:
+            raise HTTPException(400, "refusing to place a call to self")
         _send_invite(
             from_fqid=ctx["identity"],
             to_fqid=ctx["peer_fqid"],
@@ -195,6 +262,10 @@ def register_call_routes(app: FastAPI) -> None:
         _gate_token_mint(request)
         peer = await _peer_arg(request)
         ctx = _prepare_call(peer)  # no _send_invite — answering never rings
+        # Consume this caller's pending invites. Nothing used to, so an answered
+        # call kept ringing: /call/incoming just re-reads the inbox, and the
+        # envelopes sat there forever.
+        _consume_invites(from_fqid=ctx["peer_fqid"])
         return _call_response(ctx)
 
     @app.get("/call/incoming")
@@ -229,6 +300,12 @@ def register_call_routes(app: FastAPI) -> None:
                     inv.get("from_fqid"),
                     env_from,
                 )
+                continue
+            # Expire stale invites rather than ringing forever. /call/incoming
+            # is a pure read of the inbox, so without a ceiling a call nobody
+            # answered keeps alerting indefinitely.
+            age = time.time() - float(inv.get("ts") or 0)
+            if INVITE_TTL_S > 0 and age > INVITE_TTL_S:
                 continue
             invites.append(inv)
         invites.sort(key=lambda i: i.get("ts", 0), reverse=True)

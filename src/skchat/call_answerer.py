@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import time
 from typing import Optional
 from urllib import error as urlerror
@@ -281,6 +282,39 @@ async def _run_call(joinable: dict) -> None:
         await _join_and_publish(joinable)
 
 
+#: Rooms with a call in flight, so a re-delivered invite does not double-join.
+_ACTIVE_ROOMS: set[str] = set()
+_ACTIVE_LOCK = threading.Lock()
+
+
+def _spawn_call(joinable: dict) -> None:
+    """Run one answered call on a worker thread, keeping the poll loop alive.
+
+    ``run_answerer`` used to ``asyncio.run(...)`` inline, which blocks polling
+    for the entire duration of the call: a second caller rings into nothing
+    until the first one hangs up. Each call now gets its own thread and its own
+    event loop, and the room is tracked so a re-delivered invite for a call
+    already in progress is ignored rather than joined twice.
+    """
+    room = joinable.get("room") or ""
+    with _ACTIVE_LOCK:
+        if room in _ACTIVE_ROOMS:
+            logger.debug("call already in progress for room=%s; ignoring", room)
+            return
+        _ACTIVE_ROOMS.add(room)
+
+    def _runner() -> None:
+        try:
+            asyncio.run(_run_call(joinable))
+        except Exception as e:
+            logger.error("join/publish failed for room=%s: %s", room, e)
+        finally:
+            with _ACTIVE_LOCK:
+                _ACTIVE_ROOMS.discard(room)
+
+    threading.Thread(target=_runner, name=f"call:{room[:16]}", daemon=True).start()
+
+
 def run_answerer(
     base_url: Optional[str] = None,
     operator_token: Optional[str] = None,
@@ -293,7 +327,6 @@ def run_answerer(
     ``_resolve_webui_url``), ``SKCHAT_GUEST_OPERATOR_TOKEN`` (required),
     ``SKCHAT_ANSWERER_POLL_S`` (default 3s).
     """
-    import asyncio
 
     base_url = base_url or _resolve_webui_url()
     operator_token = operator_token or os.getenv("SKCHAT_GUEST_OPERATOR_TOKEN", "")
@@ -325,10 +358,10 @@ def run_answerer(
             logger.info(
                 "answering call -> room=%s via %s", joinable["room"], joinable["livekit_url"]
             )
-            try:
-                asyncio.run(_run_call(joinable))
-            except Exception as e:
-                logger.error("join/publish failed for room=%s: %s", joinable["room"], e)
+            # Run the call on its own thread so polling continues. asyncio.run()
+            # inline blocked the loop for the WHOLE call, so a second caller rang
+            # into nothing until the first hung up.
+            _spawn_call(joinable)
         time.sleep(interval)
 
 
