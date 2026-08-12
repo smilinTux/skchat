@@ -65,6 +65,10 @@ _EXEMPT_METHOD_PREFIX = {
 _GATED_PREFIX = (
     "/file",
     "/adapters",
+    # Generalized fleet suggestion engine: read (/api/suggest/{surface}/{id})
+    # and write (/api/queue/{surface}/{id}). Gated like /api/card.
+    "/api/suggest",
+    "/api/queue",
     # Kanban card read + mutation (/api/card/{id}[/{action}]): a write surface,
     # must never be public over the funnel. Capability in dataplane_auth.
     "/api/card",

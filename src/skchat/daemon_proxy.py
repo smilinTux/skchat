@@ -1527,6 +1527,33 @@ async def api_gtd(request: "Request"):
     return _proxy(url)
 
 
+@router.get("/suggest/{surface}/{item_id}")
+async def api_surface_suggest(surface: str, item_id: str, request: "Request"):
+    """Generalized AI SUGGESTIONS for any fleet surface (coord/gtd/itil/chat/
+    security): the dashboard resolves (surface, id) to a shadow card and reuses
+    the card suggestion engine. Forwards ?llm=0/1, long timeout for the LLM path.
+    Gated (read) via the /api/suggest prefix in dataplane_paths."""
+    from urllib.parse import quote
+
+    url = f"{_DASHBOARD}/api/suggest/{quote(surface, safe='')}/{quote(item_id, safe='')}"
+    if request.url.query:
+        url = f"{url}?{request.url.query}"
+    return _proxy(url, timeout=40)
+
+
+@router.post("/queue/{surface}/{item_id}")
+async def api_surface_queue(surface: str, item_id: str, request: "Request"):
+    """Generalized 'queue an AI to work an item' for any fleet surface. GATED as
+    a write via the /api/queue prefix; the dashboard additionally applies its
+    staged queue authz (loopback-open dev / token / capauth PDP)."""
+    from urllib.parse import quote
+
+    return await _proxy_post(
+        request,
+        f"{_DASHBOARD}/api/queue/{quote(surface, safe='')}/{quote(item_id, safe='')}",
+    )
+
+
 @router.get("/card/{card_id}")
 async def api_card(card_id: str):
     """Proxy a single kanban card's detail from the dashboard."""

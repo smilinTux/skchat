@@ -135,6 +135,8 @@ _ROUTE_CAPABILITY_RULES: tuple[tuple[str, str, str], ...] = (
     ("GET", "/api/board", CAP_STATUS),  # interim; migrates to skboard.read (L1.8)
     ("GET", "/api/kanban", CAP_STATUS),  # interim; migrates to skboard.read (L1.8)
     ("GET", "/api/gtd", CAP_STATUS),  # GTD list view; interim, migrates to skboard.read
+    ("GET", "/api/suggest/{surface}/{id}", CAP_STATUS),  # fleet suggest; interim
+    ("POST", "/api/queue/{surface}/{id}", CAP_STATUS),  # fleet queue; interim
     ("GET", "/api/card/{card_id}", CAP_STATUS),  # interim; migrates to skboard.read
     ("GET", "/api/card/{card_id}/ai-suggestions", CAP_STATUS),  # AI next-step options
     # Kanban card mutation (move/assign/priority/label/note). A WRITE, so it must
