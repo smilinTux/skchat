@@ -7,6 +7,15 @@ def test_sensitive_paths_are_gated():
     assert is_gated("GET", "/api/v1/peers") is True
 
 
+def test_coord_board_and_kanban_are_gated():
+    # The coord board + kanban (read and card mutation) are operator surfaces and
+    # must never be public over the funnel.
+    assert is_gated("GET", "/api/board") is True
+    assert is_gated("GET", "/api/kanban") is True
+    assert is_gated("GET", "/api/card/abc123") is True
+    assert is_gated("POST", "/api/card/abc123/move") is True
+
+
 def test_exempt_paths_are_open():
     assert is_gated("GET", "/health") is False
     assert is_gated("GET", "/api/health") is False

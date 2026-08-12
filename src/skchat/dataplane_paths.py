@@ -65,9 +65,13 @@ _EXEMPT_METHOD_PREFIX = {
 _GATED_PREFIX = (
     "/file",
     "/adapters",
+    # Kanban card read + mutation (/api/card/{id}[/{action}]): a write surface,
+    # must never be public over the funnel. Capability in dataplane_auth.
+    "/api/card",
 )
 _GATED_EXACT = {
     "/api/board",
+    "/api/kanban",  # coord kanban board snapshot (read), gated like /api/board
     "/media/file",
 }
 

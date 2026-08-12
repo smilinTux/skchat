@@ -1481,6 +1481,61 @@ async def api_board():
     return _proxy("http://127.0.0.1:7778/api/board")
 
 
+_DASHBOARD = "http://127.0.0.1:7778"
+
+
+async def _proxy_post(request: "Request", url: str) -> dict | list:
+    """POST proxy to a sibling dashboard endpoint, forwarding the JSON body and
+    the ``x-sk-actor`` attribution header. Same fail-soft 502 as :func:`_proxy`.
+    GET reads use :func:`_proxy`; this exists for the board card mutations."""
+    import json
+    import urllib.error
+    import urllib.request
+
+    body = await request.body()
+    headers = {"content-type": request.headers.get("content-type", "application/json")}
+    actor = request.headers.get("x-sk-actor")
+    if actor:
+        headers["x-sk-actor"] = actor
+    req = urllib.request.Request(url, data=body or b"{}", method="POST", headers=headers)
+    try:
+        r = urllib.request.urlopen(req, timeout=8)
+        return json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        raise HTTPException(e.code, (e.read() or b"").decode(errors="replace") or "mutate failed")
+    except Exception as exc:
+        logger.debug("daemon_proxy POST %s failed: %s", url, exc)
+        raise HTTPException(502, f"backend unavailable: {exc}")
+
+
+@router.get("/kanban")
+async def api_kanban():
+    """Proxy the full kanban board (lanes x columns x WIP) from the dashboard, so
+    the native app Kanban screen reads it same-origin over the funnel."""
+    return _proxy(f"{_DASHBOARD}/api/kanban")
+
+
+@router.get("/card/{card_id}")
+async def api_card(card_id: str):
+    """Proxy a single kanban card's detail from the dashboard."""
+    from urllib.parse import quote
+
+    return _proxy(f"{_DASHBOARD}/api/card/{quote(card_id, safe='')}")
+
+
+@router.post("/card/{card_id}/{action}")
+async def api_card_mutate(card_id: str, action: str, request: "Request"):
+    """Proxy a kanban card MUTATION (move / assign / priority / label / note) to
+    the dashboard so the native app can drive the board. GATED as a write in
+    dataplane_auth (only an authenticated operator reaches it)."""
+    from urllib.parse import quote
+
+    return await _proxy_post(
+        request,
+        f"{_DASHBOARD}/api/card/{quote(card_id, safe='')}/{quote(action, safe='')}",
+    )
+
+
 @router.get("/v1/capabilities")
 async def api_capabilities():
     """Same-origin proxy to the skcomms-api capability/service-discovery doc."""

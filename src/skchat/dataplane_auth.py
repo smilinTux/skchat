@@ -133,6 +133,13 @@ _ROUTE_CAPABILITY_RULES: tuple[tuple[str, str, str], ...] = (
     ("GET", "/agent/state", CAP_STATUS),
     ("GET", "/adapters", CAP_STATUS),
     ("GET", "/api/board", CAP_STATUS),  # interim; migrates to skboard.read (L1.8)
+    ("GET", "/api/kanban", CAP_STATUS),  # interim; migrates to skboard.read (L1.8)
+    ("GET", "/api/card/{card_id}", CAP_STATUS),  # interim; migrates to skboard.read
+    # Kanban card mutation (move/assign/priority/label/note). A WRITE, so it must
+    # be gated (an ungated route is public over the funnel). Interim CAP_STATUS
+    # to avoid shipping an ungranted new cap that would lock the board off; must
+    # migrate to skboard.write with the rest of the /api/board* family (L1.8).
+    ("POST", "/api/card/{card_id}/{action}", CAP_STATUS),
     (
         "GET",
         "/api/v1/guest-dm/contacts",
