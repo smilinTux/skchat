@@ -80,9 +80,17 @@ fi
 app_version="$(grep -m1 '^version:' "$APP_DIR/pubspec.yaml" | awk '{print $2}')"
 build_id="${src_commit:0:7}-$(date +%m%d-%H%M)"
 echo "    stamping v$app_version build $build_id"
+# USE_SHELL_DYNAMIC_MODULES turns on the umbrella-shell subapp discovery
+# (GET /api/v1/shell/modules) so the embedded ops panes (skdashboard Board /
+# skos OS) appear in the nav; USE_SHELL_REQUIRE_SIGNED matches the server's
+# SKCHAT_SHELL_REQUIRE_SIGNED enforcement (only capauth-signed manifests). Both
+# default OFF in the client, so without these the whole discovery path is
+# tree-shaken out and the panes never render (2026-08-12 embed fix).
 ( cd "$APP_DIR" && "$FLUTTER" build web --release --base-href "$BASE_HREF" \
     --dart-define="APP_VERSION=$app_version" \
-    --dart-define="BUILD_ID=$build_id" )
+    --dart-define="BUILD_ID=$build_id" \
+    --dart-define="USE_SHELL_DYNAMIC_MODULES=true" \
+    --dart-define="USE_SHELL_REQUIRE_SIGNED=true" )
 
 built="$APP_DIR/build/web"
 [ -f "$built/main.dart.js" ] || die "build produced no main.dart.js"

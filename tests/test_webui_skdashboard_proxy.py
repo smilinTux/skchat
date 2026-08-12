@@ -61,6 +61,40 @@ def test_rewrite_prefixes_root_absolute_nav_links():
     assert b'href="/skdashboard/static/css/board.css"' in out
 
 
+def test_rewrite_appends_embed_token_to_assets_and_nav():
+    # With a token in hand, every rewritten root-absolute href/src also carries
+    # ?embed_token=..., so <link>/<script>/nav loads authorize at the gated proxy
+    # without a cookie (the opaque-origin iframe never sends one).
+    html = (
+        b'<link href="/static/css/board.css">'
+        b'<script src="/static/js/x.js?v=2"></script>'
+        b'<a href="/board">Board</a>'
+    )
+    out = webui._rewrite_html_asset_prefix(html, "/skdashboard", "tok-ABC")
+    assert b'href="/skdashboard/static/css/board.css?embed_token=tok-ABC"' in out
+    # existing query string keeps its params, token joined with &
+    assert b'src="/skdashboard/static/js/x.js?v=2&embed_token=tok-ABC"' in out
+    assert b'<a href="/skdashboard/board?embed_token=tok-ABC">' in out
+
+
+def test_rewrite_token_is_idempotent_and_url_encoded():
+    # A token with url-unsafe chars is percent-encoded; a second pass never
+    # double-appends.
+    once = webui._rewrite_html_asset_prefix(
+        b'<link href="/static/x.css">', "/skdashboard", "a/b=c"
+    )
+    assert b"embed_token=a%2Fb%3Dc" in once
+    twice = webui._rewrite_html_asset_prefix(once, "/skdashboard", "a/b=c")
+    assert once == twice
+    assert once.count(b"embed_token=") == 1
+
+
+def test_rewrite_no_token_is_unchanged_from_before():
+    # Backward compat: no token -> no ?embed_token appended (old behaviour).
+    out = webui._rewrite_html_asset_prefix(b'<link href="/static/x.css">', "/skdashboard")
+    assert out == b'<link href="/skdashboard/static/x.css">'
+
+
 def test_rewrite_leaves_protocol_relative_and_absolute_urls_alone():
     # Cross-origin references must never be reparented onto the local prefix.
     html = (
@@ -214,9 +248,11 @@ def test_route_injects_shim_with_token_and_cors(monkeypatch):
     r = client.get(f"/skdashboard/?embed_token={token}")
     assert r.status_code == 200
     body = r.content
-    # Nav + assets reparented onto the prefix.
-    assert b'href="/skdashboard/static/css/board.css"' in body
-    assert b'<a href="/skdashboard/cockpit">' in body
+    # Nav + assets reparented onto the prefix AND carrying the embed token, so the
+    # opaque-origin pane's <link>/<script>/nav subresource loads authorize at the
+    # gated proxy without a cookie (the fix for the bare-unstyled-HTML embed bug).
+    assert b'href="/skdashboard/static/css/board.css?embed_token=' in body
+    assert b'<a href="/skdashboard/cockpit?embed_token=' in body
     # The fetch/XHR shim is present and carries THIS token, so in-pane API calls
     # authorize cross-origin without a cookie.
     assert webui._EMBED_SHIM_MARKER in body

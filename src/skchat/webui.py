@@ -357,9 +357,18 @@ async def access_tool_proxy(request: Request):
 _HTML_ROOT_ABS_ATTR_RE = _re.compile(rb"""((?:href|src)\s*=\s*["'])(/[^"'\s>]*)""")
 
 
-def _rewrite_html_asset_prefix(body: bytes, prefix: str) -> bytes:
+def _rewrite_html_asset_prefix(body: bytes, prefix: str, token: str = "") -> bytes:
     """Rewrite ROOT-ABSOLUTE ``href``/``src`` URLs in proxied HTML onto a
-    same-origin module ``prefix`` (assets AND in-app nav).
+    same-origin module ``prefix`` (assets AND in-app nav), and (when ``token``
+    is given) append ``?embed_token=...`` so each ``<link>``/``<script>``/nav
+    load authorizes at the gated proxy WITHOUT a cookie.
+
+    The embed iframe is sandboxed without ``allow-same-origin`` (A3 containment),
+    so its document origin is OPAQUE and a path-scoped ``SameSite=Lax`` cookie is
+    never attached to its subresource requests. The runtime shim already carries
+    the token on ``fetch``/``XHR`` calls; this makes the STATIC ``href``/``src``
+    subresource loads carry it too, closing the "styled-vs-unstyled dead HTML"
+    gap where CSS/JS 401'd against the gate.
 
     A subapp (the skcapstone coordination dashboard) references BOTH its assets
     (``/static/css/board.css``, ``/static/js/cmdb.js``) and its own navigation
@@ -382,16 +391,27 @@ def _rewrite_html_asset_prefix(body: bytes, prefix: str) -> bytes:
     ``data:`` URIs, so stylesheets need no rewriting; ``.js`` runtime ``fetch``
     URLs are handled at dispatch time by :func:`_embed_fetch_shim`, not here)."""
     p = prefix.rstrip("/").encode()
+    from urllib.parse import quote as _urlquote
+
+    tok = _urlquote(token, safe="").encode() if token else b""
+
+    def _add_token(url: bytes) -> bytes:
+        # Idempotent: never double-append; pick ? or & for an existing query.
+        if not tok or b"embed_token=" in url:
+            return url
+        sep = b"&" if b"?" in url else b"?"
+        return url + sep + b"embed_token=" + tok
 
     def _sub(m: "_re.Match[bytes]") -> bytes:
         open_attr, value = m.group(1), m.group(2)
-        # Protocol-relative (//host/...) -> cross-origin, never reparent.
+        # Protocol-relative (//host/...) -> cross-origin, never reparent/token.
         if value.startswith(b"//"):
             return m.group(0)
-        # Already under the prefix -> idempotent, leave as-is.
+        # Already under the prefix -> keep the prefix (idempotent), but still
+        # ensure the token so the gated subresource load authorizes.
         if value == p or value.startswith(p + b"/"):
-            return m.group(0)
-        return open_attr + p + value
+            return open_attr + _add_token(value)
+        return open_attr + _add_token(p + value)
 
     return _HTML_ROOT_ABS_ATTR_RE.sub(_sub, body)
 
@@ -520,7 +540,7 @@ async def _reverse_proxy(
             ctype = r.headers.get("content-type", "application/octet-stream")
             data = r.read()
             if html_prefix and "text/html" in ctype.lower():
-                data = _rewrite_html_asset_prefix(data, html_prefix)
+                data = _rewrite_html_asset_prefix(data, html_prefix, embed_token or "")
                 data = _inject_embed_shim(data, html_prefix, embed_token or "")
             return Response(
                 content=data,
@@ -845,16 +865,39 @@ async def skdashboard_proxy(path: str, request: Request):
     return resp
 
 
-@app.api_route("/skos/{path:path}", methods=["GET", "POST"])
+@app.api_route("/skos/{path:path}", methods=_MODULE_PROXY_METHODS)
 async def skos_proxy(path: str, request: Request):
     """/skos/* -> the skos read-only web surface (SKOS_URL, default :7781) so the
     shell's "OS" pane loads over the 443 funnel. GATED for the same reason as
     skdashboard: skos's surface has no auth of its own, so it must not be public
     over the funnel. Accepts a full operator credential OR a module-scoped,
-    read-only ``embed_token`` (see ``embed_auth``); otherwise 401."""
+    read-only ``embed_token`` (see ``embed_auth``); otherwise 401.
+
+    Gets the SAME embed treatment as skdashboard (previously missing, so the pane
+    rendered as bare unstyled HTML): the html_prefix + token rewrite/shim keep its
+    assets/nav/API inside the /skos prefix and authorized, and the CORS headers let
+    the opaque-origin iframe READ the proxied replies."""
+    if request.method == "OPTIONS":
+        from starlette.responses import Response as _Resp
+
+        return _Resp(status_code=204, headers=_module_cors_headers(request))
     how = _authorize_module_proxy(request, "skos")
     upstream = os.environ.get("SKOS_URL", "http://127.0.0.1:7781")
-    resp = await _reverse_proxy(request, upstream, path, label="skos")
+    embed_tok = (
+        request.query_params.get("embed_token")
+        or request.cookies.get(cookie_name("skos"))
+        or ""
+    ).strip()
+    resp = await _reverse_proxy(
+        request,
+        upstream,
+        path,
+        label="skos",
+        html_prefix="/skos",
+        embed_token=embed_tok,
+    )
+    for _k, _v in _module_cors_headers(request).items():
+        resp.headers[_k] = _v
     if how == "embed" and presented_via_query(request):
         _set_embed_cookie(resp, request, "skos")
     return resp
