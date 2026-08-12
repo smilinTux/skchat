@@ -480,6 +480,38 @@ unscoped "E2E quantum-resistant," or "CNSA-2.0." AES-256 is **not** quantum-brok
 Full detail + diagrams: **`docs/crypto-architecture.md`**; master plan
 **`docs/quantum-resistance-architecture.md`**; epic `PQC-MIGRATION` (coord `e1d6ba2a`).
 
+## Do feature work in a worktree, NOT in this checkout
+
+**This checkout IS production.** skchat is installed editable, so
+`~/.skenv` imports straight out of `src/skchat` here:
+
+```
+skchat imports from: /home/cbrd21/clawd/skcapstone-repos/skchat/src/skchat
+```
+
+Every running service (`skchat-daemon`, `skchat-webui@<agent>`, the answerer)
+therefore executes whatever is checked out RIGHT NOW. Checking out a feature
+branch here silently puts in-progress code into the live daemon; an uncommitted
+edit is live the moment a service restarts. That is also why two sessions
+sharing this directory collide: the deploy script commits to whatever branch
+happens to be open, so one session's deploy has landed on another's feature
+branch.
+
+Work in a worktree instead:
+
+```bash
+git worktree add ~/skworld-worktrees/<name> -b session/<name> main
+cd ~/skworld-worktrees/<name>          # edit, test, commit, push, open the PR here
+```
+
+`pyproject.toml` sets `pythonpath = ["src"]` relative to the rootdir, so pytest
+run against a worktree tests THAT tree's code, verified: a probe added in the
+worktree is visible there and invisible to production.
+
+Keep this checkout on `main`, and use it only to merge, pull and deploy. The
+built web bundle lives here and the deploy script commits it, so deploys belong
+here too.
+
 ## Deploying the web client (read this before you rsync anything)
 
 `src/skchat/static/app/` is **tracked in git** and the webui serves it directly.
