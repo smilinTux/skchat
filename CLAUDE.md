@@ -532,6 +532,29 @@ enrolled before this shipped). A readable registry with no row for a fingerprint
 reads as NOT approved; a missing or unreadable registry reads as approved, because
 one corrupt JSON file must not lock every device off the node at once.
 
+**Linking a device: use a link code, not the operator token.**
+
+```bash
+skchat devices link          # short-lived single-use code + a scannable QR
+skchat devices codes         # how many are outstanding
+skchat devices codes --revoke-all
+```
+
+`SKCHAT_GUEST_OPERATOR_TOKEN` is a long-lived shared secret: it sits in plaintext
+in `~/.config/skchat/webui-<agent>.env` (per-agent, they differ), it is presented
+by other services (`skchat-call-answerer@<agent>`), and it gates guest invites,
+prekey signing and the call routes as well as enrollment. Typing that into a
+phone spreads a permanent credential around; a bootstrap secret should be
+short-lived and single-use, which is what a link code is.
+
+A code is accepted in the SAME header as the operator token, so the app's
+existing paste field works unchanged, but ONLY on `POST /api/v1/auth/enroll/open`.
+It must never widen to the rest of `_require_operator`'s surface, or it becomes a
+worse operator token rather than a better one (there is a test for exactly that).
+Only `sha256(code)` is stored, so the state file is not a source of working
+codes. The device still signs the window with its own key and still lands
+pending approval, so a leaked code alone links nothing usable.
+
 **The client-side trap, which caused a live outage.** Adding a route to
 `_ROUTE_CAPABILITY_RULES` makes it **gated**, and the data-plane gate accepts only
 `Authorization: CapAuth/Bearer <session>` or `X-CapAuth-Token`. It does **not**

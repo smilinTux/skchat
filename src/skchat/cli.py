@@ -5592,6 +5592,75 @@ def devices() -> None:
     """Manage linked operator devices."""
 
 
+@devices.command("link")
+@click.option("--ttl", default=600, show_default=True, help="Seconds the code stays valid.")
+@click.option("--qr/--no-qr", default=True, help="Render a QR to scan from the phone.")
+@click.option(
+    "--url",
+    default=None,
+    help="Web UI base URL to encode in the QR (default http://<this host>:8765).",
+)
+def devices_link(ttl: int, qr: bool, url: str | None) -> None:
+    """Mint a short-lived, single-use code for linking a device.
+
+    Paste it where the app asks for the operator token, or scan the QR. It opens
+    ONE enrollment window, then burns.
+
+    Why not just paste the operator token: that token is long-lived, sits in
+    plaintext env files, is presented by other services, and has no rotation
+    path, so typing it into a phone spreads a permanent credential around. A
+    bootstrap secret should be short-lived and single-use. This one is.
+
+    The device still signs the enrollment window with its own key, and still
+    lands pending approval, so a leaked code alone links nothing usable.
+    """
+    import socket
+
+    from . import link_codes as _LC
+
+    code = _LC.mint(ttl=ttl)
+    minutes = ttl // 60
+    click.echo("")
+    click.echo(f"  Device link code:  {click.style(code, bold=True)}")
+    click.echo(f"  Valid for {minutes} minute(s), single use.")
+    click.echo("")
+
+    if qr:
+        base = url or f"http://{socket.gethostname()}:8765"
+        payload = f"{base.rstrip('/')}/app/?link={code}"
+        try:
+            import segno
+
+            segno.make(payload, error="m").terminal(compact=True)
+            click.echo("")
+            click.echo(f"  QR encodes: {payload}")
+        except ImportError:
+            click.echo("  (install `segno` for a scannable QR: pip install segno)")
+            click.echo(f"  Link URL: {payload}")
+    click.echo("")
+    click.echo("  Then approve the device from an already-linked one, or:")
+    click.echo("    skchat devices pending")
+    click.echo("")
+
+
+@devices.command("codes")
+@click.option("--revoke-all", is_flag=True, help="Invalidate every outstanding code.")
+def devices_codes(revoke_all: bool) -> None:
+    """Show how many link codes are outstanding, or revoke them all.
+
+    Codes are stored as hashes only, so there is nothing to list back: a code
+    that was never used and is now forgotten can only be revoked, not recovered.
+    """
+    from . import link_codes as _LC
+
+    if revoke_all:
+        n = _LC.revoke_all()
+        click.echo(f"Revoked {n} outstanding link code(s).")
+        return
+    n = _LC.outstanding()
+    click.echo(f"{n} link code(s) outstanding." if n else "No link codes outstanding.")
+
+
 @devices.command("reset")
 @click.option("--yes", is_flag=True, help="Confirm: this unlinks every device.")
 def devices_reset(yes: bool) -> None:
