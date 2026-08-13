@@ -102,6 +102,12 @@ FILLER_DELAY_S = float(os.getenv("LUMINA_FILLER_DELAY_S", "0.8"))
 #: Speak it immediately on every turn, no matter how fast the reply is.
 FILLER_ALWAYS = os.getenv("LUMINA_FILLER_ALWAYS", "0") not in ("0", "false", "no", "")
 
+#: End a session once the room has been empty this long. Rooms are derived
+#: per-pair and therefore reused by every future call, so a session that
+#: outlives its call does not merely leak: it answers the NEXT call with pumps
+#: bound to participants who left.
+SESSION_EMPTY_TIMEOUT_S = float(os.getenv("LUMINA_SESSION_EMPTY_TIMEOUT_S", "60"))
+
 # Roundtable / addressing tuning.
 FOLLOW_UP_WINDOW_S = float(os.getenv("LUMINA_FOLLOW_UP_S", "60"))
 AGENT_TURN_CAP = int(os.getenv("LUMINA_AGENT_TURN_CAP", "6"))
@@ -1103,6 +1109,36 @@ async def build_room_session(
     def _on_disconnected(*_a):  # noqa: ANN001
         closed.set()
 
+    @room.on("participant_disconnected")
+    def _on_participant_left(participant):  # noqa: ANN001
+        """End the call when the last human leaves.
+
+        Hanging up does NOT disconnect the agent: the SFU keeps it in the room
+        with its track published, so `closed` never fired, build_room_session
+        never returned, _run_call never returned, and _ACTIVE_ROOMS never
+        released the room. Because derive_room() is deterministic per pair, the
+        NEXT call landed in that same room and was answered by the stale
+        session, whose pumps were bound to participants who had left. That is
+        the origin of the doubled level lines, of "RtcError: InvalidState -
+        failed to capture frame" (a dead AudioSource from the previous call),
+        and of the "error putting to queue: Event loop is closed" flood once
+        the orphaned thread's loop went away.
+        """
+        who = getattr(participant, "identity", "") or "peer"
+        pumped.discard(who)
+        segmenters.pop(who, None)
+        bargers.pop(who, None)
+        remaining = [
+            p
+            for p in getattr(room, "remote_participants", {}).values()
+            if getattr(p, "identity", "") != who
+        ]
+        if remaining:
+            log.info("%s left; %d participant(s) remain", who, len(remaining))
+            return
+        log.info("%s left and the room is empty; ending the session", who)
+        closed.set()
+
     await room.connect(url, token)
     await room.local_participant.publish_track(track)
 
@@ -1129,6 +1165,36 @@ async def build_room_session(
         len(registry) if registry is not None else 0,
     )
     await _set_state(room, "listening")
+
+    async def _empty_room_watchdog() -> None:
+        """Backstop: end a session nobody is in.
+
+        participant_disconnected is the clean signal, but it does not fire when
+        a peer drops off the network rather than hanging up, and it cannot fire
+        for a caller who never arrives. Without this, either case leaves an
+        immortal session holding the per-pair room against every future call.
+        Grace on entry so a session that starts before the caller finishes
+        joining is not killed at birth.
+        """
+        empty_since: float | None = None
+        while not closed.is_set():
+            await asyncio.sleep(5)
+            n = len(getattr(room, "remote_participants", {}) or {})
+            if n:
+                empty_since = None
+                continue
+            now = time.monotonic()
+            if empty_since is None:
+                empty_since = now
+            elif now - empty_since >= SESSION_EMPTY_TIMEOUT_S:
+                log.info(
+                    "no participants for %.0fs; ending the session",
+                    now - empty_since,
+                )
+                closed.set()
+                return
+
+    tasks.append(asyncio.create_task(_empty_room_watchdog()))
     try:
         await closed.wait()
     finally:
