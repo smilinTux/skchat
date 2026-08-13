@@ -116,6 +116,22 @@ where = ["src"]
 [tool.setuptools.package-data]
 skchat = ["SKILL.md", "static/*"]
 
+# Belt and braces. The line above looks like it limits the wheel to the top level
+# of static/, but it does not: `include-package-data` defaults to TRUE under
+# pyproject.toml, and setuptools_scm's file finder reports every git-tracked file,
+# so in practice ANYTHING committed under src/skchat/ is shipped.
+#
+# That is how src/skchat/static/app/pqc/node_modules (314 files, 34MB, including
+# THREE copies of the same 10MB esbuild binary) ended up inside all 368 published
+# releases, taking skchat-sovereign past PyPI's 10GB per-project limit and
+# hard-blocking every publish with a 400.
+#
+# node_modules is now gitignored, which is the actual fix. This exclude is the
+# second line of defence, so a `git add -f` cannot quietly put 30MB of Node build
+# tooling back into a Python wheel.
+[tool.setuptools.exclude-package-data]
+skchat = ["static/app/pqc/node_modules/*", "static/app/pqc/node_modules/**/*"]
+
 [tool.setuptools_scm]
 version_file = "src/skchat/_version.py"
 fallback_version = "0.0.0+unknown"
