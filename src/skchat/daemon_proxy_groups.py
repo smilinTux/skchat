@@ -872,10 +872,15 @@ def create_group(
     members: list[str],
     description: str = "",
     acl: Optional[dict[str, Any]] = None,
+    metadata: Optional[dict[str, Any]] = None,
 ):
     """Create + persist a new ``GroupChat`` with the creator as admin.
 
     *members* are raw handles/URIs (the creator is added automatically).
+    *metadata* is optional extensible tagging (e.g. a project chat's
+    ``{"project": "repo:<name>"}``), merged into the group's ``metadata``
+    dict alongside the ``acl`` block already stored there. ``None`` (default)
+    leaves it untouched, same as before this parameter existed.
     Returns the persisted group.
     """
     from .group import GroupChat, MemberRole
@@ -905,6 +910,7 @@ def create_group(
         description=description,
         creator_hybrid_kem_public_hex=creator_hybrid,
         member_hybrid_keys=member_hybrid_keys,
+        metadata=metadata,
     )
     merged_acl = dict(_DEFAULT_ACL)
     if acl:
@@ -1015,8 +1021,16 @@ def update_group(
     name: Optional[str] = None,
     description: Optional[str] = None,
     acl: Optional[dict[str, Any]] = None,
+    metadata: Optional[dict[str, Any]] = None,
 ):
-    """Update name/description/acl and persist."""
+    """Update name/description/acl/metadata and persist.
+
+    *metadata* merges into the group's existing ``metadata`` dict (does not
+    replace it), so an existing group can be adopted as, say, a project chat
+    (``metadata={"project": "repo:<name>"}``) without recreating it and
+    without disturbing unrelated keys already stored there (e.g. ``acl``,
+    ``guests``). ``None`` (default) leaves ``metadata`` untouched.
+    """
     if name is not None and name.strip():
         group.name = name.strip()
     if description is not None:
@@ -1025,6 +1039,8 @@ def update_group(
         cur = dict(_acl(group))
         cur.update({k: v for k, v in acl.items() if k in _DEFAULT_ACL})
         group.metadata["acl"] = cur
+    if metadata:
+        group.metadata.update(metadata)
     group.updated_at = datetime.now(timezone.utc)
     save_group(group)
     return group

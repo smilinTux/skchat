@@ -273,6 +273,54 @@ def test_update_group_name_and_acl(client):
     assert G._acl(grp)["announcement"] is True
 
 
+def test_create_group_with_project_metadata_persists_and_reloads(client):
+    """C-15: a group can be created carrying a project-chat tag, and the tag
+    genuinely survives the write path, not just the in-memory object.
+
+    ``client`` isolates ``G._GROUPS_DIR`` to a tmp dir, so ``create_group``'s
+    internal ``save_group`` writes real JSON to disk here; ``load_group``
+    re-reads it fresh from that file. A version that dropped ``metadata`` at
+    serialization would pass an in-memory-only assertion but fail this one.
+    """
+    grp = G.create_group(
+        name="skworld-app",
+        creator_uri=daemon_proxy.OPERATOR_ID,
+        members=[],
+        metadata={"project": "repo:skworld-app"},
+    )
+    reloaded = G.load_group(grp.id)
+    assert reloaded is not None
+    assert reloaded.metadata["project"] == "repo:skworld-app"
+    # The acl block create_group always seeds is untouched by the metadata merge.
+    assert "acl" in reloaded.metadata
+
+
+def test_create_group_without_metadata_unaffected(client):
+    """Existing callers that never pass ``metadata`` keep working unchanged."""
+    grp = G.create_group(name="Plain", creator_uri=daemon_proxy.OPERATOR_ID, members=[])
+    reloaded = G.load_group(grp.id)
+    assert reloaded is not None
+    assert "project" not in reloaded.metadata
+    assert "acl" in reloaded.metadata
+
+
+def test_update_group_adopts_project_metadata_on_existing_group(client):
+    """An existing (non-project) group can be adopted as a project chat
+    without recreating it, cheaper than tearing down and rebuilding one.
+    """
+    gid = _create(client, name="Ops", members=["lumina"])["group_id"]
+    before = G.load_group(gid)
+    assert "project" not in before.metadata
+
+    updated = G.update_group(before, metadata={"project": "repo:skworld-app"})
+    assert updated.metadata["project"] == "repo:skworld-app"
+
+    reloaded = G.load_group(gid)
+    assert reloaded.metadata["project"] == "repo:skworld-app"
+    # Unrelated metadata (acl, seeded at create time) survives the adoption.
+    assert "acl" in reloaded.metadata
+
+
 def test_missing_group_404s(client):
     assert client.get("/api/v1/groups/nope/members").status_code == 404
     assert client.put("/api/v1/groups/nope", json={"name": "x"}).status_code == 404

@@ -98,6 +98,58 @@ def test_create_classical_optout(alice_keys: tuple[str, str]) -> None:
     assert g.epoch == 0
 
 
+def test_create_without_metadata_defaults_empty(alice_keys: tuple[str, str]) -> None:
+    """Existing callers that never pass ``metadata`` are unaffected."""
+    _, alice_pub = alice_keys
+    g = GroupChat.create(
+        name="No Metadata",
+        creator_uri="capauth:alice@skworld.io",
+        creator_public_key=alice_pub,
+        kem_suite="rsa-pgp-wrap-v1",
+    )
+    assert g.metadata == {}
+
+
+def test_create_with_metadata_seeds_project_tag(alice_keys: tuple[str, str]) -> None:
+    """``metadata`` on :meth:`GroupChat.create` lands in the group's metadata dict.
+
+    This is the mechanism the Code section's project-chat column relies on: a
+    group carrying ``metadata["project"] == "repo:<name>"``.
+    """
+    _, alice_pub = alice_keys
+    g = GroupChat.create(
+        name="skworld-app",
+        creator_uri="capauth:alice@skworld.io",
+        creator_public_key=alice_pub,
+        kem_suite="rsa-pgp-wrap-v1",
+        metadata={"project": "repo:skworld-app"},
+    )
+    assert g.metadata["project"] == "repo:skworld-app"
+
+
+def test_create_metadata_survives_json_round_trip(alice_keys: tuple[str, str]) -> None:
+    """The point of this card: metadata must survive serialize -> deserialize.
+
+    A group created with project metadata, dumped to JSON (as ``save_group``
+    does) and reloaded via ``model_validate_json`` (as ``load_group`` does),
+    must still carry the tag. A version that silently drops metadata at save
+    time would pass an in-memory-only check but fail here.
+    """
+    _, alice_pub = alice_keys
+    g = GroupChat.create(
+        name="skworld-app",
+        creator_uri="capauth:alice@skworld.io",
+        creator_public_key=alice_pub,
+        kem_suite="rsa-pgp-wrap-v1",
+        metadata={"project": "repo:skworld-app"},
+    )
+    dumped = g.model_dump_json()
+    reloaded = GroupChat.model_validate_json(dumped)
+    assert reloaded.metadata["project"] == "repo:skworld-app"
+    assert reloaded.id == g.id
+    assert reloaded.name == g.name
+
+
 class TestGroupChatCreation:
     """Tests for group creation and management."""
 
