@@ -465,6 +465,14 @@ def _embed_fetch_shim(prefix: str, token: str) -> bytes:
         "XMLHttpRequest.prototype.open=function(){try{"
         'if(typeof arguments[1]==="string"){arguments[1]=fix(arguments[1]);}'
         "}catch(e){}return xo.apply(this,arguments);};"
+        # EventSource (SSE) is a THIRD dispatch path, like ES-module imports: it
+        # neither goes through window.fetch/XHR nor can carry a header, so its
+        # root-absolute URL (the dashboard's /api/events live stream) must be
+        # prefixed + tokened here too, or it 404s off the /skdashboard prefix.
+        "var OE=window.EventSource;"
+        "if(OE){var NE=function(u,c){try{if(typeof u===\"string\"){u=fix(u);}}catch(e){}return new OE(u,c);};"
+        "NE.prototype=OE.prototype;try{NE.CONNECTING=OE.CONNECTING;NE.OPEN=OE.OPEN;NE.CLOSED=OE.CLOSED;}catch(e){}"
+        "window.EventSource=NE;}"
         "})();"
     ) % (p, t)
     return b"<script>" + js.encode("utf-8") + b"</script>"
