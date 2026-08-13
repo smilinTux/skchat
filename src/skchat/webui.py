@@ -473,6 +473,18 @@ def _embed_fetch_shim(prefix: str, token: str) -> bytes:
         "if(OE){var NE=function(u,c){try{if(typeof u===\"string\"){u=fix(u);}}catch(e){}return new OE(u,c);};"
         "NE.prototype=OE.prototype;try{NE.CONNECTING=OE.CONNECTING;NE.OPEN=OE.OPEN;NE.CLOSED=OE.CLOSED;}catch(e){}"
         "window.EventSource=NE;}"
+        # Anchor-navigation shim: nav links the subapp builds at RUNTIME (e.g. the
+        # overview tiles' `innerHTML='<a href=\"/board\">'`, re-rendered on every
+        # SSE tick) are never seen by the server-side HTML rewrite, so their
+        # root-absolute hrefs would navigate OFF the /skdashboard prefix (dead
+        # pane / 401). Cook the href at click time (capture phase, before the
+        # default nav): idempotent for the already-rewritten static nav, and it
+        # survives re-renders because it runs per click, not once.
+        "document.addEventListener(\"click\",function(e){try{"
+        'var a=e.target&&e.target.closest?e.target.closest("a[href]"):null;if(!a)return;'
+        'var h=a.getAttribute("href");if(!internal(h))return;var f=fix(h);'
+        "if(f!==h){a.setAttribute(\"href\",f);}"
+        "}catch(err){}},true);"
         "})();"
     ) % (p, t)
     return b"<script>" + js.encode("utf-8") + b"</script>"
