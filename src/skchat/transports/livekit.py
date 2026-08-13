@@ -542,6 +542,8 @@ __all__ = [
     "mode_ceiling",
     "build_room_session",
     "run_agent",
+    "wav_to_pcm",
+    "engine_mode",
     "default_engine_factory",
     "run_turn",
     "ADDRESS_TRIGGERS",
@@ -549,6 +551,67 @@ __all__ = [
 
 
 # ─── Room session (the loop the module docstring promised) ──────────────────
+#: The transport's ceiling vocabulary is sacred/group (inherited from
+#: lumina-call.py). The VoiceEngine persona speaks private/group. They are the
+#: same idea under different names, and "sacred" is NOT a value the persona
+#: understands: it fell through to the group branch, which injects "This is a
+#: group call ... no private topics." That is why Chef, alone with her on a 1:1,
+#: was met by an agent behaving as if she were on a public conference call and
+#: refusing to discuss anything private.
+_ENGINE_MODE = {"sacred": "private", "private": "private", "group": "group"}
+
+
+def engine_mode(ceiling: str) -> str:
+    """Translate a transport mode ceiling into the persona's vocabulary."""
+    return _ENGINE_MODE.get((ceiling or "").strip().lower(), "group")
+
+
+def wav_to_pcm(data: bytes, target_rate: int) -> bytes:
+    """Decode a WAV payload to raw mono int16 PCM at *target_rate*.
+
+    The TTS client returns a complete WAV (Piper renders 22.05 kHz), and it does
+    NOT resample. Publishing those bytes straight into an AudioFrame declared at
+    16 kHz played the 44-byte RIFF header as a click and ran the speech at
+    0.73x, pitched down: the "really slow and creepy" voice Chef heard. An
+    earlier comment in this file claimed the client resampled; it does not, and
+    I should have checked rather than asserted it.
+
+    Falls back to returning the input unchanged if it is not WAV (already raw
+    PCM), so a different TTS backend still works.
+    """
+    if not data[:4] == b"RIFF":
+        return data
+    import io
+    import wave
+
+    with wave.open(io.BytesIO(data)) as w:
+        rate, chans, width = w.getframerate(), w.getnchannels(), w.getsampwidth()
+        pcm = w.readframes(w.getnframes())
+
+    if width != 2:  # pragma: no cover - Piper is 16-bit
+        log.warning("unexpected TTS sample width %d; passing through", width)
+        return pcm
+    if chans > 1:  # pragma: no cover - Piper is mono
+        try:
+            import audioop
+
+            pcm = audioop.tomono(pcm, 2, 0.5, 0.5)
+        except Exception:
+            pass
+    if rate == target_rate:
+        return pcm
+    try:
+        import audioop
+
+        converted, _ = audioop.ratecv(pcm, 2, 1, rate, target_rate, None)
+        return converted
+    except Exception:
+        # No audioop (3.13+): publish at the source rate rather than at the
+        # wrong one. Slightly off is recoverable; 0.73x is not.
+        log.warning("cannot resample %d->%d; audio may play at the wrong speed", rate, target_rate)
+        return pcm
+
+
 def _engine_voice(engine) -> str:
     """The TTS voice this engine is configured for.
 
@@ -634,7 +697,8 @@ async def build_room_session(
             # config so the transport never picks a voice the engine disagrees
             # with; an omitted kwarg used to TypeError after the audio had
             # already been sent, killing the pump so she answered exactly once.
-            pcm = await engine.tts.synthesize(text, voice=_engine_voice(engine))
+            audio = await engine.tts.synthesize(text, voice=_engine_voice(engine))
+            pcm = wav_to_pcm(audio, TTS_SAMPLE_RATE) if audio else b""
             if not pcm:
                 log.warning("TTS returned no audio; reply dropped: %s", text[:60])
                 return
@@ -665,7 +729,7 @@ async def build_room_session(
             engine,
             history,
             transcript,
-            mode=mode,
+            mode=engine_mode(mode),
             speaker_id=speaker_id,
             is_operator=is_chef_identity(speaker_id),
         )
