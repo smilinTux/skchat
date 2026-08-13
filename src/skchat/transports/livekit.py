@@ -136,6 +136,9 @@ AVATAR_MAX_EDGE = int(os.getenv("LUMINA_AVATAR_MAX_EDGE", "720"))
 #: outlives its call does not merely leak: it answers the NEXT call with pumps
 #: bound to participants who left.
 SESSION_EMPTY_TIMEOUT_S = float(os.getenv("LUMINA_SESSION_EMPTY_TIMEOUT_S", "60"))
+#: Grace after a session goes live before an empty room may end it. The agent
+#: joins before the caller finishes arriving, so "empty" is meaningless here.
+SESSION_JOIN_GRACE_S = float(os.getenv("LUMINA_SESSION_JOIN_GRACE_S", "20"))
 
 # Roundtable / addressing tuning.
 FOLLOW_UP_WINDOW_S = float(os.getenv("LUMINA_FOLLOW_UP_S", "60"))
@@ -809,6 +812,37 @@ def load_avatar_rgba(path: str = AVATAR_IMAGE, max_edge: int = AVATAR_MAX_EDGE):
         return None
 
 
+def should_end_on_leave(
+    remaining: int,
+    since_start_s: float,
+    grace_s: float = SESSION_JOIN_GRACE_S,
+) -> bool:
+    """Does a participant leaving mean the CALL is over?
+
+    Pure, because this one decision has now failed three separate ways in a
+    single night and each fix broke the previous case:
+
+    1. Counting "who else is here" while EXCLUDING the departing identity cut
+       Chef off mid-call. A client that reconnects rejoins with the same
+       identity, so the stale disconnect read as an empty room while he was
+       still in it.
+    2. Handing the whole decision to the 60s watchdog instead let her narrate
+       a 3203-character story at his speakers after he had hung up and walked
+       away.
+    3. Restoring the immediate stop then hung up on HERSELF one second after
+       going live, because the agent joins before the caller finishes arriving
+       and a ghost from the previous call disconnected inside that window.
+
+    The trap in all three: "someone left" and "nobody has arrived yet" produce
+    the SAME state, an empty participant map, and mean opposite things. Time
+    since the session went live is what separates them, so the rule needs both
+    facts and both are arguments here where a test can reach them.
+    """
+    if remaining > 0:
+        return False
+    return since_start_s >= grace_s
+
+
 def split_for_speech(text: str, max_chars: int = LONGFORM_CHUNK_CHARS) -> list[str]:
     """Split a long reply into speakable chunks on sentence boundaries.
 
@@ -958,6 +992,8 @@ async def build_room_session(
     turn: dict[str, asyncio.Task | None] = {"task": None}
     #: When the current reply started playing, for the barge-in grace window.
     speak_started: dict[str, float] = {"t": 0.0}
+    #: When this session went live, for the empty-room join grace.
+    session_started: dict[str, float] = {"t": time.monotonic()}
 
     source = rtc.AudioSource(TTS_SAMPLE_RATE, 1)
     track = rtc.LocalAudioTrack.create_audio_track(f"{agent_name}-voice", source)
@@ -1344,6 +1380,28 @@ async def build_room_session(
         remaining = len(getattr(room, "remote_participants", {}) or {})
         if remaining:
             log.info("%s left; %d participant(s) remain", who, remaining)
+            return
+        # An empty room is NORMAL for the first moments of a session: the agent
+        # answers and joins before the caller finishes arriving, and a ghost
+        # from the previous call disconnecting in that window made this handler
+        # hang up on itself one second after going live:
+        #
+        #     07:40:54  answering call
+        #     07:40:56  left and the room is empty; stopping
+        #     07:40:57  voice session live
+        #     07:40:58  voice session ended
+        #
+        # Chef joined and saw an empty room. So "empty" only means "everyone
+        # hung up" once somebody has actually had time to show up; before that
+        # the watchdog owns the decision, and it already handles a caller who
+        # never arrives.
+        since_start = time.monotonic() - session_started["t"]
+        if not should_end_on_leave(remaining, since_start):
+            log.info(
+                "%s left %.1fs into the session; too early to call it empty, leaving it to the watchdog",
+                who,
+                since_start,
+            )
             return
         log.info("%s left and the room is empty; stopping", who)
         # Cancel first. Waiting for the session teardown to get around to it
