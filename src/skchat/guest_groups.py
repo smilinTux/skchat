@@ -240,9 +240,19 @@ def create_group_invite(
         payload["idm"] = pq_material["idm"]
         payload["bc"] = pq_material["bc"]
         payload["mode"] = pq_material["mode"]
+        # ``ik_fp`` (a 40-char fingerprint) is the operator anchor the LINK
+        # commits to. The full armored public key and the detached signature
+        # are deliberately NOT inlined: together they ran ~1.2kB, which pushed
+        # the join URL past 1.8kB and made its QR too dense to scan at any
+        # sane size, and made the invite sheet unreadable.
+        #
+        # Nothing is weakened by moving them. Both are rebuilt from local state
+        # by resolve_operator_material() and served on the preview endpoint the
+        # guest already fetches, and the preview checks the key it serves
+        # against THIS fingerprint. A first-contact guest never had an
+        # independent way to judge an inline key anyway; a fingerprint is the
+        # part someone can actually verify out of band.
         payload["ik_fp"] = pq_material["ik_fp"]
-        payload["op_sig"] = pq_material["operator_sig"]
-        payload["op_pub"] = pq_material["operator_pubkey"]
         fragment_secret = _pqi.new_fragment_secret()
 
     token = _jwt.encode(payload, _secret(), algorithm="HS256")
@@ -288,6 +298,20 @@ def gdm_seat_cap_default() -> int:
     except (TypeError, ValueError):
         v = GDM_SEAT_CAP_DEFAULT
     return max(1, v)
+
+
+def has_seated_guests(group) -> bool:
+    """True iff at least one untrusted guest currently holds a seat.
+
+    Read-side only. Deliberately NOT folded into :func:`is_guest_dm_like`: a
+    "classic" guest group (a plain group with guest links) is a real, distinct
+    category with its own documented rules, notably that its guests DO see
+    pre-join history where dm-family guests are fenced. Widening the dm-family
+    test to include seated guests silently changed four such behaviours at
+    once (history fencing, whole-group expiry, gdm invite rate limits, and ring
+    semantics), which is a policy change, not a rendering fix.
+    """
+    return bool(group is not None and (group.metadata.get("guests") or {}))
 
 
 def is_guest_dm_like(group) -> bool:

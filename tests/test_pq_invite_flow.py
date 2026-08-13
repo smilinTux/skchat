@@ -131,17 +131,23 @@ def test_invite_carries_full_pubkey_fqid_sig_and_fragment(client):
     frag_k = inv["join_url"].split("&k=", 1)[1]
     assert len(base64.urlsafe_b64decode(frag_k + "=" * (-len(frag_k) % 4))) == 32
 
-    # Token carries the operator-signed identity claims + FULL inline pubkey.
+    # Token carries the operator-signed identity claims and PINS the operator
+    # by fingerprint. The full armored key and the detached signature are NOT
+    # inlined: together they ran ~1.2kB and pushed the join URL past 1.8kB,
+    # which made its QR too dense to scan and the invite sheet unreadable.
+    # The key is served by the preview endpoint instead, checked against this
+    # fingerprint (see test_preview_returns_material_and_commitment_holds).
     payload = _jwt.decode(inv["token"], _SECRET, algorithms=["HS256"])
     assert payload["idm"] == "alice@op.realm"  # full FQID (C1)
     assert payload["mode"] == "group"
     assert payload["bc"] == inv["bc"]
-    assert payload["op_pub"].startswith("-----BEGIN PGP PUBLIC KEY")  # full key inline (C2)
+    assert payload["ik_fp"], "the link must still pin WHICH operator key"
+    assert "op_pub" not in payload
+    assert "op_sig" not in payload
 
-    # Self-authenticating: the operator sig verifies under the inline pubkey,
-    # no directory lookup needed.
-    claims = PQI.canonical_claims(payload["idm"], payload["bc"], payload["mode"])
-    assert PQI.verify_invite_claims(claims, payload["op_sig"], payload["op_pub"]) is True
+    # The size property is the whole point, so assert it rather than trusting
+    # that nobody re-inlines something large later.
+    assert len(inv["join_url"]) < 900, f"join url regressed to {len(inv['join_url'])} chars"
 
 
 def test_preview_returns_material_and_commitment_holds(client):

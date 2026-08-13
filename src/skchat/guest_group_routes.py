@@ -356,6 +356,38 @@ async def operator_revoke_invite(group_id: str, token: str, request: Request):
     return JSONResponse({"ok": True, "revoked_jti": jti, "group_id": group_id})
 
 
+def _operator_material_for(info: dict):
+    """Rebuild (pubkey, signature) for an invite that does not inline them.
+
+    Returns ``(None, None)`` on ANY failure so the preview degrades to the
+    classic shape instead of 500-ing a joiner who did nothing wrong.
+
+    The fingerprint check is the point. The link commits to ``ik_fp``, so a key
+    resolved here that does not match it is refused rather than served: without
+    that, moving the key out of the token would have replaced a pinned key with
+    whatever the server felt like returning.
+    """
+    try:
+        from skchat import pq_invites as _pqi
+
+        material = _pqi.resolve_operator_material(info.get("mode") or "dm")
+    except Exception as exc:  # noqa: BLE001 - degrade, never fail the preview
+        logger.info("operator material unavailable for preview: %s", exc)
+        return None, None
+
+    pinned = (info.get("ik_fp") or "").strip().upper()
+    resolved = (material.get("ik_fp") or "").strip().upper()
+    if pinned and resolved and pinned != resolved:
+        logger.warning(
+            "operator key fingerprint does not match the invite: invite pinned %s, "
+            "resolved %s - refusing to serve it",
+            pinned,
+            resolved,
+        )
+        return None, None
+    return material.get("operator_pubkey"), material.get("operator_sig")
+
+
 def _operator_signed_prekey():
     """The operator's current signed hybrid prekey (hybrid_public_hex), or None.
 
@@ -415,15 +447,23 @@ async def guest_invite_preview(token: str):
     # operator signature (under the FULL inline pubkey) and the bundle commitment
     # BEFORE the handshake - fail-closed, no directory lookup (C1/C2/H3).
     if GG.pq_invites_enabled():
+        # The pubkey and signature no longer ride in the token (they cost ~1.2kB
+        # and made the QR unscannable), so rebuild them from local state for any
+        # invite that does not carry them. Older invites still do; prefer those
+        # so an in-flight link keeps verifying exactly as it did when minted.
+        op_pub = info.get("operator_pubkey")
+        op_sig = info.get("operator_sig")
+        if not op_pub or not op_sig:
+            op_pub, op_sig = _operator_material_for(info)
         resp.update(
             {
                 "jti": info["jti"],
                 "idm": info.get("idm"),
-                "full_pubkey": info.get("operator_pubkey"),
+                "full_pubkey": op_pub,
                 "ik_fp": info.get("ik_fp"),
                 "bc": info.get("bc"),
                 "mode": info.get("mode"),
-                "operator_sig": info.get("operator_sig"),
+                "operator_sig": op_sig,
                 # Phase 2: the operator's current signed hybrid prekey, so the guest
                 # can verify_commitment(full_pubkey, signed_prekey, bc) and encapsulate
                 # its PQXDH to it. Read live (no JWT bloat). A prekey rotation since
