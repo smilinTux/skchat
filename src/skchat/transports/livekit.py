@@ -778,14 +778,45 @@ async def build_room_session(
 
     tasks: list[asyncio.Task] = []
 
+    pumped: set[str] = set()
+
     @room.on("track_subscribed")
     def _on_track(track_, publication, participant):  # noqa: ANN001
         if getattr(track_, "kind", None) != rtc.TrackKind.KIND_AUDIO:
             return
         who = getattr(participant, "identity", "") or "peer"
-        log.info("subscribed to audio from %s", who)
+        # One pump per track. track_subscribed can fire more than once for the
+        # same publication (renegotiation, a client republishing on reload), and
+        # a second pump feeds the SAME per-speaker VADSegmenter interleaved
+        # frames, so utterances never segment and she goes silent while the
+        # level meter happily shows the gate open. Observed live: every level
+        # line logged twice, zero transcripts.
+        # Key on the PARTICIPANT, not the track sid. A client that republishes
+        # (page reload, device switch) can leave a stale audio track alongside
+        # the live one, so the sids differ while both carry the same speaker.
+        # Two pumps then interleave frames into that speaker's single
+        # VADSegmenter and no utterance ever segments: she hears you continuously
+        # and never decides you finished a sentence. Observed live as every level
+        # line printed twice with zero transcripts.
+        if who in pumped:
+            log.info(
+                "ignoring extra audio track for %s (sid=%s); already pumping",
+                who,
+                getattr(publication, "sid", "?"),
+            )
+            return
+        pumped.add(who)
+        log.info("subscribed to audio from %s (sid=%s)", who, getattr(publication, "sid", "?"))
         stream = rtc.AudioStream(track_, sample_rate=STT_SAMPLE_RATE, num_channels=1)
         tasks.append(asyncio.create_task(pump(stream, who)))
+
+    @room.on("track_unsubscribed")
+    def _on_untrack(track_, publication, participant):  # noqa: ANN001
+        if getattr(track_, "kind", None) != rtc.TrackKind.KIND_AUDIO:
+            return
+        who = getattr(participant, "identity", "") or "peer"
+        pumped.discard(who)
+        segmenters.pop(who, None)  # fresh VAD state on the next publish
 
     closed = asyncio.Event()
 
