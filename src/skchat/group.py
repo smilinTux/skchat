@@ -174,6 +174,7 @@ class GroupChat(BaseModel):
         kem_suite: Optional[str] = None,
         creator_hybrid_kem_public_hex: str = "",
         member_hybrid_keys: Optional[dict[str, str]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> GroupChat:
         """Create a new group chat with the creator as admin.
 
@@ -198,6 +199,12 @@ class GroupChat(BaseModel):
             member_hybrid_keys: ``identity_uri -> hex(hybrid pub)`` for any
                 members added at creation (used by the create paths to populate
                 hybrid keys from the prekey store before seeding epoch 1).
+            metadata: Extensible metadata to seed on the new group (e.g. a
+                project-chat tag, ``{"project": "repo:<name>"}``). ``None``
+                (default) leaves ``metadata`` empty, same as before this
+                parameter existed. Merged into the group's ``metadata`` dict,
+                so it composes with anything a caller sets afterwards (e.g.
+                ``create_group``'s ``acl`` merge).
 
         Returns:
             GroupChat: New group with creator as admin member. If hybrid and at
@@ -214,6 +221,8 @@ class GroupChat(BaseModel):
             created_by=creator_uri,
             kem_suite=suite,
         )
+        if metadata:
+            group.metadata.update(metadata)
         group.add_member(
             identity_uri=creator_uri,
             role=MemberRole.ADMIN,
