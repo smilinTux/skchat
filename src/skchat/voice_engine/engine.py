@@ -25,8 +25,12 @@ log = logging.getLogger("skchat.voice_engine.engine")
 Mode = Literal["sacred", "group", "private"]
 
 _BREVITY_RULE = (
-    "Keep replies to 1-3 short spoken sentences. No markdown, no emoji. "
-    "Be warm and conversational."
+    "LENGTH LIMIT, this overrides any other instruction about how much to say: "
+    "reply in AT MOST 2 short spoken sentences, then stop. This is a phone call, "
+    "not an essay: say the one thing that matters and let the other person "
+    "answer. If there is more to say, say the first part and wait to be asked. "
+    "Never list, never enumerate, never summarize your own reasoning. "
+    "No markdown, no emoji, no stage directions. Warm and conversational."
 )
 
 
@@ -87,10 +91,8 @@ class VoiceEngine:
         Returns:
             The LLM's reply as a plain string ready for TTS.
         """
-        # 1. Build system prompt from persona + brevity rule.
+        # 1. Build system prompt from persona + runtime facts + brevity rule.
         system_text = self.persona.build(self.agent, mode=mode)
-        if _BREVITY_RULE not in system_text:
-            system_text = system_text + "\n" + _BREVITY_RULE
         # Tell her what she is actually running on. A model cannot introspect its
         # own weights, so asked "what model are you using right now" she invents a
         # plausible name: on 2026-08-13 she answered "Claude 3.5 Sonnet" while
@@ -101,6 +103,13 @@ class VoiceEngine:
             f"the model '{self.cfg.model}' served at {self.cfg.llm_url}"
             f" (fallback '{self.cfg.fallback_model}'). Never guess a different model name."
         )
+        # Brevity goes LAST, always. The persona is long and expansive and the
+        # rule was being buried in the middle of it: measured live on
+        # 2026-08-13, replies ran 22-38 SECONDS of speech while this asked for
+        # 1-3 sentences. At F5's ~0.33x realtime that is 7-10s of synthesis
+        # before she says a word, which is most of what "she's slow" was.
+        if _BREVITY_RULE not in system_text:
+            system_text = system_text + "\n\n" + _BREVITY_RULE
         system_msg = {"role": "system", "content": system_text}
 
         # 2. Fetch relevant memories. These go in their OWN system message, NOT

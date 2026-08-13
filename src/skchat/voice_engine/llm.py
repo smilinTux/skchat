@@ -45,7 +45,46 @@ def strip_formatting(text: str) -> str:
     text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
     text = re.sub(r"`{1,3}[^`]*`{1,3}", "", text)
     text = _EMOJI.sub("", text)
-    return text.strip()
+    # Last step, so it sees the text exactly as it will be spoken.
+    return trim_dangling_sentence(text)
+
+
+#: Ends a spoken sentence. Closing quotes/brackets may follow the punctuation.
+_SENTENCE_END = re.compile(r"[.!?…][\"'”’)\]]*\s*$")
+#: Last sentence boundary anywhere in the text.
+_LAST_BOUNDARY = re.compile(r"[.!?…][\"'”’)\]]*(?=\s)")
+#: Only trim if this many characters of finished sentence survive. Guards the
+#: "Hi. <entire answer, cut off>" case, where trimming would leave a greeting
+#: and throw the reply away.
+_MIN_KEEP_CHARS = 12
+
+
+def trim_dangling_sentence(text: str) -> str:
+    """Drop a final sentence the token cap cut off mid-word.
+
+    A max_tokens cap is the only hard guarantee on reply length, but hitting it
+    ends her mid-word, which sounds worse to a listener than a long answer:
+    speech has no scrollbar, so a truncated tail is just a broken sentence. Trim
+    back to the last completed sentence instead.
+
+    Text already ending in terminal punctuation is untouched. The guard is on
+    what SURVIVES, not on how much is removed: an earlier version refused any
+    trim that dropped more than 40% of the reply, which rejected exactly the
+    common case ("I'm here, Chef. <long cut-off thought>") while accepting
+    nothing useful. Losing the truncated tail is the price of the cap; ending
+    mid-word is not.
+    """
+    t = (text or "").strip()
+    if not t or _SENTENCE_END.search(t):
+        return t
+    ends = [m.end() for m in _LAST_BOUNDARY.finditer(t)]
+    if not ends:
+        return t  # one long unterminated sentence; better dangling than gone
+    cut = ends[-1]
+    if cut < _MIN_KEEP_CHARS:
+        return t  # would leave only a greeting; keep the dangling clause
+    log.info("trimmed %d chars of a cut-off sentence", len(t) - cut)
+    return t[:cut].strip()
 
 
 def strip_think(text: str) -> str:
