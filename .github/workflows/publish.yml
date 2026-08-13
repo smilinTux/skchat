@@ -20,10 +20,15 @@ name: Publish to PyPI
 # Card 0c3668a6. Previously the ONLY thing that cut tags was a local pre-push
 # git hook, which fired on ANY branch push, so 5 of 6 consecutive tags were cut
 # off unmerged feature branches and one shipped to PyPI straight from an
-# in-review branch. That hook is now main-only (scripts/hooks/pre-push), and
-# this workflow is the durable server-side path that does not depend on anyone
-# having the hook installed or pushing main from a local clone (main is normally
-# updated by a GitHub squash-merge, where no local push happens at all).
+# in-review branch. That hook has now been REMOVED outright (2026-08-13) rather
+# than just constrained to main: even main-only, it still turned an ordinary
+# push into a release, and 12 of the 14 fleet repos never had it and release
+# fine without one.
+#
+# Releases are therefore explicit: `git tag vX.Y.Z && git push origin vX.Y.Z`,
+# or a manual workflow_dispatch. Nothing cuts a tag on your behalf. The
+# "refuse to publish a tag that is not on main" step in `build` stays as the
+# server-side backstop, since a tag can still arrive from any clone.
 
 on:
   push:
