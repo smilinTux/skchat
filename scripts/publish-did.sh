@@ -130,6 +130,29 @@ if [[ "$GIT_FALLBACK" == "true" ]]; then
     cp "$DID_PUBLIC_FILE" "$TARGET_DIR/did.json"
 
     cd "$SKWORLD_REPO"
+
+    # This commits into ANOTHER repo, on whatever branch that repo happens to
+    # be on. Those checkouts are shared and get parked on feature branches, so
+    # a published DID can silently land on someone else's branch and never
+    # reach main: the publish reports success and the DID is not actually
+    # served. Same failure that put a web-bundle deploy on a feature branch on
+    # 2026-08-13. SKIP_BRANCH_GUARD=1 escapes.
+    if [[ "${SKIP_BRANCH_GUARD:-}" != "1" ]]; then
+        _target_branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
+        if [[ "$_target_branch" != "main" && "$_target_branch" != "master" ]]; then
+            cat >&2 <<EOF
+publish-did: REFUSING to commit a DID into $SKWORLD_REPO on branch '$_target_branch'.
+
+A DID committed to a feature branch is not published: it never reaches main,
+while this script reports success.
+
+Put that checkout on main first, or point SKWORLD_REPO at a worktree on main.
+Override (rarely right): SKIP_BRANCH_GUARD=1
+EOF
+            exit 1
+        fi
+    fi
+
     git add "agents/$AGENT_SLUG/.well-known/did.json"
     git commit -m "chore: publish DID for $AGENT_SLUG" || echo "  Nothing to commit."
     echo "  Committed to $SKWORLD_REPO"
