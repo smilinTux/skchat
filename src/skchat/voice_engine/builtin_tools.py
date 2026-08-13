@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from pathlib import Path
 
 from skchat.voice_engine.config import VoiceConfig
@@ -390,3 +391,73 @@ def build_default_registry(cfg: VoiceConfig, agent: str) -> ToolRegistry:  # noq
         log.debug("lumina_creative voice tools unavailable (%s: %s)", type(exc).__name__, exc)
 
     return reg
+
+
+MCP_TOOLS_ENABLED = os.getenv("LUMINA_CALL_MCP_TOOLS", "1") not in ("0", "false", "no", "")
+
+
+async def attach_mcp_tools(reg: ToolRegistry):
+    """Give a voice turn the same hands the operator has in a private DM.
+
+    Without this a call had 8 tools (4 generic + 4 sacred) while a DM had 110
+    across 10 MCP servers, so she would talk about checking mail or the calendar
+    and have no way to actually do it.
+
+    ``skchat.lumina_mcp`` was written for exactly this ("MCP client manager for
+    the FaceTime voice agent") and was simply never connected to the transport.
+    It namespaces tools ``<server>__<tool>`` and ships ``curate_tools``, which is
+    installed as the registry's per-turn curator here: the LLM sees the always-on
+    core plus whatever this sentence's keywords matched, NOT all 110. That is the
+    lazy behaviour, and it is why attaching everything does not cost a slow turn.
+
+    Returns the live ``MCPRegistry`` (the caller MUST ``aclose_all()`` it when
+    the call ends) or ``None`` when MCP is disabled or unavailable. Failure is
+    always soft: a call with fewer tools beats no call.
+    """
+    if not MCP_TOOLS_ENABLED:
+        log.info("MCP tools disabled (LUMINA_CALL_MCP_TOOLS=0)")
+        return None
+    try:
+        from skchat.lumina_mcp import MCPRegistry, curate_tools  # noqa: PLC0415
+    except Exception as exc:  # noqa: BLE001 - optional dependency (mcp sdk)
+        log.warning("lumina_mcp unavailable (%r); call keeps built-in tools only", exc)
+        return None
+
+    mcp = MCPRegistry()
+    try:
+        await mcp.connect_all()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("MCP connect failed (%r); call keeps built-in tools only", exc)
+        try:
+            await mcp.aclose_all()
+        except Exception:  # noqa: BLE001, S110 - already failing; nothing to salvage
+            pass
+        return None
+
+    def _make_handler(qualified: str):
+        async def _handler(args: dict, _ctx: dict) -> str:
+            return await mcp.call(qualified, args or {})
+
+        return _handler
+
+    added = 0
+    for schema in mcp.tools_for_llm():
+        name = (schema.get("function") or {}).get("name") or ""
+        if not name:
+            continue
+        # Operator-gated, sacred-only. These reach real mail, calendars, the
+        # vault and the fleet, so they must never be reachable from a group
+        # room or a non-operator speaker; ToolRegistry.dispatch enforces both.
+        reg.register(
+            Tool(name=name, schema=schema, handler=_make_handler(name), operator_only=True)
+        )
+        added += 1
+
+    reg.curator = curate_tools
+    log.info(
+        "MCP tools attached: %d tools from %s (curated per turn, %d total in registry)",
+        added,
+        ",".join(mcp.online_servers) or "no servers",
+        len(reg),
+    )
+    return mcp

@@ -133,22 +133,40 @@ def test_vad_gated_ignores_mic():
 
 
 # ─── Barge-in ───────────────────────────────────────────────────────────────
+# These pin rms_threshold explicitly instead of inheriting BARGE_IN_RMS. The
+# default is a live tuning knob (raised 2000 -> 3500 on 2026-08-13 because a
+# phone speaker fed her own voice back and she interrupted herself), and a unit
+# test of the dwell arithmetic should not break every time that is retuned.
+BARGE_RMS = 2000
+
+
 def test_barge_in_fires_after_dwell():
-    det = BargeInDetector(dwell_ms=300, frame_ms=FRAME_MS, enabled=True)
+    det = BargeInDetector(rms_threshold=BARGE_RMS, dwell_ms=300, frame_ms=FRAME_MS, enabled=True)
     fired = [det.push(VOICED) for _ in range(15)]  # 15*20ms = 300ms
     assert True in fired
     # Fires exactly when accumulated voiced time hits the dwell (15th frame).
     assert fired.index(True) == 14
 
 
+def test_barge_in_ignores_voice_below_its_own_threshold():
+    """Speech loud enough for the VAD must NOT be loud enough to interrupt.
+
+    The whole point of the elevated barge-in gate is that room tone and echo of
+    her own reply clear the speech gate but should never cut her off.
+    """
+    det = BargeInDetector(rms_threshold=BARGE_RMS, dwell_ms=300, frame_ms=FRAME_MS, enabled=True)
+    quiet_speech = frame(1500)  # above the 1200 speech gate, below barge-in
+    assert not any(det.push(quiet_speech) for _ in range(50))
+
+
 def test_barge_in_decays_on_silence():
-    det = BargeInDetector(dwell_ms=300, frame_ms=FRAME_MS, enabled=True)
+    det = BargeInDetector(rms_threshold=BARGE_RMS, dwell_ms=300, frame_ms=FRAME_MS, enabled=True)
     # Alternate voiced/quiet so accumulated voiced time never reaches dwell.
     assert not any(det.push(VOICED if i % 2 == 0 else QUIET) for i in range(40))
 
 
 def test_barge_in_disabled():
-    det = BargeInDetector(dwell_ms=20, frame_ms=FRAME_MS, enabled=False)
+    det = BargeInDetector(rms_threshold=BARGE_RMS, dwell_ms=20, frame_ms=FRAME_MS, enabled=False)
     assert not any(det.push(VOICED) for _ in range(10))
 
 

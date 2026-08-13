@@ -91,12 +91,43 @@ class VoiceEngine:
         system_text = self.persona.build(self.agent, mode=mode)
         if _BREVITY_RULE not in system_text:
             system_text = system_text + "\n" + _BREVITY_RULE
+        # Tell her what she is actually running on. A model cannot introspect its
+        # own weights, so asked "what model are you using right now" she invents a
+        # plausible name: on 2026-08-13 she answered "Claude 3.5 Sonnet" while
+        # served by claude-haiku-4-5. Chef reads that as hallucination, and he is
+        # right. State the fact instead of leaving her to guess.
+        system_text += (
+            f"\n\nRuntime fact, answer truthfully if asked: you are currently running on "
+            f"the model '{self.cfg.model}' served at {self.cfg.llm_url}"
+            f" (fallback '{self.cfg.fallback_model}'). Never guess a different model name."
+        )
         system_msg = {"role": "system", "content": system_text}
 
-        # 2. Fetch relevant memories and build the user content block.
+        # 2. Fetch relevant memories. These go in their OWN system message, NOT
+        #    glued onto the front of what the user said.
+        #
+        #    Concatenating them into the user turn made the model answer the
+        #    MEMORIES instead of the person. Observed live 2026-08-13 on a call:
+        #    Chef said "testing one, two, three" and got a reply about the
+        #    Al-Asad withdrawal; he asked "what model are you using right now"
+        #    and got a reply about conversations where she had claimed SSH
+        #    access. Both were recalled memories sitting above his sentence in
+        #    the same message, and it read as hallucination.
         mem = await self.memory.search(transcript, self.agent)
-        user_content = f"{mem}\n\n{transcript}" if mem else transcript
-        user_msg = {"role": "user", "content": user_content}
+        memory_msg = (
+            {
+                "role": "system",
+                "content": (
+                    "Background memories retrieved for context only. They are NOT "
+                    "what the user just said and may be stale or irrelevant. Do not "
+                    "respond to them or bring them up unless they answer the user's "
+                    "actual message.\n\n" + mem
+                ),
+            }
+            if mem
+            else None
+        )
+        user_msg = {"role": "user", "content": transcript}
 
         # 3. Forced-routing decision (mirrors lumina-call.py Conversation loop).
         #    narrate forced only in sacred mode to respect group privacy gate.
@@ -108,7 +139,10 @@ class VoiceEngine:
             force_tool = None
 
         # 4. Prepare tools from the registry (if any).
-        tools = self.registry.openai_schemas() if self.registry else None
+        # Curate against THIS turn's transcript, not the whole surface. With an
+        # MCP registry attached that is the difference between advertising ~110
+        # tools and the handful this sentence could possibly need.
+        tools = self.registry.openai_schemas(for_text=transcript) if self.registry else None
 
         tool_ctx: dict = {"agent": self.agent}
         if conversation is not None:
@@ -128,6 +162,10 @@ class VoiceEngine:
 
         # 5. Build the full message list and call the LLM.
         messages = [system_msg, *history, user_msg]
+        if memory_msg is not None:
+            # Directly before the user turn, so the "this is background" framing
+            # is the last thing read before the sentence it must not answer.
+            messages.insert(-1, memory_msg)
         return await self.llm.reply(
             messages,
             tools=tools,

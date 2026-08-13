@@ -319,7 +319,14 @@ def _spawn_call(joinable: dict) -> None:
     room = joinable.get("room") or ""
     with _ACTIVE_LOCK:
         if room in _ACTIVE_ROOMS:
-            logger.debug("call already in progress for room=%s; ignoring", room)
+            # INFO, not DEBUG. The caller logs "answering call -> room=..."
+            # BEFORE this guard runs, so a re-delivered invite prints that line
+            # again and reads exactly like a genuine second join. On 2026-08-13
+            # that cost a debugging session: rooms are derived per-pair and so
+            # are stable across calls, which made the repeat look like the
+            # known double-pump bug. If the join is skipped, say so at the same
+            # level as the line that claimed it happened.
+            logger.info("already in room=%s; not joining twice", room)
             return
         _ACTIVE_ROOMS.add(room)
 
