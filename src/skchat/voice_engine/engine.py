@@ -18,7 +18,12 @@ from skchat.voice_engine.conversation import Conversation
 from skchat.voice_engine.llm import LLMClient
 from skchat.voice_engine.memory import MemoryBridge
 from skchat.voice_engine.persona import PersonaBuilder
-from skchat.voice_engine.tools import ToolRegistry, wants_action, wants_narrate
+from skchat.voice_engine.tools import (
+    ONE_TO_ONE_MODES,
+    ToolRegistry,
+    wants_action,
+    wants_narrate,
+)
 
 log = logging.getLogger("skchat.voice_engine.engine")
 
@@ -139,8 +144,22 @@ class VoiceEngine:
         user_msg = {"role": "user", "content": transcript}
 
         # 3. Forced-routing decision (mirrors lumina-call.py Conversation loop).
-        #    narrate forced only in sacred mode to respect group privacy gate.
-        if wants_narrate(transcript) and mode == "sacred":
+        #    narrate forced only 1:1 with the operator, to respect the group
+        #    privacy gate.
+        #
+        #    This read `mode == "sacred"` and so was NEVER true on a real call:
+        #    the transport calls the 1:1 register "sacred", the persona calls it
+        #    "private", and engine_mode() translates on the way in here. Asked
+        #    "tell me a worship story" on 2026-08-13 she routed it as a narrate
+        #    turn (the filler picked the narrate bucket) and then, with nothing
+        #    forcing the tool, simply chatted about it: "I'm not quite
+        #    following, are you saying you want a beach scene?" The capability
+        #    was attached and curated in; only the forcing was missing.
+        #
+        #    Third place this exact sacred/private mismatch has bitten, after
+        #    the group-call persona branch and the operator-tool gate. Both
+        #    names are load-bearing, so accept both rather than picking one.
+        if wants_narrate(transcript) and mode in ONE_TO_ONE_MODES:
             force_tool: str | None = "narrate"
         elif wants_action(transcript):
             force_tool = "required"
