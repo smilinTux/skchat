@@ -855,41 +855,57 @@ async def build_room_session(
     source = rtc.AudioSource(TTS_SAMPLE_RATE, 1)
     track = rtc.LocalAudioTrack.create_audio_track(f"{agent_name}-voice", source)
 
-    async def say(text: str, *, filler: bool = False) -> None:
-        """Synthesize and publish one reply, guarding against overlap.
+    async def synth(text: str) -> bytes:
+        """Render one reply to publishable PCM. No side effects on call state.
+
+        Split out of ``say`` so a reply can be SYNTHESIZED while the filler is
+        still being spoken. Synthesis used to start only after the filler
+        finished playing, which meant the "working on it" acknowledgement made
+        the real answer ~2.4s later than it needed to be: it bought perceived
+        responsiveness and paid for it in actual answer time. Measured on a live
+        turn 2026-08-13 -- LLM done at t+1.3s, reply audio not ready until
+        t+6.3s, with 2.5s of that spent waiting on the filler and 2.4s on a TTS
+        call that could have run during it.
+        """
+        if not text.strip():
+            return b""
+        # `voice` is keyword-only and required. Take it from the engine's own
+        # config so the transport never picks a voice the engine disagrees
+        # with; an omitted kwarg used to TypeError after the audio had
+        # already been sent, killing the pump so she answered exactly once.
+        audio = await engine.tts.synthesize(text, voice=_engine_voice(engine))
+        pcm = normalize_pcm(wav_to_pcm(audio, TTS_SAMPLE_RATE)) if audio else b""
+        if not pcm:
+            log.warning("TTS returned no audio; reply dropped: %s", text[:60])
+            return b""
+        # Speech-per-character is the cheapest truncation detector there is.
+        # F5-TTS can return a well-formed WAV that contains only the tail of
+        # the sentence; the bytes look fine, so nothing else notices.
+        secs = len(pcm) / 2 / TTS_SAMPLE_RATE
+        if len(text) > 40 and secs < len(text) * 0.02:
+            log.warning(
+                "TTS output looks truncated: %.2fs for %d chars (%r...)",
+                secs,
+                len(text),
+                text[:60],
+            )
+        return pcm
+
+    async def publish(pcm: bytes, text: str = "", *, filler: bool = False) -> None:
+        """Play already-rendered PCM on the agent's track.
 
         ``filler`` marks the short "working on it" acknowledgement, which must
         NOT count as taking a conversational turn: letting it call
         ``note_own_speech`` would open the roundtable follow-up window on a
         phrase that carries no content.
         """
-        if not text.strip():
+        if not pcm:
             return
         speaking.set()
         speak_started["t"] = time.monotonic()
         if not filler:
             gate.note_own_speech()
         try:
-            # `voice` is keyword-only and required. Take it from the engine's own
-            # config so the transport never picks a voice the engine disagrees
-            # with; an omitted kwarg used to TypeError after the audio had
-            # already been sent, killing the pump so she answered exactly once.
-            audio = await engine.tts.synthesize(text, voice=_engine_voice(engine))
-            pcm = normalize_pcm(wav_to_pcm(audio, TTS_SAMPLE_RATE)) if audio else b""
-            if not pcm:
-                log.warning("TTS returned no audio; reply dropped: %s", text[:60])
-                return
-            # Speech-per-character is the cheapest truncation detector there is.
-            # F5-TTS can return a well-formed WAV that contains only the tail of
-            # the sentence; the bytes look fine, so nothing else notices.
-            secs = len(pcm) / 2 / TTS_SAMPLE_RATE
-            if len(text) > 40 and secs < len(text) * 0.02:
-                log.warning(
-                    "TTS output looks truncated: %.2fs for %d chars (%r...)",
-                    secs,
-                    len(text),
-                    text[:60],
-                )
             # 20 ms frames at 16-bit mono.
             step = int(TTS_SAMPLE_RATE * 0.02) * 2
             for i in range(0, len(pcm), step):
@@ -922,6 +938,10 @@ async def build_room_session(
             speaking.clear()
             for det in bargers.values():
                 det.reset()
+
+    async def say(text: str, *, filler: bool = False) -> None:
+        """Render and speak in one step. Used where there is nothing to overlap."""
+        await publish(await synth(text), text, filler=filler)
 
     async def handle_utterance(speaker_id: str, pcm: bytes) -> None:
         transcript = (await engine.stt.transcribe(pcm) or "").strip()
@@ -980,26 +1000,46 @@ async def build_room_session(
             )
         finally:
             replied.set()
-        if filler_task is not None:
-            if spoke_filler.is_set():
-                # Already talking. Let it land rather than clipping her
-                # mid-word, then the real reply follows on the same track.
-                try:
-                    await filler_task
-                except asyncio.CancelledError:
-                    raise
-                except Exception as exc:  # noqa: BLE001 - never eat the reply
-                    log.warning("filler failed (%r)", exc)
-            else:
-                filler_task.cancel()
         gate.note_reply_to(speaker_id)
         # Log what she SAYS, not just what she heard. Without this half, a
         # truncated or empty reply is indistinguishable from a TTS fault: the
         # 2026-08-13 F5 cutover produced 0.2s of audio out of a 9s turn and
         # there was no way to tell whether the LLM or the synth had dropped it.
         log.info("reply: %s", (reply or "").strip()[:160] or "(empty)")
+
+        # Start rendering the reply NOW, while the filler is still being
+        # spoken, instead of after it. The filler exists to cover the wait, so
+        # letting it also POSTPONE the answer defeats half its purpose: on a
+        # measured turn the reply was ready at t+6.3s when the TTS could have
+        # run inside the 2.5s the filler was already playing.
+        t0 = time.monotonic()
+        synth_task = asyncio.create_task(synth(reply or ""))
+        try:
+            if filler_task is not None:
+                if spoke_filler.is_set():
+                    # Already talking. Let it land rather than clipping her
+                    # mid-word, then the real reply follows on the same track.
+                    try:
+                        await filler_task
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:  # noqa: BLE001 - never eat the reply
+                        log.warning("filler failed (%r)", exc)
+                else:
+                    filler_task.cancel()
+            reply_pcm = await synth_task
+        except BaseException:
+            # Includes barge-in cancelling the turn: a synth left running would
+            # hold a TTS connection and then publish into a call that moved on.
+            synth_task.cancel()
+            raise
+        log.info(
+            "reply ready in %.2fs (%.1fs of audio)",
+            time.monotonic() - t0,
+            len(reply_pcm) / 2 / TTS_SAMPLE_RATE,
+        )
         await _set_state(room, "speaking", reply or "")
-        await say(reply)
+        await publish(reply_pcm, reply or "")
         await _set_state(room, "listening")
 
     async def pump(stream, speaker_id: str) -> None:
