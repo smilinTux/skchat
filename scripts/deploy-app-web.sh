@@ -50,6 +50,39 @@ app_main_commit() {
   git -C "$APP_DIR" rev-parse origin/main
 }
 
+# ── Branch guard ────────────────────────────────────────────────────────────
+# This script COMMITS the bundle, to whatever branch happens to be checked out.
+# On 2026-08-13 that put a deploy commit onto a concurrent session's feature
+# branch: the run reported success, the bundle never reached main, and
+# production kept serving the old client. The shared checkout is also
+# production, so it is routinely parked on someone else's branch, which makes
+# this the default outcome rather than an unlucky one.
+#
+# The fix is a worktree, not a --force:
+#   git worktree add ~/skworld-worktrees/deploy -b deploy/<name> origin/main
+#
+# SKIP_BRANCH_GUARD=1 escapes it, for the rare deliberate case.
+require_main_branch() {
+  [ "${SKIP_BRANCH_GUARD:-}" = "1" ] && return 0
+  local branch
+  branch="$(git -C "$SKCHAT_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
+  [ "$branch" = "main" ] && return 0
+  cat >&2 <<EOF
+deploy-app-web: REFUSING to deploy from branch '$branch'.
+
+This script commits the built bundle to the current branch. Deploying from a
+feature branch lands the commit there instead of main, which looks like a
+successful deploy while production keeps serving the old client.
+
+Deploy from a worktree on main:
+  git worktree add ~/skworld-worktrees/deploy -b deploy/<name> origin/main
+  cd ~/skworld-worktrees/deploy && ./scripts/deploy-app-web.sh
+
+Override (rarely right): SKIP_BRANCH_GUARD=1
+EOF
+  exit 1
+}
+
 if [ "${1:-}" = "--check" ]; then
   have="$(deployed_commit)"
   want="$(app_main_commit)"
@@ -63,6 +96,10 @@ if [ "${1:-}" = "--check" ]; then
   echo "Run ./scripts/deploy-app-web.sh to rebuild and commit it."
   exit 1
 fi
+
+# Everything past --check writes and commits, so gate it here. --check stays
+# read-only and usable from any branch, which is how you diagnose a bad deploy.
+require_main_branch
 
 command -v "$FLUTTER" >/dev/null 2>&1 || [ -x "$FLUTTER" ] || die "flutter not found: $FLUTTER"
 
