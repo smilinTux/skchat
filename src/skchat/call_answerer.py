@@ -17,6 +17,7 @@ network-position bypass.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import threading
@@ -273,7 +274,7 @@ async def _run_call(joinable: dict) -> None:
             url=joinable["livekit_url"],
             token=joinable["token"],
             agent_name=os.getenv("SKAGENT", "lumina"),
-            peer_fqid=joinable.get("peer_fqid") or joinable.get("from_fqid"),
+            peer_fqid=_conversational_peer(joinable),
         )
     except Exception:
         logger.exception(
@@ -285,6 +286,25 @@ async def _run_call(joinable: dict) -> None:
 #: Rooms with a call in flight, so a re-delivered invite does not double-join.
 _ACTIVE_ROOMS: set[str] = set()
 _ACTIVE_LOCK = threading.Lock()
+
+
+def _conversational_peer(joinable: dict) -> str | None:
+    """Who is Lumina actually talking to, for choosing the conversational mode.
+
+    Normally the invite's from_fqid. But a SELF-addressed call (from == to) means
+    the browser is authenticated as the agent's own webui rather than as chef, so
+    the literal peer is Lumina herself and the mode would fall to 'group',
+    leaving her waiting to be addressed by name in what is really a 1:1.
+
+    /call/incoming and /call/answer are both operator-gated, so a self-addressed
+    invite can only have come from the operator. Treat it as chef.
+    """
+    peer = joinable.get("peer_fqid") or joinable.get("from_fqid")
+    me = os.getenv("SKAGENT", "lumina")
+    if peer and str(peer).split("@")[0] == me:
+        logger.info("self-addressed call; treating the caller as the operator")
+        return "chef"
+    return peer
 
 
 def _spawn_call(joinable: dict) -> None:
@@ -299,7 +319,14 @@ def _spawn_call(joinable: dict) -> None:
     room = joinable.get("room") or ""
     with _ACTIVE_LOCK:
         if room in _ACTIVE_ROOMS:
-            logger.debug("call already in progress for room=%s; ignoring", room)
+            # INFO, not DEBUG. The caller logs "answering call -> room=..."
+            # BEFORE this guard runs, so a re-delivered invite prints that line
+            # again and reads exactly like a genuine second join. On 2026-08-13
+            # that cost a debugging session: rooms are derived per-pair and so
+            # are stable across calls, which made the repeat look like the
+            # known double-pump bug. If the join is skipped, say so at the same
+            # level as the line that claimed it happened.
+            logger.info("already in room=%s; not joining twice", room)
             return
         _ACTIVE_ROOMS.add(room)
 

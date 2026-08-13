@@ -41,19 +41,48 @@ def test_stale_invite_is_filtered_by_ttl():
     assert age > INVITE_TTL_S, "fixture must actually be stale"
 
 
-def test_self_call_guard_exists_in_the_start_route():
-    """The guard must live at CREATION, not just be filtered on read.
+def test_self_addressed_call_is_allowed_but_flagged():
+    """A self-addressed call must NOT be rejected: it is how Chef actually calls.
 
-    Filtering on read would leave the envelope in the inbox to be re-evaluated
-    forever; refusing to mint it is what actually stops the loop.
+    The browser drives Lumina's own webui, so calling "lumina" resolves both
+    sides to lumina@chef.skworld.io. An earlier version of this rejected that
+    outright, which was correct in theory and would have blocked every real
+    call. The harm was never the self-addressing, it was that nothing consumed
+    the invite so it rang forever, which consume-on-answer + TTL fix.
     """
     import inspect
 
     from skchat import call_routes
 
     src = inspect.getsource(call_routes.register_call_routes)
-    assert 'ctx["identity"] == ctx["peer_fqid"]' in src
-    assert "refusing to place a call to self" in src
+    assert "refusing to place a call to self" not in src, "hard reject blocks real calls"
+    assert "self-addressed call" in src, "should still leave a breadcrumb"
+
+
+def test_answering_agent_joins_under_a_distinct_identity():
+    """The agent must not collide with the human on a self-addressed call.
+
+    Both sides used to mint the identical LiveKit identity, so the SFU evicted
+    one with DuplicateIdentity: the call looked connected while the agent was
+    silently gone. Observed live.
+    """
+    import inspect
+
+    from skchat import call_routes
+
+    prep = inspect.getsource(call_routes._prepare_call)
+    assert "identity_suffix" in prep
+    routes = inspect.getsource(call_routes.register_call_routes)
+    assert 'identity_suffix="#agent"' in routes
+
+
+def test_self_addressed_call_is_treated_as_the_operator():
+    """Mode must not fall to 'group' just because the peer is literally us."""
+    from skchat.call_answerer import _conversational_peer
+
+    assert _conversational_peer({"peer_fqid": "lumina@chef.skworld.io"}) == "chef"
+    assert _conversational_peer({"peer_fqid": "chef@skworld.io"}) == "chef@skworld.io"
+    assert _conversational_peer({"peer_fqid": "mallory@x.io"}) == "mallory@x.io"
 
 
 # ─── answerer concurrency ───────────────────────────────────────────────────

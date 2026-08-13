@@ -123,6 +123,13 @@ fallback_version = "0.0.0+unknown"
 [tool.ruff]
 line-length = 99
 target-version = "py311"
+# setuptools_scm GENERATES src/skchat/_version.py (see version_file above) during
+# the editable install CI runs before linting, and it emits single-quoted strings
+# that `ruff format --check` rejects. The file is gitignored, so nobody can fix it
+# by committing a formatted copy: it is rewritten on every build and the check
+# goes red again. That is a standing source of the "chronically red" CI this
+# workflow's own comments complain about. Exclude the artifact instead.
+extend-exclude = ["src/skchat/_version.py"]
 
 [tool.ruff.lint]
 select = ["E", "W", "F", "I"]

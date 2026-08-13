@@ -41,12 +41,15 @@ engine via :class:`skchat.voice_engine.config.VoiceConfig`):
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import math
 import os
 import re
 import time
 from typing import Callable, Iterable, Optional
+
+from skchat.voice_engine.tools import pick_filler
 
 log = logging.getLogger("skchat.transports.livekit")
 
@@ -63,9 +66,41 @@ MAX_UTTERANCE_MS = 12000  # force-flush so a monologue doesn't starve
 ECHO_TAIL_S = float(os.getenv("LUMINA_ECHO_TAIL_S", "2.5"))
 
 # Barge-in — cut Lumina off when the user starts talking during her reply.
+#
+# Thresholds are deliberately well above the speech gate. On a phone with the
+# speaker on there is no echo cancellation between her output and its mic, so
+# HER OWN VOICE comes back as "the user talking" and she interrupts herself.
+# Observed live 2026-08-13: barge-in firing 1-6s into every single reply, which
+# also chopped the front off Chef's next sentence ("to you available", "tools to
+# get available") and left her answering fragments.
 BARGE_IN_ENABLED = os.getenv("LUMINA_BARGE_IN", "1") not in ("0", "false", "no", "")
-BARGE_IN_DWELL_MS = int(os.getenv("LUMINA_BARGE_IN_DWELL_MS", "300"))
-BARGE_IN_RMS = int(os.getenv("LUMINA_BARGE_IN_RMS", "2000"))
+BARGE_IN_DWELL_MS = int(os.getenv("LUMINA_BARGE_IN_DWELL_MS", "600"))
+BARGE_IN_RMS = int(os.getenv("LUMINA_BARGE_IN_RMS", "3500"))
+#: Ignore barge-in for this long after she starts a reply. Her own onset is the
+#: loudest thing the far-end mic hears, and it arrives immediately.
+BARGE_IN_GRACE_MS = int(os.getenv("LUMINA_BARGE_IN_GRACE_MS", "1200"))
+
+# Reply loudness. Different TTS engines hand back wildly different levels for
+# the same words: Piper peak-normalizes (peak 32767, RMS ~5800) while F5-TTS,
+# which renders Lumina's actual cloned voice, comes back at peak 19226 / RMS
+# ~2021 — nearly 3x quieter. Publishing that raw is what "her voice is way too
+# low" sounds like, and it is a property of the engine, not of the call. So
+# normalize here, once, where every reply passes regardless of backend.
+TTS_TARGET_PEAK = float(os.getenv("LUMINA_TTS_TARGET_PEAK", "0.97"))
+TTS_EXTRA_GAIN = float(os.getenv("LUMINA_TTS_GAIN", "1.0"))
+
+# "I heard you, working on it" filler.
+#
+# Fires on measured WAIT, not on guessed intent. The first cut gated it behind
+# wants_narrate/wants_action keywords, so ordinary conversation never triggered
+# one and Chef got the silence back ("im chatting, no filler"). A keyword is a
+# guess about whether a turn will be slow; the clock is the actual answer, and
+# it also stays quiet when she happens to reply instantly.
+FILLER_ENABLED = os.getenv("LUMINA_FILLER", "1") not in ("0", "false", "no", "")
+#: Speak the acknowledgement once a reply has taken longer than this.
+FILLER_DELAY_S = float(os.getenv("LUMINA_FILLER_DELAY_S", "0.8"))
+#: Speak it immediately on every turn, no matter how fast the reply is.
+FILLER_ALWAYS = os.getenv("LUMINA_FILLER_ALWAYS", "0") not in ("0", "false", "no", "")
 
 # Roundtable / addressing tuning.
 FOLLOW_UP_WINDOW_S = float(os.getenv("LUMINA_FOLLOW_UP_S", "60"))
@@ -444,6 +479,9 @@ def default_engine_factory() -> Callable[[str], object]:
     """
 
     def factory(agent_name: str):
+        # Built-ins only here. The MCP surface is attached later, inside the
+        # live session, because connect_all() is async and its servers must be
+        # torn down when the call ends: this factory is sync and per-process.
         from skchat.voice_engine.builtin_tools import build_default_registry  # noqa: PLC0415
         from skchat.voice_engine.config import VoiceConfig  # noqa: PLC0415
         from skchat.voice_engine.engine import VoiceEngine  # noqa: PLC0415
@@ -541,6 +579,8 @@ __all__ = [
     "mode_ceiling",
     "build_room_session",
     "run_agent",
+    "wav_to_pcm",
+    "engine_mode",
     "default_engine_factory",
     "run_turn",
     "ADDRESS_TRIGGERS",
@@ -548,6 +588,215 @@ __all__ = [
 
 
 # ─── Room session (the loop the module docstring promised) ──────────────────
+#: The transport's ceiling vocabulary is sacred/group (inherited from
+#: lumina-call.py). The VoiceEngine persona speaks private/group. They are the
+#: same idea under different names, and "sacred" is NOT a value the persona
+#: understands: it fell through to the group branch, which injects "This is a
+#: group call ... no private topics." That is why Chef, alone with her on a 1:1,
+#: was met by an agent behaving as if she were on a public conference call and
+#: refusing to discuss anything private.
+_ENGINE_MODE = {"sacred": "private", "private": "private", "group": "group"}
+
+
+def engine_mode(ceiling: str) -> str:
+    """Translate a transport mode ceiling into the persona's vocabulary."""
+    return _ENGINE_MODE.get((ceiling or "").strip().lower(), "group")
+
+
+def wav_to_pcm(data: bytes, target_rate: int) -> bytes:
+    """Decode a WAV payload to raw mono int16 PCM at *target_rate*.
+
+    The TTS client returns a complete WAV (Piper renders 22.05 kHz), and it does
+    NOT resample. Publishing those bytes straight into an AudioFrame declared at
+    16 kHz played the 44-byte RIFF header as a click and ran the speech at
+    0.73x, pitched down: the "really slow and creepy" voice Chef heard. An
+    earlier comment in this file claimed the client resampled; it does not, and
+    I should have checked rather than asserted it.
+
+    Falls back to returning the input unchanged if it is not WAV (already raw
+    PCM), so a different TTS backend still works.
+    """
+    if not data[:4] == b"RIFF":
+        return data
+    import io
+    import wave
+
+    with wave.open(io.BytesIO(data)) as w:
+        rate, chans, width = w.getframerate(), w.getnchannels(), w.getsampwidth()
+        pcm = w.readframes(w.getnframes())
+
+    if width != 2:  # pragma: no cover - Piper is 16-bit
+        log.warning("unexpected TTS sample width %d; passing through", width)
+        return pcm
+    if chans > 1:  # pragma: no cover - Piper is mono
+        try:
+            import audioop
+
+            pcm = audioop.tomono(pcm, 2, 0.5, 0.5)
+        except Exception:
+            pass
+    if rate == target_rate:
+        return pcm
+    try:
+        import audioop
+
+        converted, _ = audioop.ratecv(pcm, 2, 1, rate, target_rate, None)
+        return converted
+    except Exception:
+        # No audioop (3.13+): publish at the source rate rather than at the
+        # wrong one. Slightly off is recoverable; 0.73x is not.
+        log.warning("cannot resample %d->%d; audio may play at the wrong speed", rate, target_rate)
+        return pcm
+
+
+def normalize_pcm(
+    pcm: bytes,
+    *,
+    target_peak: float = TTS_TARGET_PEAK,
+    extra_gain: float = TTS_EXTRA_GAIN,
+) -> bytes:
+    """Bring one reply up to a consistent loudness, whatever rendered it.
+
+    Peak-normalizes to ``target_peak`` of full scale, then applies
+    ``extra_gain``. Peak rather than RMS because peak cannot clip on its own:
+    an RMS target on speech with a couple of loud plosives would drive most of
+    the waveform into the limiter. ``extra_gain`` above 1.0 deliberately can
+    clip, so it stays opt-in and defaults off.
+
+    Returns the input unchanged on digital silence (nothing to scale to) or if
+    audioop is unavailable (Python 3.13 dropped it), because a quiet reply
+    beats no reply.
+    """
+    if not pcm:
+        return pcm
+    try:
+        import audioop
+    except Exception:  # pragma: no cover - 3.13+ without audioop
+        return pcm
+    peak = audioop.max(pcm, 2)
+    if peak <= 0:
+        return pcm
+    factor = (target_peak * 32767.0) / peak * extra_gain
+    if abs(factor - 1.0) < 0.01:
+        return pcm
+    # audioop.mul saturates rather than wrapping, so a hot factor limits
+    # instead of turning into noise.
+    return audioop.mul(pcm, 2, factor)
+
+
+def _engine_voice(engine) -> str:
+    """The TTS voice this engine is configured for.
+
+    Read off the engine rather than hardcoded, so transport and brain cannot
+    disagree. Falls back to the Piper default if the engine exposes no config.
+    """
+    cfg = getattr(engine, "config", None) or getattr(engine, "cfg", None)
+    voice = getattr(cfg, "tts_voice", None) if cfg else None
+    return voice or os.getenv("SKCHAT_TTS_VOICE", "af_heart")
+
+
+# Whisper's labels for "there was no speech here", plus the single tokens it
+# emits on room tone. Bracketed/parenthesised forms are matched structurally so
+# new variants ("[ Silence ]", "(coughs)") do not need enumerating.
+_NON_SPEECH_EXACT = frozenset(
+    {
+        "you",
+        "thank you",
+        "thanks for watching",
+        "thanks for watching!",
+        "bye",
+        ".",
+        "...",
+    }
+)
+
+
+def is_non_speech(transcript: str) -> bool:
+    """True when a transcript is whisper describing silence, not words spoken.
+
+    Whisper does not return an empty string for a silent segment; it returns a
+    label such as ``[BLANK_AUDIO]`` or ``(silence)``, or a stock filler like
+    "you" / "Thanks for watching" learned from captioned video. Treating those
+    as user speech makes the agent answer nobody.
+    """
+    t = (transcript or "").strip()
+    if not t:
+        return True
+    if (t.startswith("[") and t.endswith("]")) or (t.startswith("(") and t.endswith(")")):
+        return True
+    bare = t.lower().strip(" .!,?-")
+    # Punctuation-only ("...", "?!") strips to nothing: no words were said.
+    return not bare or bare in _NON_SPEECH_EXACT
+
+
+def _drain(source) -> None:
+    """Throw away audio already queued for playout. Best effort.
+
+    Needed on barge-in: the publish buffer holds up to a second of the sentence
+    being cancelled, and without dropping it that second still reaches the
+    listener, ahead of whatever she says next.
+    """
+    try:
+        source.clear_queue()
+    except Exception as exc:  # noqa: BLE001 - older SDKs may not expose it
+        log.debug("clear_queue unavailable (%r)", exc)
+
+
+def _preview(text: str, n: int = 60) -> str:
+    """Short, log-safe echo of a reply."""
+    return repr((text or "").strip()[:n])
+
+
+async def _set_state(room, state: str, detail: str = "") -> None:
+    """Publish idle/listening/thinking/speaking as participant metadata.
+
+    The webui surfaces this as a status pill, which is how the operator can tell
+    "she is working on it" apart from "she is broken". Ported from
+    ``lumina-call.py:set_state``, including the part that matters: this is
+    FIRE-AND-FORGET. ``set_metadata`` can take seconds when the signal channel is
+    busy publishing audio, and awaiting it before kicking off the LLM is real,
+    measured latency on every single turn. Log intent now, push in background.
+    """
+    log.info("state -> %s%s", state, f" ({detail[:60]})" if detail else "")
+    if room is None:
+        return
+
+    async def _push() -> None:
+        try:
+            await room.local_participant.set_metadata(
+                json.dumps({"state": state, "detail": detail[:120]})
+            )
+        except Exception as exc:  # noqa: BLE001 - telemetry must never break a call
+            log.debug("set_metadata failed (%r)", exc)
+
+    try:
+        asyncio.create_task(_push())
+    except RuntimeError:  # pragma: no cover - no running loop (tests)
+        pass
+
+
+async def _emit_level(room, speaker_id: str, peak: float) -> None:
+    """Publish a mic-level datagram so a client can show "I can hear you".
+
+    Chef asked for exactly this: with no feedback, a call where the gate is set
+    too high is indistinguishable from a broken pipeline. Best effort; telemetry
+    must never disturb the call.
+    """
+    try:
+        payload = json.dumps(
+            {
+                "type": "level",
+                "speaker": speaker_id,
+                "rms": round(peak),
+                "gate": RMS_VOICE_THRESHOLD,
+                "hearing": peak >= RMS_VOICE_THRESHOLD,
+            }
+        ).encode()
+        await room.local_participant.publish_data(payload, reliable=False)
+    except Exception:  # pragma: no cover - telemetry only
+        log.debug("level telemetry publish failed", exc_info=True)
+
+
 async def build_room_session(
     room_name: str,
     *,
@@ -585,21 +834,56 @@ async def build_room_session(
     dedup = TranscriptDedup()
     segmenters: dict[str, VADSegmenter] = {}
     speaking = asyncio.Event()  # set while we are playing TTS
+    # Sustained-voice detectors, one per speaker, consulted only while she is
+    # speaking. The class existed and was unit-tested but was never instantiated,
+    # so she could not be interrupted at all.
+    bargers: dict[str, BargeInDetector] = {}
+    # The in-flight turn, so barge-in has something to cancel. handle_utterance
+    # used to be awaited inline in the pump, which meant the pump stopped reading
+    # frames for the whole turn: even a wired-up detector would have been fed
+    # nothing while she talked.
+    turn: dict[str, asyncio.Task | None] = {"task": None}
+    #: When the current reply started playing, for the barge-in grace window.
+    speak_started: dict[str, float] = {"t": 0.0}
 
     source = rtc.AudioSource(TTS_SAMPLE_RATE, 1)
     track = rtc.LocalAudioTrack.create_audio_track(f"{agent_name}-voice", source)
 
-    async def say(text: str) -> None:
-        """Synthesize and publish one reply, guarding against overlap."""
+    async def say(text: str, *, filler: bool = False) -> None:
+        """Synthesize and publish one reply, guarding against overlap.
+
+        ``filler`` marks the short "working on it" acknowledgement, which must
+        NOT count as taking a conversational turn: letting it call
+        ``note_own_speech`` would open the roundtable follow-up window on a
+        phrase that carries no content.
+        """
         if not text.strip():
             return
         speaking.set()
-        gate.note_own_speech()
+        speak_started["t"] = time.monotonic()
+        if not filler:
+            gate.note_own_speech()
         try:
-            pcm = await engine.tts.synthesize(text)
+            # `voice` is keyword-only and required. Take it from the engine's own
+            # config so the transport never picks a voice the engine disagrees
+            # with; an omitted kwarg used to TypeError after the audio had
+            # already been sent, killing the pump so she answered exactly once.
+            audio = await engine.tts.synthesize(text, voice=_engine_voice(engine))
+            pcm = normalize_pcm(wav_to_pcm(audio, TTS_SAMPLE_RATE)) if audio else b""
             if not pcm:
                 log.warning("TTS returned no audio; reply dropped: %s", text[:60])
                 return
+            # Speech-per-character is the cheapest truncation detector there is.
+            # F5-TTS can return a well-formed WAV that contains only the tail of
+            # the sentence; the bytes look fine, so nothing else notices.
+            secs = len(pcm) / 2 / TTS_SAMPLE_RATE
+            if len(text) > 40 and secs < len(text) * 0.02:
+                log.warning(
+                    "TTS output looks truncated: %.2fs for %d chars (%r...)",
+                    secs,
+                    len(text),
+                    text[:60],
+                )
             # 20 ms frames at 16-bit mono.
             step = int(TTS_SAMPLE_RATE * 0.02) * 2
             for i in range(0, len(pcm), step):
@@ -609,55 +893,209 @@ async def build_room_session(
                 await source.capture_frame(
                     rtc.AudioFrame(chunk, TTS_SAMPLE_RATE, 1, len(chunk) // 2)
                 )
+            # capture_frame only fills a ~1s playout buffer, so returning from
+            # the loop means "queued", NOT "spoken". Clearing `speaking` there
+            # opened the VAD gate about a second before she stopped talking, so
+            # her own tail leaked into the segmenter as the front of Chef's next
+            # utterance. Wait for the buffer to actually drain.
+            await source.wait_for_playout()
+        except asyncio.CancelledError:
+            # Barge-in, almost always. Stopping mid-sentence is the POINT, so
+            # this is not an error, but it must be visible or "she cut out"
+            # looks identical to a crash.
+            #
+            # Dropping the queued audio is the part that matters: without it
+            # the buffered ~1s of a cancelled sentence still plays out, and the
+            # NEXT reply's frames land behind it. That is the "weird two second
+            # buzz before she talks" Chef heard: the tail of a killed sentence
+            # smeared into the start of the next one.
+            _drain(source)
+            log.info("reply interrupted after %s", _preview(text))
+            raise
         finally:
             speaking.clear()
+            for det in bargers.values():
+                det.reset()
 
     async def handle_utterance(speaker_id: str, pcm: bytes) -> None:
         transcript = (await engine.stt.transcribe(pcm) or "").strip()
-        if not transcript or not dedup.seen(speaker_id, transcript):
+        if not transcript:
+            return
+        if is_non_speech(transcript):
+            # Whisper labels silence rather than returning nothing: "[BLANK_AUDIO]",
+            # "(silence)", a lone "you" or "thank you" on room tone. Feeding those
+            # to the LLM produced full replies to nobody ("sometimes silence says
+            # more than words"), which burns a turn, talks over the operator, and
+            # reads as her rambling. Observed live 2026-08-13.
+            log.info("non-speech transcript ignored: %s", transcript[:40])
+            return
+        if dedup.is_duplicate(transcript):
+            log.debug("duplicate transcript dropped: %s", transcript[:60])
             return
         if not gate.should_reply(speaker_id, transcript, mode=mode):
             log.debug("not addressed, staying quiet: %s: %s", speaker_id, transcript[:60])
             return
         log.info("%s: %s", speaker_id, transcript[:100])
-        reply = await run_turn(
-            engine,
-            history,
-            transcript,
-            mode=mode,
-            speaker_id=speaker_id,
-            is_operator=is_chef_identity(speaker_id),
-        )
+
+        await _set_state(room, "thinking")
+
+        # "I heard you, I'm working on it." Armed for every turn, but it only
+        # SPEAKS if the reply has not arrived within FILLER_DELAY_S: a fast
+        # answer cancels it before a word is synthesized, so quick exchanges
+        # stay snappy and only real waits get covered.
+        replied = asyncio.Event()
+        spoke_filler = asyncio.Event()
+
+        async def _filler_when_slow() -> None:
+            if not FILLER_ALWAYS:
+                try:
+                    await asyncio.wait_for(replied.wait(), timeout=FILLER_DELAY_S)
+                    return  # she beat the clock; say nothing
+                except asyncio.TimeoutError:
+                    pass
+                if replied.is_set():
+                    return
+            text, bucket = pick_filler(transcript)
+            spoke_filler.set()
+            log.info("filler (%s): %s", bucket, text)
+            await _set_state(room, "thinking", text)
+            await say(text, filler=True)
+
+        filler_task = asyncio.create_task(_filler_when_slow()) if FILLER_ENABLED else None
+
+        try:
+            reply = await run_turn(
+                engine,
+                history,
+                transcript,
+                mode=engine_mode(mode),
+                speaker_id=speaker_id,
+                is_operator=is_chef_identity(speaker_id),
+            )
+        finally:
+            replied.set()
+        if filler_task is not None:
+            if spoke_filler.is_set():
+                # Already talking. Let it land rather than clipping her
+                # mid-word, then the real reply follows on the same track.
+                try:
+                    await filler_task
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:  # noqa: BLE001 - never eat the reply
+                    log.warning("filler failed (%r)", exc)
+            else:
+                filler_task.cancel()
         gate.note_reply_to(speaker_id)
+        # Log what she SAYS, not just what she heard. Without this half, a
+        # truncated or empty reply is indistinguishable from a TTS fault: the
+        # 2026-08-13 F5 cutover produced 0.2s of audio out of a 9s turn and
+        # there was no way to tell whether the LLM or the synth had dropped it.
+        log.info("reply: %s", (reply or "").strip()[:160] or "(empty)")
+        await _set_state(room, "speaking", reply or "")
         await say(reply)
+        await _set_state(room, "listening")
 
     async def pump(stream, speaker_id: str) -> None:
         """Drain one participant's audio into their VAD segmenter."""
         seg = segmenters.setdefault(speaker_id, VADSegmenter())
+        # Level telemetry. Without this, "she cannot hear me" is unfalsifiable:
+        # the agent subscribes, receives every frame, and silently discards them
+        # because they sit under the VAD gate. Log the observed peak against the
+        # configured threshold so the gap is visible instead of guessed at, and
+        # emit it on the data channel so a client can show a live level.
+        peak = 0.0
+        last_report = 0.0
         try:
             async for ev in stream:
                 frame = getattr(ev, "frame", ev)
                 pcm = bytes(frame.data)
+                lvl = rms16(pcm)
+                peak = max(peak, lvl)
+                now = time.monotonic()
+                if now - last_report >= 2.0:
+                    log.info(
+                        "hearing %s: peak_rms=%.0f gate=%d %s",
+                        speaker_id,
+                        peak,
+                        RMS_VOICE_THRESHOLD,
+                        "OPEN" if peak >= RMS_VOICE_THRESHOLD else "below gate (silent to VAD)",
+                    )
+                    await _emit_level(room, speaker_id, peak)
+                    peak, last_report = 0.0, now
+                # Barge-in: while she is speaking, sustained voice from the peer
+                # cancels her reply. Only meaningful because the turn now runs as
+                # a task and this loop keeps draining frames underneath it.
+                if speaking.is_set() and (now - speak_started["t"]) * 1000 >= BARGE_IN_GRACE_MS:
+                    det = bargers.setdefault(speaker_id, BargeInDetector())
+                    if det.push(pcm):
+                        t = turn["task"]
+                        if t is not None and not t.done():
+                            log.info("barge-in from %s: cancelling her turn", speaker_id)
+                            t.cancel()
+                elif speaker_id in bargers:
+                    bargers[speaker_id].reset()
                 # While we speak, keep feeding the segmenter (barge-in) but do
                 # not let our own playback close an utterance.
                 utt = seg.push(pcm, gated=speaking.is_set())
                 if utt:
-                    await handle_utterance(speaker_id, utt)
+                    prev = turn["task"]
+                    if prev is not None and not prev.done():
+                        # She is still mid-turn and was not interrupted. Dropping
+                        # is deliberate: awaiting here is what used to stall this
+                        # loop, and stalling it is what made barge-in impossible.
+                        log.info("turn in flight; dropping utterance from %s", speaker_id)
+                    else:
+                        turn["task"] = asyncio.create_task(handle_utterance(speaker_id, utt))
         except asyncio.CancelledError:
             raise
         except Exception:
-            log.debug("audio pump ended for %s", speaker_id, exc_info=True)
+            # WARNING, not debug. A bug in the turn used to end the pump silently
+            # and present as "she hears me but never answers"; an AttributeError
+            # on a mis-named dedup call hid here for a whole debugging session.
+            log.warning("audio pump for %s ended on error", speaker_id, exc_info=True)
 
     tasks: list[asyncio.Task] = []
+
+    pumped: set[str] = set()
 
     @room.on("track_subscribed")
     def _on_track(track_, publication, participant):  # noqa: ANN001
         if getattr(track_, "kind", None) != rtc.TrackKind.KIND_AUDIO:
             return
         who = getattr(participant, "identity", "") or "peer"
-        log.info("subscribed to audio from %s", who)
+        # One pump per track. track_subscribed can fire more than once for the
+        # same publication (renegotiation, a client republishing on reload), and
+        # a second pump feeds the SAME per-speaker VADSegmenter interleaved
+        # frames, so utterances never segment and she goes silent while the
+        # level meter happily shows the gate open. Observed live: every level
+        # line logged twice, zero transcripts.
+        # Key on the PARTICIPANT, not the track sid. A client that republishes
+        # (page reload, device switch) can leave a stale audio track alongside
+        # the live one, so the sids differ while both carry the same speaker.
+        # Two pumps then interleave frames into that speaker's single
+        # VADSegmenter and no utterance ever segments: she hears you continuously
+        # and never decides you finished a sentence. Observed live as every level
+        # line printed twice with zero transcripts.
+        if who in pumped:
+            log.info(
+                "ignoring extra audio track for %s (sid=%s); already pumping",
+                who,
+                getattr(publication, "sid", "?"),
+            )
+            return
+        pumped.add(who)
+        log.info("subscribed to audio from %s (sid=%s)", who, getattr(publication, "sid", "?"))
         stream = rtc.AudioStream(track_, sample_rate=STT_SAMPLE_RATE, num_channels=1)
         tasks.append(asyncio.create_task(pump(stream, who)))
+
+    @room.on("track_unsubscribed")
+    def _on_untrack(track_, publication, participant):  # noqa: ANN001
+        if getattr(track_, "kind", None) != rtc.TrackKind.KIND_AUDIO:
+            return
+        who = getattr(participant, "identity", "") or "peer"
+        pumped.discard(who)
+        segmenters.pop(who, None)  # fresh VAD state on the next publish
 
     closed = asyncio.Event()
 
@@ -667,18 +1105,43 @@ async def build_room_session(
 
     await room.connect(url, token)
     await room.local_participant.publish_track(track)
+
+    # Her hands. Attached AFTER connect so a slow MCP spawn never delays the
+    # join (a caller hearing nothing while 10 servers boot is the same bug as
+    # publishing silence), and inside the session so the stdio processes live
+    # and die with the call rather than with the answerer process.
+    mcp = None
+    registry = getattr(engine, "registry", None)
+    if registry is not None:
+        try:
+            from skchat.voice_engine.builtin_tools import attach_mcp_tools  # noqa: PLC0415
+
+            mcp = await attach_mcp_tools(registry)
+        except Exception:  # noqa: BLE001 - never fail a call over tools
+            log.warning("attaching MCP tools failed; continuing with built-ins", exc_info=True)
+
     log.info(
-        "voice session live: room=%s agent=%s mode=%s peer=%s",
+        "voice session live: room=%s agent=%s mode=%s peer=%s tools=%d",
         room_name,
         agent_name,
         mode,
         peer_fqid or "?",
+        len(registry) if registry is not None else 0,
     )
+    await _set_state(room, "listening")
     try:
         await closed.wait()
     finally:
+        t = turn["task"]
+        if t is not None and not t.done():
+            t.cancel()
         for t in tasks:
             t.cancel()
+        if mcp is not None:
+            try:
+                await mcp.aclose_all()
+            except Exception:  # noqa: BLE001 - teardown is best-effort
+                log.debug("MCP teardown failed", exc_info=True)
         try:
             await room.disconnect()
         except Exception:  # pragma: no cover - already gone

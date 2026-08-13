@@ -135,19 +135,32 @@ def _resolve_peer(peer: str) -> str:
     raise HTTPException(status_code=404, detail=f"peer not paired: {peer}")
 
 
-def _prepare_call(peer: str) -> dict:
+def _prepare_call(peer: str, *, identity_suffix: str = "") -> dict:
+    """Build the room + token for one side of a call.
+
+    ``identity_suffix`` distinguishes the LiveKit participant identity without
+    changing who we are. The agent answering a call MUST NOT join under the same
+    identity as the human, or LiveKit evicts one of them with
+    ``DuplicateIdentity`` and the call looks connected while the agent is gone.
+
+    That is not hypothetical: the operator drives Lumina's own webui, so a call
+    to "lumina" is self-addressed (from == to == lumina@chef.skworld.io) and both
+    the browser and the answering agent minted the identical identity. Observed
+    live as the agent joining and being kicked seconds later.
+    """
     peer_fqid = _resolve_peer(peer)  # 404 if not paired (resolve first)
     if not _have_creds():  # 503 only once the peer is valid
         raise HTTPException(status_code=503, detail="livekit not configured")
     local_fqid = _self_fqid()
     room = derive_room(local_fqid, peer_fqid)
-    token = _mint_token(local_fqid, local_fqid.split("@", 1)[0], room, _TOKEN_TTL)
+    join_identity = f"{local_fqid}{identity_suffix}"
+    token = _mint_token(join_identity, local_fqid.split("@", 1)[0], room, _TOKEN_TTL)
     return {
         "room": room,
         "token": token,
         "livekit_url": LIVEKIT_URL,
         "peer_fqid": peer_fqid,
-        "identity": local_fqid,
+        "identity": join_identity,
     }
 
 
@@ -238,12 +251,23 @@ def register_call_routes(app: FastAPI) -> None:
             body = {}
         topic = (body.get("topic") or "").strip()
         ctx = _prepare_call(peer)
-        # A self-addressed invite is never a real call, and it is not harmless:
-        # /call/incoming re-reads the inbox every poll, so one self-invite rings
-        # the operator forever. Observed live as 15 stuck envelopes with
-        # from_fqid == to_fqid == lumina@chef.skworld.io.
-        if ctx["identity"] == ctx["peer_fqid"]:
-            raise HTTPException(400, "refusing to place a call to self")
+        # A self-addressed call (from == to) is how the operator actually
+        # reaches Lumina today: the browser drives Lumina's own webui, so
+        # calling "lumina" resolves both sides to lumina@chef.skworld.io.
+        #
+        # An earlier version of this REJECTED that outright, which was correct in
+        # theory and would have blocked every real call. The harm was never the
+        # self-addressing itself, it was that nothing consumed the invite so it
+        # rang forever; that is fixed by consume-on-answer plus INVITE_TTL_S.
+        # So allow it, and leave a breadcrumb, because the identity really should
+        # be chef calling lumina rather than lumina calling herself.
+        if _self_fqid() == ctx["peer_fqid"]:
+            logger.warning(
+                "self-addressed call (%s -> itself): the caller is authenticated as the "
+                "agent, not as the operator. Allowed, but the browser should hold chef's "
+                "identity.",
+                ctx["peer_fqid"],
+            )
         _send_invite(
             from_fqid=ctx["identity"],
             to_fqid=ctx["peer_fqid"],
@@ -261,7 +285,9 @@ def register_call_routes(app: FastAPI) -> None:
         # Same token-minting exposure as /call/start above -> same gate.
         _gate_token_mint(request)
         peer = await _peer_arg(request)
-        ctx = _prepare_call(peer)  # no _send_invite — answering never rings
+        # Distinct participant identity: see _prepare_call. Without this the
+        # answering agent collides with the caller on a self-addressed call.
+        ctx = _prepare_call(peer, identity_suffix="#agent")
         # Consume this caller's pending invites. Nothing used to, so an answered
         # call kept ringing: /call/incoming just re-reads the inbox, and the
         # envelopes sat there forever.

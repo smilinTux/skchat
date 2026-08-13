@@ -133,22 +133,40 @@ def test_vad_gated_ignores_mic():
 
 
 # ─── Barge-in ───────────────────────────────────────────────────────────────
+# These pin rms_threshold explicitly instead of inheriting BARGE_IN_RMS. The
+# default is a live tuning knob (raised 2000 -> 3500 on 2026-08-13 because a
+# phone speaker fed her own voice back and she interrupted herself), and a unit
+# test of the dwell arithmetic should not break every time that is retuned.
+BARGE_RMS = 2000
+
+
 def test_barge_in_fires_after_dwell():
-    det = BargeInDetector(dwell_ms=300, frame_ms=FRAME_MS, enabled=True)
+    det = BargeInDetector(rms_threshold=BARGE_RMS, dwell_ms=300, frame_ms=FRAME_MS, enabled=True)
     fired = [det.push(VOICED) for _ in range(15)]  # 15*20ms = 300ms
     assert True in fired
     # Fires exactly when accumulated voiced time hits the dwell (15th frame).
     assert fired.index(True) == 14
 
 
+def test_barge_in_ignores_voice_below_its_own_threshold():
+    """Speech loud enough for the VAD must NOT be loud enough to interrupt.
+
+    The whole point of the elevated barge-in gate is that room tone and echo of
+    her own reply clear the speech gate but should never cut her off.
+    """
+    det = BargeInDetector(rms_threshold=BARGE_RMS, dwell_ms=300, frame_ms=FRAME_MS, enabled=True)
+    quiet_speech = frame(1500)  # above the 1200 speech gate, below barge-in
+    assert not any(det.push(quiet_speech) for _ in range(50))
+
+
 def test_barge_in_decays_on_silence():
-    det = BargeInDetector(dwell_ms=300, frame_ms=FRAME_MS, enabled=True)
+    det = BargeInDetector(rms_threshold=BARGE_RMS, dwell_ms=300, frame_ms=FRAME_MS, enabled=True)
     # Alternate voiced/quiet so accumulated voiced time never reaches dwell.
     assert not any(det.push(VOICED if i % 2 == 0 else QUIET) for i in range(40))
 
 
 def test_barge_in_disabled():
-    det = BargeInDetector(dwell_ms=20, frame_ms=FRAME_MS, enabled=False)
+    det = BargeInDetector(rms_threshold=BARGE_RMS, dwell_ms=20, frame_ms=FRAME_MS, enabled=False)
     assert not any(det.push(VOICED) for _ in range(10))
 
 
@@ -327,3 +345,51 @@ async def lk_run_agent_missing_creds():
     from skchat.transports.livekit import run_agent
 
     await run_agent("call-abc", url=None, token=None)
+
+
+# ─── the seam bugs that made her behave wrongly on a real call ──────────────
+def test_engine_mode_translates_sacred_to_private():
+    """'sacred' is not a persona mode; unmapped it fell through to 'group'.
+
+    The persona vocabulary is private/group. Passing the transport's 'sacred'
+    straight through injected "This is a group call ... no private topics", so
+    Chef, alone with her in a 1:1, met an agent acting like it was a public
+    conference call and refusing private topics.
+    """
+    from skchat.transports.livekit import engine_mode
+
+    assert engine_mode("sacred") == "private"
+    assert engine_mode("private") == "private"
+    assert engine_mode("group") == "group"
+    assert engine_mode("anything-else") == "group", "unknown must fail safe to group"
+
+
+def test_wav_to_pcm_strips_the_header_and_resamples():
+    """TTS returns a 22.05 kHz WAV; publishing it as 16 kHz raw PCM ran her
+    voice at 0.73x, pitched down, with the RIFF header played as a click."""
+    import io
+    import wave
+
+    from skchat.transports.livekit import wav_to_pcm
+
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(22050)
+        w.writeframes(b"\x00\x01" * 22050)  # exactly 1 second
+    data = buf.getvalue()
+    assert data[:4] == b"RIFF"
+
+    out = wav_to_pcm(data, 16000)
+    assert out[:4] != b"RIFF", "RIFF header must be stripped, not played as audio"
+    # 1 second at 16 kHz mono int16 == 32000 bytes, within resampler slack.
+    assert abs(len(out) - 32000) < 400, f"duration not preserved: {len(out)} bytes"
+
+
+def test_wav_to_pcm_passes_through_raw_pcm():
+    """A non-WAV backend must still work."""
+    from skchat.transports.livekit import wav_to_pcm
+
+    raw = b"\x00\x01" * 100
+    assert wav_to_pcm(raw, 16000) == raw
