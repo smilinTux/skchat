@@ -24,3 +24,11 @@ src/skchat/_version.py
 .venv*/
 .testvenv/
 venv/
+
+# npm build inputs. These are NOT shippable: setuptools include-package-data
+# defaults to true under pyproject.toml and setuptools_scm reports every tracked
+# file, so anything committed under src/skchat/ lands in the wheel. A tracked
+# node_modules put three copies of a 10MB esbuild binary into all 368 published
+# releases and pushed the PyPI project past its 10GB size limit, which hard-blocks
+# publishing. Rebuild with `npm ci` from the committed package-lock.json instead.
+node_modules/
