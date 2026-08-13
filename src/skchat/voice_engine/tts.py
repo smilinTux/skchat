@@ -6,6 +6,7 @@ stream() yields raw int16 PCM chunks from the /audio/speech/stream endpoint
 from __future__ import annotations
 
 import logging
+import os
 from typing import AsyncIterator, Awaitable, Callable
 
 import httpx
@@ -25,6 +26,14 @@ PostFn = Callable[[str, dict], Awaitable[bytes]]
 StreamFn = Callable[[str, dict], AsyncIterator[bytes]]
 
 
+#: Per-request TTS timeout. F5 renders at roughly 0.33x realtime, so a 3400
+#: character narration needs well over a minute. The old fixed 60s meant a long
+#: story synthesized fine and then timed out on the wire: Chef asked for a
+#: worship story on 2026-08-13, narrate produced it in 32s, and the transport
+#: logged "reply ready in 60.02s (0.0s of audio)" and said nothing at all.
+TTS_TIMEOUT_S = float(os.getenv("LUMINA_TTS_TIMEOUT_S", "300"))
+
+
 class TTSClient:
     def __init__(
         self, cfg: VoiceConfig, _post: PostFn | None = None, _stream: StreamFn | None = None
@@ -34,13 +43,13 @@ class TTSClient:
         self._stream = _stream or self._http_stream
 
     async def _http_post(self, url: str, payload: dict) -> bytes:
-        async with httpx.AsyncClient(timeout=60.0) as http:
+        async with httpx.AsyncClient(timeout=TTS_TIMEOUT_S) as http:
             r = await http.post(url, json=payload)
             r.raise_for_status()
             return r.content
 
     async def _http_stream(self, url: str, payload: dict) -> AsyncIterator[bytes]:
-        async with httpx.AsyncClient(timeout=60.0) as http:
+        async with httpx.AsyncClient(timeout=TTS_TIMEOUT_S) as http:
             async with http.stream("POST", url, json=payload) as r:
                 r.raise_for_status()
                 async for chunk in r.aiter_bytes():

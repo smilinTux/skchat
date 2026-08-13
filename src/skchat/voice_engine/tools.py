@@ -123,6 +123,25 @@ _CHAT_FILLERS: tuple[str, ...] = (
 )
 
 
+# Spoken when a turn is STILL running well after the first acknowledgement.
+# A single "give me a sec" covers a few seconds; a worship narration takes
+# 30s+ to generate and minutes to render, and silence that long reads as a
+# dropped call. These are deliberately shorter and calmer than the openers:
+# they are reassurance, not conversation, and they will be heard repeatedly.
+_WAITING_FILLERS: tuple[str, ...] = (
+    "Still with you.",
+    "Still working on it.",
+    "Almost there.",
+    "Hang with me, nearly there.",
+    "Still going.",
+)
+
+
+def pick_waiting_filler() -> str:
+    """A short 'I have not forgotten you' line for a long-running turn."""
+    return random.choice(_WAITING_FILLERS)
+
+
 def pick_filler(user_text: str) -> tuple[str, str]:
     """Return ``(filler_text, bucket)`` for this turn.
 
