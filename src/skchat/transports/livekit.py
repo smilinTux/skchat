@@ -1318,16 +1318,41 @@ async def build_room_session(
         while excluding that identity therefore reports an empty room for the
         one person who is still in it.
 
-        So this only cleans up state, and the empty-room watchdog decides when
-        the call is over. It samples real room membership repeatedly over
-        SESSION_EMPTY_TIMEOUT_S, so a momentary gap cannot end a live call,
-        which is the property a hangup signal needs and a single edge lacks.
+        The bug was the IDENTITY FILTER, not the event. Leaving the whole
+        decision to the 60s watchdog then produced the opposite failure: Chef
+        hung up, went to the DM screen, and she narrated a 3203-character story
+        at his speakers anyway, because his client was still subscribed:
+
+            08:05  lumina@chef.skworld.io left; letting the watchdog confirm
+            08:21  filler (waiting): Still working on it.
+            08:47  first audio in 10.22s (9 chunks, 3203 chars)
+
+        So ask the question correctly instead of deferring it. "Is anyone in
+        the room" is answered by the live participant map with NO filtering:
+        on a reconnect the replacement is already in it, so the stale
+        disconnect cannot read as empty. Then stop talking IMMEDIATELY, which
+        is the part that matters to whoever just hung up, and end the session.
+
+        The watchdog stays as the backstop for the cases an event cannot
+        cover: a peer that drops off the network instead of leaving, and a
+        caller who never arrives.
         """
         who = getattr(participant, "identity", "") or "peer"
         pumped.discard(who)
         segmenters.pop(who, None)
         bargers.pop(who, None)
-        log.info("%s left; letting the watchdog confirm before ending", who)
+        remaining = len(getattr(room, "remote_participants", {}) or {})
+        if remaining:
+            log.info("%s left; %d participant(s) remain", who, remaining)
+            return
+        log.info("%s left and the room is empty; stopping", who)
+        # Cancel first. Waiting for the session teardown to get around to it
+        # means she keeps speaking into a room nobody is in, and a listener
+        # whose client has not torn down its subscription still HEARS it.
+        t = turn["task"]
+        if t is not None and not t.done():
+            t.cancel()
+        closed.set()
 
     await room.connect(url, token)
     await room.local_participant.publish_track(track)
