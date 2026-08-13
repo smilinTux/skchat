@@ -1151,33 +1151,35 @@ async def build_room_session(
 
     @room.on("participant_disconnected")
     def _on_participant_left(participant):  # noqa: ANN001
-        """End the call when the last human leaves.
+        """Release a departed participant's per-speaker state. Does NOT hang up.
 
-        Hanging up does NOT disconnect the agent: the SFU keeps it in the room
-        with its track published, so `closed` never fired, build_room_session
-        never returned, _run_call never returned, and _ACTIVE_ROOMS never
-        released the room. Because derive_room() is deterministic per pair, the
-        NEXT call landed in that same room and was answered by the stale
-        session, whose pumps were bound to participants who had left. That is
-        the origin of the doubled level lines, of "RtcError: InvalidState -
-        failed to capture frame" (a dead AudioSource from the previous call),
-        and of the "error putting to queue: Event loop is closed" flood once
-        the orphaned thread's loop went away.
+        Hanging up does not disconnect the agent (the SFU keeps it in the room
+        with its track published), which is why a session had to learn to end
+        itself at all: without it `closed` never fired, _ACTIVE_ROOMS never
+        released the per-pair room, and the NEXT call was answered by the stale
+        session. But ending the call HERE is wrong, and cut Chef off mid-call on
+        2026-08-13:
+
+            06:10:51  voice session live
+            06:10:58  left and the room is empty; ending the session
+            06:10:59  hearing lumina@chef...: peak_rms=37   <- still there
+
+        A client that reconnects (network blip, page reload, handoff) rejoins
+        with the SAME identity, and the old participant's disconnect event can
+        arrive AFTER the replacement has joined. Counting "who else is here"
+        while excluding that identity therefore reports an empty room for the
+        one person who is still in it.
+
+        So this only cleans up state, and the empty-room watchdog decides when
+        the call is over. It samples real room membership repeatedly over
+        SESSION_EMPTY_TIMEOUT_S, so a momentary gap cannot end a live call,
+        which is the property a hangup signal needs and a single edge lacks.
         """
         who = getattr(participant, "identity", "") or "peer"
         pumped.discard(who)
         segmenters.pop(who, None)
         bargers.pop(who, None)
-        remaining = [
-            p
-            for p in getattr(room, "remote_participants", {}).values()
-            if getattr(p, "identity", "") != who
-        ]
-        if remaining:
-            log.info("%s left; %d participant(s) remain", who, len(remaining))
-            return
-        log.info("%s left and the room is empty; ending the session", who)
-        closed.set()
+        log.info("%s left; letting the watchdog confirm before ending", who)
 
     await room.connect(url, token)
     await room.local_participant.publish_track(track)

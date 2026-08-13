@@ -28,7 +28,7 @@ Handler = Callable[[dict, dict], Awaitable[str]]
 # This is the same sacred/private mismatch that made her treat a 1:1 as a public
 # conference call, one layer further in. Accept both names rather than pick one:
 # the two vocabularies are load-bearing elsewhere.
-_ONE_TO_ONE_MODES = frozenset({"sacred", "private"})
+ONE_TO_ONE_MODES = frozenset({"sacred", "private"})
 
 # Neutral base only. The intimate/escalation trigger vocabulary lives in the
 # private lumina_creative package and is merged in when installed — keeping sacred
@@ -204,7 +204,7 @@ class ToolRegistry:
         # (for operator_only ones) sacred mode.
         if not is_operator:
             return f"PERMISSION DENIED: '{name}' can only be run when the operator asks."
-        if tool.operator_only and (mode or "").strip().lower() not in _ONE_TO_ONE_MODES:
+        if tool.operator_only and (mode or "").strip().lower() not in ONE_TO_ONE_MODES:
             return f"REFUSED: '{name}' is sacred-mode only — there are other people in this room."
         if tool.handler is None:
             return f"tool {name} has no handler"
