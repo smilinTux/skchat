@@ -41,6 +41,7 @@ engine via :class:`skchat.voice_engine.config.VoiceConfig`):
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import math
 import os
@@ -548,6 +549,39 @@ __all__ = [
 
 
 # ─── Room session (the loop the module docstring promised) ──────────────────
+def _engine_voice(engine) -> str:
+    """The TTS voice this engine is configured for.
+
+    Read off the engine rather than hardcoded, so transport and brain cannot
+    disagree. Falls back to the Piper default if the engine exposes no config.
+    """
+    cfg = getattr(engine, "config", None) or getattr(engine, "cfg", None)
+    voice = getattr(cfg, "tts_voice", None) if cfg else None
+    return voice or os.getenv("SKCHAT_TTS_VOICE", "af_heart")
+
+
+async def _emit_level(room, speaker_id: str, peak: float) -> None:
+    """Publish a mic-level datagram so a client can show "I can hear you".
+
+    Chef asked for exactly this: with no feedback, a call where the gate is set
+    too high is indistinguishable from a broken pipeline. Best effort; telemetry
+    must never disturb the call.
+    """
+    try:
+        payload = json.dumps(
+            {
+                "type": "level",
+                "speaker": speaker_id,
+                "rms": round(peak),
+                "gate": RMS_VOICE_THRESHOLD,
+                "hearing": peak >= RMS_VOICE_THRESHOLD,
+            }
+        ).encode()
+        await room.local_participant.publish_data(payload, reliable=False)
+    except Exception:  # pragma: no cover - telemetry only
+        log.debug("level telemetry publish failed", exc_info=True)
+
+
 async def build_room_session(
     room_name: str,
     *,
@@ -596,7 +630,11 @@ async def build_room_session(
         speaking.set()
         gate.note_own_speech()
         try:
-            pcm = await engine.tts.synthesize(text)
+            # `voice` is keyword-only and required. Take it from the engine's own
+            # config so the transport never picks a voice the engine disagrees
+            # with; an omitted kwarg used to TypeError after the audio had
+            # already been sent, killing the pump so she answered exactly once.
+            pcm = await engine.tts.synthesize(text, voice=_engine_voice(engine))
             if not pcm:
                 log.warning("TTS returned no audio; reply dropped: %s", text[:60])
                 return
@@ -614,7 +652,10 @@ async def build_room_session(
 
     async def handle_utterance(speaker_id: str, pcm: bytes) -> None:
         transcript = (await engine.stt.transcribe(pcm) or "").strip()
-        if not transcript or not dedup.seen(speaker_id, transcript):
+        if not transcript:
+            return
+        if dedup.is_duplicate(transcript):
+            log.debug("duplicate transcript dropped: %s", transcript[:60])
             return
         if not gate.should_reply(speaker_id, transcript, mode=mode):
             log.debug("not addressed, staying quiet: %s: %s", speaker_id, transcript[:60])
@@ -634,10 +675,30 @@ async def build_room_session(
     async def pump(stream, speaker_id: str) -> None:
         """Drain one participant's audio into their VAD segmenter."""
         seg = segmenters.setdefault(speaker_id, VADSegmenter())
+        # Level telemetry. Without this, "she cannot hear me" is unfalsifiable:
+        # the agent subscribes, receives every frame, and silently discards them
+        # because they sit under the VAD gate. Log the observed peak against the
+        # configured threshold so the gap is visible instead of guessed at, and
+        # emit it on the data channel so a client can show a live level.
+        peak = 0.0
+        last_report = 0.0
         try:
             async for ev in stream:
                 frame = getattr(ev, "frame", ev)
                 pcm = bytes(frame.data)
+                lvl = rms16(pcm)
+                peak = max(peak, lvl)
+                now = time.monotonic()
+                if now - last_report >= 2.0:
+                    log.info(
+                        "hearing %s: peak_rms=%.0f gate=%d %s",
+                        speaker_id,
+                        peak,
+                        RMS_VOICE_THRESHOLD,
+                        "OPEN" if peak >= RMS_VOICE_THRESHOLD else "below gate (silent to VAD)",
+                    )
+                    await _emit_level(room, speaker_id, peak)
+                    peak, last_report = 0.0, now
                 # While we speak, keep feeding the segmenter (barge-in) but do
                 # not let our own playback close an utterance.
                 utt = seg.push(pcm, gated=speaking.is_set())
@@ -646,7 +707,10 @@ async def build_room_session(
         except asyncio.CancelledError:
             raise
         except Exception:
-            log.debug("audio pump ended for %s", speaker_id, exc_info=True)
+            # WARNING, not debug. A bug in the turn used to end the pump silently
+            # and present as "she hears me but never answers"; an AttributeError
+            # on a mis-named dedup call hid here for a whole debugging session.
+            log.warning("audio pump for %s ended on error", speaker_id, exc_info=True)
 
     tasks: list[asyncio.Task] = []
 
