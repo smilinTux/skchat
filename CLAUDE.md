@@ -524,17 +524,48 @@ checkout.
 on `main` were running nowhere and a full night of work could not be deployed.
 If you switch it, switch it back the moment you are done.
 
-**3. Deploy the web bundle from a worktree, never from here.**
-`deploy-app-web.sh` commits to whatever branch is open. Run from this checkout
-while it sits on someone else's branch, and your deploy commit lands on THEIR
-branch and never reaches main. That happened, and the deploy looked completely
-successful.
+**3. Deploy the web bundle from THIS checkout, with it on `main`.** The bundle
+commit has to land on main or the deploy silently does nothing, so
+`deploy-app-web.sh` refuses to run on any other branch. A worktree cannot help
+here: git allows `main` in exactly one place, and that place is this checkout.
+Earlier wording said "deploy from a worktree, never from here", which is
+unfollowable, and on 2026-08-13 a session built a whole bundle before the guard
+rejected it.
+
+The full deploy, and every step matters:
+
+```bash
+# 1. This checkout must be on main and clean, or the guard stops you.
+git -C ~/clawd/skcapstone-repos/skchat status --short | grep -v '^??'
+git -C ~/clawd/skcapstone-repos/skchat checkout main && git pull --ff-only
+
+# 2. PULL THE APP CHECKOUT. The build reads its WORKING TREE, not origin.
+#    Merging a client PR on GitHub does not move it. Skip this and you ship a
+#    bundle built from whatever that checkout last had, which is a silent
+#    no-op deploy: it commits, it succeeds, and the fix is not in it.
+git -C ~/clawd/skcapstone-repos/skworld-app checkout main && git pull --ff-only
+
+# 3. Confirm what is actually stale, then build, commit and push.
+./scripts/deploy-app-web.sh --check      # deployed vs app main
+./scripts/deploy-app-web.sh              # builds, stamps, COMMITS
+git push                                 # the commit IS the deploy
+systemctl --user restart skchat-webui@lumina
+```
+
+Then verify the provenance really moved, rather than trusting the success
+message: `cat src/skchat/static/app/.source_commit` must equal
+`git -C ~/clawd/skcapstone-repos/skworld-app rev-parse main`. And tell the
+operator to HARD RELOAD: the old bundle is cached, so a normal reopen can still
+serve the previous client.
 
 **4. Always rebuild the bundle from CURRENT skworld-app main.** Two sessions
 each deployed a bundle built from their own app commit. Each build silently
 dropped the other's client work, and whichever landed last would have won.
-`./scripts/deploy-app-web.sh --check` before and after; it tells you the
-provenance. Never hand-copy or rsync a bundle: it is tracked in git, so the
+This is the same failure as step 2 above and it is easy to hit: on 2026-08-13 a
+bundle was built and committed from `daed406` minutes after the fix it was
+meant to ship had merged as `48a78e2`, purely because the app checkout had not
+been pulled. `./scripts/deploy-app-web.sh --check` before and after; it tells
+you the provenance. Never hand-copy or rsync a bundle: it is tracked in git, so the
 next checkout reverts it and the deploy silently disappears.
 
 **5. Do not restart a service while another session has uncommitted work
