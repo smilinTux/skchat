@@ -643,6 +643,23 @@ def wav_to_pcm(data: bytes, target_rate: int) -> bytes:
     PCM), so a different TTS backend still works.
     """
     if not data[:4] == b"RIFF":
+        # Not a WAV. It may legitimately be raw PCM from a different backend,
+        # but it may equally be an ERROR BODY (JSON, HTML) that the caller is
+        # about to publish as audio, which comes out as a burst of loud
+        # distortion. Chef reported exactly that ("a loud distortion noise"
+        # ~2s) during the window when the narration backend was failing.
+        #
+        # Text is trivially separable from PCM: printable ASCII with no high
+        # bytes is not a waveform. Refuse it and let the caller drop the reply,
+        # which is silence, and silence is a far better failure than noise.
+        head = data[:64]
+        if head and all(9 <= b < 127 for b in head):
+            log.warning(
+                "TTS returned %d bytes of text, not audio; refusing to publish it as PCM: %r",
+                len(data),
+                head[:80],
+            )
+            return b""
         return data
     import io
     import wave
