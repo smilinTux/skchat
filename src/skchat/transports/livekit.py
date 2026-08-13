@@ -102,6 +102,26 @@ FILLER_DELAY_S = float(os.getenv("LUMINA_FILLER_DELAY_S", "0.8"))
 #: Speak it immediately on every turn, no matter how fast the reply is.
 FILLER_ALWAYS = os.getenv("LUMINA_FILLER_ALWAYS", "0") not in ("0", "false", "no", "")
 
+# Avatar placeholder video. A voice call with no video track shows the operator
+# a blank tile, which reads as "not connected" even while she is talking. This
+# publishes her portrait as a still video track so there is a face on the call.
+# Explicitly a PLACEHOLDER, the same call skvoice's facetime.py made: a real
+# talking head (MuseTalk or similar) is separate work with its own GPU budget,
+# and swapping the frame source for a renderer changes nothing else here.
+AVATAR_ENABLED = os.getenv("LUMINA_AVATAR", "1") not in ("0", "false", "no", "")
+AVATAR_IMAGE = os.getenv(
+    "LUMINA_AVATAR_IMAGE",
+    os.path.expanduser(
+        "~/.skcapstone/agents/%s/avatar/portrait.png" % os.getenv("SKAGENT", "lumina")
+    ),
+)
+#: Frame rate for the still. Low on purpose: the picture never changes, and the
+#: only reason to resend at all is that WebRTC treats a stalled track as frozen.
+AVATAR_FPS = float(os.getenv("LUMINA_AVATAR_FPS", "2"))
+#: Longest edge, downscaled from the source portrait. 720 stays recognisable on
+#: a phone without spending call bandwidth on a still image.
+AVATAR_MAX_EDGE = int(os.getenv("LUMINA_AVATAR_MAX_EDGE", "720"))
+
 #: End a session once the room has been empty this long. Rooms are derived
 #: per-pair and therefore reused by every future call, so a session that
 #: outlives its call does not merely leak: it answers the NEXT call with pumps
@@ -735,6 +755,34 @@ def is_non_speech(transcript: str) -> bool:
     return not bare or bare in _NON_SPEECH_EXACT
 
 
+def load_avatar_rgba(path: str = AVATAR_IMAGE, max_edge: int = AVATAR_MAX_EDGE):
+    """Load the portrait as ``(width, height, rgba_bytes)``, or ``None``.
+
+    Returns None rather than raising for every reason it could fail (no Pillow,
+    no file, corrupt image): a missing face must degrade to a voice-only call,
+    never to a failed one.
+    """
+    try:
+        from PIL import Image  # noqa: PLC0415 - optional dependency
+    except Exception as exc:  # pragma: no cover - Pillow not installed
+        log.info("no Pillow; skipping avatar video (%s)", exc)
+        return None
+    try:
+        with Image.open(path) as im:
+            im = im.convert("RGBA")
+            w, h = im.size
+            scale = min(1.0, max_edge / float(max(w, h)))
+            if scale < 1.0:
+                # Even dimensions: odd sizes break chroma subsampling on the
+                # encoder's I420 conversion.
+                w, h = (int(w * scale) // 2) * 2, (int(h * scale) // 2) * 2
+                im = im.resize((w, h), Image.LANCZOS)
+            return w, h, im.tobytes()
+    except Exception as exc:  # noqa: BLE001 - a bad image must not fail the call
+        log.warning("avatar image unusable at %s (%r); voice only", path, exc)
+        return None
+
+
 def _drain(source) -> None:
     """Throw away audio already queued for playout. Best effort.
 
@@ -1181,6 +1229,36 @@ async def build_room_session(
 
     await room.connect(url, token)
     await room.local_participant.publish_track(track)
+
+    # A face on the call. Published after the audio track so a slow or missing
+    # image can never delay the leg that actually matters.
+    if AVATAR_ENABLED:
+        avatar = load_avatar_rgba()
+        if avatar is not None:
+            av_w, av_h, av_rgba = avatar
+            vsource = rtc.VideoSource(av_w, av_h)
+            vtrack = rtc.LocalVideoTrack.create_video_track(f"{agent_name}-avatar", vsource)
+            await room.local_participant.publish_track(
+                vtrack, rtc.TrackPublishOptions(source=rtc.TrackSource.SOURCE_CAMERA)
+            )
+
+            async def _pump_avatar() -> None:
+                """Resend the still forever. WebRTC reads a stalled track as
+                frozen, so a one-shot frame shows as a broken tile."""
+                period = 1.0 / max(AVATAR_FPS, 0.5)
+                frame = rtc.VideoFrame(av_w, av_h, rtc.VideoBufferType.RGBA, av_rgba)
+                while not closed.is_set():
+                    try:
+                        vsource.capture_frame(frame)
+                    except Exception as exc:  # noqa: BLE001 - video is cosmetic
+                        log.debug("avatar frame dropped (%r)", exc)
+                        return
+                    await asyncio.sleep(period)
+
+            tasks.append(asyncio.create_task(_pump_avatar()))
+            log.info(
+                "avatar published: %dx%d @%.1ffps from %s", av_w, av_h, AVATAR_FPS, AVATAR_IMAGE
+            )
 
     # Her hands. Attached AFTER connect so a slow MCP spawn never delays the
     # join (a caller hearing nothing while 10 servers boot is the same bug as
