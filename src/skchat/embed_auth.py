@@ -94,10 +94,15 @@ MODE_RO = _MODE_RO
 MODE_RW = _MODE_RW
 EMBED_MODES_VALID = _MODES
 
-#: Default / maximum embed-token lifetime (seconds). Short: it only has to outlive
-#: the initial iframe navigation before the scoped cookie takes over.
-DEFAULT_TTL = 120
-MAX_TTL = 600
+#: Default / maximum embed-token lifetime (seconds). Sized to outlive a browsing
+#: SESSION, not just the first navigation: the dashboard pane is multi-page, and
+#: every in-pane nav link carries the ORIGINAL token, so a 120s token 401'd the
+#: moment an operator clicked to another page >2 min after the pane opened
+#: ("capauth authentication required", never recovering). 30 min default / 60 min
+#: cap keeps a read-only, module-scoped, first-party pane usable while still
+#: bounded. Override via env for a tighter or looser posture.
+DEFAULT_TTL = int(os.getenv("SKCHAT_EMBED_TTL", "1800"))
+MAX_TTL = int(os.getenv("SKCHAT_EMBED_MAX_TTL", "3600"))
 
 #: The proxy module ids an embed token may be scoped to. skchat/skcode are NOT
 #: here: skchat is the shell's own origin and skcode runs its own gate + safe

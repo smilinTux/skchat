@@ -465,6 +465,26 @@ def _embed_fetch_shim(prefix: str, token: str) -> bytes:
         "XMLHttpRequest.prototype.open=function(){try{"
         'if(typeof arguments[1]==="string"){arguments[1]=fix(arguments[1]);}'
         "}catch(e){}return xo.apply(this,arguments);};"
+        # EventSource (SSE) is a THIRD dispatch path, like ES-module imports: it
+        # neither goes through window.fetch/XHR nor can carry a header, so its
+        # root-absolute URL (the dashboard's /api/events live stream) must be
+        # prefixed + tokened here too, or it 404s off the /skdashboard prefix.
+        "var OE=window.EventSource;"
+        "if(OE){var NE=function(u,c){try{if(typeof u===\"string\"){u=fix(u);}}catch(e){}return new OE(u,c);};"
+        "NE.prototype=OE.prototype;try{NE.CONNECTING=OE.CONNECTING;NE.OPEN=OE.OPEN;NE.CLOSED=OE.CLOSED;}catch(e){}"
+        "window.EventSource=NE;}"
+        # Anchor-navigation shim: nav links the subapp builds at RUNTIME (e.g. the
+        # overview tiles' `innerHTML='<a href=\"/board\">'`, re-rendered on every
+        # SSE tick) are never seen by the server-side HTML rewrite, so their
+        # root-absolute hrefs would navigate OFF the /skdashboard prefix (dead
+        # pane / 401). Cook the href at click time (capture phase, before the
+        # default nav): idempotent for the already-rewritten static nav, and it
+        # survives re-renders because it runs per click, not once.
+        "document.addEventListener(\"click\",function(e){try{"
+        'var a=e.target&&e.target.closest?e.target.closest("a[href]"):null;if(!a)return;'
+        'var h=a.getAttribute("href");if(!internal(h))return;var f=fix(h);'
+        "if(f!==h){a.setAttribute(\"href\",f);}"
+        "}catch(err){}},true);"
         "})();"
     ) % (p, t)
     return b"<script>" + js.encode("utf-8") + b"</script>"
@@ -833,7 +853,21 @@ async def skdashboard_proxy(path: str, request: Request):
         from starlette.responses import Response as _Resp
 
         return _Resp(status_code=204, headers=_module_cors_headers(request))
-    how = _authorize_module_proxy(request, "skdashboard")
+    # Public UI assets (``static/*``: js/css/fonts) are dashboard CODE, not data.
+    # The dashboard's pages are ES modules whose relative imports
+    # (``import ... from "./api.js"``) resolve WITHOUT the navigation's query
+    # string, so they cannot carry the ``embed_token``; gating them 401s
+    # ``api.js`` and every page's modules under the embed (the pane just spins
+    # and JS-rendered UI dies) while a direct :7778 hit works. Exempt read-only
+    # ``static/*`` (traversal-guarded) from the token: the DATA endpoints
+    # (``/skdashboard/api/*``) and the page routes stay gated, and the injected
+    # fetch shim still tokens the runtime API calls. Never exempt a mutation.
+    _is_static_asset = (
+        request.method in ("GET", "HEAD")
+        and path.startswith("static/")
+        and ".." not in path
+    )
+    how = "static" if _is_static_asset else _authorize_module_proxy(request, "skdashboard")
     upstream = os.environ.get("SKDASHBOARD_URL", "http://127.0.0.1:7778")
     # The token the injected fetch/XHR shim will hang off in-pane API calls: from
     # the initial navigation's query param, else the path-scoped cookie set on that
