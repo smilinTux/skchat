@@ -103,10 +103,19 @@ class VoiceEngine:
         # plausible name: on 2026-08-13 she answered "Claude 3.5 Sonnet" while
         # served by claude-haiku-4-5. Chef reads that as hallucination, and he is
         # right. State the fact instead of leaving her to guess.
+        #
+        # But state ONLY the model name. The first version handed her the
+        # endpoint and the fallback model too, and she read the lot back on a
+        # call ("running on claude-haiku-4-5 at localhost, fallback to
+        # qwen3.6-27b-abliterated if needed"), which is infrastructure spilling
+        # into a conversation. It also broadcast a stale config value as if it
+        # were true: that fallback model is not loaded anywhere.
         system_text += (
-            f"\n\nRuntime fact, answer truthfully if asked: you are currently running on "
-            f"the model '{self.cfg.model}' served at {self.cfg.llm_url}"
-            f" (fallback '{self.cfg.fallback_model}'). Never guess a different model name."
+            f"\n\nRuntime fact: the model you run on is '{self.cfg.model}'. State that "
+            f"name if you are asked what model you are, and never guess a different "
+            f"one. Do not recite it otherwise, and never read out endpoints, URLs, "
+            f"ports or fallback configuration: those are infrastructure, not "
+            f"conversation."
         )
         # Brevity goes LAST, always. The persona is long and expansive and the
         # rule was being buried in the middle of it: measured live on
