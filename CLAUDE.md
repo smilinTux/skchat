@@ -508,9 +508,60 @@ cd ~/skworld-worktrees/<name>          # edit, test, commit, push, open the PR h
 run against a worktree tests THAT tree's code, verified: a probe added in the
 worktree is visible there and invisible to production.
 
-Keep this checkout on `main`, and use it only to merge, pull and deploy. The
-built web bundle lives here and the deploy script commits it, so deploys belong
-here too.
+Keep this checkout on `main`, and use it only to merge, pull and deploy.
+
+### The rules that stop sessions walking over each other
+
+Learned the hard way on 2026-08-12/13, when three sessions shared this
+directory at once. Every one of these is a thing that actually happened.
+
+**1. Start every session with a worktree. No exceptions, not even "just one
+file".** The collisions below all began as a one-file edit in the shared
+checkout.
+
+**2. Never leave this checkout on a feature branch.** It is production. On
+2026-08-13 it sat on `fix/call-identity-collision` for hours, so merged fixes
+on `main` were running nowhere and a full night of work could not be deployed.
+If you switch it, switch it back the moment you are done.
+
+**3. Deploy the web bundle from a worktree, never from here.**
+`deploy-app-web.sh` commits to whatever branch is open. Run from this checkout
+while it sits on someone else's branch, and your deploy commit lands on THEIR
+branch and never reaches main. That happened, and the deploy looked completely
+successful.
+
+**4. Always rebuild the bundle from CURRENT skworld-app main.** Two sessions
+each deployed a bundle built from their own app commit. Each build silently
+dropped the other's client work, and whichever landed last would have won.
+`./scripts/deploy-app-web.sh --check` before and after; it tells you the
+provenance. Never hand-copy or rsync a bundle: it is tracked in git, so the
+next checkout reverts it and the deploy silently disappears.
+
+**5. Do not restart a service while another session has uncommitted work
+here.** The editable install means a restart loads whatever is on disk, so you
+would push their half-finished code into production. Check first:
+`git status --porcelain | grep -v '^??'` and `find src -name '*.py' -newermt
+'15 minutes ago'`.
+
+**6. Push a branch before removing its worktree.** Three branches on this box
+existed only locally and had never been pushed; removing those worktrees would
+have destroyed real work. `git worktree remove` does not warn you about that.
+
+**7. Do not commit another session's in-flight work.** Their commits are
+usually already on origin; it is the working tree that is live. Ask, or wait.
+
+### Before you claim something is deployed
+
+Merged is not running. Check the code that is actually loaded, not the repo:
+
+```bash
+git branch --show-current                 # is this checkout even on main?
+grep -c <a-symbol-from-your-fix> src/skchat/<file>.py
+systemctl --user show skchat-daemon.service -p ActiveEnterTimestamp --value
+```
+
+A service started before your merge does not have your fix, no matter what
+`git log` says.
 
 ## Deploying the web client (read this before you rsync anything)
 
@@ -618,3 +669,16 @@ not just the token.
 - Line length: 99 chars (black + ruff)
 - Target: Python 3.10+
 - Linting: `ruff` (E, W, F, I; ignore E501)
+- **Formatting is `ruff format`, NOT black.** CI runs `ruff format --check src/
+  tests/`, so black-formatted code can pass locally and still fail CI. This
+  line used to read "black + ruff" and cost at least one session a CI cycle.
+  Run this before you push, and note it is the same command CI runs:
+
+  ```bash
+  ruff format src/ tests/ && ruff check src/ tests/
+  ```
+
+  Both tools are PINNED in the workflow. An unpinned formatter re-reds the job
+  on every upstream release with no commit from us in between, which teaches
+  everyone to ignore it. Bump the pin deliberately, in the same commit as the
+  reformat it implies.
