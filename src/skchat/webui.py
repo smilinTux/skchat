@@ -470,7 +470,7 @@ def _embed_fetch_shim(prefix: str, token: str) -> bytes:
         # root-absolute URL (the dashboard's /api/events live stream) must be
         # prefixed + tokened here too, or it 404s off the /skdashboard prefix.
         "var OE=window.EventSource;"
-        "if(OE){var NE=function(u,c){try{if(typeof u===\"string\"){u=fix(u);}}catch(e){}return new OE(u,c);};"
+        'if(OE){var NE=function(u,c){try{if(typeof u==="string"){u=fix(u);}}catch(e){}return new OE(u,c);};'
         "NE.prototype=OE.prototype;try{NE.CONNECTING=OE.CONNECTING;NE.OPEN=OE.OPEN;NE.CLOSED=OE.CLOSED;}catch(e){}"
         "window.EventSource=NE;}"
         # Anchor-navigation shim: nav links the subapp builds at RUNTIME (e.g. the
@@ -480,10 +480,10 @@ def _embed_fetch_shim(prefix: str, token: str) -> bytes:
         # pane / 401). Cook the href at click time (capture phase, before the
         # default nav): idempotent for the already-rewritten static nav, and it
         # survives re-renders because it runs per click, not once.
-        "document.addEventListener(\"click\",function(e){try{"
+        'document.addEventListener("click",function(e){try{'
         'var a=e.target&&e.target.closest?e.target.closest("a[href]"):null;if(!a)return;'
         'var h=a.getAttribute("href");if(!internal(h))return;var f=fix(h);'
-        "if(f!==h){a.setAttribute(\"href\",f);}"
+        'if(f!==h){a.setAttribute("href",f);}'
         "}catch(err){}},true);"
         "})();"
     ) % (p, t)
@@ -863,9 +863,7 @@ async def skdashboard_proxy(path: str, request: Request):
     # (``/skdashboard/api/*``) and the page routes stay gated, and the injected
     # fetch shim still tokens the runtime API calls. Never exempt a mutation.
     _is_static_asset = (
-        request.method in ("GET", "HEAD")
-        and path.startswith("static/")
-        and ".." not in path
+        request.method in ("GET", "HEAD") and path.startswith("static/") and ".." not in path
     )
     how = "static" if _is_static_asset else _authorize_module_proxy(request, "skdashboard")
     upstream = os.environ.get("SKDASHBOARD_URL", "http://127.0.0.1:7778")
