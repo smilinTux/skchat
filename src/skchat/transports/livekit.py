@@ -49,7 +49,7 @@ import re
 import time
 from typing import Callable, Iterable, Optional
 
-from skchat.voice_engine.tools import pick_filler
+from skchat.voice_engine.tools import pick_filler, pick_waiting_filler
 
 log = logging.getLogger("skchat.transports.livekit")
 
@@ -101,6 +101,15 @@ FILLER_ENABLED = os.getenv("LUMINA_FILLER", "1") not in ("0", "false", "no", "")
 FILLER_DELAY_S = float(os.getenv("LUMINA_FILLER_DELAY_S", "0.8"))
 #: Speak it immediately on every turn, no matter how fast the reply is.
 FILLER_ALWAYS = os.getenv("LUMINA_FILLER_ALWAYS", "0") not in ("0", "false", "no", "")
+#: Repeat a short "still working on it" every this many seconds while a turn is
+#: still running. A narration can take 30s to generate and minutes to render,
+#: and silence that long is indistinguishable from a dropped call.
+FILLER_REPEAT_S = float(os.getenv("LUMINA_FILLER_REPEAT_S", "12"))
+
+#: Longest text handed to TTS in one request. Beyond this a reply is spoken in
+#: sentence-aligned chunks so audio starts within seconds instead of after the
+#: whole narration renders, and so no single request can hit the TTS timeout.
+LONGFORM_CHUNK_CHARS = int(os.getenv("LUMINA_LONGFORM_CHUNK_CHARS", "400"))
 
 # Avatar placeholder video. A voice call with no video track shows the operator
 # a blank tile, which reads as "not connected" even while she is talking. This
@@ -800,6 +809,39 @@ def load_avatar_rgba(path: str = AVATAR_IMAGE, max_edge: int = AVATAR_MAX_EDGE):
         return None
 
 
+def split_for_speech(text: str, max_chars: int = LONGFORM_CHUNK_CHARS) -> list[str]:
+    """Split a long reply into speakable chunks on sentence boundaries.
+
+    Synthesis is proportional to length, so rendering a whole narration before
+    saying a word means minutes of silence, and past the TTS timeout it means
+    NO word at all: a 3400-character worship story rendered fine and then died
+    on the wire, logging "reply ready in 60.02s (0.0s of audio)".
+
+    Chunking turns that into speech starting a few seconds in, and it removes
+    the timeout cliff entirely because no single request is ever large.
+
+    Splits only between sentences, never mid-sentence, so each chunk is a
+    natural place for a breath. Short replies come back as a single chunk and
+    are unaffected.
+    """
+    t = (text or "").strip()
+    if len(t) <= max_chars:
+        return [t] if t else []
+    # Keep the terminator with its sentence.
+    parts = re.split(r"(?<=[.!?…])\s+", t)
+    chunks: list[str] = []
+    cur = ""
+    for p in parts:
+        if cur and len(cur) + 1 + len(p) > max_chars:
+            chunks.append(cur)
+            cur = p
+        else:
+            cur = f"{cur} {p}".strip()
+    if cur:
+        chunks.append(cur)
+    return chunks
+
+
 def _drain(source) -> None:
     """Throw away audio already queued for playout. Best effort.
 
@@ -1052,6 +1094,22 @@ async def build_room_session(
             await _set_state(room, "thinking", text)
             await say(text, filler=True)
 
+            # Keep reassuring on a genuinely long turn. One "give me a sec"
+            # covers a few seconds; a worship narration takes 30s+ to generate
+            # and minutes to render, and Chef asked for exactly this after
+            # sitting through that silence. Stops the moment the reply lands.
+            while not replied.is_set():
+                try:
+                    await asyncio.wait_for(replied.wait(), timeout=FILLER_REPEAT_S)
+                    return
+                except asyncio.TimeoutError:
+                    pass
+                if replied.is_set():
+                    return
+                nudge = pick_waiting_filler()
+                log.info("filler (waiting): %s", nudge)
+                await say(nudge, filler=True)
+
         filler_task = asyncio.create_task(_filler_when_slow()) if FILLER_ENABLED else None
 
         try:
@@ -1078,7 +1136,13 @@ async def build_room_session(
         # measured turn the reply was ready at t+6.3s when the TTS could have
         # run inside the 2.5s the filler was already playing.
         t0 = time.monotonic()
-        synth_task = asyncio.create_task(synth(reply or ""))
+        # Long replies are spoken in sentence-aligned chunks. Rendering a whole
+        # narration before saying a word is minutes of silence, and past the TTS
+        # timeout it is NO word at all: a 3400-char worship story rendered fine
+        # and then died on the wire, logging "reply ready in 60.02s (0.0s of
+        # audio)". Chunking also lets chunk N+1 render while chunk N plays.
+        chunks = split_for_speech(reply or "")
+        synth_task = asyncio.create_task(synth(chunks[0])) if chunks else None
         try:
             if filler_task is not None:
                 if spoke_filler.is_set():
@@ -1092,19 +1156,38 @@ async def build_room_session(
                         log.warning("filler failed (%r)", exc)
                 else:
                     filler_task.cancel()
-            reply_pcm = await synth_task
+            if synth_task is None:
+                return
+            await _set_state(room, "speaking", reply or "")
+            spoken = 0
+            for i, chunk in enumerate(chunks):
+                pcm = await synth_task
+                # Kick off the NEXT chunk before playing this one, so synthesis
+                # overlaps playback instead of queueing behind it.
+                synth_task = (
+                    asyncio.create_task(synth(chunks[i + 1])) if i + 1 < len(chunks) else None
+                )
+                if i == 0:
+                    log.info(
+                        "first audio in %.2fs (%d chunk%s, %d chars)",
+                        time.monotonic() - t0,
+                        len(chunks),
+                        "" if len(chunks) == 1 else "s",
+                        len(reply or ""),
+                    )
+                spoken += len(pcm)
+                await publish(pcm, chunk)
         except BaseException:
             # Includes barge-in cancelling the turn: a synth left running would
             # hold a TTS connection and then publish into a call that moved on.
-            synth_task.cancel()
+            if synth_task is not None:
+                synth_task.cancel()
             raise
         log.info(
-            "reply ready in %.2fs (%.1fs of audio)",
+            "reply done in %.2fs (%.1fs of audio)",
             time.monotonic() - t0,
-            len(reply_pcm) / 2 / TTS_SAMPLE_RATE,
+            spoken / 2 / TTS_SAMPLE_RATE,
         )
-        await _set_state(room, "speaking", reply or "")
-        await publish(reply_pcm, reply or "")
         await _set_state(room, "listening")
 
     async def pump(stream, speaker_id: str) -> None:
