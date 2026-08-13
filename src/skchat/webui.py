@@ -833,7 +833,21 @@ async def skdashboard_proxy(path: str, request: Request):
         from starlette.responses import Response as _Resp
 
         return _Resp(status_code=204, headers=_module_cors_headers(request))
-    how = _authorize_module_proxy(request, "skdashboard")
+    # Public UI assets (``static/*``: js/css/fonts) are dashboard CODE, not data.
+    # The dashboard's pages are ES modules whose relative imports
+    # (``import ... from "./api.js"``) resolve WITHOUT the navigation's query
+    # string, so they cannot carry the ``embed_token``; gating them 401s
+    # ``api.js`` and every page's modules under the embed (the pane just spins
+    # and JS-rendered UI dies) while a direct :7778 hit works. Exempt read-only
+    # ``static/*`` (traversal-guarded) from the token: the DATA endpoints
+    # (``/skdashboard/api/*``) and the page routes stay gated, and the injected
+    # fetch shim still tokens the runtime API calls. Never exempt a mutation.
+    _is_static_asset = (
+        request.method in ("GET", "HEAD")
+        and path.startswith("static/")
+        and ".." not in path
+    )
+    how = "static" if _is_static_asset else _authorize_module_proxy(request, "skdashboard")
     upstream = os.environ.get("SKDASHBOARD_URL", "http://127.0.0.1:7778")
     # The token the injected fetch/XHR shim will hang off in-pane API calls: from
     # the initial navigation's query param, else the path-scoped cookie set on that
