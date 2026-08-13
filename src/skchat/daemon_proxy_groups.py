@@ -603,9 +603,18 @@ def group_to_conversation(
         # sealing) — no silent state.
         "encryption": group_encryption_status(group),
     }
-    if group.metadata.get("mode") == "dm":
+    from skchat import guest_groups as _GG
+
+    mode = group.metadata.get("mode")
+    if mode == "dm":
         conversation.update(_dm_guest_badge(group))
-    elif group.metadata.get("mode") == "gdm":
+    elif mode == "gdm" or _GG.has_seated_guests(group):
+        # The seated-guest arm covers a room built by "New guest group": that
+        # flow creates a PLAIN group and mints group invites against it, so it
+        # never carries a mode and used to render as an ordinary group - no
+        # guest badge, missing from the Guests filter - even with untrusted
+        # people in it. _gdm_roster_fields stamps mode="gdm" on the payload, so
+        # the client's guest surfaces catch it like any other guest room.
         conversation.update(_gdm_roster_fields(group))
         for participant, member in zip(participants, group.members):
             participant.update(_guest_member_fields(group, member))

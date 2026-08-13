@@ -149,13 +149,40 @@ def test_an_unknown_group_404s(client):
     assert _patch_expiry(client, "no-such-group", {"group_ttl": 60}).status_code == 404
 
 
-def test_expiry_only_applies_to_dm_family_rooms(client, room):
-    """The chokepoint only consults `expires_at` for a dm-family group, so
-    refuse to set it on a plain group rather than writing a field that would
-    silently do nothing."""
+def test_expiry_is_refused_on_a_group_with_no_guests(client, room):
+    """Refuse to write `expires_at` where the chokepoint would never read it,
+    rather than storing a field that silently does nothing.
+
+    "Guest-family" is decided by who is SEATED, not by how the room was made,
+    so this strips the guests as well as the mode. Dropping only the mode would
+    now leave a guest-bearing room, which IS expirable."""
     gid, _session = room
     grp = G.load_group(gid)
-    grp.metadata.pop("mode", None)  # a plain group, not dm/gdm
+    grp.metadata.pop("mode", None)
+    grp.metadata.pop("guests", None)
+    G.save_group(grp)
+
+    assert _patch_expiry(client, gid, {"group_ttl": 60}).status_code == 400
+    assert G.load_group(gid).metadata.get("expires_at") is None
+
+
+def test_expiry_still_does_not_reach_a_classic_guest_group(client, room):
+    """KNOWN GAP, asserted so it stays visible and cannot change by accident.
+
+    A "New guest group" room carries no mode, so the chokepoint (which gates on
+    is_guest_dm_like) never consults its expiry: that room cannot be timed out
+    even though it is full of untrusted people.
+
+    Closing it by widening is_guest_dm_like was tried and reverted: it also
+    silently fenced pre-join history from guests in classic guest groups, who
+    are meant to see it, and changed gdm rate limits and ring semantics. That
+    is a policy decision, not a side effect of a rendering fix, so the gap
+    stands until someone chooses to close it deliberately.
+    """
+    gid, _session = room
+    grp = G.load_group(gid)
+    grp.metadata.pop("mode", None)  # as "New guest group" leaves it
+    assert grp.metadata.get("guests"), "fixture should have a guest seated"
     G.save_group(grp)
 
     assert _patch_expiry(client, gid, {"group_ttl": 60}).status_code == 400
