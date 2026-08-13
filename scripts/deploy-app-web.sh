@@ -66,6 +66,19 @@ fi
 
 command -v "$FLUTTER" >/dev/null 2>&1 || [ -x "$FLUTTER" ] || die "flutter not found: $FLUTTER"
 
+# A deploy COMMITS the bundle into this checkout, so it lands on whatever branch
+# happens to be open. That has already put one session's deploy onto another
+# session's feature branch, which hides the bundle from main and leaves the next
+# person deploying from main shipping a stale client. Refuse rather than do it
+# quietly. This checkout is also the editable install the live services import,
+# so it should be sitting on main anyway.
+branch="$(git -C "$SKCHAT_DIR" rev-parse --abbrev-ref HEAD)"
+if [ "$branch" != "main" ] && [ "${ALLOW_DEPLOY_OFF_MAIN:-}" != "1" ]; then
+  die "this checkout is on '$branch', not main. A deploy commits the bundle, and
+     committing it to a feature branch hides it from main. Switch to main, or set
+     ALLOW_DEPLOY_OFF_MAIN=1 if you really mean it."
+fi
+
 echo "==> building from $APP_DIR"
 git -C "$APP_DIR" fetch -q origin main
 src_commit="$(git -C "$APP_DIR" rev-parse HEAD)"
