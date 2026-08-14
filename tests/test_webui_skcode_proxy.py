@@ -173,6 +173,7 @@ def test_ws_proxy_logs_the_rejected_path_and_never_the_token(monkeypatch, caplog
     from an expired token. The path in the log is what separates them. The token
     rides the query string, so the query must NEVER reach the log.
     """
+
     async def _reject(url, **kw):
         from websockets.exceptions import InvalidStatus
 

@@ -798,9 +798,7 @@ async def skcode_ws_proxy(websocket: WebSocket, path: str) -> None:
         # proxied path so the next operator can read the real cause off the log.
         # The QUERY IS NEVER LOGGED: the wire token rides it.
         response = getattr(exc, "response", None)
-        status = getattr(response, "status_code", None) or getattr(
-            exc, "status_code", None
-        )
+        status = getattr(response, "status_code", None) or getattr(exc, "status_code", None)
         logger.warning(
             "skcode ws proxy handshake rejected by host: path=/%s status=%s "
             "(bad token OR unmatched host route; query withheld)",
