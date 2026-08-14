@@ -23,7 +23,7 @@ Re-evaluated against live infrastructure on 2026-08-14. What changed:
 | The core must be built (session, policy, context, brain, provenance) | **Mostly built.** `voice_engine/` has `engine.respond()`, `llm.py`, `tools.py` (`ToolRegistry`), `persona.py`, `memory.py`, `stt.py`, `tts.py`, `conversation.py`, `voice_session.py`, and 20 test modules. Genuinely missing: tier policy and provenance. |
 | Ports and adapters must be defined | **The seam exists.** `transports/livekit.py:run_turn(engine, history, transcript, *, mode, speaker_id, is_operator)` is exactly the port. Alexa is a new transport against it. |
 | Tool gating is absent | **Partly present.** `ToolRegistry.dispatch()` already gates on `is_operator` and `operator_only` plus `mode`. The refusal text is literally "there are other people in this room". |
-| Route away from `sk-default`, it is a slow 9B | **Inverted.** Measured today: `sk-default` via gateway 4.1s, gateway `/v1/messages` 2.0s, `openai/gpt-oss-20b` **1.05s**. Meanwhile ornith direct is 15.5s to 19.2s and `claude-haiku-4-5` is 6.3s. |
+| Route away from `sk-default`, it is a slow 9B | **Moot.** Voice never used `sk-default`. Its real primary is the `:18783` proxy at ~1.2s and its fallback is 3.0s, both inside budget. See section 3. |
 | `inc-4b9f8e5e` (ornith wedged) blocks the latency budget | **Resolved 2026-08-14.** Chat completions return 200 in 2.2s. Closed with evidence. The observability half became `prb-e0ac7602`. |
 | skvoice `tools.py` is a live ungated tool list | **Dead code.** Imported nowhere; `llm.py` passes no tools at all. Do not plan parity against it. |
 | `lumina-house` soul overlay | **Still missing.** Only `lumina.json` and `lumina-unhinged.json` are installed. Still a deliverable. |
@@ -230,22 +230,42 @@ a room. A separate calendar named "Family"
 Amazon gives a skill approximately **eight seconds**. Progressive responses
 count against that window rather than extending it.
 
-Measured 2026-08-14, voice-sized prompt, via skgateway `:18780`:
+### The deployed voice path is fast, and already fits
 
-| Model | Latency | Verdict for Alexa |
-|---|---|---|
-| `openai/gpt-oss-20b` | **1.05s** | **Fits, with room for a tool call** |
-| gateway `/v1/messages` | 2.0s | Fits |
-| `sk-default` | 4.1s | Eats the whole brain budget |
-| `claude-haiku-4-5` | 6.3s | **Blows the ceiling on its own** |
-| `ornith-tiny` | 7.2s | Blows it |
-| ornith direct `.100:8082` | 15.5s to 19.2s | Far over |
+Measured 2026-08-14 against the endpoints `VoiceConfig` actually resolves to
+(`SKVOICE_LLM_URL=http://localhost:18783`, `SKVOICE_FALLBACK_URL=http://192.168.0.100:8082`),
+voice-sized prompt with the real system preamble:
 
-**This is a live problem, not just an Alexa one.** `VoiceConfig` defaults today
-are `model=claude-haiku-4-5` (6.3s) with `fallback_model=qwen3.6-27b-abliterated`
-on ornith direct (15s+). Every existing voice surface is running on a primary
-that would time out an Alexa turn, and a fallback that is worse. Chef has
-already called voice replies slow; these numbers say why.
+| Leg | Model | Latency | Verdict for Alexa |
+|---|---|---|---|
+| **primary**, `:18783` proxy | `claude-haiku-4-5` | **1.06s, 1.46s, 1.21s** | Fits, with room for a tool call |
+| **fallback**, `.100:8082` | `qwen3.6-27b-abliterated` | **3.0s** | Fits |
+
+Both legs clear the 5.0s brain deadline, so the deployed configuration needs no
+change for Alexa to work.
+
+**Correcting an earlier draft of this document.** It claimed haiku was 6.3s and
+the fallback 15 to 19 seconds, and concluded that every voice surface was
+running too slow to serve an Alexa turn. That was measured against skgateway
+`:18780`, which is **not** the endpoint voice uses: `claude-haiku-4-5` through
+the gateway routes to the Anthropic cloud backend, and the `ornith` model id on
+`.100:8082` is a different, larger model than the `qwen3.6-27b-abliterated` the
+fallback actually names. Measuring a config means resolving its URLs first, not
+querying a convenient endpoint that accepts the same model string.
+
+For reference, the skgateway numbers (a different path, useful only if a
+transport is ever pointed at the gateway): `openai/gpt-oss-20b` 1.05s, gateway
+`/v1/messages` 2.0s, `sk-default` 4.1s, `claude-haiku-4-5` 6.3s, `ornith-tiny`
+7.2s, `ornith` direct 15.5 to 19.2s.
+
+### Per-transport model config is still worth having
+
+Not as a latency rescue, which is not needed, but because the transports have
+genuinely different budgets: an Alexa turn has a hard 8 second ceiling imposed
+by Amazon, while a LiveKit call has none and can afford a slower, richer model.
+`VoiceConfig` is one frozen global built from a single `from_env()`, so today
+there is no way to express that difference. This is a capability gap, not an
+incident.
 
 ### Budget
 
@@ -420,7 +440,7 @@ security control. The tests assert the second thing.
 | Risk | Status | Mitigation |
 |---|---|---|
 | `mode_ceiling` is a live function on the call path | Real | Device argument is optional; absent device preserves today's behavior. Regression test is acceptance criterion 9. |
-| Default voice models are far too slow (haiku 6.3s, ornith 15s+) | **Open, affects production today** | Per-transport model config; pin Alexa to `openai/gpt-oss-20b` (1.05s). Worth fixing for all surfaces. |
+| One global `VoiceConfig` cannot express different per-transport budgets | Open, capability gap | Per-transport override (T5). Not a latency rescue: the deployed legs measure ~1.2s and 3.0s, both inside budget. |
 | `prb-e0ac7602`: gateway health probes only metadata, so inference death is silent | Open | Tracked separately. Not a P1 blocker. |
 | `deviceId` stability across sessions is undocumented by Amazon | Unverified | Verify empirically at bootstrap. If unstable, fall back to one skill per room. |
 | Provenance format may diverge from SPE | Open | Reconcile against `PROVENANCE_AND_MUTATION_STANDARD.md` before implementing. |
@@ -434,7 +454,8 @@ security control. The tests assert the second thing.
 - cloudflared tunnel for `voice.skworld.io`.
 - SearXNG on `localhost:18888`. Verified up.
 - `gog` with `david.knestrick@gmail.com` authorized.
-- A fast inference backend. `openai/gpt-oss-20b` via skgateway, verified 1.05s.
+- The existing voice inference legs, unchanged: `:18783` proxy (~1.2s) with the
+  `.100:8082` fallback (3.0s). Both verified 2026-08-14 and inside budget.
 
 ---
 
