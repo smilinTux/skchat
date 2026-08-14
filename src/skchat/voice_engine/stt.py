@@ -125,7 +125,20 @@ class STTClient:
         try:
             text = await self._post(self.cfg.stt_url, wav)
         except Exception as e:
-            log.error("STT failed: %s", e)
+            # Name the SERVICE, the URL and the exception TYPE. This used to be
+            # log.error("STT failed: %s", e), and str() on an httpx connect
+            # timeout is EMPTY, so a dead .100 produced the bare line
+            # "STT failed:" five times during an outage on 2026-08-13. It says
+            # something broke and refuses to say what, which is why it was
+            # skimmed past while the real symptom (she hears you and never
+            # answers) got blamed on a wedged segmenter for an hour.
+            log.error(
+                "STT failed: %s: %s (url=%s). She heard audio but cannot "
+                "transcribe it, so she will stay silent.",
+                type(e).__name__,
+                e or "(no detail)",
+                self.cfg.stt_url,
+            )
             return ""
         if vad and text and is_hallucination(text):
             log.info("stt: dropping hallucination %r", text)
