@@ -782,9 +782,31 @@ async def skcode_ws_proxy(websocket: WebSocket, path: str) -> None:
 
     try:
         upstream = await websockets.connect(upstream_url, open_timeout=10)
-    except _reject_errors:
-        # The host rejected the handshake (deny-all / bad token). Mirror its
-        # policy close so the client shows the pairing hint, not an error.
+    except _reject_errors as exc:
+        # The host rejected the handshake. Mirror its policy close so the client
+        # shows the pairing hint, not an error.
+        #
+        # DIAGNOSABILITY (2026-08-14): this close code is AMBIGUOUS by
+        # construction and must be logged. skcode-hostd closes before ``accept``
+        # both when it refuses the token AND when no route matched the path at
+        # all, and uvicorn answers every pre-accept close with the same HTTP 403,
+        # so the proxy cannot tell "bad token" from "bad path" here. Silently
+        # closing 1008 for both made a hostd ROUTING miss (a session id
+        # containing a "/", which ``/api/v1/sessions/{sid}/stream`` can never
+        # match) look exactly like an expired token, and the pane rendered a
+        # "pair this device" hint for a token that was perfectly valid. Log the
+        # proxied path so the next operator can read the real cause off the log.
+        # The QUERY IS NEVER LOGGED: the wire token rides it.
+        response = getattr(exc, "response", None)
+        status = getattr(response, "status_code", None) or getattr(
+            exc, "status_code", None
+        )
+        logger.warning(
+            "skcode ws proxy handshake rejected by host: path=/%s status=%s "
+            "(bad token OR unmatched host route; query withheld)",
+            path.lstrip("/"),
+            status,
+        )
         await websocket.close(code=1008)
         return
     except Exception as exc:  # noqa: BLE001 - host unreachable / network error.

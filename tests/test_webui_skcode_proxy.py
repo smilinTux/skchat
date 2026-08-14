@@ -160,3 +160,43 @@ def test_ws_proxy_relays_host_rejection_as_1008(monkeypatch):
         with client.websocket_connect("/skcode/api/v1/sessions/sid1/stream?token=bad") as ws:
             ws.receive_text()
     assert excinfo.value.code == 1008
+
+
+def test_ws_proxy_logs_the_rejected_path_and_never_the_token(monkeypatch, caplog):
+    """A relayed 1008 must leave a log line naming the PATH, never the query.
+
+    The 1008 is ambiguous by construction: skcode-hostd closes before ``accept``
+    both for a refused token and for a path no route matched, and uvicorn answers
+    every pre-accept close with the same HTTP 403. A silent close therefore made a
+    hostd routing miss (a session id containing "/", which the host's
+    ``/api/v1/sessions/{sid}/stream`` route can never match) indistinguishable
+    from an expired token. The path in the log is what separates them. The token
+    rides the query string, so the query must NEVER reach the log.
+    """
+    async def _reject(url, **kw):
+        from websockets.exceptions import InvalidStatus
+
+        raise InvalidStatus.__new__(InvalidStatus)
+
+    import websockets
+
+    monkeypatch.setattr(websockets, "connect", _reject)
+    monkeypatch.setenv("SKCODE_HOSTD_URL", "http://10.0.0.9:9394")
+
+    client = TestClient(webui.app)
+    from starlette.websockets import WebSocketDisconnect
+
+    secret = "s3cr3t-wire-token"
+    with caplog.at_level("WARNING", logger=webui.logger.name):
+        with pytest.raises(WebSocketDisconnect):
+            with client.websocket_connect(
+                f"/skcode/api/v1/sessions/agent/abc123/stream?token={secret}"
+            ) as ws:
+                ws.receive_text()
+
+    text = "\n".join(r.getMessage() for r in caplog.records)
+    # The mis-shaped path (a sid carrying a "/") is visible for triage...
+    assert "/api/v1/sessions/agent/abc123/stream" in text
+    # ...and the token never is.
+    assert secret not in text
+    assert "token=" not in text
