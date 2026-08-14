@@ -516,7 +516,7 @@ def _extract_subject(token: str) -> Optional[str]:
         session = verify_operator_session(token)
         return operator_subject(session.device_fp)
     except Exception:
-        pass
+        logger.debug("operator-session subject resolution failed", exc_info=True)
     # Audience-token branch (CR-3.4 P1): a valid skchat-audience capauth token
     # resolves to its payload subject -- ``operator:<device_fp>`` for the seat
     # (section 4), or the fqid for a daemon-self token, both of which the PDP grant
@@ -538,7 +538,7 @@ def _extract_subject(token: str) -> Optional[str]:
             if verify_audience_token(signed, SKCHAT_AUDIENCE):
                 return signed.payload.subject
         except Exception:
-            pass
+            logger.debug("audience-token subject resolution failed", exc_info=True)
     try:
         import base64
         import json
@@ -549,7 +549,7 @@ def _extract_subject(token: str) -> Optional[str]:
         if isinstance(claim, dict):
             return claim.get("fqid")
     except Exception:
-        pass
+        logger.debug("fqid subject resolution failed", exc_info=True)
     return None
 
 
@@ -680,6 +680,21 @@ def _get_shadow_twin(device_fp: str) -> Optional[str]:
     return wire
 
 
+def _record_shadow_ok() -> None:
+    """Count one converged shadow comparison and emit a periodic heartbeat.
+
+    Logged at WARNING, not INFO: the webui runs uvicorn at ``log_level="warning"``,
+    so an INFO heartbeat never reaches the journal and the Phase-2 soak gate
+    ("nonzero issuer-shadow ok heartbeats; silence never passes") could never be
+    observed. Fires on the 1st ok and every 100th thereafter, so the line volume
+    stays low while still proving the shadow is alive rather than merely silent.
+    """
+    global _shadow_ok_count
+    _shadow_ok_count += 1
+    if _shadow_ok_count % 100 == 1:
+        logger.warning("issuer-shadow ok count=%s", _shadow_ok_count)
+
+
 def _issuer_shadow_compare(request: Request, token: str) -> None:
     """Compare the HS256 operator session against its synthetic audience twin.
 
@@ -690,7 +705,6 @@ def _issuer_shadow_compare(request: Request, token: str) -> None:
     structured divergence line on ANY mismatch, else increments a heartbeat. NEVER
     raises into the request path and NEVER changes the response.
     """
-    global _shadow_ok_count
     try:
         from .operator_auth import verify_operator_session
 
@@ -730,10 +744,7 @@ def _issuer_shadow_compare(request: Request, token: str) -> None:
                 aud_authenticated,
             )
         else:
-            _shadow_ok_count += 1
-            if _shadow_ok_count % 100 == 1:
-                # Periodic heartbeat so silence is distinguishable from a dead shadow.
-                logger.info("issuer-shadow ok count=%s", _shadow_ok_count)
+            _record_shadow_ok()
     except Exception:
         # Observation only: any error here must never affect the request.
         logger.debug("issuer-shadow compare errored (non-fatal)", exc_info=True)
