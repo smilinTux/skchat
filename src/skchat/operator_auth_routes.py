@@ -346,7 +346,7 @@ def register_operator_auth_routes(app: FastAPI, *, device_store: oa.DeviceStore)
             raise HTTPException(403, str(exc)) from exc
         resp = {"session_token": token, "expires_at": sess.exp}
         # CR-3.4 AC1 / Phase 1: ALSO mint a parallel capauth audience token for
-        # operator:<device_fp>, gated by SKCHAT_OPERATOR_AUDIENCE_ISSUE (default
+        # device:<device_fp>, gated by SKCHAT_OPERATOR_AUDIENCE_ISSUE (default
         # OFF) and NON-FATAL. The HS256 session above stays the primary credential
         # the client uses; this is additive so today's clients (which read only
         # session_token) are unaffected. A mint failure returns None and never

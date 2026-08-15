@@ -213,7 +213,7 @@ def unlink_device(device_fp: str, *, device_store, owner: str = "chef") -> dict:
 
 
 def revoke_capauth_subject(device_fp: str) -> tuple[bool, int]:
-    """Revoke every capauth pairing device record for ``operator:<device_fp>``.
+    """Revoke every capauth pairing device record for ``device:<device_fp>``.
 
     Public (not underscore-prefixed) so ``skchat devices reset`` (R1) can call
     it directly for every device being reset, the same way :func:`unlink_device`
@@ -237,12 +237,24 @@ def revoke_capauth_subject(device_fp: str) -> tuple[bool, int]:
     ``revoke(device_id, reason, *, base_dir=None)``. ``device_id`` is the pairing
     ``DeviceRecord.device_id`` (the enrollment id minted at ``enroll_device`` time,
     see :func:`skchat.operator_grants.grant_operator_capabilities`), not the
-    ``operator:<fp>`` subject string, and ``reason`` has no default. Calling
+    ``device:<fp>`` subject string, and ``reason`` has no default. Calling
     ``revoke(operator_subject(device_fp))`` as drafted would raise a
     ``TypeError`` on the missing ``reason`` even before the wrong-argument
     problem, always landing in the except branch. The real lookup is subject ->
     matching device records (:func:`capauth.pairing.list_devices`) -> each
     record's own ``device_id`` -> :func:`capauth.pairing.revoke`.
+
+    Migration-window fallback (coord card N6): ``operator_subject`` now mints
+    ``device:<fp>``, but the live pairing store still holds roughly 140 device
+    records under the retired ``operator:<fp>`` shape until the separate
+    one-shot store-rewrite card runs. ``list_devices`` is an exact-string
+    matcher with no aliasing (by design, IDENTITY_NAMING_STANDARD.md sec
+    2.4), so a lookup under only the new shape would silently find nothing
+    for those records and this security-critical revoke would no-op. This
+    function therefore ALSO looks up the legacy ``operator:<fp>`` subject and
+    revokes anything found there too, deduplicated by ``device_id`` (the same
+    device can only be enrolled under one of the two shapes at a time). Drop
+    the legacy lookup once the store rewrite is confirmed complete fleet-wide.
     """
     try:
         from capauth.pairing import default_base_dir, list_devices, revoke
@@ -250,8 +262,15 @@ def revoke_capauth_subject(device_fp: str) -> tuple[bool, int]:
         from skchat.dataplane_auth import operator_subject
 
         subject = operator_subject(device_fp)
+        legacy_subject = f"operator:{device_fp}"
         base = default_base_dir()
-        devices = list_devices(subject, base_dir=base, include_revoked=False)
+        devices = list(list_devices(subject, base_dir=base, include_revoked=False))
+        if legacy_subject != subject:
+            seen_ids = {d.device_id for d in devices}
+            for d in list_devices(legacy_subject, base_dir=base, include_revoked=False):
+                if d.device_id not in seen_ids:
+                    devices.append(d)
+                    seen_ids.add(d.device_id)
     except Exception:
         logger.debug("capauth revoke unavailable for %s (best-effort)", device_fp, exc_info=True)
         return False, 0

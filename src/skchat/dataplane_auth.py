@@ -496,11 +496,28 @@ def _capability_for_path(path: str) -> Optional[str]:
 def operator_subject(device_fp: str) -> str:
     """The PDP subject id for an enrolled operator device.
 
-    Single source of truth for the ``operator:<device_fp>`` subject string so the
+    Single source of truth for the ``device:<device_fp>`` subject string so the
     capability grant issued at enrollment (see :mod:`skchat.operator_grants`) and
     the subject :func:`_extract_subject` hands the PDP can never drift apart.
+
+    Emits ``device:<fp>`` per ``IDENTITY_NAMING_STANDARD.md`` sec 1 (the ONE
+    permitted prefixed subject class), matching what
+    ``capauth.subject.canonical_subject`` already normalizes a legacy
+    ``operator:<fp>`` record onto (coord card N2, capauth `84f3ed8`). This
+    function's name is kept for back-compat with every existing import site;
+    it mints the device-seat subject regardless of what it is called.
+
+    Deployment note (coord card N6): the live capauth pairing store still
+    holds roughly 140 device records under the retired ``operator:<fp>``
+    shape. A separate card does a one-shot store rewrite (with a dual-read
+    period) to move those records onto ``device:<fp>``. This function must
+    not go live ahead of that rewrite landing, or every request from an
+    already-enrolled device stops matching its own pairing/token records
+    (``capauth.authz.decide`` and ``capauth.pairing.list_devices`` are both
+    exact-string matchers with no aliasing, by design -- see
+    IDENTITY_NAMING_STANDARD.md sec 2.4).
     """
-    return f"operator:{device_fp}"
+    return f"device:{device_fp}"
 
 
 def _extract_subject(token: str) -> Optional[str]:
@@ -518,7 +535,7 @@ def _extract_subject(token: str) -> Optional[str]:
     except Exception:
         logger.debug("operator-session subject resolution failed", exc_info=True)
     # Audience-token branch (CR-3.4 P1): a valid skchat-audience capauth token
-    # resolves to its payload subject -- ``operator:<device_fp>`` for the seat
+    # resolves to its payload subject -- ``device:<device_fp>`` for the seat
     # (section 4), or the fqid for a daemon-self token, both of which the PDP grant
     # bundle already covers. Tried after the operator-session branch and before the
     # FQID-assertion branch, and gated on ``accept_audience_tokens()`` like the
