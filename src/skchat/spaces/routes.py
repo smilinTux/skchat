@@ -11,9 +11,15 @@ import logging
 import os
 import time
 from pathlib import Path
+from urllib.parse import quote
 
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+)
 
 from skchat.spaces.lanes import KNOWN_LANES, LaneDispatcher, LaneStore
 from skchat.spaces.registry import SpaceRegistry
@@ -564,7 +570,34 @@ def register_spaces_routes(
         return HTMLResponse("spaces.html missing", status_code=500)
 
     @app.get("/space/{space_id}", response_class=HTMLResponse)
-    async def space_page(space_id: str) -> HTMLResponse:  # noqa: ARG001
+    async def space_page(space_id: str, legacy: int = 0) -> Response:
+        """Send a shared Space link to the app that actually renders a Space.
+
+        This path used to serve `space.html` directly, and the app's own share
+        sheet built its invite URLs against it. That page is a DIFFERENT,
+        older client: it has no Watch Together in it at all, so a guest handed
+        an invite joined the right room and then sat looking at an app with no
+        video in it. Redirecting heals every link already sent, which is the
+        half the app-side fix cannot reach.
+
+        `#` is load-bearing. The Flutter app is mounted at `/app/`
+        (`<base href="/app/">`) and calls no `usePathUrlStrategy`, so it runs
+        on Flutter web's default HASH strategy: `/app/spaces/{id}` would serve
+        index.html through the SPA catch-all and then boot the router with an
+        empty route, landing the guest on the home screen. A fragment in a
+        Location header is applied by the browser, not sent upstream, which is
+        exactly what is wanted here.
+
+        `?legacy=1` still serves the old page. It is the only client that
+        works if the Flutter build is missing or broken, and turning a working
+        fallback into a 404 to fix a link is a bad trade.
+        """
+        if not legacy:
+            return RedirectResponse(
+                url=f"/app/#/spaces/{quote(space_id, safe='')}",
+                status_code=302,
+                headers=_no_cache_headers,
+            )
         static = _space_html_path()
         if not static.exists():
             return HTMLResponse("space.html missing", status_code=500)
