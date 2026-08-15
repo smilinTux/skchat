@@ -14,6 +14,19 @@ agent ecosystem — the human-and-AI conversation surface that sits on top of
 and an **MCP server** so agents running inside Claude Code / Cursor / any
 MCP host can send, receive, react, call, and transfer files as native tools.
 
+> ⚠️ **Crypto component. Experimental, pre-1.0, NOT independently security-audited.**
+> **Crypto maturity: T1 (Agile) + T2 (Hybrid KEM, `HKDF(X25519 ‖ ML-KEM-768)`, FIPS 203)
+> on the surfaces skchat owns (device prekeys, 1:1 DM ratchet, new groups, at-rest DEK).
+> T3 (Hybrid sig) NOT claimed, signatures are classical Ed25519/RSA. T4 (Transport
+> closed) NOT claimed.** skchat **consumes** its primitives (`skcomms.pqkem`, capauth,
+> `cryptography`) rather than owning them; the original code is the composition, which is
+> where protocol bugs live. No third-party audit, fuzzing, or formal review has been
+> performed. A passing test suite proves interop and behaviour, not the absence of side
+> channels or protocol flaws. **Review it yourself before production use.** Per-surface
+> state and the documented exceptions (legacy classical groups, the reduced-assurance
+> browser leg): [SOP.md §9](SOP.md) · [SECURITY.md](SECURITY.md). Runtime self-report:
+> `skchat pqc report`.
+
 **The core idea:** a message is composed locally, persisted to a local SQLite
 history, PGP-signed/encrypted, and handed to SKComm for delivery over whichever
 transport is healthy. When a message `@mentions` an agent, the **AdvocacyEngine**

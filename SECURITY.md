@@ -8,6 +8,20 @@ document is the "how do I report a vulnerability, and what has this crypto actua
 through" front door, per
 [sk-standards `SECURITY_DISCLOSURE_STANDARD.md`](https://github.com/smilinTux/sk-standards/blob/main/standards/SECURITY_DISCLOSURE_STANDARD.md).
 
+> ⚠️ **Experimental · pre-1.0 · NOT independently security-audited.** No third-party
+> security audit, fuzzing, or formal review has been performed. skchat **binds vetted
+> primitives** (`skcomms.pqkem` for X25519 + ML-KEM-768, capauth / PGPy for signing,
+> `cryptography` for AES-GCM and HKDF) and does **not** hand-roll KEM or signature math.
+> The original code is the **composition**: prekey publish/fetch, the 1:1 DM epoch
+> ratchet, group key distribution and rotation, the at-rest DEK wrap, and the glossa
+> gatekeeper's source-authentication. That is exactly where protocol bugs live. A passing
+> test suite proves interop and behavior, **not** the absence of side-channels or
+> protocol flaws. **Review it yourself before production use.**
+>
+> **Maturity tier: T1 (Agile) + T2 (Hybrid KEM) on skchat-owned surfaces; T3 (Hybrid sig)
+> and T4 (Transport closed) NOT claimed.** Full per-surface breakdown, including the
+> legacy-classical-group and browser-leg exceptions: [SOP.md §9](SOP.md).
+
 ## Reporting a vulnerability
 
 - **Primary:** GitHub **private vulnerability reporting** — `Security ▸ Report a
@@ -21,7 +35,22 @@ through" front door, per
   date (default ≤ 90 days) under ISO/IEC 29147 / 30111 coordinated disclosure.
 - **Safe harbour:** good-faith research under coordinated disclosure will not be pursued.
 
-Supported version: the latest tagged release on `main`. Fixes land there first.
+### Supported versions
+
+| Version | Supported | Notes |
+|---|---|---|
+| latest tagged release on `main` | ✅ | fixes land here first |
+| any older `0.x` tag | ❌ | upgrade; pre-1.0, only the newest line is patched |
+| `main` between tags | ⚠️ best effort | unreleased, may carry unshipped changes |
+
+Versions are setuptools-scm derived from the newest release git tag, so "latest tagged
+release" is the only meaningful support boundary. See [SOP.md §9](SOP.md).
+
+### Deployment note (not a vulnerability report)
+
+The webui `:8765` / `:8766` and the app-web `:8088` listeners are bound `0.0.0.0` on
+`.158` and reachable from the LAN and tailnet. This is **known and documented** in
+[SOP.md §5](SOP.md) with its measured scope and remediation. It is not a new finding.
 
 ## Threat model
 
