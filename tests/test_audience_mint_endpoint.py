@@ -116,13 +116,14 @@ def _install_hermetic_mint(monkeypatch, tmp_path, subject: str = _StubIdentity.f
     monkeypatch.setattr("capauth.tokens.verify_token", lambda t, h=None: True)
     monkeypatch.setattr("capauth.resolve_agent_identity", lambda agent=None: _StubIdentity())
 
-    seen = {"n": 0, "agent": "unset", "audience": None, "scopes": "unset"}
+    seen = {"n": 0, "agent": "unset", "audience": None, "scopes": "unset", "store": "unset"}
 
     def _mint(agent=None, audience="skchat", scopes=None, **kwargs):
         seen["n"] += 1
         seen["agent"] = agent
         seen["audience"] = audience
         seen["scopes"] = scopes
+        seen["store"] = kwargs.get("store", "unset")
         granted = scopes if scopes is not None else AUDIENCE_SCOPES.get(audience, ["chat.send"])
         # subject is fixed server-side (this daemon), never taken from request.
         return mint_audience_token(home, subject, audience, list(granted), sign=False)
@@ -204,6 +205,21 @@ class TestMintHappyPath:
         assert verify_audience_token(tok, "skchat") is True
         # Subject is the daemon's resolved identity, not anything from the request.
         assert tok.payload.subject == _StubIdentity.fqid
+
+    def test_mint_does_not_persist_a_file(self, client, monkeypatch, tmp_path):
+        # Audience tokens are self-contained; this per-request endpoint must mint
+        # with store=False so it never floods the token store (card e793b6bc).
+        seen = _install_hermetic_mint(monkeypatch, tmp_path)
+        monkeypatch.setenv(dataplane_auth.AUDIENCE_MINT_ENV_FLAG, "1")
+        dataplane_auth.set_validator(_FakeValidator(True))
+
+        resp = client.post(
+            "/api/v1/audience-token",
+            headers={"Authorization": "Bearer valid-cred"},
+            json={},
+        )
+        assert resp.status_code == 200, resp.text
+        assert seen["store"] is False
 
     def test_explicit_scopes_passed_through(self, client, monkeypatch, tmp_path):
         seen = _install_hermetic_mint(monkeypatch, tmp_path)
