@@ -42,7 +42,14 @@ standards.
   documentation defect regardless.
 - **Stopped referring to a `version` field to bump**; `pyproject.toml` is
   `dynamic = ["version"]` with setuptools-scm deriving from the newest release tag.
-- Added a `docs-evidence` block (10 hermetic checks, all negative-tested) and the
+- **Narrowed a stale release warning to what is actually dangerous.** SOP §5 said "do NOT
+  `git push` skchat, pushing auto-publishes to PyPI". Re-verified 2026-08-15: the local
+  `pre-push` hook that cut a tag on any branch push was removed on 2026-08-13 and its
+  `.git/hooks/pre-push` symlink is now dangling, and `publish.yml` triggers **only** on
+  `push: tags: ["v*"]` plus `workflow_dispatch`, with no branch trigger and no other
+  workflow cutting a tag. The real rule is **never push a `v*` tag**. A blanket warning
+  that must be violated to do ordinary work is a warning that stops being read.
+- Added a `docs-evidence` block (11 hermetic checks, all negative-tested) and the
   `docs-check` CI gate at tiers 1,2.
 
 ### Security (crypto-relevant)

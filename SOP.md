@@ -87,8 +87,26 @@ run without them.
 
 ## 5. Release / Deploy
 
-> ⚠️ **Do NOT `git push` skchat — pushing auto-publishes to PyPI.** Commit **locally only**;
-> a maintainer cuts releases deliberately.
+> ⚠️ **NEVER push a `v*` tag. That, and only that, publishes to PyPI.**
+> Re-verified 2026-08-15. `publish.yml` triggers on `push: tags: ["v*"]` and
+> `workflow_dispatch`, nothing else: it has **no** branch trigger, and it is the only
+> workflow in this repo that cuts or pushes a tag. So `git push --tags` or
+> `git push --follow-tags` is the dangerous command. Use a plain `git push <remote>
+> <branch>`.
+>
+> **What changed, and why the old warning was broader than the truth.** This section used
+> to say "do NOT `git push` skchat, pushing auto-publishes to PyPI". That was true when a
+> local `pre-push` hook cut a release tag on **any** branch push, which is how 5 of 6
+> consecutive tags got cut off unmerged branches and one shipped to PyPI from an
+> in-review branch. **That hook was removed on 2026-08-13** (`publish.yml` header, card
+> `0c3668a6`); the `.git/hooks/pre-push` symlink left behind is dangling and a no-op, its
+> target `scripts/hooks/pre-push` no longer exists. A branch push is now safe and does
+> not publish. Keeping the old blanket warning would mean the rule has to be violated to
+> do ordinary work, which is how a warning stops being read.
+>
+> A maintainer still cuts releases deliberately. If you are unsure, record
+> `git ls-remote --tags origin | grep -vc '\^{}'` before and after your push and confirm
+> the count is unchanged.
 
 Library/service: add a dated `CHANGELOG.md` entry, run the gate, commit locally. **There
 is no `version` field to bump**, `pyproject.toml` is `dynamic = ["version"]` and
@@ -319,4 +337,6 @@ checks:
     run: grep -qF 'not live and not integration and not e2e_live and not e2e_3way' .github/workflows/ci.yml && ! grep -qE '\|\|[[:space:]]*true' .github/workflows/ci.yml
   - name: version is setuptools-scm derived, with no SemVer literal to go stale
     run: grep -qxF 'dynamic = ["version"]' pyproject.toml && grep -qxF '[tool.setuptools_scm]' pyproject.toml && ! grep -qE '^version[[:space:]]*=' pyproject.toml
+  - name: PyPI publish is still tags-only, so section 5's push rule stays true
+    run: grep -qxF '    tags: ["v*"]' .github/workflows/publish.yml && ! grep -qE '^ +branches:' .github/workflows/publish.yml
 -->
