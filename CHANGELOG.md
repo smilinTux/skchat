@@ -69,6 +69,21 @@ standards.
   `docs-check` CI gate at tiers 1,2.
 
 ### Security (crypto-relevant)
+- **Voice-call privilege is resolved from the signature-verified invite FQID, not
+  from the LiveKit display identity.** New `skchat/voice_engine/caller_profile.py`
+  resolves a `CallerProfile` (`operator | companion | guest`) by EXACT match of the
+  invite's `from_fqid` (surfaced only by the signature-gated `/call/incoming`)
+  against a directory derived from the agent's own sovereign FQID. This retires
+  `is_chef_identity()` and `LUMINA_OPERATOR_PREFIXES`, a `startswith("chef")` match
+  over caller-supplied display data that was wrong in both directions: it failed
+  CLOSED for the operator on 2026-08-13 (his browser joins as
+  `lumina@chef.skworld.io`, so the roundtable cap silenced her to him and every
+  operator tool was refused mid-call), and it failed OPEN for anyone choosing a
+  display name beginning with `chef`. Operator authority now also requires the 1:1
+  register and a non-agent speaker, and anything unknown, malformed or absent
+  resolves to the least privilege rather than defaulting to operator. Identity only:
+  the per-profile tool policy, confirmations, the action ledger and the speakable
+  gate are separate changes.
 - **`/call/start`, `/call/answer`, and `/call/incoming` are now gated by
   `_gate_token_mint`, matching `/livekit/token`.** Both `/call/start` and
   `/call/answer` mint the same full-publish LiveKit JWT as `/livekit/token`

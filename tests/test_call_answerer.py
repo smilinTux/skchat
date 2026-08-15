@@ -115,3 +115,61 @@ def test_invite_without_nonce_is_ignored():
         ]
     )
     assert poll_and_answer(api, set()) is None
+
+
+def test_conversational_peer_hands_the_verified_fqid_through_untouched():
+    """The invite FQID is the only trustworthy fact about who is calling.
+
+    This used to rewrite a self-addressed call (from == to) to the literal
+    string "chef", because the mode ceiling was keyed on a name prefix. A bare
+    name is not an identity anything can verify, and substituting one threw
+    away the FQID the signature actually covers. Resolution now happens in
+    caller_profile, which knows that an invite from the agent to itself came
+    from the operator: the /call routes are operator-gated.
+    """
+    from skchat.call_answerer import _conversational_peer
+
+    self_addressed = {"peer_fqid": "lumina@chef.skworld.io", "room": "call-abc"}
+    assert _conversational_peer(self_addressed) == "lumina@chef.skworld.io"
+
+    from_only = {"from_fqid": "nan@chef.skworld.io"}
+    assert _conversational_peer(from_only) == "nan@chef.skworld.io"
+
+    assert _conversational_peer({"room": "call-abc"}) is None
+
+
+def test_answered_invite_carries_the_verified_caller_into_the_session(monkeypatch):
+    """End of the trust chain: signed invite -> joinable -> caller profile.
+
+    /call/incoming has already cross-checked the invite against the signed
+    envelope sender, so from_fqid is the input the session privilege decision
+    is allowed to use, and it must survive the answer step intact.
+    """
+    from skchat.call_answerer import _conversational_peer
+    from skchat.voice_engine.caller_profile import (
+        CallerProfile,
+        reset_default_directory,
+        resolve_caller_profile,
+    )
+
+    monkeypatch.setenv("SKCHAT_AGENT_FQID", "lumina@chef.skworld.io")
+    monkeypatch.setenv("SKCHAT_COMPANION_FQIDS", "nan@chef.skworld.io")
+    reset_default_directory()
+    try:
+        api = _FakeApi(
+            [
+                {
+                    "from_fqid": "lumina@chef.skworld.io",
+                    "room": "call-abc",
+                    "livekit_url": "wss://sfu",
+                    "nonce": "n1",
+                    "ts": 10,
+                }
+            ]
+        )
+        joinable = poll_and_answer(api, set())
+        assert joinable["peer_fqid"] == "lumina@chef.skworld.io"
+        peer = _conversational_peer(joinable)
+        assert resolve_caller_profile(peer) is CallerProfile.OPERATOR
+    finally:
+        reset_default_directory()

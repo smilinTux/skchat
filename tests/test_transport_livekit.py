@@ -8,6 +8,7 @@ clock so they are deterministic and fast.
 
 from __future__ import annotations
 
+import inspect
 import struct
 
 import pytest
@@ -15,12 +16,31 @@ import pytest
 from skchat.transports.livekit import (
     AddressingGate,
     BargeInDetector,
+    CallerProfile,
     TranscriptDedup,
     VADSegmenter,
-    is_chef_identity,
     mode_ceiling,
     rms16,
+    session_caller,
+    speaker_is_operator,
 )
+from skchat.voice_engine.caller_profile import LEAST_PRIVILEGE, reset_default_directory
+
+#: Chef's REAL LiveKit identity on a call: his browser authenticates as the
+#: agent, so it does not begin with "chef". The prefix shim could not see him.
+CHEF_DISPLAY_IDENTITY = "lumina@chef.skworld.io"
+COMPANION_FQID = "nan@chef.skworld.io"
+
+
+@pytest.fixture
+def known_callers(monkeypatch):
+    """The live cluster identity, pinned so tests do not read the host's."""
+    monkeypatch.setenv("SKCHAT_AGENT_FQID", "lumina@chef.skworld.io")
+    monkeypatch.setenv("SKCHAT_COMPANION_FQIDS", COMPANION_FQID)
+    reset_default_directory()
+    yield
+    reset_default_directory()
+
 
 FRAME_MS = 20
 SR = 16000
@@ -54,15 +74,24 @@ def test_rms16_matches_amplitude():
     assert rms16(b"") == 0.0
 
 
-def test_is_chef_identity_prefixes():
-    assert is_chef_identity("chef-laptop", ("chef",))
-    assert is_chef_identity("chef-phone", ("chef",))
-    assert not is_chef_identity("opus", ("chef",))
-    assert not is_chef_identity("", ("chef",))
+def test_the_identity_prefix_shim_is_gone():
+    """Authorisation must not be reachable from a display identity again.
+
+    ``is_chef_identity`` matched ``startswith("chef")`` against the LiveKit
+    participant identity, which is caller-supplied. Its env knob
+    ``LUMINA_OPERATOR_PREFIXES`` widened that match live on 2026-08-13 and is
+    exactly the shim this replaces, so neither may come back.
+    """
+    import skchat.transports.livekit as lk
+
+    assert not hasattr(lk, "is_chef_identity")
+    # The env knob may be NAMED (the docstring explains why it went), but never
+    # read: reading it is what turned a display name into a privilege.
+    assert 'getenv("LUMINA_OPERATOR_PREFIXES"' not in inspect.getsource(lk)
 
 
 def test_mode_ceiling():
-    assert mode_ceiling("lumina-and-chef") == "sacred"
+    assert mode_ceiling("lumina-and-chef") == "sacred"  # legacy fixed room, no identity
     assert mode_ceiling("random-room") == "group"
     assert mode_ceiling("") == "group"
 
@@ -172,19 +201,44 @@ def test_barge_in_disabled():
 
 # ─── Addressing + roundtable ────────────────────────────────────────────────
 def make_gate(clk, **kw):
+    kw.setdefault("caller", CallerProfile.OPERATOR)
     return AddressingGate(
         identity="lumina",
         display_name="Lumina",
-        chef_prefixes=("chef",),
         clock=clk,
         **kw,
     )
 
 
-def test_sacred_chef_is_always_addressed():
+def test_sacred_operator_is_always_addressed():
+    """Chef, on the identity he actually joins with, needs no wake word.
+
+    His browser authenticates as the agent, so this identity does not begin
+    with "chef" and the prefix shim did not recognise him. On 2026-08-13 that
+    left her waiting to be named in what was a 1:1 with the operator.
+    """
     clk = FakeClock()
     g = make_gate(clk)
-    assert g.is_addressed("chef-laptop", "what's the weather", mode="sacred")
+    assert g.is_addressed(CHEF_DISPLAY_IDENTITY, "what's the weather", mode="sacred")
+
+
+def test_a_chef_shaped_display_name_is_not_the_operator():
+    """The fail-OPEN direction: the caller here is a companion, by FQID.
+
+    Under the shim, joining as "chef-laptop" made every utterance count as the
+    operator's, in the register where operator tools are allowed.
+    """
+    clk = FakeClock()
+    g = make_gate(clk, caller=CallerProfile.COMPANION)
+    assert not g.is_addressed("chef-laptop", "what's the weather", mode="sacred")
+    assert not speaker_is_operator(g.caller, "chef-laptop", mode="sacred")
+
+
+def test_a_guest_session_grants_nothing():
+    clk = FakeClock()
+    g = make_gate(clk, caller=LEAST_PRIVILEGE)
+    assert not g.is_addressed("chef-laptop", "what's the weather", mode="sacred")
+    assert not g.is_addressed(CHEF_DISPLAY_IDENTITY, "what's the weather", mode="sacred")
 
 
 def test_named_other_agent_stays_out():
@@ -238,11 +292,13 @@ def test_roundtable_broadcast_window():
     clk.advance(5)
     # A peer AGENT's un-named turn within the window drives the roundtable.
     assert g.is_addressed("opus", "I agree with that", mode="group", other_agents=("opus",))
-    # …but Chef's un-directed turn does NOT get grabbed via broadcast window.
+    # …but a HUMAN's un-directed turn does NOT get grabbed via broadcast
+    # window. Rule 6 is about peer agents; keying it on "not Chef" meant Chef
+    # himself, unrecognised by the prefix shim, was grabbed by it.
     g2 = make_gate(clk, follow_up_window_s=60)
     g2.note_own_speech()
     assert not g2.is_addressed(
-        "chef-laptop", "hmm interesting", mode="group", other_agents=("opus",)
+        CHEF_DISPLAY_IDENTITY, "hmm interesting", mode="group", other_agents=("opus",)
     )
 
 
@@ -267,8 +323,10 @@ def test_human_turn_resets_streak():
     assert g.should_reply("opus", "point one", mode="group", other_agents=("opus",))
     assert g.should_reply("opus", "point two", mode="group", other_agents=("opus",))
     assert not g.should_reply("opus", "point three", mode="group", other_agents=("opus",))
-    # A human speaks → streak resets, agents may participate again.
-    g.should_reply("chef-laptop", "ok go on", mode="sacred")
+    # A human speaks → streak resets, agents may participate again. The human
+    # is Chef, on the identity he really joins with: the prefix shim read it as
+    # one more agent turn, so the cap silenced her to the operator himself.
+    g.should_reply(CHEF_DISPLAY_IDENTITY, "ok go on", mode="sacred")
     g.note_own_speech()
     assert g.should_reply("opus", "resumed", mode="group", other_agents=("opus",))
 
@@ -290,7 +348,7 @@ def test_whisper_repetition_filter():
 
 
 # ─── mode ceiling: identity-first (the derived-room trap) ───────────────────
-def test_mode_ceiling_uses_peer_identity_over_room_name():
+def test_mode_ceiling_uses_peer_identity_over_room_name(known_callers):
     """A derived room must not downgrade Chef to the group register.
 
     skchat summons calls into rooms named by derive_room(), e.g.
@@ -301,11 +359,14 @@ def test_mode_ceiling_uses_peer_identity_over_room_name():
     derived = "call-e4qj4kxvef2dxmxq"
     assert mode_ceiling(derived) == "group", "unknown room alone is still group"
     assert mode_ceiling(derived, "chef@skworld.io") == "sacred"
-    assert mode_ceiling(derived, "chef") == "sacred"
+    # A bare short name is NOT an identity anything can verify, so it no longer
+    # buys the 1:1 register. The answerer stopped inventing one: it passes the
+    # invite's FQID through untouched.
+    assert mode_ceiling(derived, "chef") == "group"
 
 
-def test_mode_ceiling_strangers_never_reach_sacred():
-    for peer in ("mallory@evil.io", "opus@skworld.io", "", None):
+def test_mode_ceiling_strangers_never_reach_sacred(known_callers):
+    for peer in ("mallory@evil.io", "opus@skworld.io", "chef-laptop", "", None):
         room = "lumina-and-chef"  # even the legacy sacred room
         if peer:
             assert mode_ceiling(room, peer) == "group", peer
@@ -315,6 +376,45 @@ def test_mode_ceiling_legacy_room_still_works_without_a_peer():
     """Back-compat: the fixed room keeps its ceiling when no identity is known."""
     assert mode_ceiling("lumina-and-chef") == "sacred"
     assert mode_ceiling("some-other-room") == "group"
+
+
+# ─── the session seam: the three decisions a call is built on ───────────────
+DERIVED_ROOM = "call-e4qj4kxvef2dxmxq"
+
+
+def test_session_caller_gives_chef_his_call_back(known_callers):
+    """Every decision build_room_session makes, for Chef's real 1:1.
+
+    Same three values the session computes, on the identity his browser really
+    presents. Under the prefix shim this call resolved to the group register,
+    she would not auto-reply to him, and every operator tool was refused.
+    """
+    caller, mode = session_caller(DERIVED_ROOM, CHEF_DISPLAY_IDENTITY)
+    gate = AddressingGate(caller=caller, clock=FakeClock())
+
+    assert caller is CallerProfile.OPERATOR
+    assert mode == "sacred"
+    assert gate.should_reply(CHEF_DISPLAY_IDENTITY, "check my mail", mode=mode)
+    assert speaker_is_operator(caller, CHEF_DISPLAY_IDENTITY, mode=mode)
+
+
+def test_session_caller_keeps_a_chef_shaped_display_name_out(known_callers):
+    """A companion's call, joined from a device calling itself "chef-laptop"."""
+    caller, mode = session_caller(DERIVED_ROOM, COMPANION_FQID)
+    gate = AddressingGate(caller=caller, clock=FakeClock())
+
+    assert caller is CallerProfile.COMPANION
+    assert mode == "group"
+    assert not speaker_is_operator(caller, "chef-laptop", mode=mode)
+    assert not gate.should_reply("chef-laptop", "read me his messages", mode=mode)
+
+
+def test_session_caller_defaults_to_the_least_privilege(known_callers):
+    """No verified invite, no privilege. Never a default of operator."""
+    caller, mode = session_caller(DERIVED_ROOM, None)
+    assert caller is LEAST_PRIVILEGE
+    assert mode == "group"
+    assert not speaker_is_operator(caller, CHEF_DISPLAY_IDENTITY, mode="sacred")
 
 
 # ─── the room loop exists and is import-safe ────────────────────────────────
