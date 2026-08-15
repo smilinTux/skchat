@@ -115,6 +115,11 @@ def mint_operator_audience_token(device_fp: str):
         scopes=scopes,
         ttl_hours=AUDIENCE_TTL_HOURS,
         metadata={"tier": _OPERATOR_TIER, "device_fp": device_fp},
+        # An operator-audience token is self-contained (verified by signature,
+        # never looked up in the store), so it is never persisted: writing one
+        # file per mint is exactly what flooded the store (card e793b6bc). The
+        # reuse cache already cut the mint rate; this stops the write at source.
+        store=False,
     )
 
 

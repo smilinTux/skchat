@@ -13,6 +13,12 @@ standards.
 ## [Unreleased]
 
 ### Fixed
+- **Operator-audience tokens are no longer persisted (`store=False`).**
+  `mint_operator_audience_token` now mints with capauth's `store=False`, so the
+  self-contained (signature-verified, never store-looked-up) audience token writes
+  no file. This removes the flood substrate at the source; the reuse cache and GC
+  become belt-and-suspenders for this token. Follow-up to the cache/GC fix below.
+  Card `e793b6bc`.
 - **Runaway operator-audience mint (store flood).** `issue_operator_audience` ran on
   every session handshake and minted a fresh capauth audience token each time; each
   mint stores a file, so `capauth/security/tokens` flooded to 38k files / 153MB of
