@@ -12,6 +12,16 @@ standards.
 
 ## [Unreleased]
 
+### Fixed
+- **Runaway operator-audience mint (store flood).** `issue_operator_audience` ran on
+  every session handshake and minted a fresh capauth audience token each time; each
+  mint stores a file, so `capauth/security/tokens` flooded to 38k files / 153MB of
+  expired 12h-TTL tokens (none read). Added a per-fingerprint reuse cache (reuse
+  until 5 min before the 12h expiry, mirroring the shadow twin cache) so minting
+  drops from per-request to about twice a day per device, plus an opportunistic,
+  rate-limited GC nudge (`capauth.tokens.prune_expired_tokens`) after a real mint.
+  The token and wire form are unchanged; no crypto behavior changes.
+
 ### Security (crypto-relevant)
 - **`/call/start`, `/call/answer`, and `/call/incoming` are now gated by
   `_gate_token_mint`, matching `/livekit/token`.** Both `/call/start` and
