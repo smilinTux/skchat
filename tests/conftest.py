@@ -36,6 +36,32 @@ from skchat.models import ChatMessage, ContentType, Thread
 PASSPHRASE = "test-passphrase-123"
 
 
+@pytest.fixture(autouse=True)
+def _reset_operator_audience_cache():
+    """Isolate the operator-audience reuse cache between tests.
+
+    ``skchat.operator_audience._operator_audience_cache`` is a module global (the
+    per-fingerprint token reuse cache). Without a reset, a token cached by one
+    test leaks into another's assertions in a full-suite / xdist run: a test that
+    opens a session with ``SKCHAT_OPERATOR_AUDIENCE_ISSUE`` on caches a token, and
+    a later test served that stale token mints nothing and sees the wrong subject.
+    Cleared before and after every test.
+    """
+    try:
+        from skchat.operator_audience import _operator_audience_cache
+
+        _operator_audience_cache.clear()
+    except Exception:
+        pass
+    yield
+    try:
+        from skchat.operator_audience import _operator_audience_cache
+
+        _operator_audience_cache.clear()
+    except Exception:
+        pass
+
+
 def _generate_test_keypair(name: str, email: str) -> tuple[str, str]:
     """Generate a PGP keypair for testing.
 
