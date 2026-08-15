@@ -21,11 +21,30 @@ from __future__ import annotations
 import base64
 import logging
 import os
+import threading
+import time
 from typing import Optional
 
 from .dataplane_auth import SKCHAT_AUDIENCE, operator_subject
 
 logger = logging.getLogger("skchat.operator_audience")
+
+#: Per-fingerprint reuse cache for the issued audience token:
+#: ``device_fp -> (wire, expires_at_iso, expires_at_epoch)``. Without it,
+#: :func:`issue_operator_audience` minted a fresh token on EVERY session handshake
+#: and each mint stores a file, which flooded the token store (38k files). The
+#: token is reused until shortly before expiry, mirroring the shadow twin cache.
+_operator_audience_cache: dict[str, tuple[str, str, float]] = {}
+_operator_audience_lock = threading.Lock()
+
+#: Re-mint this many seconds before expiry (same rhythm as the shadow twin's
+#: ``_SHADOW_REFRESH_SKEW``), so a token is never handed out about to expire.
+_AUDIENCE_REFRESH_SKEW = 300
+
+#: Opportunistic store GC: prune expired token files after a real mint, at most
+#: once per this interval so a hot handshake path never re-scans the store.
+_GC_MIN_INTERVAL = 3600.0
+_last_gc = [0.0]
 
 _TRUTHY = {"1", "true", "yes", "on"}
 
@@ -113,24 +132,57 @@ def wire_form(token) -> str:
     )
 
 
+def _gc_token_store() -> None:
+    """Prune expired token files from the store, at most once per interval.
+
+    The audience mint path writes one file per token via capauth ``_store_token``;
+    the flood was those files never being reaped. Rate-limited so the hot handshake
+    path never re-scans the store, and fully best-effort: any error is swallowed
+    (GC is hygiene, never on the critical path).
+    """
+    now = time.time()
+    if now - _last_gc[0] < _GC_MIN_INTERVAL:
+        return
+    _last_gc[0] = now
+    try:
+        from capauth import resolve_capauth_home
+        from capauth.tokens import prune_expired_tokens
+
+        removed = prune_expired_tokens(resolve_capauth_home())
+        if removed:
+            logger.info("pruned %d expired token files from the store", removed)
+    except Exception:
+        logger.debug("token-store GC skipped (non-fatal)", exc_info=True)
+
+
 def issue_operator_audience(device_fp: str) -> Optional[dict]:
-    """Best-effort parallel mint for the session handshake.
+    """Best-effort parallel mint for the session handshake, with per-fp reuse.
 
     Returns ``{"audience_token": <wire>, "audience_expires_at": <iso>}`` when the
-    flag is on and the mint succeeds, else ``None``. NON-FATAL: the flag being off, or
-    ANY mint/keyring/signing error, returns ``None`` (logged) so the caller still
-    returns the HS256 session and the seat can never be locked out by the audience
-    path during the parallel phases.
+    flag is on and a token is available, else ``None``. A still-valid cached token
+    for this fingerprint is REUSED (no new mint, no new stored file) until it is
+    within :data:`_AUDIENCE_REFRESH_SKEW` of expiry; only then is a fresh one
+    minted. NON-FATAL: the flag being off, or ANY mint/keyring/signing error,
+    returns ``None`` (logged) so the caller still returns the HS256 session and the
+    seat can never be locked out by the audience path during the parallel phases.
     """
     if not operator_audience_issue_enabled():
         return None
+
+    now = time.time()
+    with _operator_audience_lock:
+        cached = _operator_audience_cache.get(device_fp)
+        if cached is not None and cached[2] - _AUDIENCE_REFRESH_SKEW > now:
+            return {"audience_token": cached[0], "audience_expires_at": cached[1]}
+
     try:
         token = mint_operator_audience_token(device_fp)
+        wire = wire_form(token)
         exp = token.payload.expires_at
-        return {
-            "audience_token": wire_form(token),
-            "audience_expires_at": exp.isoformat() if hasattr(exp, "isoformat") else exp,
-        }
+        exp_iso = exp.isoformat() if hasattr(exp, "isoformat") else exp
+        exp_epoch = (
+            exp.timestamp() if hasattr(exp, "timestamp") else now + AUDIENCE_TTL_HOURS * 3600
+        )
     except Exception:
         logger.warning(
             "operator-audience mint failed for %s (non-fatal, HS256 session unaffected)",
@@ -138,6 +190,11 @@ def issue_operator_audience(device_fp: str) -> Optional[dict]:
             exc_info=True,
         )
         return None
+
+    with _operator_audience_lock:
+        _operator_audience_cache[device_fp] = (wire, exp_iso, exp_epoch)
+    _gc_token_store()
+    return {"audience_token": wire, "audience_expires_at": exp_iso}
 
 
 __all__ = [

@@ -12,6 +12,16 @@ standards.
 
 ## [Unreleased]
 
+### Fixed
+- **Runaway operator-audience mint (store flood).** `issue_operator_audience` ran on
+  every session handshake and minted a fresh capauth audience token each time; each
+  mint stores a file, so `capauth/security/tokens` flooded to 38k files / 153MB of
+  expired 12h-TTL tokens (none read). Added a per-fingerprint reuse cache (reuse
+  until 5 min before the 12h expiry, mirroring the shadow twin cache) so minting
+  drops from per-request to about twice a day per device, plus an opportunistic,
+  rate-limited GC nudge (`capauth.tokens.prune_expired_tokens`) after a real mint.
+  The token and wire form are unchanged; no crypto behavior changes.
+
 ### Docs
 - **Declared a maturity tier for the first time.** skchat is a crypto component and had
   **no** `T0`-`T4` declaration in README or SOP, while `SECURITY.md` pointed at "`SOP.md`
