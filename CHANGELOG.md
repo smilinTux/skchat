@@ -13,6 +13,11 @@ standards.
 ## [Unreleased]
 
 ### Fixed
+- **The `/api/v1/audience-token` mint endpoint no longer persists a file.**
+  `mint_agent_audience_token` is now called with `store=False`: this endpoint
+  mints a self-contained audience token per request, so writing a file per mint
+  was the same flood substrate the operator-audience path had (card `e793b6bc`).
+  The caller still gets the wire form.
 - **Operator-audience tokens are no longer persisted (`store=False`).**
   `mint_operator_audience_token` now mints with capauth's `store=False`, so the
   self-contained (signature-verified, never store-looked-up) audience token writes

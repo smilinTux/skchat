@@ -1152,7 +1152,13 @@ async def audience_token_mint(request: Request) -> JSONResponse:
         # identity internally; resolving here first surfaces identity errors and
         # documents that the subject is server-derived, not caller-supplied.
         identity = resolve_agent_identity()
-        token = mint_agent_audience_token(agent=None, audience=audience, scopes=scopes)
+        # store=False: an audience token is self-contained (verified by signature,
+        # never looked up in the store), and this endpoint mints one per request,
+        # so persisting a file per mint is the same flood the operator-audience
+        # path had (card e793b6bc). The caller receives the wire form below.
+        token = mint_agent_audience_token(
+            agent=None, audience=audience, scopes=scopes, store=False
+        )
         import base64
 
         wire = (
