@@ -62,7 +62,13 @@ class TTSClient:
         try:
             return await self._post(self.cfg.tts_url, payload)
         except Exception as e:
-            log.error("TTS failed: %s", e)
+            log.error(
+                "TTS failed: %s: %s (url=%s, voice=%s). She has a reply but no way to speak it.",
+                type(e).__name__,
+                e or "(no detail)",
+                self.cfg.tts_url,
+                voice,
+            )
             return b""
 
     async def stream(self, text: str, *, voice: str) -> AsyncIterator[bytes]:

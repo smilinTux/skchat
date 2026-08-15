@@ -22,6 +22,46 @@ standards.
   rate-limited GC nudge (`capauth.tokens.prune_expired_tokens`) after a real mint.
   The token and wire form are unchanged; no crypto behavior changes.
 
+### Docs
+- **Declared a maturity tier for the first time.** skchat is a crypto component and had
+  **no** `T0`-`T4` declaration in README or SOP, while `SECURITY.md` pointed at "`SOP.md`
+  §9" for one. Now declared and backed by code: **T1 (Agile) + T2 (Hybrid KEM,
+  `HKDF(X25519 ‖ ML-KEM-768)`, FIPS 203) on skchat-owned surfaces (device prekeys, 1:1 DM
+  ratchet, new groups, at-rest DEK); T3 (Hybrid sig) NOT claimed, signatures are classical
+  Ed25519/RSA; T4 (Transport closed) NOT claimed.** The tier is scoped precisely: skchat
+  **consumes** primitives from capauth and skcomms rather than owning them. Documented
+  exceptions kept explicit (legacy `rsa-pgp-wrap-v1` groups, the reduced-assurance browser
+  leg).
+- **Added the mandatory experimental/unaudited posture statement** to README and
+  SECURITY.md, per `SECURITY_DISCLOSURE_STANDARD` section 2. Neither file previously
+  contained the words audit, experimental, or unaudited. Also added a supported-versions
+  table.
+- **Corrected a false bind claim in SOP §5.** It declared the webui binds
+  `127.0.0.1:8765` and that skchat is "never an internet-exposed port". Verified
+  2026-08-15 with `ss -tlnp`: **`0.0.0.0:8765`**, plus a second instance on
+  **`0.0.0.0:8766`** (opus). The code default is correct (`webui.py`, `SKCHAT_HOST`
+  defaults to `127.0.0.1`); `~/.config/skchat/webui-*.env` sets `SKCHAT_HOST=0.0.0.0`.
+  Raw-port exposure is the **LAN `192.168.0.0/16` plus tailnet, not the internet**.
+  Separately, Funnel **does** proxy `/` to `localhost:8765`, so `:8765` is internet
+  reachable **through the Funnel path** and always was, by design.
+- **Corrected the opposite error on `:9385`.** Its bind is right (`127.0.0.1`), but the
+  claim that it is "not Funnel-exposed" was wrong: Funnel proxies `/daemon` to it.
+- **Declared the undocumented `skchat-app-web` surface** on `0.0.0.0:8088`. This one is
+  deliberate (`systemd/units/skchat-app-web.service` overrides the script's `127.0.0.1`
+  default because `:8088` is not Funnel-fronted), but an undeclared listener is a
+  documentation defect regardless.
+- **Stopped referring to a `version` field to bump**; `pyproject.toml` is
+  `dynamic = ["version"]` with setuptools-scm deriving from the newest release tag.
+- **Narrowed a stale release warning to what is actually dangerous.** SOP §5 said "do NOT
+  `git push` skchat, pushing auto-publishes to PyPI". Re-verified 2026-08-15: the local
+  `pre-push` hook that cut a tag on any branch push was removed on 2026-08-13 and its
+  `.git/hooks/pre-push` symlink is now dangling, and `publish.yml` triggers **only** on
+  `push: tags: ["v*"]` plus `workflow_dispatch`, with no branch trigger and no other
+  workflow cutting a tag. The real rule is **never push a `v*` tag**. A blanket warning
+  that must be violated to do ordinary work is a warning that stops being read.
+- Added a `docs-evidence` block (11 hermetic checks, all negative-tested) and the
+  `docs-check` CI gate at tiers 1,2.
+
 ### Security (crypto-relevant)
 - **`/call/start`, `/call/answer`, and `/call/incoming` are now gated by
   `_gate_token_mint`, matching `/livekit/token`.** Both `/call/start` and

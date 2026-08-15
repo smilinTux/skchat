@@ -18,6 +18,7 @@ network-position bypass.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import threading
@@ -138,6 +139,23 @@ class AnswererApi:
             "Content-Type": "application/json",
             "X-Operator-Token": self.operator_token,
         }
+
+    def mint_token(self, room: str, identity: str, name: str = "") -> dict:
+        """Mint a LiveKit JWT for an arbitrary room.
+
+        Needed for a presence rejoin, where there is no invite to carry a token.
+        /livekit/token is gated to loopback/tailnet OR the operator token, and
+        the answerer satisfies both.
+        """
+        body = json.dumps({"room": room, "identity": identity, "name": name or identity})
+        req = urlrequest.Request(
+            f"{self.base_url}/livekit/token",
+            data=body.encode("utf-8"),
+            headers=self._headers(),
+            method="POST",
+        )
+        with urlrequest.urlopen(req, timeout=self.timeout) as resp:
+            return json.loads(resp.read().decode("utf-8"))
 
     def poll_incoming(self) -> list:
         req = urlrequest.Request(
@@ -283,6 +301,41 @@ async def _run_call(joinable: dict) -> None:
         await _join_and_publish(joinable)
 
 
+#: Suffix the agent appends to its own LiveKit identity when it joins.
+AGENT_IDENTITY_SUFFIX = "#agent"
+
+#: How often to reconcile presence against the rooms she is wanted in.
+RECONCILE_INTERVAL_S = float(os.getenv("SKCHAT_ANSWERER_RECONCILE_S", "10"))
+
+#: Rooms she should be in whenever a human is waiting there. Seeded with her
+#: own derived 1:1 room and grown by every invite seen, so "pull her into a
+#: room" works for group/space rooms too without her ever joining a room nobody
+#: asked her to.
+_WATCHED_ROOMS: set = set()
+
+
+def should_join(identities: list, agent_suffix: str = AGENT_IDENTITY_SUFFIX) -> bool:
+    """Should the agent join a room currently holding *identities*?
+
+    Yes only when a human is waiting and no agent is already there.
+
+    This exists because answering was purely INVITE-driven, and an invite is a
+    momentary thing: it has a 120s TTL and is consumed on answer. On 2026-08-13
+    Chef's phone left (ending her session correctly), he rejoined later from
+    another device without placing a NEW call, and nothing on the server had any
+    reason to put her back. He sat alone in the room while she was healthy and
+    idle. Presence is the durable signal; an invite is only the first hint of
+    it.
+
+    Both halves matter. Requiring a human stops her joining and holding empty
+    rooms; requiring no agent stops a second session colliding with a live one,
+    which is how identity collisions and doubled audio pumps happened before.
+    """
+    humans = [i for i in identities if not str(i).endswith(agent_suffix)]
+    agents = [i for i in identities if str(i).endswith(agent_suffix)]
+    return bool(humans) and not agents
+
+
 #: Rooms with a call in flight, so a re-delivered invite does not double-join.
 _ACTIVE_ROOMS: set[str] = set()
 _ACTIVE_LOCK = threading.Lock()
@@ -342,6 +395,93 @@ def _spawn_call(joinable: dict) -> None:
     threading.Thread(target=_runner, name=f"call:{room[:16]}", daemon=True).start()
 
 
+def _livekit_admin():
+    """(url, key, secret) for the local SFU, or None.
+
+    Read from the SFU's own config on this node. Presence needs to ask "who is
+    in that room", which the call routes do not expose. Fail SOFT: without it
+    the answerer keeps working exactly as before, invite-driven.
+    """
+    import yaml  # noqa: PLC0415 - only needed when reconciling
+
+    try:
+        cfg = yaml.safe_load(open(os.path.expanduser("~/.config/livekit/livekit.yaml")))
+        keys = cfg.get("keys") or {}
+        agent = os.getenv("SKAGENT", "lumina")
+        name = f"skchat-{agent}" if f"skchat-{agent}" in keys else next(iter(keys), None)
+        if not name:
+            return None
+        url = os.getenv("SKCHAT_ANSWERER_LIVEKIT_HTTP", "http://100.108.59.57:7880")
+        return url, name, keys[name]
+    except Exception as exc:  # noqa: BLE001
+        logger.info("presence rejoin disabled (no LiveKit admin config: %r)", exc)
+        return None
+
+
+async def _room_identities(admin, room: str) -> list:
+    """Identities currently in *room*, or [] if it does not exist."""
+    from livekit import api  # noqa: PLC0415
+
+    url, key, secret = admin
+    lk = api.LiveKitAPI(url, key, secret)
+    try:
+        res = await lk.room.list_participants(api.ListParticipantsRequest(room=room))
+        return [p.identity for p in res.participants]
+    except Exception:  # noqa: BLE001 - a missing room is not an error
+        return []
+    finally:
+        await lk.aclose()
+
+
+def _reconcile_presence(api_client, admin) -> None:
+    """Put her in any WATCHED room where a human is waiting and she is not.
+
+    One pass. Deliberately narrow: it only ever considers rooms already in
+    _WATCHED_ROOMS (her own derived 1:1 room, plus any room an invite named), so
+    she can be pulled into a group or space room but never wanders into a call
+    that did not ask for her.
+    """
+    agent = os.getenv("SKAGENT", "lumina")
+    fqid = _self_fqid()
+    for room in sorted(_WATCHED_ROOMS):
+        with _ACTIVE_LOCK:
+            if room in _ACTIVE_ROOMS:
+                continue
+        try:
+            identities = asyncio.run(_room_identities(admin, room))
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("presence check failed for %s: %r", room, exc)
+            continue
+        if not should_join(identities):
+            continue
+        logger.info(
+            "presence: %s has %s waiting and no agent; joining", room, ",".join(identities)
+        )
+        try:
+            minted = api_client.mint_token(
+                room, identity=f"{fqid}{AGENT_IDENTITY_SUFFIX}", name=agent
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("presence: could not mint a token for %s: %r", room, exc)
+            continue
+        direct = os.getenv("SKCHAT_ANSWERER_LIVEKIT_URL", "").strip()
+        _spawn_call(
+            {
+                "room": room,
+                "token": minted.get("token"),
+                "livekit_url": direct or minted.get("url") or minted.get("livekit_url"),
+                "peer_fqid": fqid,
+                "from_fqid": fqid,
+            }
+        )
+
+
+def _self_fqid() -> str:
+    """This agent's FQID, as the browser addresses it."""
+    agent = os.getenv("SKAGENT", "lumina")
+    return os.getenv("SKCHAT_AGENT_FQID", "") or f"{agent}@chef.skworld.io"
+
+
 def run_answerer(
     base_url: Optional[str] = None,
     operator_token: Optional[str] = None,
@@ -365,6 +505,23 @@ def run_answerer(
     api = AnswererApi(base_url, operator_token)
     seen: set = set()
     logger.info("call answerer polling %s every %.1fs", base_url, interval)
+
+    # Presence rejoin. An invite is momentary (120s TTL, consumed on answer) but
+    # a person sitting in a room is not, and answering ONLY on invites meant she
+    # never came back when Chef rejoined from another device without placing a
+    # new call. Seed the watch with her own derived 1:1 room; every invite adds
+    # the room it names, so she can be pulled into group and space rooms too.
+    admin = _livekit_admin()
+    try:
+        from skchat.call_session import derive_room  # noqa: PLC0415
+
+        me = _self_fqid()
+        _WATCHED_ROOMS.add(derive_room(me, me))
+        logger.info("presence: watching %s", ",".join(sorted(_WATCHED_ROOMS)))
+    except Exception as exc:  # noqa: BLE001
+        logger.info("presence: could not derive the 1:1 room (%r)", exc)
+    last_reconcile = 0.0
+
     while True:
         try:
             joinable = poll_and_answer(api, seen)
@@ -388,7 +545,16 @@ def run_answerer(
             # Run the call on its own thread so polling continues. asyncio.run()
             # inline blocked the loop for the WHOLE call, so a second caller rang
             # into nothing until the first hung up.
+            _WATCHED_ROOMS.add(joinable["room"])
             _spawn_call(joinable)
+        # Presence is checked on its own cadence so a slow SFU query cannot
+        # stall invite answering, which is still the fast path when ringing.
+        if admin and time.monotonic() - last_reconcile >= RECONCILE_INTERVAL_S:
+            last_reconcile = time.monotonic()
+            try:
+                _reconcile_presence(api, admin)
+            except Exception as exc:  # noqa: BLE001 - never kill the poll loop
+                logger.warning("presence reconcile error: %r", exc)
         time.sleep(interval)
 
 
