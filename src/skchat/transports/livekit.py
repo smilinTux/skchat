@@ -35,7 +35,11 @@ engine via :class:`skchat.voice_engine.config.VoiceConfig`):
     LUMINA_BARGE_IN_RMS           2000
     LUMINA_FOLLOW_UP_S            60     (roundtable follow-up window)
     LUMINA_AGENT_TURN_CAP         6      (consecutive peer-agent replies)
-    LUMINA_OPERATOR_PREFIXES      chef   (comma list of Chef identity prefixes)
+
+Operator recognition is NOT an environment setting. It is resolved from the
+signature-verified invite FQID by :mod:`skchat.voice_engine.caller_profile`;
+``LUMINA_OPERATOR_PREFIXES`` (a startswith() over the LiveKit display identity)
+was removed because a display identity is caller-supplied, not a claim.
 """
 
 from __future__ import annotations
@@ -49,6 +53,13 @@ import re
 import time
 from typing import Callable, Iterable, Optional
 
+from skchat.voice_engine.caller_profile import (
+    LEAST_PRIVILEGE,
+    CallerProfile,
+    is_peer_agent,
+    resolve_caller_profile,
+    speaker_is_operator,
+)
 from skchat.voice_engine.tools import pick_filler, pick_waiting_filler
 
 log = logging.getLogger("skchat.transports.livekit")
@@ -149,12 +160,6 @@ IDENTITY = os.getenv("LUMINA_IDENTITY", "lumina")
 DISPLAY_NAME = os.getenv("LUMINA_NAME", "Lumina")
 DEFAULT_ROOM = os.getenv("SKCHAT_LIVEKIT_DEFAULT_ROOM", "lumina-and-chef")
 
-_CHEF_IDENTITY_PREFIXES = tuple(
-    p.strip().lower()
-    for p in os.getenv("LUMINA_OPERATOR_PREFIXES", "chef").split(",")
-    if p.strip()
-)
-
 # Wake words — Lumina's name + common whisper mis-transcriptions + generic
 # direct-address phrases. Ported from lumina-call.py so behaviour matches.
 ADDRESS_TRIGGERS = (
@@ -234,12 +239,6 @@ def rms16(pcm: bytes) -> float:
             s -= 0x10000
         total += s * s
     return math.sqrt(total / n)
-
-
-def is_chef_identity(identity: str, prefixes: Iterable[str] = _CHEF_IDENTITY_PREFIXES) -> bool:
-    """True when ``identity`` is one of Chef's devices (chef-laptop, chef-phone…)."""
-    ident_low = (identity or "").lower()
-    return any(ident_low.startswith(p) for p in prefixes)
 
 
 # ─── VAD segmenter (energy gate; no torch, no network) ──────────────────────
@@ -376,7 +375,8 @@ class AddressingGate:
     Rules (in order), from :meth:`is_addressed`:
       1. Named another agent (and not me) → not for me.
       2. Named me → engage (open my follow-up window with this speaker).
-      3. Sacred mode + speaker is Chef → everything Chef says is to me.
+      3. 1:1 register + the verified caller is the operator → everything he
+         says is to me.
       4. I recently engaged THIS speaker (< follow_up_window_s) → keep rolling.
       5. Generic wake-word AND no other agent present → engage.
       6. A peer agent spoke within my broadcast window → engage (roundtable).
@@ -384,6 +384,13 @@ class AddressingGate:
     :meth:`should_reply` layers the loop-damping cap on top: a human turn
     resets the streak; each consecutive peer-agent reply increments it; past
     ``agent_turn_cap`` the agents go quiet until a human speaks again.
+
+    ``caller`` is the profile of this call's verified caller, resolved from the
+    signed invite (see :mod:`skchat.voice_engine.caller_profile`). It is not a
+    property of a speaker string, which is why rules 3 and the streak no longer
+    ask "does this display name start with chef". That question silenced Chef
+    on 2026-08-13: his browser joins as ``lumina@chef.skworld.io``, every turn
+    of his counted as a peer-agent turn, and the cap muted her to him.
     """
 
     def __init__(
@@ -391,13 +398,13 @@ class AddressingGate:
         *,
         identity: str = IDENTITY,
         display_name: str = DISPLAY_NAME,
-        chef_prefixes: Iterable[str] = _CHEF_IDENTITY_PREFIXES,
+        caller: CallerProfile = LEAST_PRIVILEGE,
         follow_up_window_s: float = FOLLOW_UP_WINDOW_S,
         agent_turn_cap: int = AGENT_TURN_CAP,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._my_names = [n.lower() for n in (identity, display_name) if n]
-        self._chef_prefixes = tuple(p.lower() for p in chef_prefixes)
+        self.caller = caller
         self.follow_up_window_s = follow_up_window_s
         self.agent_turn_cap = agent_turn_cap
         self._clock = clock
@@ -406,8 +413,8 @@ class AddressingGate:
         self._agent_turn_streak = 0
 
     # -- helpers -------------------------------------------------------------
-    def _is_chef(self, speaker_id: str) -> bool:
-        return is_chef_identity(speaker_id, self._chef_prefixes)
+    def _is_operator(self, speaker_id: str, mode: str, other_agents: Iterable[str] = ()) -> bool:
+        return speaker_is_operator(self.caller, speaker_id, mode=mode, other_agents=other_agents)
 
     def note_own_speech(self) -> None:
         """Call whenever this agent speaks — opens the broadcast follow-up
@@ -433,7 +440,7 @@ class AddressingGate:
         if named_me:
             self._engaged_with[speaker_id] = self._clock()
             return True
-        if mode == "sacred" and self._is_chef(speaker_id):
+        if self._is_operator(speaker_id, mode, other_agents):
             self._engaged_with[speaker_id] = self._clock()
             return True
         last = self._engaged_with.get(speaker_id)
@@ -443,7 +450,7 @@ class AddressingGate:
             self._engaged_with[speaker_id] = self._clock()
             return True
         if (
-            not self._is_chef(speaker_id)
+            is_peer_agent(speaker_id, other_agents=others)
             and self._clock() - self._broadcast_speak_t < self.follow_up_window_s
         ):
             self._engaged_with[speaker_id] = self._clock()
@@ -460,11 +467,16 @@ class AddressingGate:
         agent does, so repeated calls model a real conversation.
         """
         addressed = self.is_addressed(speaker_id, text, mode=mode, other_agents=other_agents)
-        if self._is_chef(speaker_id):
+        # Loop-damping counts AGENT turns, which is what the cap is for and
+        # what the docstring always said. It used to count "not Chef", so any
+        # human the prefix shim did not recognise (Chef himself, on his own
+        # browser identity) was damped into silence.
+        peer_agent = is_peer_agent(speaker_id, other_agents=other_agents)
+        if not peer_agent:
             self._agent_turn_streak = 0
         if not addressed:
             return False
-        if not self._is_chef(speaker_id):
+        if peer_agent:
             self._agent_turn_streak += 1
             if self._agent_turn_streak > self.agent_turn_cap:
                 log.info(
@@ -580,7 +592,12 @@ def _require_livekit():
         ) from exc
 
 
-def mode_ceiling(room_name: str, peer_fqid: str | None = None) -> str:
+def mode_ceiling(
+    room_name: str,
+    peer_fqid: str | None = None,
+    *,
+    caller: CallerProfile | None = None,
+) -> str:
     """The *maximum* mode for a call; a stranger joining still forces group.
 
     Prefer the verified peer identity, fall back to the room name.
@@ -594,17 +611,45 @@ def mode_ceiling(room_name: str, peer_fqid: str | None = None) -> str:
 
     So when the caller knows who it is actually talking to (the answerer does:
     the invite is signature-verified and carries ``from_fqid``), pass it and the
-    identity decides. ``peer_fqid`` accepts a bare short name or a full FQID.
+    identity decides. ``peer_fqid`` must be a full FQID; a bare short name is
+    not an identity anything can verify, so it resolves to the least privilege
+    and lands in 'group' with every other unknown.
+
+    Pass ``caller`` when the profile has already been resolved for the session,
+    so one call is not resolved twice under two different directories.
 
     Unknown peers and unknown rooms both default to 'group', which is the safe
     direction: a wrong 'group' loses warmth, a wrong 'sacred' leaks it.
     """
-    if peer_fqid:
-        if is_chef_identity(str(peer_fqid).split("@")[0]):
-            return "sacred"
+    if caller is None and peer_fqid:
+        caller = resolve_caller_profile(peer_fqid)
+    if caller is CallerProfile.OPERATOR:
+        return "sacred"
+    if peer_fqid or (caller is not None and caller is not LEAST_PRIVILEGE):
         return "group"
+    # Nothing is known about who is calling: the legacy fixed room keeps its
+    # ceiling, everything else stays in the group register.
     ceilings = {"lumina-and-chef": "sacred"}
     return ceilings.get((room_name or "").strip(), "group")
+
+
+def session_caller(
+    room_name: str,
+    peer_fqid: str | None = None,
+    *,
+    agent_name: str = "lumina",
+    caller: CallerProfile | None = None,
+) -> tuple[CallerProfile, str]:
+    """The two facts a call session is built on: who is calling, and the mode.
+
+    One seam, resolved once per session, so there is a single place to audit
+    who a call thinks it is talking to. Pass the ``from_fqid`` of the
+    signature-verified invite; pass ``caller`` only when it has already been
+    resolved upstream.
+    """
+    if caller is None:
+        caller = resolve_caller_profile(peer_fqid, agent_name=agent_name)
+    return caller, mode_ceiling(room_name, peer_fqid, caller=caller)
 
 
 __all__ = [
@@ -613,8 +658,9 @@ __all__ = [
     "AddressingGate",
     "TranscriptDedup",
     "rms16",
-    "is_chef_identity",
+    "CallerProfile",
     "mode_ceiling",
+    "session_caller",
     "build_room_session",
     "run_agent",
     "wav_to_pcm",
@@ -951,6 +997,7 @@ async def build_room_session(
     token: str,
     agent_name: str = "lumina",
     peer_fqid: str | None = None,
+    caller: CallerProfile | None = None,
     engine_factory: Callable[[str], object] | None = None,
 ):
     """Join *room_name* and converse until the room closes.
@@ -963,9 +1010,12 @@ async def build_room_session(
     (``call_answerer``) published silence while the process that could talk
     (``lumina-call.py``) sat in a different, fixed room.
 
-    The mode is decided by *peer_fqid* when the caller knows it. The answerer
-    does: the invite is signature-verified. See :func:`mode_ceiling` for why the
-    room name alone is the wrong key.
+    Privilege for the whole session is decided ONCE here, from *peer_fqid*,
+    which the answerer takes from an invite ``/call/incoming`` has already
+    signature-verified. Everything downstream (the mode ceiling, the addressing
+    gate, the ``is_operator`` flag on every turn) reads that one resolved
+    profile, so there is a single place to audit and no second, weaker path.
+    A session with no verified caller runs as a guest.
 
     Returns when the room disconnects. Raises RuntimeError if the livekit SDK is
     absent, so a host without the RTC stack fails loudly here rather than
@@ -973,11 +1023,12 @@ async def build_room_session(
     """
     rtc = _require_livekit()
     engine = (engine_factory or default_engine_factory())(agent_name)
-    mode = mode_ceiling(room_name, peer_fqid)
+    caller, mode = session_caller(room_name, peer_fqid, agent_name=agent_name, caller=caller)
+    log.info("session caller=%s mode=%s (invite fqid %r)", caller.value, mode, peer_fqid)
 
     room = rtc.Room()
     history: list[dict] = []
-    gate = AddressingGate()
+    gate = AddressingGate(caller=caller)
     dedup = TranscriptDedup()
     segmenters: dict[str, VADSegmenter] = {}
     speaking = asyncio.Event()  # set while we are playing TTS
@@ -1155,7 +1206,7 @@ async def build_room_session(
                 transcript,
                 mode=engine_mode(mode),
                 speaker_id=speaker_id,
-                is_operator=is_chef_identity(speaker_id),
+                is_operator=speaker_is_operator(caller, speaker_id, mode=mode),
             )
         finally:
             replied.set()

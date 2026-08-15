@@ -76,13 +76,32 @@ def test_answering_agent_joins_under_a_distinct_identity():
     assert 'identity_suffix="#agent"' in routes
 
 
-def test_self_addressed_call_is_treated_as_the_operator():
-    """Mode must not fall to 'group' just because the peer is literally us."""
-    from skchat.call_answerer import _conversational_peer
+def test_self_addressed_call_is_treated_as_the_operator(monkeypatch):
+    """Mode must not fall to 'group' just because the peer is literally us.
 
-    assert _conversational_peer({"peer_fqid": "lumina@chef.skworld.io"}) == "chef"
-    assert _conversational_peer({"peer_fqid": "chef@skworld.io"}) == "chef@skworld.io"
-    assert _conversational_peer({"peer_fqid": "mallory@x.io"}) == "mallory@x.io"
+    The answerer used to rewrite this case to the bare string "chef" so a
+    prefix match would light up. The FQID now travels intact and the caller
+    resolver decides, which is the only version of this that a companion or a
+    stranger cannot imitate by choosing a name.
+    """
+    from skchat.call_answerer import _conversational_peer
+    from skchat.voice_engine.caller_profile import (
+        CallerProfile,
+        reset_default_directory,
+        resolve_caller_profile,
+    )
+
+    monkeypatch.setenv("SKCHAT_AGENT_FQID", "lumina@chef.skworld.io")
+    monkeypatch.delenv("SKCHAT_COMPANION_FQIDS", raising=False)
+    reset_default_directory()
+    try:
+        for peer in ("lumina@chef.skworld.io", "chef@skworld.io"):
+            assert _conversational_peer({"peer_fqid": peer}) == peer
+            assert resolve_caller_profile(peer) is CallerProfile.OPERATOR
+        assert _conversational_peer({"peer_fqid": "mallory@x.io"}) == "mallory@x.io"
+        assert resolve_caller_profile("mallory@x.io") is CallerProfile.GUEST
+    finally:
+        reset_default_directory()
 
 
 # ─── answerer concurrency ───────────────────────────────────────────────────

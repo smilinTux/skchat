@@ -274,8 +274,10 @@ async def _run_call(joinable: dict) -> None:
     worse.
 
     The peer identity comes from the invite, which /call/incoming has already
-    signature-verified, and decides the conversational mode. Passing it matters:
-    a derived room name alone would silently demote Chef to the group register.
+    signature-verified. It decides the caller profile, and through it the
+    conversational mode and every operator decision in the session. Passing it
+    matters: a derived room name alone would silently demote Chef to the group
+    register, and the display identity he joins with is not a claim at all.
     """
     if os.getenv("SKCHAT_ANSWERER_ENGINE", "").strip().lower() not in ("1", "true", "yes", "on"):
         await _join_and_publish(joinable)
@@ -342,22 +344,23 @@ _ACTIVE_LOCK = threading.Lock()
 
 
 def _conversational_peer(joinable: dict) -> str | None:
-    """Who is Lumina actually talking to, for choosing the conversational mode.
+    """The verified FQID of whoever this call is with, unaltered.
 
-    Normally the invite's from_fqid. But a SELF-addressed call (from == to) means
-    the browser is authenticated as the agent's own webui rather than as chef, so
-    the literal peer is Lumina herself and the mode would fall to 'group',
-    leaving her waiting to be addressed by name in what is really a 1:1.
+    It used to rewrite a SELF-addressed call (from == to) to the literal string
+    "chef", because the mode ceiling was keyed on a name prefix and a
+    self-addressed call would otherwise have fallen to the group register: the
+    operator's browser authenticates as the agent's own webui, so his invites
+    arrive as ``lumina@chef.skworld.io``.
 
-    /call/incoming and /call/answer are both operator-gated, so a self-addressed
-    invite can only have come from the operator. Treat it as chef.
+    That rewrite is gone. A bare name is not an identity anything can verify,
+    and substituting one threw away the only trustworthy fact we had. The FQID
+    now travels intact and
+    :func:`skchat.voice_engine.caller_profile.resolve_caller_profile` decides
+    what it means, including the self-addressed case (the /call routes are
+    operator-gated, so an invite from the agent to itself came from the
+    operator).
     """
-    peer = joinable.get("peer_fqid") or joinable.get("from_fqid")
-    me = os.getenv("SKAGENT", "lumina")
-    if peer and str(peer).split("@")[0] == me:
-        logger.info("self-addressed call; treating the caller as the operator")
-        return "chef"
-    return peer
+    return joinable.get("peer_fqid") or joinable.get("from_fqid")
 
 
 def _spawn_call(joinable: dict) -> None:
