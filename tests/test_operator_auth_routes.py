@@ -217,3 +217,93 @@ def test_session_rejects_replayed_nonce(client):
         "/api/v1/auth/session", json={"device_fp": fp, "nonce": ch["nonce"], "sig": ssig}
     )
     assert replay.status_code == 401
+
+
+# --------------------------------------------------------------------------- #
+# inc-c72a9120 part 2: the `enroll` route threads a capauth `proof` into the
+# capability grant, and the outcome (granted or not) is visible on the
+# device's registry row -- not just swallowed inside the best-effort grant.
+# --------------------------------------------------------------------------- #
+
+
+def _capauth_proof(priv, pub_b64: str, device_fp: str) -> str:
+    """A real capauth `verified` enrollment proof for (priv, pub_b64).
+
+    Mirrors ``operator_device_and_proof`` in conftest.py, but reusing THIS
+    file's own already-generated keypair (a real client signs the enrollment
+    window nonce and the capauth challenge with the SAME device key), via
+    this file's own ``_sig`` helper for the P1363 encoding.
+    """
+    from capauth.pairing import verified_challenge
+    from capauth.pairing.store import fingerprint_for
+    from capauth.subject import canonical_subject
+
+    subject = canonical_subject(f"operator:{device_fp}")
+    capauth_fp = fingerprint_for(pub_b64)
+    return _sig(priv, verified_challenge(capauth_fp, subject))
+
+
+def test_enroll_with_a_valid_proof_grants_capabilities_and_reports_it(client):
+    priv, pub = _kp()
+    device_fp = oa.device_fingerprint(pub)
+    proof = _capauth_proof(priv, pub, device_fp)
+    w = client.post("/api/v1/auth/enroll/open").json()
+    sig = _sig(priv, _canon({"nonce": w["window_nonce"], "device_pubkey": pub}))
+
+    e = client.post(
+        "/api/v1/auth/enroll",
+        json={
+            "device_pubkey": pub,
+            "window_nonce": w["window_nonce"],
+            "sig": sig,
+            "proof": proof,
+        },
+    )
+
+    assert e.status_code == 200
+    assert e.json()["device_fp"] == device_fp
+    assert e.json()["capabilities_granted"] is True
+
+    from skchat import device_registry as DR
+
+    row = DR.get_device(device_fp)
+    assert row["capabilities_granted"] is True
+    assert row["capabilities_error"] is None
+
+
+def test_enroll_with_no_proof_still_succeeds_but_visibly_holds_zero_capabilities(client):
+    """The decision this card had to make: an older client that sends no
+    `proof` still enrolls (Phase 3 approval still works the same way), but it
+    is NOT silently granted every capability (the original inc-c72a9120 bug)
+    and its registry row -- the same row `skchat devices pending`'s JSON dump
+    and `GET /api/v1/operator/devices` both render verbatim -- says so.
+    """
+    priv, pub = _kp()
+    device_fp = oa.device_fingerprint(pub)
+    w = client.post("/api/v1/auth/enroll/open").json()
+    sig = _sig(priv, _canon({"nonce": w["window_nonce"], "device_pubkey": pub}))
+
+    e = client.post(
+        "/api/v1/auth/enroll",
+        json={"device_pubkey": pub, "window_nonce": w["window_nonce"], "sig": sig},
+    )
+
+    assert e.status_code == 200  # enrollment itself still succeeds (unchanged)
+    assert e.json()["capabilities_granted"] is False
+
+    from skchat import device_registry as DR
+
+    row = DR.get_device(device_fp)
+    assert row["capabilities_granted"] is False
+    assert row["capabilities_error"]  # a non-empty, human-readable reason
+
+    from capauth.tokens import list_tokens
+
+    from skchat.dataplane_auth import operator_subject
+
+    subject = operator_subject(device_fp)
+    granted_caps: set[str] = set()
+    for t in list_tokens(Path.home() / ".skcapstone"):
+        if getattr(t.payload, "subject", None) == subject and t.payload.is_active:
+            granted_caps.update(getattr(t.payload, "capabilities", []) or [])
+    assert granted_caps == set(), granted_caps

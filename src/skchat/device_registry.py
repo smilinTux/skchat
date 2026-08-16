@@ -282,6 +282,56 @@ def set_label(device_fp: str, label: str) -> bool:
         return True
 
 
+def record_grant_result(device_fp: str, *, granted: bool, error: str | None = None) -> bool:
+    """Record whether the capauth capability grant succeeded for *device_fp*.
+
+    inc-c72a9120: enrollment (this registry row) used to be written
+    unconditionally, regardless of whether the separate, best-effort capauth
+    capability grant (``skchat.prekey``/``inbox``/``send``/...) actually
+    succeeded. A device that presented no signed enrollment proof (an older
+    client) or an invalid one landed fully enrolled with ZERO working
+    capabilities and no visible sign of it anywhere -- the enrollment response
+    was 200 either way. This is that visible sign: both
+    ``skchat devices pending`` (JSON dump) and the web "Linked Devices" list
+    (``GET /api/v1/operator/devices``, :mod:`skchat.device_routes`) render
+    every registry row verbatim (``dict(row)``), so a ``capabilities_granted:
+    false`` row surfaces on both surfaces automatically, no separate plumbing
+    needed.
+
+    Creates a minimal row if one is not already present, mirroring
+    :func:`set_approved`'s fallback: ``record_enroll`` is itself best-effort
+    and can fail independently, and a grant failure must never go unrecorded
+    just because its sibling write already did.
+
+    Returns True (this call cannot meaningfully fail short of a disk error,
+    which propagates rather than being swallowed here -- callers already wrap
+    registry writes in their own best-effort try/except).
+    """
+    if not device_fp:
+        return False
+    now = time.time()
+    with _lock:
+        data = _load()
+        row = data.get(device_fp)
+        if row is None:
+            row = {
+                "device_fp": device_fp,
+                "label": "Unknown device",
+                "label_source": "derived",
+                "platform": "unknown",
+                "user_agent": "",
+                "enrolled_at": now,
+                "last_seen": now,
+                "key_ids": [],
+                "revoked": False,
+            }
+        row["capabilities_granted"] = bool(granted)
+        row["capabilities_error"] = None if granted else (error or "capability grant failed")
+        data[device_fp] = row
+        _save(data)
+        return True
+
+
 def get_device(device_fp: str) -> dict | None:
     with _lock:
         return _load().get(device_fp)

@@ -91,6 +91,71 @@ def _generate_test_keypair(name: str, email: str) -> tuple[str, str]:
     return str(key), str(key.pubkey)
 
 
+def operator_device_and_proof(*, canonicalize: bool = True) -> tuple[str, str, str]:
+    """A real ``(device_fp, pubkey_b64, proof)`` triple for a WebCrypto ECDSA
+    P-256 operator device -- exactly what a real skchat client must build to
+    satisfy capauth's ``verified`` enrollment proof requirement (capauth card
+    N10, ``83c1fa2``; the ECDSA key-shape widening that made it satisfiable at
+    all is capauth's ``fix/device-key-proof``, inc-c72a9120 part 1).
+
+    TRAP pinned here, deliberately (cost a live debugging cycle -- see
+    inc-c72a9120): skchat calls ``enroll_device(..., subject=f"operator:
+    {device_fp}")``, but capauth's ``enroll_device`` resolves that subject
+    through ``capauth.subject.canonical_subject``, which retires the legacy
+    ``operator:<fp>`` device-seat prefix in favor of ``device:<fp>`` (see that
+    function's own docstring: ``canonical_subject("operator:0a1b...") ==
+    "device:0a1b..."``). The proof must be a signature over the CANONICAL
+    ``device:<fp>`` bytes, not the raw ``operator:<fp>`` skchat passes in -- a
+    signature over the wrong bytes is a REAL signature that capauth refuses
+    with the exact same "none was presented or it did not verify" message as
+    a genuinely missing proof, which reads like a missing-proof bug and sends
+    you hunting in the wrong place.
+
+    This calls capauth's own PUBLIC ``canonical_subject`` (never hardcodes the
+    string ``"device:"``) for exactly that reason: if capauth ever changes how
+    it canonicalizes ``operator:`` subjects, this helper -- and every test
+    built on it -- breaks LOUDLY here instead of silently in production.
+
+    ``canonicalize=False`` reproduces the trap on purpose (signs the WRONG,
+    raw ``operator:<fp>`` bytes instead), for a test that pins the refusal.
+
+    Uses a real ``cryptography`` P-256 keypair and a real signature -- no
+    mocked verifier, since a mocked verifier proves nothing about a verifier.
+    """
+    import base64
+
+    from capauth.pairing import verified_challenge
+    from capauth.pairing.store import fingerprint_for
+    from capauth.subject import canonical_subject
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
+
+    from skchat.operator_auth import device_fingerprint
+
+    private_key = ec.generate_private_key(ec.SECP256R1())
+    spki = private_key.public_key().public_bytes(
+        serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
+    )
+    pubkey_b64 = base64.b64encode(spki).decode("ascii")
+
+    # skchat's OWN device fingerprint (16 hex, subject-naming only) -- NOT the
+    # same value as capauth's fingerprint_for() below, which is a differently
+    # truncated/cased hash of the same key material and is what the challenge
+    # is actually bound to.
+    device_fp = device_fingerprint(pubkey_b64)
+    raw_subject = f"operator:{device_fp}"
+    subject = canonical_subject(raw_subject) if canonicalize else raw_subject
+    capauth_fp = fingerprint_for(pubkey_b64)
+
+    challenge = verified_challenge(capauth_fp, subject)
+    der_sig = private_key.sign(challenge, ec.ECDSA(hashes.SHA256()))
+    r, s = decode_dss_signature(der_sig)
+    proof = base64.b64encode(r.to_bytes(32, "big") + s.to_bytes(32, "big")).decode("ascii")
+
+    return device_fp, pubkey_b64, proof
+
+
 @pytest.fixture(scope="session")
 def alice_keys() -> tuple[str, str]:
     """Generate Alice's PGP keypair (session-scoped for speed).

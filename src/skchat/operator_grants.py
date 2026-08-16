@@ -113,18 +113,58 @@ AGENT_CAPABILITIES = [
 _GRANT_MODE = "verified"
 
 
-def grant_operator_capabilities(device_fp: str, device_pubkey_b64: str) -> bool:
-    """Grant ``skchat.prekey`` + ``skchat.inbox`` to ``operator:<device_fp>``.
+def grant_operator_capabilities(
+    device_fp: str, device_pubkey_b64: str, proof: str | None = None
+) -> bool:
+    """Grant the full operator capability bundle to ``operator:<device_fp>``.
 
-    Records an attested pairing device for the subject AND issues a non-expiring
-    capability token granting both capabilities, both under capauth's default
-    storage root (the same root the authz PDP reads). Returns True on success,
-    False if any step failed (best-effort: logged and swallowed, never raised).
+    Records a ``verified`` pairing device for the subject AND issues a
+    non-expiring capability token granting :data:`OPERATOR_CAPABILITIES`, both
+    under capauth's default storage root (the same root the authz PDP reads).
+    Returns True on success, False if any step failed (best-effort: logged and
+    swallowed, never raised, per this module's docstring).
+
+    ``proof`` (inc-c72a9120, capauth card N10 / ``83c1fa2``): capauth's
+    ``enroll_device`` requires real evidence of device-key possession for
+    ``mode="verified"`` -- a signature, made by the device's own key, over
+    ``capauth.pairing.verified_challenge(fingerprint, canonical_subject)``.
+    ``proof`` is that signature (base64, WebCrypto P1363 ``r||s`` or DER),
+    produced by the device itself and threaded through unmodified from the
+    enrollment route (:mod:`skchat.operator_auth_routes`) to
+    ``enroll_device``. This function never computes or checks the challenge
+    itself; capauth is the one source of truth for what "verified" requires.
+
+    A caller with no proof (an older client, or one that failed to sign) is
+    refused OUTRIGHT here, before ever calling capauth: not silently granted
+    (the original bug -- enroll_device raised, the grant failed, and NOTHING
+    told the operator), and not silently downgraded to a weaker mode either
+    (``skchat.send``/``groups``/``calls`` are min-mode VERIFIED, so a `tofu`
+    device-record would just make ``decide()`` deny those later, for a reason
+    that looks unrelated to "no proof was ever presented"). The refusal is
+    logged at ERROR, naming the subject (which embeds ``device_fp``), so it is
+    visible in the daemon's own logs even before anyone checks
+    ``skchat devices ...`` or the web Linked Devices list -- the caller
+    (``operator_auth_routes.enroll``) also records this outcome onto the
+    device's registry row via ``device_registry.record_grant_result`` so BOTH
+    surfaces show a device that enrolled but holds zero capabilities, rather
+    than looking indistinguishable from a fully working one.
     """
     if not device_fp or not device_pubkey_b64:
         return False
 
     subject = operator_subject(device_fp)
+
+    if not proof:
+        logger.error(
+            "operator capability grant REFUSED for %s: no enrollment proof was "
+            "presented (older client, or it failed to sign); this device is "
+            "enrolled but holds ZERO skchat capabilities (no send/groups/calls/"
+            "prekey/inbox) until it re-links from a client that signs a "
+            "verified-mode proof (inc-c72a9120, card N10)",
+            subject,
+        )
+        return False
+
     try:
         from capauth.pairing import approve, default_base_dir, enroll_device
         from capauth.tokens import issue_token
@@ -136,6 +176,7 @@ def grant_operator_capabilities(device_fp: str, device_pubkey_b64: str) -> bool:
             mode=_GRANT_MODE,
             subject=subject,
             base_dir=base,
+            proof=proof,
         )
         approve(enrollment.enrollment_id, "skchat", base_dir=base)
         # The PDP checks only presence/activity/revocation of the grant, not the
@@ -145,8 +186,12 @@ def grant_operator_capabilities(device_fp: str, device_pubkey_b64: str) -> bool:
         issue_token(base, subject, OPERATOR_CAPABILITIES, ttl_hours=None, sign=False)
         return True
     except Exception:
-        logger.warning(
-            "operator capability grant failed for %s (best-effort)",
+        # ERROR, not WARNING: this device is left with ZERO skchat
+        # capabilities (send/groups/calls/prekey/inbox all denied), and a
+        # WARNING is exactly the level that let the original bug go unnoticed.
+        logger.error(
+            "operator capability grant failed for %s (device holds ZERO "
+            "skchat capabilities; inc-c72a9120)",
             subject,
             exc_info=True,
         )
@@ -169,6 +214,15 @@ def backfill_operator_capabilities(base_dir=None) -> int:
     Re-enrolling with the device's stored pubkey upserts that record in place
     (``store.upsert_device``), it does not create a duplicate or a new device.
     Best-effort per subject; a capauth error is logged and skipped, never raised.
+
+    ⚠ Pre-existing gap, NOT addressed here (out of scope for inc-c72a9120 part
+    2): this re-enroll passes no ``proof``, so under card N10 it will now fail
+    closed for every subject the same way the live enrollment path did before
+    this fix -- it just never had a device online to sign one, since this is a
+    batch reconciliation over ALREADY-enrolled records, not a live handshake.
+    Backfilling a device that predates the proof requirement needs either a
+    stored/re-derivable proof or the device itself back online to re-sign; this
+    function does neither yet.
     """
     try:
         from capauth.pairing import (

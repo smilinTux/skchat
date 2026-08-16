@@ -274,9 +274,13 @@ class TestOperatorAudienceAuthorizes:
         from skchat.operator_audience import mint_operator_audience_token
         from skchat.operator_grants import grant_operator_capabilities
 
-        device_fp = "abc123deadbeef01"
-        pubkey_b64 = "TESTPUBKEYb64AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
-        assert grant_operator_capabilities(device_fp, pubkey_b64) is True
+        from .conftest import operator_device_and_proof
+
+        # inc-c72a9120 part 2: mode="verified" now requires a real
+        # device-signed proof; this test's setup just needs a granted
+        # subject, so build one the same way test_operator_grants.py does.
+        device_fp, pubkey_b64, proof = operator_device_and_proof()
+        assert grant_operator_capabilities(device_fp, pubkey_b64, proof=proof) is True
         subject = operator_subject(device_fp)
 
         tok = mint_operator_audience_token(device_fp)

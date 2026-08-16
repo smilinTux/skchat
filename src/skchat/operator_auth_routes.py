@@ -227,22 +227,49 @@ def register_operator_auth_routes(app: FastAPI, *, device_store: oa.DeviceStore)
             raise HTTPException(401, "device signature invalid")
         _pairing.consume()
         device_fp = device_store.enroll(pub)
-        # Grant the enrolled device the skchat.prekey capability so a POST
-        # /api/v1/prekey from its session is AUTHORIZED (not just authenticated)
-        # when the authz PDP is enforcing. Best-effort: a grant failure is logged
-        # inside and never breaks the enrollment response.
-        grant_operator_prekey_capability(device_fp, pub)
+        # Write the registry row FIRST: record_grant_result below needs a row
+        # to attach the outcome to (it creates a minimal one if none exists,
+        # but recording the real enrollment metadata first, when it succeeds,
+        # is strictly better than a placeholder).
         _record_enrollment(request, device_fp, label=body.get("label"))
+        # Grant the enrolled device its skchat capability bundle so a session
+        # from it is AUTHORIZED (not just authenticated) when the authz PDP is
+        # enforcing. `proof` (inc-c72a9120, capauth card N10): the device's own
+        # signature over capauth's verified_challenge, required for
+        # mode="verified"; an older client that sends none is refused the
+        # grant rather than silently landing with zero capabilities -- see
+        # grant_operator_capabilities' docstring for the no-proof decision.
+        # Best-effort either way: nothing here may break the enrollment
+        # response itself, only what it reports.
+        proof = body.get("proof")
+        granted = grant_operator_prekey_capability(device_fp, pub, proof=proof)
+        from . import device_registry as DR
+
+        DR.record_grant_result(
+            device_fp,
+            granted=granted,
+            error=(
+                None
+                if granted
+                else (
+                    "no capabilities granted at enrollment: this device presented "
+                    "no signed proof (or capauth refused it); re-link from an "
+                    "up-to-date client to receive send/groups/calls/prekey/inbox"
+                )
+            ),
+        )
         _claim_bootstrap_window(device_fp)
         # Tell the caller whether it is pending approval (Phase 3): a missing
         # registry row (recording failed, best-effort) reads as approved, same
         # as everywhere else this is checked, so a registry hiccup never tells
         # an otherwise-fine device it is stuck pending.
-        from . import device_registry as DR
-
         row = DR.get_device(device_fp)
         approved = True if row is None else DR.is_approved(row)
-        return {"device_fp": device_fp, "approved": approved}
+        return {
+            "device_fp": device_fp,
+            "approved": approved,
+            "capabilities_granted": granted,
+        }
 
     @router.get("/challenge")
     async def challenge():
