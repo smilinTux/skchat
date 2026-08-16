@@ -200,6 +200,18 @@ standards.
   `SECURITY.md` for the client-facing note).
 
 ### Added
+- **`GET /api/v1/health` — per-service backend health (card `f2e6c451`).** New
+  `skchat.health` probes STT/TTS/LLM (via the same `VoiceConfig.from_env()`
+  the voice engine reads) and the LiveKit SFU concurrently (~2s timeout each,
+  never raises), plus reports skchat's own app-server liveness, so the
+  Flutter app can show the operator WHY the assistant went quiet instead of
+  sitting silent — built after the 2026-08-13 `.100` outage had no visible
+  symptom in the app at all. `up`/`down`/`unknown` are never conflated: an
+  unconfigured URL is always "unknown" (never "down"), a failed probe is
+  never reported "up", and failure `detail` strings are built from the
+  exception TYPE + host:port rather than `str(exc)` (which is frequently
+  empty on an httpx connect timeout). Gated the same as `GET /api/v1/status`
+  (`skchat.status` capability) since it leaks internal backend hostnames/ports.
 - **Group threads carry per-member participants (unified conversation list).**
   `daemon_proxy` `/conversations` group threads now carry per-member
   participants with server-resolved `soul_fingerprint`, feeding the client's
