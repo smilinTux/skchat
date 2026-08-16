@@ -13,6 +13,24 @@ standards.
 ## [Unreleased]
 
 ### Fixed
+- **Operator enrollment now sends capauth the device-signed proof its
+  `verified` mode requires (`inc-c72a9120` part 2).** capauth's
+  `enroll_device(mode="verified")` requires a `proof` (card N10, `83c1fa2`),
+  but `grant_operator_capabilities` called it without one, so the capability
+  grant raised, was swallowed by the best-effort handler, and a newly linked
+  device enrolled successfully with **zero** skchat capabilities (no
+  send/groups/calls/prekey/inbox) -- with no visible sign of it anywhere.
+  `grant_operator_capabilities(device_fp, pubkey, proof=None)` now threads a
+  `proof` field (accepted on `POST /api/v1/auth/enroll`) through to
+  `enroll_device` unmodified. A client presenting no proof is refused the
+  grant outright (never silently granted, never silently downgraded to a
+  weaker mode), logged at ERROR, and the outcome is recorded onto the
+  device's registry row (`device_registry.record_grant_result`) so both
+  `skchat devices pending` and the web Linked Devices list
+  (`GET /api/v1/operator/devices`) show a device that enrolled but holds no
+  capabilities, instead of looking identical to a fully working one. Needs
+  capauth's ECDSA device-key proof widening (capauth PR #53) to actually
+  verify a real device signature.
 - **The `/api/v1/audience-token` mint endpoint no longer persists a file.**
   `mint_agent_audience_token` is now called with `store=False`: this endpoint
   mints a self-contained audience token per request, so writing a file per mint
