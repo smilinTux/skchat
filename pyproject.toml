@@ -86,7 +86,19 @@ dev = [
     # at module load. It is published on PyPI and was simply never declared, so
     # CI (a clean install) collected ModuleNotFoundError while dev machines,
     # which have it installed already, stayed green.
-    "capauth>=0.3.1",  # 0.3.1 ships capauth.testing, the gpg test seam CI needs
+    # Bounded, not floating. capauth carries AUTHORIZATION GATES, so a release
+    # can change what is permitted without any skchat commit. That is not
+    # hypothetical: capauth card N10 made `enroll_device(mode="verified")`
+    # require a possession proof, and skchat's main went red for 37 hours
+    # (last green 2026-08-14T22:57) with merges still landing into it, because
+    # a floating `>=0.3.1` picked the new gate up on its own. Nobody broke it;
+    # it broke itself when a dependency moved, and the blame landed on whoever
+    # merged last.
+    #
+    # The ceiling makes the next such change a DELIBERATE act: capauth 0.4 will
+    # not install until someone raises this bound and reads what changed. Raise
+    # it in the same PR that adapts to the new behaviour, never on its own.
+    "capauth>=0.3.1,<0.4",  # 0.3.1 ships capauth.testing, the gpg test seam CI needs
     # the skcode ws-proxy tests dial a real websocket client; same story as
     # capauth above (published, just never declared).
     "websockets>=12.0",
