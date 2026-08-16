@@ -151,6 +151,20 @@ class Moderator:
                     # any already-published microphone track(s) directly so the SFU
                     # itself stops relaying it, regardless of client behavior.
                     await self._mute_mic_tracks(svc, room, identity, current)
+                elif can_publish and not state.on_stage:
+                    # Coming UP onto the stage: land muted. Both clients already
+                    # do this (X Spaces model, the human clicks Unmute), but that
+                    # is client good behavior rather than a control, and a
+                    # participant can reach the grant with a mic track already
+                    # published: a stale cached build, a third-party client, or
+                    # someone re-promoted seconds after being removed. Muting at
+                    # the SFU makes "muted by default" true regardless.
+                    #
+                    # Gated on the TRANSITION (`not state.on_stage`), never on the
+                    # result alone: invite and raise_hand are both idempotent, and
+                    # a host re-inviting someone already up and mid-sentence must
+                    # not silence them.
+                    await self._mute_mic_tracks(svc, room, identity, current)
                 return can_publish
         finally:
             # evict the lock once nobody else is holding or waiting for it, so the
@@ -161,11 +175,15 @@ class Moderator:
                 self._locks.pop(key, None)
 
     async def _mute_mic_tracks(self, svc, room: str, identity: str, participant) -> None:
-        """Best-effort demote backstop: force-mute any published microphone
+        """Best-effort stage backstop: force-mute any published microphone
         track(s) on `participant`. No-op if there are none. A mute failure (e.g.
         the track vanished mid-race) is logged and swallowed rather than raised,
-        since the can_publish revoke already applied and is authoritative; this
-        is defense-in-depth, not the primary control."""
+        since the permission change already applied and is authoritative; this
+        is defense-in-depth, not the primary control.
+
+        Used on BOTH stage transitions, for the same reason in mirror image: on
+        the way down so a revoked grant leaves no hot mic behind, and on the way
+        up so a fresh grant does not arrive already live."""
         from livekit import api
 
         for track in getattr(participant, "tracks", None) or []:
