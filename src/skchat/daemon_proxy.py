@@ -1425,6 +1425,31 @@ async def api_status():
     return _proxy("http://127.0.0.1:9383/api/v1/household/agents")
 
 
+@router.get("/v1/health")
+async def api_v1_health():
+    """Per-service health for the Flutter app's "why is Lumina quiet" screen.
+
+    Card f2e6c451 (2026-08-13, the ``.100`` outage): Lumina going silent had
+    NO visible cause in the app; diagnosing it needed shell access. This
+    probes STT/TTS/LLM/the LiveKit SFU concurrently (about 2s timeout each,
+    never raises) plus reports skchat's own app-server liveness, and returns
+    a fixed-shape ``{generated_at, services:[{id,label,state,detail,
+    latency_ms,checked_at}, ...]}`` payload — see :mod:`skchat.health` for the
+    honesty contract (unconfigured is "unknown" not "down"; a failed probe is
+    never reported "up"; detail is built from the exception TYPE, never
+    ``str(exc)``, since a connect timeout's ``str()`` is often empty).
+
+    Gated like the other operational-metadata reads (``skchat.status``, see
+    ``dataplane_auth._ROUTE_CAPABILITY_RULES``): this leaks infrastructure
+    topology (hostnames/ports of internal backends), so it requires the same
+    operator credential ``GET /api/v1/status`` and ``GET
+    /api/v1/webrtc/ice-config`` do, not an unauthenticated liveness probe.
+    """
+    from skchat.health import build_health_payload
+
+    return JSONResponse(await build_health_payload())
+
+
 # Voice input is short (dictation / a voice note), so cap the upload well under
 # whisper's own limit to bound memory + reject stray large bodies.
 _MAX_STT_BYTES = 25 * 1024 * 1024
