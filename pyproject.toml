@@ -86,7 +86,7 @@ dev = [
     # at module load. It is published on PyPI and was simply never declared, so
     # CI (a clean install) collected ModuleNotFoundError while dev machines,
     # which have it installed already, stayed green.
-    "capauth>=0.2",
+    "capauth>=0.3.1",  # 0.3.1 ships capauth.testing, the gpg test seam CI needs
     # the skcode ws-proxy tests dial a real websocket client; same story as
     # capauth above (published, just never declared).
     "websockets>=12.0",

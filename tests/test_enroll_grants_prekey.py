@@ -19,6 +19,27 @@ import json
 from pathlib import Path
 
 import pytest
+
+# CapAuth signs capability tokens with gpg, and since capauth 0d412ab a signing
+# failure RAISES instead of quietly producing an unsigned token that decide()
+# would then have honoured. That was the right fix (an unsigned token granted
+# RCE), but it means a CI runner, which has no secret key and no unlocked
+# agent, cannot mint at all: every mint raises TokenSigningError and every
+# capauth-gated route in this module 403s.
+#
+# capauth.testing is CapAuth's own shipped test seam. It fakes the gpg
+# SUBPROCESS boundary only: tokens are really signed and really verified,
+# in-process, without gpg. It weakens nothing, an unsigned token is still
+# denied, a tampered payload is still denied, and a signature from a different
+# issuer is still denied.
+#
+# Applied PER MODULE rather than autouse in tests/conftest.py on purpose.
+# tests/test_dataplane_audience_token.py and tests/test_audience_mint_endpoint.py
+# generate a real ephemeral gpg key and sign end to end with no stubbing at all.
+# A directory-wide autouse stub would silently reach those too and convert
+# genuine coverage of the real signing path into coverage of the stub, which is
+# the exact "passes for the wrong reason" failure this seam is meant to avoid.
+from capauth.testing import stub_token_signing  # noqa: F401
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
@@ -28,6 +49,8 @@ from fastapi.testclient import TestClient
 from skchat import daemon_proxy
 from skchat import operator_auth as oa
 from skchat.operator_auth_routes import register_operator_auth_routes
+
+pytestmark = pytest.mark.usefixtures("stub_token_signing")
 
 
 def _canon(obj):
