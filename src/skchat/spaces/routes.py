@@ -6,14 +6,13 @@ connects — so these routes are fully testable with a dummy key/secret.
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import os
 import time
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import JSONResponse
 
 from skchat.spaces.lanes import KNOWN_LANES, LaneDispatcher, LaneStore
 from skchat.spaces.registry import SpaceRegistry
@@ -24,40 +23,6 @@ from skchat.spaces.tokens import mint_space_token
 logger = logging.getLogger("skchat.spaces.routes")
 
 _DEFAULT_TTL = int(os.getenv("SKCHAT_LIVEKIT_TOKEN_TTL", "21600"))
-
-# VER: build-stamp placeholder in space.html, substituted with a short stable
-# hash of the file's ORIGINAL bytes so an already-open tab can notice a newer
-# deploy landed (no amount of server no-cache headers helps a tab that never
-# reloads) and self-heal instead of silently running stale JS.
-_SPACE_HTML_PLACEHOLDER = "__SPACE_BUILD__"
-
-
-def _space_html_path() -> Path:
-    """Path to the Space page HTML shell, resolved relative to this module."""
-    return Path(__file__).resolve().parent.parent / "static" / "space.html"
-
-
-def _compute_build_hash(raw: bytes) -> str:
-    """Short stable build stamp: first 12 hex chars of a sha1 of the file bytes."""
-    return hashlib.sha1(raw).hexdigest()[:12]
-
-
-def render_space_html() -> tuple[str, str]:
-    """Read space.html, hash the ORIGINAL bytes (stable per deploy, computed
-    before any substitution), and replace the __SPACE_BUILD__ placeholder with
-    that hash.
-
-    Returns ``(html_text, build_hash)``. If the placeholder is not present the
-    file is served unchanged (never crash), while the hash is still computed
-    and returned so GET /spaces/build always agrees with what was served.
-    """
-    raw = _space_html_path().read_bytes()
-    build_hash = _compute_build_hash(raw)
-    text = raw.decode("utf-8")
-    if _SPACE_HTML_PLACEHOLDER in text:
-        text = text.replace(_SPACE_HTML_PLACEHOLDER, build_hash)
-    return text, build_hash
-
 
 def _url() -> str:
     return os.getenv("SKCHAT_LIVEKIT_URL", "ws://skworld-100:7880")
@@ -548,36 +513,3 @@ def register_spaces_routes(
             logger.warning("sfu/candidates discovery failed: %s", exc)
             hosts = []
         return JSONResponse({"hosts": hosts})
-
-    # These HTML shells carry the live client JS. They must never be cached by a
-    # browser, or a phone that loaded a Space before a deploy keeps running stale
-    # JS (this is what hid the promotion unmute button from a guest after the
-    # invited-banner fix shipped). Assets are versioned via query strings; the
-    # shell itself is always revalidated.
-    _no_cache_headers = {"Cache-Control": "no-cache, no-store, must-revalidate"}
-
-    @app.get("/spaces/live", response_class=HTMLResponse)
-    async def spaces_directory() -> HTMLResponse:
-        static = Path(__file__).resolve().parent.parent / "static" / "spaces.html"
-        if static.exists():
-            return FileResponse(static, media_type="text/html", headers=_no_cache_headers)
-        return HTMLResponse("spaces.html missing", status_code=500)
-
-    @app.get("/space/{space_id}", response_class=HTMLResponse)
-    async def space_page(space_id: str) -> HTMLResponse:  # noqa: ARG001
-        static = _space_html_path()
-        if not static.exists():
-            return HTMLResponse("space.html missing", status_code=500)
-        html, _build_hash = render_space_html()
-        return HTMLResponse(html, headers=_no_cache_headers)
-
-    @app.get("/spaces/build")
-    async def spaces_build() -> JSONResponse:
-        """VER: cheap version endpoint the open Space tab polls to notice a
-        newer build deployed while it was sitting open. Same hash the shell
-        was (or would be) served with, computed from the current file bytes."""
-        static = _space_html_path()
-        if not static.exists():
-            return JSONResponse({"build": ""})
-        _html, build_hash = render_space_html()
-        return JSONResponse({"build": build_hash})

@@ -106,11 +106,68 @@ async def test_remove_with_no_published_track_is_noop(mod, fake):
 
 
 @pytest.mark.asyncio
-async def test_non_remove_actions_do_not_force_mute(mod, fake):
+async def test_promotion_force_mutes_an_already_published_mic_track(mod, fake):
+    # Chef: "when I bring someone up to stage, they are muted by default."
+    # Both clients already land muted on promotion, but that is client good
+    # behavior, not a control: a stale cached build, a third-party client, or a
+    # participant who was on stage moments ago can arrive at the grant with a
+    # live mic track already published. Mute it at the SFU so the default does
+    # not depend on anyone cooperating. Mirrors the demote backstop above.
     fake.set_participant("alice", json.dumps({"hand_raised": True, "invited_to_stage": False}))
+    fake._participants["alice"].tracks = [
+        FakeTrack("TR_mic", api.TrackSource.MICROPHONE),
+        FakeTrack("TR_cam", api.TrackSource.CAMERA),
+    ]
+    await mod.stage_action("space-x", "alice", "invite")
+    # The camera is untouched: this is about landing muted, not about taking
+    # away a grant they were just given.
+    assert fake.muted == [("alice", "TR_mic", True)]
+    assert fake.updates[-1].permission.can_publish is True
+
+
+@pytest.mark.asyncio
+async def test_an_action_that_keeps_someone_on_stage_never_cuts_them_off(mod, fake):
+    # The mute rides the TRANSITION onto the stage, not "the result is
+    # on_stage". A host re-inviting someone who is already up and mid-sentence
+    # must not silence them, and invite/raise_hand are both idempotent.
+    fake.set_participant("alice", json.dumps({"hand_raised": True, "invited_to_stage": True}))
     fake._participants["alice"].tracks = [FakeTrack("TR_mic", api.TrackSource.MICROPHONE)]
     await mod.stage_action("space-x", "alice", "invite")
     assert fake.muted == []
+
+
+@pytest.mark.asyncio
+async def test_an_action_that_does_not_promote_does_not_force_mute(mod, fake):
+    # Raising a hand with no invite standing is not a promotion: nothing about
+    # the participant's publish grant changed, so there is nothing to default.
+    fake.set_participant("alice", "")
+    fake._participants["alice"].tracks = [FakeTrack("TR_mic", api.TrackSource.MICROPHONE)]
+    await mod.stage_action("space-x", "alice", "raise_hand")
+    assert fake.muted == []
+    assert fake.updates[-1].permission.can_publish is False
+
+
+@pytest.mark.asyncio
+async def test_promotion_with_no_published_track_is_noop(mod, fake):
+    # The ordinary case by far: a listener has no mic track to mute, because
+    # they could not publish one. No mute call, no error.
+    fake.set_participant("alice", json.dumps({"hand_raised": True, "invited_to_stage": False}))
+    await mod.stage_action("space-x", "alice", "invite")
+    assert fake.muted == []
+
+
+@pytest.mark.asyncio
+async def test_promotion_mute_failure_does_not_fail_the_promotion(mod, fake):
+    # Same posture as the demote backstop: the permission grant already applied
+    # and is the primary control. Losing the mute must not cost the promotion.
+    fake.set_participant("alice", json.dumps({"hand_raised": True, "invited_to_stage": False}))
+    fake._participants["alice"].tracks = [FakeTrack("TR_mic", api.TrackSource.MICROPHONE)]
+
+    async def boom(req):
+        raise RuntimeError("track vanished")
+
+    fake.mute_published_track = boom
+    assert await mod.stage_action("space-x", "alice", "invite") is True
 
 
 @pytest.mark.asyncio
