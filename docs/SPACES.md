@@ -4,7 +4,7 @@ Sovereign, X-Spaces-style live audio rooms built on skchat's LiveKit call infras
 
 ## 1. Overview
 
-**What Spaces is, in two sentences:** Spaces is skchat's live-audio-room feature, a LiveKit (SFU) room per Space with a host/speaker/listener role model, a raise-hand-plus-invite mutual-consent promotion gate, host moderation (mute/remove/kick/end), optional consent-gated recording, and a set of shared data lanes (chat/watch/whiteboard/doc/terminal/screen-share) for the room's back-channel. It ships a web client (`static/space.html` + `static/spaces.html`), a Flutter client (`lib/features/spaces/`), and the server module (`src/skchat/spaces/`).
+**What Spaces is, in two sentences:** Spaces is skchat's live-audio-room feature, a LiveKit (SFU) room per Space with a host/speaker/listener role model, a raise-hand-plus-invite mutual-consent promotion gate, host moderation (mute/remove/kick/end), optional consent-gated recording, and a set of shared data lanes (chat/watch/whiteboard/doc/terminal/screen-share) for the room's back-channel. It ships a Flutter client (`lib/features/spaces/`, served at `/app/`) and the server module (`src/skchat/spaces/`). The original plain-HTML web client (`static/space.html` + `static/spaces.html`) was DELETED 2026-08-15: it was a second, older client kept alive only by legacy links that no longer exist.
 
 **Sovereign posture:** every Space runs on a self-hosted LiveKit SFU on the operator's tailnet, no third-party media server. Off-tailnet reach (guests, cellular clients) rides the operator's own coturn TURN relay and the operator's own Tailscale Funnel `:443`, never a SaaS calling product. See §2.8 Connectivity for the exact current posture and its honest limits.
 
@@ -17,7 +17,6 @@ Sovereign, X-Spaces-style live audio rooms built on skchat's LiveKit call infras
 | `src/skchat/spaces/roles.py` | role-to-LiveKit-grant mapping (`Role.HOST/SPEAKER/LISTENER`, `grant_for()`) |
 | `src/skchat/spaces/moderation.py` | the raise-hand/invite AND-gate (`apply_action`) + the `Moderator` LiveKit wrapper (mute/kick/stage transitions) |
 | `src/skchat/spaces/registry.py` | the "live now" Space registry, JSON-backed at `~/.skchat/spaces.json` |
-| `src/skchat/static/space.html` | the web room UI: join card, control-bar state machine, invited banner, share |
 | `lib/features/spaces/space_room_screen.dart` (skchat-app repo) | the Flutter room screen |
 
 **The data it owns:** `Space` records (`~/.skchat/spaces.json`), per-speaker recording consent (`~/.skchat/spaces-consent.json`), lane events (`~/.skchat/lanes.db`, SQLite), and recording files (`~/.skchat/spaces-recordings/<space_id>.ogg`). It does NOT own identity (capauth), transport envelopes (skcomms), or the SFU media plane itself (LiveKit).
@@ -60,8 +59,6 @@ One glance: a Space is a room on ONE sovereign LiveKit SFU. The webui process bo
 ```mermaid
 flowchart TD
     subgraph clients["Client tier"]
-      WEB["static/space.html<br/>web room UI"]
-      DIR["static/spaces.html<br/>web live directory"]
       APP["Flutter space_room_screen.dart<br/>(skchat-app)"]
     end
 
@@ -117,7 +114,7 @@ flowchart LR
     class WEBUI,LK,COTURN priv
 ```
 
-- **`/`** proxies to `localhost:8765` (`skchat-webui@lumina.service`), which is where every `/spaces/*` and `/sfu/*` route lives (they are registered on the same FastAPI app the web client is served from), and where `GET /spaces/live` and `GET /space/{id}` serve the HTML shells.
+- **`/`** proxies to `localhost:8765` (`skchat-webui@lumina.service`), which is where every `/spaces/*` and `/sfu/*` route lives, and where `GET /app/{path}` serves the Flutter client. The old `GET /spaces/live` and `GET /space/{id}` HTML shells are gone (2026-08-15).
 - **`/livekit-ws`** proxies to the tailnet SFU (`100.108.59.57:7880`) so an off-tailnet client's signaling websocket is reachable at all; `public_aware_livekit_url()` (`src/skchat/livekit_routes.py:326`) decides per-request whether a client gets the tailnet `SKCHAT_LIVEKIT_URL` or the public `SKCHAT_LIVEKIT_PUBLIC_URL`, based on whether the request demonstrably arrived off-tailnet.
 - **`tcp :8443` / `tcp :10000`** are raw TLS-over-TCP legs for the coturn TURNS relay, not HTTP paths; they exist so a restrictive-NAT client can still get a TURN relay when a firewall blocks other ports.
 - All Spaces backends bind `127.0.0.1` / the tailnet only; the Funnel tunnel is the only public listener, matching SK-STD-008's "exactly one public `:443`" rule. There is no reverse proxy in front (Tier 0), because Spaces shares one hostname with the rest of skchat and needs only path-routing, not vhosting.
@@ -228,7 +225,7 @@ sequenceDiagram
     R-->>Actor: {ok: true}
 ```
 
-`remove-from-stage` is the one route that permits BOTH the host and the speaker's own identity, exactly matching the web client's self-service "Leave stage" button (`space.html:439-447`) and the AND-gate's symmetric teardown.
+`remove-from-stage` is the one route that permits BOTH the host and the speaker's own identity, matching the app's self-service "Leave stage" affordance and the AND-gate's symmetric teardown.
 
 ### 2.9 Sequence: END (host-explicit) vs. bare disconnect (the honest gap)
 
@@ -294,20 +291,20 @@ A separate, fully-implemented and unit-tested layer (`src/skchat/spaces/federati
 3. **Live.** Listeners raise hands, the host invites, the AND-gate promotes them to speaker (§2.6). The host moderates: mute (§2.7), remove-from-stage / self-leave-stage (§2.8), kick (hard SFU eviction, `Moderator.kick`), and can start/stop consent-gated recording (§2.9).
 4. **End, honestly.** There are exactly two ways a Space's lifecycle actually terminates in the server's bookkeeping, and they are NOT symmetric (see §2.13, item 1):
    - **Explicit `/end`** (host-only): marks the Space `ENDED`, persists it, and it stops appearing in `GET /spaces`. This is the only clean path.
-   - **Bare disconnect / tab close / app "Leave"**: the client tears down its own LiveKit connection and nothing else. No route is called. The Space stays listed as live indefinitely. The Flutter "Leave" action (`space_room_screen.dart:350-354`, `SpaceRoomNotifier.leave()`) and the web page's tab-close path are both silent from the server's point of view; there is no `beforeunload`/`pagehide` handler in `space.html` and no HTTP call in the Flutter `leave()`.
+   - **Bare disconnect / tab close / app "Leave"**: the client tears down its own LiveKit connection and nothing else. No route is called. The Space stays listed as live indefinitely. The Flutter "Leave" action (`SpaceRoomNotifier.leave()`) is silent from the server's point of view: no HTTP call.
    - **Host reconnect is unconditional.** `/spaces/{id}/join-host` only checks `status != ended` and `requester == host_fqid` (`routes.py:203-214`); there is no "already connected" gate, so a host who dropped and rejoins gets a fresh HOST token and full resume, no special recovery flow needed, but also nothing stops two host sessions from coexisting if the original session never actually closed.
 
 ### 2.13 KNOWN GAPS / LIMITATIONS (honesty gate)
 
 These are real, verified-against-code limitations, not hedges. Each links the exact evidence.
 
-1. **Zombie Spaces on host disconnect.** There is no LiveKit webhook subscriber anywhere in the codebase (`grep webhook` across `src/skchat` returns zero matches): the server has zero visibility into SFU-side disconnects. A bare tab close / app kill / network loss leaves the Space `status=open`/`live` forever unless a human explicitly calls `/end`. This is the single highest-impact gap: a directory (`GET /spaces`, `spaces.html`) can accumulate stale "live" entries with nobody actually in the room. Approved fix (grace + auto-end via LiveKit webhook, plus resume-as-host): `docs/superpowers/specs/2026-07-18-spaces-host-lifecycle-design.md`, not yet built.
+1. **Zombie Spaces on host disconnect.** There is no LiveKit webhook subscriber anywhere in the codebase (`grep webhook` across `src/skchat` returns zero matches): the server has zero visibility into SFU-side disconnects. A bare tab close / app kill / network loss leaves the Space `status=open`/`live` forever unless a human explicitly calls `/end`. This is the single highest-impact gap: the directory (`GET /spaces`, now consumed only by the Flutter client) can accumulate stale "live" entries with nobody actually in the room. Approved fix (grace + auto-end via LiveKit webhook, plus resume-as-host): `docs/superpowers/specs/2026-07-18-spaces-host-lifecycle-design.md`, not yet built.
 2. **No co-host / moderator tier.** `Role` is exactly `HOST | SPEAKER | LISTENER` (`roles.py:52-55`); grep confirms zero references to a co-host concept for audio Spaces. A host cannot delegate moderation to a trusted second party without handing over the literal `host_fqid` identity.
-3. **Recording exists server-side; the Spaces client never wires the button.** `record/start` and `record/stop` are real, consent-gated, tested routes (`routes.py:389-423`), and `SpacesService.recordStart`/`recordStop` (`spaces_service.dart:75-79`) are real Dart methods: but nothing in `space_room_screen.dart` ever calls them. (The recording button that does exist in the app lives in the separate 1:1/conference call screen, `livekit_call_screen`, not in Spaces.) The web client has no record button at all; it only polls `/spaces` and shows a passive "● REC" pill if a recording happens to be active (`space.html:377-384`).
-4. **STUN-assist connectivity is a design document, not shipped code.** `docs/superpowers/specs/2026-07-18-spaces-connectivity-profiles-design.md` is APPROVED but grep for `iceServers`/`rtcConfig`/STUN handling in `space.html` and the Flutter connect path finds nothing yet. Today's connectivity is exactly two tiers: tailnet direct UDP, or the sovereign coturn TURN relay (see §2.14); there is no per-user "Balanced" profile live.
+3. **Recording exists server-side; the Spaces client never wires the button.** `record/start` and `record/stop` are real, consent-gated, tested routes (`routes.py:389-423`), and `SpacesService.recordStart`/`recordStop` (`spaces_service.dart:75-79`) are real Dart methods: but nothing in `space_room_screen.dart` ever calls them. (The recording button that does exist in the app lives in the separate 1:1/conference call screen, `livekit_call_screen`, not in Spaces.) 
+4. **STUN-assist connectivity is a design document, not shipped code.** `docs/superpowers/specs/2026-07-18-spaces-connectivity-profiles-design.md` is APPROVED but grep for `iceServers`/`rtcConfig`/STUN handling in the Flutter connect path finds nothing yet. Today's connectivity is exactly two tiers: tailnet direct UDP, or the sovereign coturn TURN relay (see §2.14); there is no per-user "Balanced" profile live.
 5. **Off-tailnet direct UDP needs a router change (Phase 2 of the same spec).** Even after STUN-assist ships, it changes nothing until the SFU itself advertises a publicly reachable UDP candidate; `livekit.yaml` today sets `use_external_ip: false` and binds only the tailnet IP. Forwarding the SFU's UDP range on the operator's router is a separate, tracked, not-yet-done infrastructure change.
 6. **`speaker_cap` is stored, not enforced.** `Space.speaker_cap` defaults to 10 (`space.py:35`) and is asserted by exactly one unit test as "a configurable default" (`tests/test_spaces_space.py:32`): no route reads it to reject a raise-hand or an invite once the cap is reached. A host can promote unlimited speakers today.
-7. **Listing order: RESOLVED (newest-first).** `SpaceRegistry.live()` now sorts by `created_at` descending, so the directory list (`GET /spaces`, consumed by both `spaces.html` and the Flutter directory) is newest-first at the source. `created_at` is still not emitted in the `/spaces` JSON payload (the ordering is applied server-side, so clients need not re-sort); a client that wants to display the timestamp would need it surfaced. Spaces created before `created_at` existed default to `0.0` and sort last.
+7. **Listing order: RESOLVED (newest-first).** `SpaceRegistry.live()` now sorts by `created_at` descending, so the directory list (`GET /spaces`, consumed by the Flutter directory) is newest-first at the source. `created_at` is still not emitted in the `/spaces` JSON payload (the ordering is applied server-side, so clients need not re-sort); a client that wants to display the timestamp would need it surfaced. Spaces created before `created_at` existed default to `0.0` and sort last.
 8. **The `/spaces/create` and `/spaces/{id}/join-host` routes trust an asserted `host_fqid`, not a proven one**, by explicit design comment (`routes.py:169-172`): they are tailnet-only until the signed-assertion hardening (`sk-lk-authd`, which already exists for the federation path, §2.11a) is wired into the single-host create/join-host flow too. Do not expose these two routes publicly before that lands.
 
 ### 2.14 Connectivity
@@ -371,7 +368,7 @@ The mic is always a separate track wherever a system-audio track exists, so muti
 
 ## 3. Build
 
-Spaces ships inside the `skchat-sovereign` Python package (`src/skchat/spaces/`), no separate build step. Server dependency: `livekit-api` (Python SDK for RoomService/Egress Twirp calls; soft-imported so the module imports fine without it installed, but `/spaces/create` etc. will 503 without `SKCHAT_LIVEKIT_API_KEY`/`SECRET`). Web client: no build, plain HTML/JS served as a static file with the `livekit-client` UMD bundle from a CDN (`space.html:7`). Flutter client: part of the standard `skchat-app` build (`flutter build web` / native), depends on `livekit_client`, `dio`, `flutter_riverpod`, `go_router`.
+Spaces ships inside the `skchat-sovereign` Python package (`src/skchat/spaces/`), no separate build step. Server dependency: `livekit-api` (Python SDK for RoomService/Egress Twirp calls; soft-imported so the module imports fine without it installed, but `/spaces/create` etc. will 503 without `SKCHAT_LIVEKIT_API_KEY`/`SECRET`). Flutter client: part of the standard `skchat-app` build (`flutter build web` / native), depends on `livekit_client`, `dio`, `flutter_riverpod`, `go_router`.
 
 ```bash
 # Server: same as any skchat install
@@ -434,20 +431,9 @@ Rollback: redeploy the previous `skchat-sovereign` package version and restart t
 | `SKCHAT_SPACES_AUTO_WRITEUP` | unset (disabled) | `1`/`true`/`yes` enables the post-recording transcript write-up background job |
 | `SKREACHD_ENABLED` | unset (disabled) | Gates the term-lane `POST /spaces/{id}/lanes/term/run` sandboxed executor; without it, the route returns an `exec_disabled` event instead of running anything |
 
-### 6.2 Web client (`static/space.html`, `static/spaces.html`)
+### 6.2 Flutter client (`lib/features/spaces/`, `skchat-app` repo)
 
-- **`spaces.html`** is the live directory: polls `GET /spaces` every 5s, renders a card per live Space (title, host, listener/speaker counts, a "● REC" pill if recording), links to `/space/{id}`.
-- **`space.html`** is the room itself. Key behaviors, all verified in the markup:
-  - **Join card**: name input pre-filled from `localStorage` (guarded against Safari private-mode throws, falls back to an in-memory store) or a random `Guest-<Animal><NN>` alias; `?host=<fqid>` in the URL joins as host, `?identity=`/`?name=` join as a specific listener.
-  - **Control-bar state machine** (`updateStageControls()`, `space.html:162-239`): a single function owns whether `#hand`, `#mic`, `#leaveStage`, and the invited banner are shown, so they cannot drift out of sync (a documented prior bug: a promoted speaker used to see a stale "Raise hand" button next to a separate "Unmute" button). States: not connected -> listener -> hand raised -> invited-not-yet-onstage -> onstage/speaker -> demoted (collapses back to listener).
-  - **Invited banner**: shown when `invited_to_stage=true` and not yet on stage; dismissible (latched client-side until the next invite re-arms it).
-  - **Share**: native OS share sheet where available, else clipboard copy with an inline "Link copied" notice (`space.html:389-411`).
-  - **Version self-heal**: the HTML shell is served with `Cache-Control: no-cache, no-store, must-revalidate` so a phone that loaded a Space before a deploy never keeps running stale JS on a fresh load. For an ALREADY-open tab, the page also carries a build stamp (`const SPACE_BUILD`, substituted server-side from a hash of `space.html`) and polls `GET /spaces/build` on `visibilitychange`; if the deployed build differs it reloads (auto on the join card, or a "new version, tap to reload" prompt if live in a Space).
-  - **Host controls**: clicking a participant ring prompts for `invite` / `remove-from-stage` / `kick` (host-only, gated client-side by the presence of `?host=`, but the server independently enforces `_require_host` on every one of those routes regardless of what the client sends).
-
-### 6.3 Flutter client (`lib/features/spaces/`, `skchat-app` repo)
-
-- `spaces_directory_screen.dart`: the live-Spaces list (app equivalent of `spaces.html`).
+- `spaces_directory_screen.dart`: the live-Spaces list, and since 2026-08-15 the only directory there is.
 - `space_room_screen.dart` (1693 lines): the room screen: participant grid with speaking-ring pulse (`_soulColorFor`, per-agent color), the invited-to-stage banner (`_InvitedToStageBanner`), header with live listener count (`listeners = participants.where((p) => !p.canPublish).length`), a lanes FAB opening a draggable bottom sheet with Chat / Watch together / Whiteboard / Shared doc / Screen share / Terminal panels.
 - `space_share_sheet.dart`: share to an existing skchat chat/group, OS native share, or copy-link; the join URL is derived from the runtime `backendConfigProvider`, never hardcoded.
 - `services/spaces_service.dart`: the Dio-backed HTTP client for every `/spaces/*` route (`listLive`, `create`, `joinListener`, `joinHost`, `raiseHand`, `invite`, `removeFromStage`, `mute`, `kick`, `end`, `consent`, `recordStart`, `recordStop`: the last two are defined but never called, §2.13 item 3).
@@ -480,8 +466,6 @@ All routes are registered on the skchat webui's FastAPI app (`webui.py:132-134`)
 | `POST /spaces/{id}/record/stop` | host-only | `{requester}` | `{ok, writeup_started}` |
 | `POST /sfu/get` | signed capauth FQID assertion | `{claim, sig}` | LiveKit token response, `403` on bad/replayed assertion |
 | `GET /sfu/candidates` | none (best-effort, never 500) | (none) | `{hosts: [{fqid, auth_url, sfu_ws_url}]}` |
-| `GET /spaces/live` | none | (none) | the `spaces.html` directory shell |
-| `GET /space/{id}` | none | (none) | the `space.html` room shell |
 
 ---
 
@@ -497,7 +481,7 @@ All routes are registered on the skchat webui's FastAPI app (`webui.py:132-134`)
 | Off-tailnet guest can't connect media at all | Confirm coturn is reachable: `systemctl --user status skchat-coturn.service`; confirm the Funnel TCP legs are live per `systemd/TAILSCALE-INGRESS.md` (`tailscale funnel status`). |
 | Federation `/sfu/get` returns `403` | Check the assertion signature against the caller's pinned key (`federation/keystore.py` TOFU pin) and that the nonce hasn't already been consumed (`federation/nonce.py`, replay window 300s). |
 | `/sfu/candidates` always returns an empty list | `SKCHAT_NOSTR_RELAYS` unset, or no host has called the advertise path (`federation/advertise.py`) recently; this route is best-effort by design and never errors. |
-| Stale JS on a guest's phone after a deploy | Should not happen: `space.html`/`spaces.html` are served `no-cache, no-store, must-revalidate` (`routes.py:495`). If it does, check the reverse-proxy/Funnel layer isn't caching the shell itself. |
+| Stale JS on a guest's phone after a deploy | The Flutter client's `index.html` and `main.dart.js` are served `no-cache, must-revalidate` (`conf/routes.py`, the `volatile` set). If it persists, check the reverse-proxy/Funnel layer is not caching them, and confirm the served bundle size matches the file on disk. |
 
 ---
 
@@ -521,14 +505,14 @@ All routes are registered on the skchat webui's FastAPI app (`webui.py:132-134`)
 | Raise-hand | HAVE | `routes.py:274-286` |
 | Host invite | HAVE | `routes.py:288-301` |
 | Mutual-consent (AND-gate) promotion | HAVE | `moderation.py:49-67` |
-| Self mute/unmute | HAVE | `space.html:359-375`, `space_room_screen.dart:256-264` |
+| Self mute/unmute | HAVE | `space_room_screen.dart:256-264` |
 | Host force-mute | HAVE (host-only) | `routes.py:318-328` -> `moderation.py:189-194` |
 | Remove speaker (host or self) | HAVE | `routes.py:303-316` |
 | Kick (hard eviction) | HAVE (host-only) | `routes.py:330-338` |
 | End | HAVE (host-only) | `routes.py:255-263` |
-| Share / invite link | HAVE | `space.html:389-411`, `space_share_sheet.dart` |
-| Speaking indicators | HAVE | `space.html:28-30,302`; `space_room_screen.dart:1172` |
-| Listener count | HAVE | `space.html:308`; `space_room_screen.dart:718-752` |
+| Share / invite link | HAVE | `space_share_sheet.dart` |
+| Speaking indicators | HAVE | `space_room_screen.dart:1172` |
+| Listener count | HAVE | `space_room_screen.dart:718-752` |
 | Data lanes (chat/watch/whiteboard/doc/terminal/screen-share) | HAVE | `lanes.py`, `space_room_screen.dart:482-527` |
 | Recording | PARTIAL | server + consent complete (`routes.py:389-423`, `consent.py`); no client button in Spaces (§2.13 item 3) |
 | Co-host | MISSING | no code path (sovereign scope decision, considered YAGNI so far) |

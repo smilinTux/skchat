@@ -12,11 +12,7 @@ import time
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import (
-    FileResponse,
-    HTMLResponse,
-    JSONResponse,
-)
+from fastapi.responses import JSONResponse
 
 from skchat.spaces.lanes import KNOWN_LANES, LaneDispatcher, LaneStore
 from skchat.spaces.registry import SpaceRegistry
@@ -517,17 +513,3 @@ def register_spaces_routes(
             logger.warning("sfu/candidates discovery failed: %s", exc)
             hosts = []
         return JSONResponse({"hosts": hosts})
-
-    # The directory shell carries live client JS and must never be cached, or a
-    # phone that loaded it before a deploy keeps running stale JS. The Space
-    # page itself no longer exists here: it was a second, older client that the
-    # Flutter app at /app/ replaced, and it is gone rather than redirected
-    # because there is no legacy link traffic to preserve.
-    _no_cache_headers = {"Cache-Control": "no-cache, no-store, must-revalidate"}
-
-    @app.get("/spaces/live", response_class=HTMLResponse)
-    async def spaces_directory() -> HTMLResponse:
-        static = Path(__file__).resolve().parent.parent / "static" / "spaces.html"
-        if static.exists():
-            return FileResponse(static, media_type="text/html", headers=_no_cache_headers)
-        return HTMLResponse("spaces.html missing", status_code=500)
