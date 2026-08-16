@@ -6,19 +6,16 @@ connects — so these routes are fully testable with a dummy key/secret.
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import os
 import time
 from pathlib import Path
-from urllib.parse import quote
 
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import (
     FileResponse,
     HTMLResponse,
     JSONResponse,
-    RedirectResponse,
 )
 
 from skchat.spaces.lanes import KNOWN_LANES, LaneDispatcher, LaneStore
@@ -30,40 +27,6 @@ from skchat.spaces.tokens import mint_space_token
 logger = logging.getLogger("skchat.spaces.routes")
 
 _DEFAULT_TTL = int(os.getenv("SKCHAT_LIVEKIT_TOKEN_TTL", "21600"))
-
-# VER: build-stamp placeholder in space.html, substituted with a short stable
-# hash of the file's ORIGINAL bytes so an already-open tab can notice a newer
-# deploy landed (no amount of server no-cache headers helps a tab that never
-# reloads) and self-heal instead of silently running stale JS.
-_SPACE_HTML_PLACEHOLDER = "__SPACE_BUILD__"
-
-
-def _space_html_path() -> Path:
-    """Path to the Space page HTML shell, resolved relative to this module."""
-    return Path(__file__).resolve().parent.parent / "static" / "space.html"
-
-
-def _compute_build_hash(raw: bytes) -> str:
-    """Short stable build stamp: first 12 hex chars of a sha1 of the file bytes."""
-    return hashlib.sha1(raw).hexdigest()[:12]
-
-
-def render_space_html() -> tuple[str, str]:
-    """Read space.html, hash the ORIGINAL bytes (stable per deploy, computed
-    before any substitution), and replace the __SPACE_BUILD__ placeholder with
-    that hash.
-
-    Returns ``(html_text, build_hash)``. If the placeholder is not present the
-    file is served unchanged (never crash), while the hash is still computed
-    and returned so GET /spaces/build always agrees with what was served.
-    """
-    raw = _space_html_path().read_bytes()
-    build_hash = _compute_build_hash(raw)
-    text = raw.decode("utf-8")
-    if _SPACE_HTML_PLACEHOLDER in text:
-        text = text.replace(_SPACE_HTML_PLACEHOLDER, build_hash)
-    return text, build_hash
-
 
 def _url() -> str:
     return os.getenv("SKCHAT_LIVEKIT_URL", "ws://skworld-100:7880")
@@ -555,11 +518,11 @@ def register_spaces_routes(
             hosts = []
         return JSONResponse({"hosts": hosts})
 
-    # These HTML shells carry the live client JS. They must never be cached by a
-    # browser, or a phone that loaded a Space before a deploy keeps running stale
-    # JS (this is what hid the promotion unmute button from a guest after the
-    # invited-banner fix shipped). Assets are versioned via query strings; the
-    # shell itself is always revalidated.
+    # The directory shell carries live client JS and must never be cached, or a
+    # phone that loaded it before a deploy keeps running stale JS. The Space
+    # page itself no longer exists here: it was a second, older client that the
+    # Flutter app at /app/ replaced, and it is gone rather than redirected
+    # because there is no legacy link traffic to preserve.
     _no_cache_headers = {"Cache-Control": "no-cache, no-store, must-revalidate"}
 
     @app.get("/spaces/live", response_class=HTMLResponse)
@@ -568,49 +531,3 @@ def register_spaces_routes(
         if static.exists():
             return FileResponse(static, media_type="text/html", headers=_no_cache_headers)
         return HTMLResponse("spaces.html missing", status_code=500)
-
-    @app.get("/space/{space_id}", response_class=HTMLResponse)
-    async def space_page(space_id: str, legacy: int = 0) -> Response:
-        """Send a shared Space link to the app that actually renders a Space.
-
-        This path used to serve `space.html` directly, and the app's own share
-        sheet built its invite URLs against it. That page is a DIFFERENT,
-        older client: it has no Watch Together in it at all, so a guest handed
-        an invite joined the right room and then sat looking at an app with no
-        video in it. Redirecting heals every link already sent, which is the
-        half the app-side fix cannot reach.
-
-        `#` is load-bearing. The Flutter app is mounted at `/app/`
-        (`<base href="/app/">`) and calls no `usePathUrlStrategy`, so it runs
-        on Flutter web's default HASH strategy: `/app/spaces/{id}` would serve
-        index.html through the SPA catch-all and then boot the router with an
-        empty route, landing the guest on the home screen. A fragment in a
-        Location header is applied by the browser, not sent upstream, which is
-        exactly what is wanted here.
-
-        `?legacy=1` still serves the old page. It is the only client that
-        works if the Flutter build is missing or broken, and turning a working
-        fallback into a 404 to fix a link is a bad trade.
-        """
-        if not legacy:
-            return RedirectResponse(
-                url=f"/app/#/spaces/{quote(space_id, safe='')}",
-                status_code=302,
-                headers=_no_cache_headers,
-            )
-        static = _space_html_path()
-        if not static.exists():
-            return HTMLResponse("space.html missing", status_code=500)
-        html, _build_hash = render_space_html()
-        return HTMLResponse(html, headers=_no_cache_headers)
-
-    @app.get("/spaces/build")
-    async def spaces_build() -> JSONResponse:
-        """VER: cheap version endpoint the open Space tab polls to notice a
-        newer build deployed while it was sitting open. Same hash the shell
-        was (or would be) served with, computed from the current file bytes."""
-        static = _space_html_path()
-        if not static.exists():
-            return JSONResponse({"build": ""})
-        _html, build_hash = render_space_html()
-        return JSONResponse({"build": build_hash})
