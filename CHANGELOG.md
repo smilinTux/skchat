@@ -12,6 +12,48 @@ standards.
 
 ## [Unreleased]
 
+### Added
+- **Browser QA lane (skwatchdog WD-10, card `01b304a5`).** `skchat browser-qa run`
+  walks skchat web in a real Chrome over raw CDP, captures a screenshot plus the
+  console per step, grades the **image**, and writes one result artifact
+  (`~/.skchat/browser-qa/<run_id>/result.json`) that the skos watchdog folds into
+  the daily digest as ordinary `WatchdogEvent` records. Report-only: it never
+  opens a card, writes a GTD item, or restarts anything.
+
+  Why an image and not the DOM: Flutter web renders into a canvas, so
+  `document.body.innerText` is empty on a fully working page. A share-link fix
+  shipped with the route correctly present in the compiled bundle and still
+  rendered a blank grey screen, because the route did an unguarded cast on a
+  router extra that is null for a shared link. It was caught only when a human
+  loaded the page. Grading therefore measures pixels: a frame where one colour
+  covers 99.5% or more is the blank-screen signature.
+
+  Safety, non-negotiable: the lane **never navigates to an existing Space**
+  (`/app/#/spaces/{id}` joins a live call and can publish audio), and
+  `assert_safe_url` refuses the whole room route family on every navigation. When
+  a run genuinely needs a room it creates its own over plain HTTP and ends it in
+  the same run, guaranteed on the failure path by a `try/finally`, a pre-create
+  reap record, and a reap sweep at the start of every run. It defaults to CDP port
+  **9232**, never 9229 (the daily instance) or 9222/9223 (the agent instances).
+
+  Severity discipline: only deterministic evidence (unreachable API, failed
+  navigation, failed capture, blank frame, un-ended Space) earns `problem`, since
+  a `problem` files a GTD item. A model verdict of `fail`, a console error, a slow
+  boot, a missing browser, and an ungraded run all top out at `notable`. When
+  skgateway is unreachable the run carries a noted gap and **no verdict is
+  invented**.
+
+  A blind grader is also a fabricated verdict, so the model must read three
+  random digits off a generated test image before it is trusted to judge a
+  screenshot. Caught in the field during this card: `sk-default` routes to
+  `openai/gpt-oss-20b` (`modality: text->text`), which scored a correctly
+  rendered onboarding screen 1 out of 5 with "the page shows no usable UI",
+  having judged the console log alone. The run now skips with
+  `vision_unavailable` instead. Likewise, 401/403 auth challenges from the
+  lane's own fresh unauthenticated profile are kept in the evidence but
+  excluded from severity, so the digest does not carry a `notable` line every
+  morning for behaving correctly. Runbook: `runbooks/browser-qa-lane.md`.
+
 ### Fixed
 - **The `/api/v1/audience-token` mint endpoint no longer persists a file.**
   `mint_agent_audience_token` is now called with `store=False`: this endpoint
