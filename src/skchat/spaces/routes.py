@@ -24,6 +24,7 @@ logger = logging.getLogger("skchat.spaces.routes")
 
 _DEFAULT_TTL = int(os.getenv("SKCHAT_LIVEKIT_TOKEN_TTL", "21600"))
 
+
 def _url() -> str:
     return os.getenv("SKCHAT_LIVEKIT_URL", "ws://skworld-100:7880")
 

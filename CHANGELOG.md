@@ -116,6 +116,50 @@ standards.
   `docs-check` CI gate at tiers 1,2.
 
 ### Security (crypto-relevant)
+- **Guest enrollment supplies a real proof, and the pairing mirror now sends
+  capauth a canonical subject.** Two silent-degradation bugs on the same path.
+
+  `enroll_device` has required a `proof` for the `verified` tier since capauth
+  card N10, and skchat sent none, so `verified` enrollment simply stopped
+  working. `POST /enroll/open` now optionally takes a `device_pubkey` and
+  returns a `capauth_challenge`; the device signs it and returns
+  `capauth_proof` on `POST /enroll`. The SERVER derives the challenge via
+  capauth's own helpers rather than having each client re-implement the
+  fingerprint and subject-canonicalization rules, because a client that got
+  either wrong would emit a proof capauth rejects, and a rejected proof
+  degrades the tier silently. Old clients are neither locked out nor silently
+  promoted: they enroll `tofu`, with a WARNING naming every capability the PDP
+  will now deny, and `enrollment_mode` on the response so the degradation is
+  visible immediately.
+
+  Separately, capauth's fqid grammar admits only `device:<16-64 hex>` or
+  `<local>@...<org-domain>`, and refuses anything else instead of storing it
+  verbatim as 0.3.1 did. skchat passed a bare PGP fingerprint
+  (`mirror_admission`) or an operator fqid (`mirror_trusted_operator`), so
+  every mirrored enrollment raised `SubjectNamingError` into a `logger.warning`
+  and was swallowed: skchat's SQLite recorded the trust while capauth recorded
+  nothing, which is invisible at every later read and is exactly the divergence
+  the mirror exists to prevent. `_capauth_subject()` now does that mapping in
+  one place so the enroll paths cannot drift apart.
+
+  `mirror_revocation` deliberately still passes the RAW pin. capauth's
+  `list_devices` already matches both the raw spelling and its canonical form
+  (capauth card N3), so canonicalizing there would be a regression: it would
+  stop matching legacy records stored verbatim, which are the oldest and
+  longest-trusted ones. Migrating those is capauth's own job via
+  `apply_canonical_rewrite`.
+
+  `mirror_trusted_operator` records `tofu`, not `attested`, and says so loudly.
+  skchat holds only the remote operator's PUBLIC key; `attested` asserts that
+  the vouching operator signed capauth's attested challenge, and no such
+  signature exists on this path or can be manufactured. A caller that genuinely
+  holds an attestation passes it and gets the real tier.
+
+  Known gap, carded as `1e2268ef`: `grant_agent_capabilities` and
+  `backfill_agent_capabilities` still pass `sign=False`, so agent-subject
+  tokens (`lumina@`, `opus@`) authorize nothing. Same class of bug, different
+  path, left out of this change rather than widening its blast radius.
+
 - **Voice-call privilege is resolved from the signature-verified invite FQID, not
   from the LiveKit display identity.** New `skchat/voice_engine/caller_profile.py`
   resolves a `CallerProfile` (`operator | companion | guest`) by EXACT match of the

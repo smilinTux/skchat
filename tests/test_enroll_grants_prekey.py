@@ -92,19 +92,37 @@ def client(tmp_path, monkeypatch):
     return TestClient(app, client=("127.0.0.1", 12345))
 
 
-def _enroll_and_session(client) -> str:
-    """Run the full enroll -> challenge -> session handshake; return the token."""
+def _enroll_and_session(client, *, send_capauth_proof: bool = True) -> str:
+    """Run the full enroll -> challenge -> session handshake; return the token.
+
+    With ``send_capauth_proof`` this is the CURRENT client flow: post the device
+    pubkey to ``/enroll/open`` to receive capauth's enrollment challenge, and
+    sign it into ``capauth_proof`` alongside the existing window-nonce signature.
+    Two distinct signatures over two domain-separated payloads, both by the same
+    device key: ``sig`` authenticates the enroll request to skchat, and
+    ``capauth_proof`` is what capauth requires before it will record ``verified``
+    (card N10).
+
+    Without it, this is the SHIPPED web build: it never sends a capauth proof,
+    must still enroll successfully, and must land at the tofu floor.
+    """
     priv, pub = _kp()
-    w = client.post("/api/v1/auth/enroll/open").json()
-    e = client.post(
-        "/api/v1/auth/enroll",
-        json={
-            "device_pubkey": pub,
-            "window_nonce": w["window_nonce"],
-            "sig": _sig(priv, _canon({"nonce": w["window_nonce"], "device_pubkey": pub})),
-        },
-    )
+    w = client.post(
+        "/api/v1/auth/enroll/open",
+        json={"device_pubkey": pub} if send_capauth_proof else None,
+    ).json()
+    body = {
+        "device_pubkey": pub,
+        "window_nonce": w["window_nonce"],
+        "sig": _sig(priv, _canon({"nonce": w["window_nonce"], "device_pubkey": pub})),
+    }
+    if send_capauth_proof:
+        assert "capauth_challenge" in w, w
+        body["capauth_proof"] = _sig(priv, base64.b64decode(w["capauth_challenge"]))
+    e = client.post("/api/v1/auth/enroll", json=body)
     assert e.status_code == 200, e.text
+    expected_mode = "verified" if send_capauth_proof else "tofu"
+    assert e.json()["enrollment_mode"] == expected_mode, e.text
     fp = e.json()["device_fp"]
     assert e.json()["approved"] is False  # Phase 3: a fresh fp always lands pending
     # Simulate the operator approving from the CLI (or another already-linked
@@ -132,6 +150,35 @@ def test_enrolled_device_can_publish_prekey(client):
     )
     assert resp.status_code == 200, resp.text
     assert resp.json()["ok"] is True
+
+
+def test_legacy_client_with_no_capauth_proof_enrolls_but_is_denied_prekey(client):
+    """The shipped web build is NOT locked out, and NOT silently promoted either.
+
+    It cannot sign capauth's enrollment challenge (it does not know to), so it
+    enrolls at ``tofu``. ``skchat.prekey`` requires ``attested``, so the PDP
+    denies it. That is the honest, visible cost of not proving the tier, and it
+    is reported back on the enroll response (``enrollment_mode``) rather than
+    only surfacing here as an unexplained 403.
+
+    The alternative, recording ``verified`` on a claim nobody checked, is exactly
+    what capauth card N10 exists to stop: ``verified`` also gates
+    ``skcode.dispatch``, remote code execution as the subject.
+    """
+    token = _enroll_and_session(client, send_capauth_proof=False)
+    resp = client.post(
+        "/api/v1/prekey",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"suite": "x25519-mlkem768", "hybrid_public_hex": "ef" * 32, "key_id": "12345678"},
+    )
+    assert resp.status_code == 403, resp.text
+
+
+def test_enroll_open_without_a_pubkey_keeps_its_original_shape(client):
+    """The shipped client POSTs no body at all; that must not 400 or change."""
+    r = client.post("/api/v1/auth/enroll/open")
+    assert r.status_code == 200, r.text
+    assert set(r.json()) == {"window_nonce", "exp"}
 
 
 def test_never_enrolled_session_is_still_denied(client):
