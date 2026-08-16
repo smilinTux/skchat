@@ -38,7 +38,7 @@ USAGE
         --base https://noroc2027.tail204f0c.ts.net:10000 \\
         [--cdp-a ws://100.x.x.x:9250/...] [--cdp-b ws://100.y.y.y:9251/...] \\
         [--operator-token <SKCHAT_GUEST_OPERATOR_TOKEN>] \\
-        [--host-fqid lumina@chef.skworld] [--timeout 30] [--keep-open]
+        [--host-fqid lumina@chef.skworld.io] [--timeout 30] [--keep-open]
 
 Exit code 0 = all requested scenarios PASS, non-zero otherwise. This module is
 import-safe: the pure helpers (url build, token mint, ICE assertion, chrome flag
@@ -997,7 +997,7 @@ def build_parser() -> argparse.ArgumentParser:
                     help="CDP url for browser B; omit to launch a local dedicated chrome")
     ap.add_argument("--operator-token", default=os.getenv("SKCHAT_GUEST_OPERATOR_TOKEN"),
                     help="operator bearer token for /guest/invite (else loopback/tailnet trust)")
-    ap.add_argument("--host-fqid", default=os.getenv("GCV_HOST_FQID", "lumina@chef.skworld"),
+    ap.add_argument("--host-fqid", default=os.getenv("GCV_HOST_FQID", "lumina@chef.skworld.io"),
                     help="host FQID used to mint confs")
     ap.add_argument("--peer", default=os.getenv("GCV_PEER", "guest@public"),
                     help="peer arg for /connectivity/ice (scenario d)")

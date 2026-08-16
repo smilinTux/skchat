@@ -420,7 +420,7 @@ def test_conf_token_funnel_same_hostname_gets_public(monkeypatch, tmp_path):
     # Loopback peer = tailscaled Funnel terminus.
     client = _make_conf_client(tmp_path, ("127.0.0.1", 54321))
     created = client.post(
-        "/conf/create", json={"host_fqid": "lumina@chef.skworld", "title": "Standup"}
+        "/conf/create", json={"host_fqid": "lumina@chef.skworld.io", "title": "Standup"}
     )
     assert created.status_code == 200, created.text
     room = created.json()["room"]
@@ -442,7 +442,7 @@ def test_conf_token_tailnet_peer_same_hostname_gets_tailnet(monkeypatch, tmp_pat
     monkeypatch.setenv("SKCHAT_LIVEKIT_API_SECRET", "secret-0123456789")
     client = _make_conf_client(tmp_path, ("100.64.0.5", 12345))
     created = client.post(
-        "/conf/create", json={"host_fqid": "lumina@chef.skworld", "title": "Standup"}
+        "/conf/create", json={"host_fqid": "lumina@chef.skworld.io", "title": "Standup"}
     )
     assert created.status_code == 200, created.text
     room = created.json()["room"]

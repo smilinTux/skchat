@@ -80,9 +80,9 @@ The **sovereign cross-realm path works end-to-end** for a conf hosted on .158's 
    jarvis's `GET /conf/candidates` (via the relay) with the `auth_url` to mint.
 2. jarvis mints a token with its OWN identity:
    `ssh .41 'SKAGENT=jarvis skchat conf join-federated --host https://noroc2027.tail204f0c.ts.net --room <ROOM> --json'`
-   → lumina verifies jarvis's signed assertion (trust + pinned key) and mints (`sub: jarvis@chef.skworld`,
+   → lumina verifies jarvis's signed assertion (trust + pinned key) and mints (`sub: jarvis@chef.skworld.io`,
    `iss: skchat-lumina`).
-3. `drive_fed.py` (two headless-Chrome tabs, fake media) → **lumina sees `jarvis@chef.skworld` with
+3. `drive_fed.py` (two headless-Chrome tabs, fake media) → **lumina sees `jarvis@chef.skworld.io` with
    video, jarvis sees `lumina` with video — both ways.** This is the true Shape-B federated sovereign
    call (vs Shape A's shared key). **Only the .41-HOSTED direction remains** (the conf on .41's SFU),
    which is what the networking knot below blocks.

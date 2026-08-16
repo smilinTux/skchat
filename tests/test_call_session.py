@@ -9,14 +9,14 @@ from skchat.call_session import (
 
 
 def test_derive_room_is_order_independent():
-    a, b = "lumina@chef.skworld", "opus@chef.skworld"
+    a, b = "lumina@chef.skworld.io", "opus@chef.skworld.io"
     assert derive_room(a, b) == derive_room(b, a)
 
 
 def test_derive_room_is_stable_and_well_formed():
-    room = derive_room("lumina@chef.skworld", "opus@chef.skworld")
+    room = derive_room("lumina@chef.skworld.io", "opus@chef.skworld.io")
     assert room.startswith("call-")
-    assert room == derive_room("lumina@chef.skworld", "opus@chef.skworld")
+    assert room == derive_room("lumina@chef.skworld.io", "opus@chef.skworld.io")
     assert "lumina" not in room and "opus" not in room
     suffix = room[len("call-") :]
     assert len(suffix) == 16 and suffix == suffix.lower()
@@ -27,22 +27,22 @@ def test_derive_room_distinct_pairs_differ():
 
 
 def test_derive_room_strips_whitespace():
-    assert derive_room("  lumina@chef.skworld  ", "opus@chef.skworld") == derive_room(
-        "lumina@chef.skworld", "opus@chef.skworld"
+    assert derive_room("  lumina@chef.skworld.io  ", "opus@chef.skworld.io") == derive_room(
+        "lumina@chef.skworld.io", "opus@chef.skworld.io"
     )
 
 
 def test_invite_body_roundtrip():
     body = build_invite_body(
-        from_fqid="opus@chef.skworld",
-        to_fqid="lumina@chef.skworld",
+        from_fqid="opus@chef.skworld.io",
+        to_fqid="lumina@chef.skworld.io",
         room="call-abc",
         livekit_url="wss://noroc2027.tail204f0c.ts.net:8443",
     )
     inv = parse_invite_body(body)
     assert inv["type"] == CALL_INVITE_SUBJECT
-    assert inv["from_fqid"] == "opus@chef.skworld"
-    assert inv["to_fqid"] == "lumina@chef.skworld"
+    assert inv["from_fqid"] == "opus@chef.skworld.io"
+    assert inv["to_fqid"] == "lumina@chef.skworld.io"
     assert inv["room"] == "call-abc"
     assert inv["transport"] == "livekit"
     assert "nonce" in inv and "ts" in inv
@@ -91,5 +91,5 @@ def test_invite_topic_defaults_empty():
 
 def test_self_pair_room_is_deterministic():
     # degenerate self-call: deterministic + well-formed (no crash)
-    room = derive_room("solo@chef.skworld", "solo@chef.skworld")
+    room = derive_room("solo@chef.skworld.io", "solo@chef.skworld.io")
     assert room.startswith("call-") and len(room[len("call-") :]) == 16

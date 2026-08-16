@@ -51,7 +51,7 @@ USAGE
     ~/.skenv/bin/python scripts/qa_two_browser.py \
         [--base http://localhost:8765] \
         [--space space-zvteyh73i6b6czb6] \
-        [--create-host lumina@chef.skworld] \
+        [--create-host lumina@chef.skworld.io] \
         [--timeout 25]
 
 Exit code 0 = PASS (B received A's data-channel message), non-zero = FAIL/BLOCKED.

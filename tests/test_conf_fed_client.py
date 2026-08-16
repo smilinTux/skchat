@@ -43,16 +43,16 @@ def test_build_signed_conf_assertion_carries_room_and_fresh_nonce():
     import json
 
     s1 = build_signed_conf_assertion(
-        fqid="lumina@chef.skworld", room="standup", sign=lambda p: "SIG"
+        fqid="lumina@chef.skworld.io", room="standup", sign=lambda p: "SIG"
     )
     assert s1["sig"] == "SIG"
     claim = json.loads(s1["claim"])
-    assert claim["fqid"] == "lumina@chef.skworld"
+    assert claim["fqid"] == "lumina@chef.skworld.io"
     assert claim["space_id"] == "standup"  # room carried in the shared space_id slot
     assert claim["nonce"]
 
     s2 = build_signed_conf_assertion(
-        fqid="lumina@chef.skworld", room="standup", sign=lambda p: "SIG"
+        fqid="lumina@chef.skworld.io", room="standup", sign=lambda p: "SIG"
     )
     n1 = json.loads(s1["claim"])["nonce"]
     n2 = json.loads(s2["claim"])["nonce"]
@@ -71,7 +71,7 @@ def test_mint_remote_conf_token_happy_path():
                 "token": "JWT",
                 "url": "ws://box-a:7880",
                 "role": "participant",
-                "identity": "lumina@chef.skworld",
+                "identity": "lumina@chef.skworld.io",
                 "conf_id": "conf-abc",
                 "room": "standup",
             },
@@ -80,7 +80,7 @@ def test_mint_remote_conf_token_happy_path():
     out = mint_remote_conf_token(
         "http://box-a:8765",
         "standup",
-        fqid="lumina@chef.skworld",
+        fqid="lumina@chef.skworld.io",
         post=fake_post,
         sign=lambda p: "SIG",
     )
@@ -102,7 +102,7 @@ def test_mint_url_accepts_full_federated_token_url():
     mint_remote_conf_token(
         "http://box-a:8765/conf/demo/federated-token",
         "demo",
-        fqid="a@chef.skworld",
+        fqid="a@chef.skworld.io",
         post=fake_post,
         sign=lambda p: "SIG",
     )
@@ -125,7 +125,7 @@ def test_mint_404_raises_federation_error():
         mint_remote_conf_token(
             "http://box-a:8765",
             "ghost",
-            fqid="a@chef.skworld",
+            fqid="a@chef.skworld.io",
             post=lambda url, body: _FakeResp(404),
             sign=lambda p: "SIG",
         )
@@ -136,7 +136,7 @@ def test_mint_non_2xx_raises_federation_error():
         mint_remote_conf_token(
             "http://box-a:8765",
             "standup",
-            fqid="a@chef.skworld",
+            fqid="a@chef.skworld.io",
             post=lambda url, body: _FakeResp(500),
             sign=lambda p: "SIG",
         )
@@ -170,7 +170,8 @@ def server(tmp_path, monkeypatch):
 
 def _create_conf(tc, slug="standup"):
     r = tc.post(
-        "/conf/create", json={"host_fqid": "lumina@chef.skworld", "title": "Standup", "slug": slug}
+        "/conf/create",
+        json={"host_fqid": "lumina@chef.skworld.io", "title": "Standup", "slug": slug},
     )
     assert r.status_code == 200, r.text
     return r.json()["room"]
@@ -209,7 +210,7 @@ def test_roundtrip_trusted_fqid_mints_token(server, tmp_path, monkeypatch):
 
     tc, post = server
     room = _create_conf(tc)
-    fqid = "jarvis@chef.skworld"
+    fqid = "jarvis@chef.skworld.io"
 
     # 1) pin a "pubkey" for the fqid (content is opaque to our stub verifier)
     peers = tmp_path / "peers"

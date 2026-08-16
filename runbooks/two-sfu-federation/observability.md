@@ -20,7 +20,7 @@ curl -s http://127.0.0.1:8765/federation/status | jq
   "service": "skchat-federation",
   "status": "ok",
   "identity": {
-    "fqid": "lumina@chef.skworld",
+    "fqid": "lumina@chef.skworld.io",
     "public_sfu_ws_url": "wss://noroc2027.tailXXXX.ts.net/livekit-ws",
     "public_webui_base": "https://noroc2027.tailXXXX.ts.net"
   },
@@ -28,13 +28,13 @@ curl -s http://127.0.0.1:8765/federation/status | jq
   "trust": {
     "configured": true,
     "path": "/home/cbrd21/.skchat/federation-trust.json",
-    "full_access": ["jarvis@chef.skworld"],
+    "full_access": ["jarvis@chef.skworld.io"],
     "default": "subscribe",
     "remote_max_role": "speaker"
   },
-  "pinned_peers": ["jarvis@chef.skworld"],
+  "pinned_peers": ["jarvis@chef.skworld.io"],
   "discovered_focus": [
-    { "fqid": "jarvis@chef.skworld",
+    { "fqid": "jarvis@chef.skworld.io",
       "auth_url": "https://cbrd21-laptop....ts.net/conf/standup/federated-token",
       "sfu_ws_url": "wss://cbrd21-laptop....ts.net/livekit-ws" }
   ],
@@ -106,7 +106,7 @@ A federated join (`skchat conf agent-join-federated --room R` or
   fresh nonce, so this means a literal retry of the SAME signed body. Re-issue.
 - If the host pins keys, ensure this instance's key is in the host's
   `federation-peers/` (its `pinned_peers`), and realm matches exactly
-  (`lumina@chef.skworld` ≠ `lumina@evil.attacker`).
+  (`lumina@chef.skworld.io` ≠ `lumina@evil.attacker`).
 
 ### 3. SFU unreachable (token minted, media never connects)
 

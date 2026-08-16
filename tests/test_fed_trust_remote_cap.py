@@ -10,14 +10,14 @@ def _pol(tmp_path, data):
 
 
 def test_remote_max_role_defaults_to_speaker(tmp_path):
-    pol = _pol(tmp_path, {"full_access": ["chef.skworld"], "default": "deny"})
+    pol = _pol(tmp_path, {"full_access": ["chef.skworld.io"], "default": "deny"})
     assert pol.remote_max_role == "speaker"  # default preserves behavior
 
 
 def test_remote_max_role_can_be_listener(tmp_path):
     pol = _pol(
         tmp_path,
-        {"full_access": ["chef.skworld"], "default": "deny", "remote_max_role": "listener"},
+        {"full_access": ["chef.skworld.io"], "default": "deny", "remote_max_role": "listener"},
     )
     assert pol.remote_max_role == "listener"
 

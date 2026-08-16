@@ -49,12 +49,13 @@ def _msg(recipient="lumina"):
 
 
 def test_uses_federation_when_peer_resolves(tx, monkeypatch):
-    monkeypatch.setattr(tx, "_federation_target", lambda r: "lumina@chef.skworld")
+    monkeypatch.setattr(tx, "_federation_target", lambda r: "lumina@chef.skworld.io")
     res = tx.send_message(_msg("lumina"))
     assert res["delivered"] is True
     assert res["transport"] == "skfed-s2s"
     assert (
-        tx._skcomms.federated_calls and tx._skcomms.federated_calls[0][0] == "lumina@chef.skworld"
+        tx._skcomms.federated_calls
+        and tx._skcomms.federated_calls[0][0] == "lumina@chef.skworld.io"
     )
     assert not tx._skcomms.legacy_calls  # legacy path NOT used
 
@@ -73,7 +74,7 @@ def test_falls_back_when_federation_undelivered(tmp_path, monkeypatch):
         history=ChatHistory(history_dir=tmp_path / "h"),
         identity="capauth:jarvis@skworld.io",
     )
-    monkeypatch.setattr(tx, "_federation_target", lambda r: "lumina@chef.skworld")
+    monkeypatch.setattr(tx, "_federation_target", lambda r: "lumina@chef.skworld.io")
     tx.send_message(_msg("lumina"))
     assert sk.federated_calls and sk.legacy_calls  # tried fed, fell back to legacy
 
@@ -81,7 +82,7 @@ def test_falls_back_when_federation_undelivered(tmp_path, monkeypatch):
 def test_federation_target_resolves_https_s2s_peer(tx, monkeypatch):
     class FakePeer:
         name = "lumina"
-        fqid = "lumina@chef.skworld"
+        fqid = "lumina@chef.skworld.io"
 
         def inbox_url(self):
             return "http://100.108.59.57:9384/api/v1/inbox"
@@ -93,7 +94,7 @@ def test_federation_target_resolves_https_s2s_peer(tx, monkeypatch):
     import skcomms.discovery as disc
 
     monkeypatch.setattr(disc, "PeerStore", lambda *a, **k: FakeStore())
-    assert tx._federation_target("lumina") == "lumina@chef.skworld"
-    assert tx._federation_target("capauth:lumina@skworld.io") == "lumina@chef.skworld"
-    assert tx._federation_target("lumina@chef.skworld") == "lumina@chef.skworld"
+    assert tx._federation_target("lumina") == "lumina@chef.skworld.io"
+    assert tx._federation_target("capauth:lumina@skworld.io") == "lumina@chef.skworld.io"
+    assert tx._federation_target("lumina@chef.skworld.io") == "lumina@chef.skworld.io"
     assert tx._federation_target("nobody") is None

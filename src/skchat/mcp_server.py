@@ -540,7 +540,7 @@ async def list_tools() -> list[Tool]:
                         "type": "string",
                         "description": (
                             "Paired peer FQID or bare name (e.g. 'lumina' or "
-                            "'lumina@chef.skworld')."
+                            "'lumina@chef.skworld.io')."
                         ),
                     },
                 },
@@ -1385,7 +1385,7 @@ async def list_tools() -> list[Tool]:
                     },
                     "fqid": {
                         "type": "string",
-                        "description": "Sovereign FQID (e.g. 'bob@chef.skworld'). Alias for identity.",
+                        "description": "Sovereign FQID (e.g. 'bob@chef.skworld.io'). Alias for identity.",
                     },
                     "name": {
                         "type": "string",
@@ -1483,7 +1483,7 @@ async def list_tools() -> list[Tool]:
                         "type": "string",
                         "description": (
                             "Sender FQID to accept (as shown by "
-                            "list_contact_requests, e.g. 'alice@home.skworld')."
+                            "list_contact_requests, e.g. 'alice@home.skworld.io')."
                         ),
                     },
                 },
@@ -1503,7 +1503,7 @@ async def list_tools() -> list[Tool]:
                 "properties": {
                     "sender": {
                         "type": "string",
-                        "description": "Sender FQID to decline (e.g. 'alice@home.skworld').",
+                        "description": "Sender FQID to decline (e.g. 'alice@home.skworld.io').",
                     },
                     "block": {
                         "type": "boolean",

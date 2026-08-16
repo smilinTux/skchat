@@ -30,7 +30,7 @@ def setup(tmp_path, monkeypatch):
     register_spaces_routes(app, registry=reg, consent=led, recorder=rec)
     c = TestClient(app)
     sid = c.post(
-        "/spaces/create", json={"host_fqid": "lumina@chef.skworld", "title": "T", "slug": "s"}
+        "/spaces/create", json={"host_fqid": "lumina@chef.skworld.io", "title": "T", "slug": "s"}
     ).json()["space_id"]
     return c, sid, rec, led, reg
 
@@ -39,7 +39,7 @@ def test_record_blocked_until_speakers_consent(setup):
     # I1/I2: the on-stage set is server-authoritative (reg.speakers), NOT the body.
     c, sid, rec, led, reg = setup
     reg.add_speaker(sid, "alice@x.y")
-    r = c.post(f"/spaces/{sid}/record/start", json={"requester": "lumina@chef.skworld"})
+    r = c.post(f"/spaces/{sid}/record/start", json={"requester": "lumina@chef.skworld.io"})
     assert r.status_code == 409
     assert r.json()["missing_consent"] == ["alice@x.y"]
     assert rec.started == []  # not started
@@ -49,7 +49,7 @@ def test_record_starts_after_consent(setup):
     c, sid, rec, led, reg = setup
     reg.add_speaker(sid, "alice@x.y")
     c.post(f"/spaces/{sid}/consent", json={"identity": "alice@x.y"})
-    r = c.post(f"/spaces/{sid}/record/start", json={"requester": "lumina@chef.skworld"})
+    r = c.post(f"/spaces/{sid}/record/start", json={"requester": "lumina@chef.skworld.io"})
     assert r.status_code == 200
     assert len(rec.started) == 1
     # REC reflected in the live listing
@@ -64,7 +64,7 @@ def test_record_blocked_by_unconsented_onstage_speaker_no_body(setup):
     reg.add_speaker(sid, "alice@x.y")
     reg.add_speaker(sid, "bob@x.y")
     c.post(f"/spaces/{sid}/consent", json={"identity": "alice@x.y"})
-    r = c.post(f"/spaces/{sid}/record/start", json={"requester": "lumina@chef.skworld"})
+    r = c.post(f"/spaces/{sid}/record/start", json={"requester": "lumina@chef.skworld.io"})
     assert r.status_code == 409
     assert r.json()["missing_consent"] == ["bob@x.y"]
     assert rec.started == []
@@ -80,8 +80,8 @@ def test_stop_recording(setup):
     c, sid, rec, led, reg = setup
     reg.add_speaker(sid, "alice@x.y")
     c.post(f"/spaces/{sid}/consent", json={"identity": "alice@x.y"})
-    c.post(f"/spaces/{sid}/record/start", json={"requester": "lumina@chef.skworld"})
-    r = c.post(f"/spaces/{sid}/record/stop", json={"requester": "lumina@chef.skworld"})
+    c.post(f"/spaces/{sid}/record/start", json={"requester": "lumina@chef.skworld.io"})
+    r = c.post(f"/spaces/{sid}/record/stop", json={"requester": "lumina@chef.skworld.io"})
     assert r.status_code == 200
     assert rec.stopped == ["EG_xyz"]
     live = c.get("/spaces").json()["spaces"]

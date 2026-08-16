@@ -21,14 +21,14 @@ def client(tmp_path, monkeypatch):
 
 def test_guest_invite_joins_as_listener_only(client):
     sid = client.post(
-        "/spaces/create", json={"host_fqid": "lumina@chef.skworld", "title": "T", "slug": "s"}
+        "/spaces/create", json={"host_fqid": "lumina@chef.skworld.io", "title": "T", "slug": "s"}
     ).json()["space_id"]
 
     # host mints a guest invite bound to THIS space id (room == space_id)
     from skchat.guest import InviteIssuer
 
     invite = InviteIssuer().create_invite(
-        room=sid, display="Visitor", ttl=3600, issuer="lumina@chef.skworld"
+        room=sid, display="Visitor", ttl=3600, issuer="lumina@chef.skworld.io"
     )
     r = client.post(
         f"/spaces/{sid}/join-guest",
@@ -45,12 +45,12 @@ def test_guest_invite_joins_as_listener_only(client):
 
 def test_guest_invite_for_other_space_rejected(client):
     sid = client.post(
-        "/spaces/create", json={"host_fqid": "lumina@chef.skworld", "title": "T", "slug": "s"}
+        "/spaces/create", json={"host_fqid": "lumina@chef.skworld.io", "title": "T", "slug": "s"}
     ).json()["space_id"]
     from skchat.guest import InviteIssuer
 
     other = InviteIssuer().create_invite(
-        room="space-someotherroom0", display="X", ttl=3600, issuer="lumina@chef.skworld"
+        room="space-someotherroom0", display="X", ttl=3600, issuer="lumina@chef.skworld.io"
     )
     r = client.post(
         f"/spaces/{sid}/join-guest", json={"invite_token": other["invite_token"], "display": "X"}

@@ -65,24 +65,24 @@ Prove the end-to-end federated join path with real infra:
   ```bash
   # on .41 — export jarvis's public key armor
   cat ~/.skcapstone/agents/jarvis/capauth/identity/public.asc
-  # on .158 — pin it under the FULL fqid (agent@host.realm), e.g. jarvis@chef.skworld
+  # on .158 — pin it under the FULL fqid (agent@host.realm), e.g. jarvis@chef.skworld.io
   mkdir -p ~/.skchat/federation-peers
-  # write the armor to ~/.skchat/federation-peers/jarvis@chef.skworld.asc
+  # write the armor to ~/.skchat/federation-peers/jarvis@chef.skworld.io.asc
   ```
   (No pin ⇒ `verify_signed` → `AssertionError: no pubkey` ⇒ `/sfu/get` 403.)
 - **`.158` trust policy** (`~/.skchat/federation-trust.json`,
   `src/skchat/spaces/federation/trust.py`) must grant jarvis access. Either the FULL
-  fqid `jarvis@chef.skworld` or the host suffix `chef.skworld` in `full_access`, e.g.:
+  fqid `jarvis@chef.skworld.io` or the host suffix `chef.skworld.io` in `full_access`, e.g.:
   ```json
-  {"full_access": ["jarvis@chef.skworld"], "default": "deny", "remote_max_role": "speaker"}
+  {"full_access": ["jarvis@chef.skworld.io"], "default": "deny", "remote_max_role": "speaker"}
   ```
   - `default: deny` + no match ⇒ 403. `remote_max_role: "listener"` caps a
     FULL-trust remote at LISTENER (the cap proven in `test_fed_authd_policy.py` /
     `test_fed_trust_remote_cap.py`).
 
 ### Identity values (substitute your realm)
-- `SPACE_HOST_FQID` — the Space host on `.158`, e.g. `lumina@chef.skworld`.
-- `JOINER_FQID` — the federated joiner on `.41`, e.g. `jarvis@chef.skworld`.
+- `SPACE_HOST_FQID` — the Space host on `.158`, e.g. `lumina@chef.skworld.io`.
+- `JOINER_FQID` — the federated joiner on `.41`, e.g. `jarvis@chef.skworld.io`.
 - `RELAY` — `wss://<your-relay>`.
 
 ---
@@ -136,7 +136,7 @@ cd ~ && ~/.skenv/bin/python - <<'PY'
 import os, time
 from skchat.spaces.federation.nostr_io import FederationNostr
 relays = [r for r in os.environ["SKCHAT_NOSTR_RELAYS"].split(",") if r.strip()]
-host = os.environ["SPACE_HOST_FQID"]            # e.g. lumina@chef.skworld
+host = os.environ["SPACE_HOST_FQID"]            # e.g. lumina@chef.skworld.io
 space_id = os.environ["SPACE_ID"]
 auth_url = "https://noroc2027.tail204f0c.ts.net:8765/sfu/get"   # .158 authd
 sfu_ws   = "wss://noroc2027.tail204f0c.ts.net:8443"             # .158 SFU
@@ -194,7 +194,7 @@ from skchat.spaces.federation.discovery import (
     FederationDiscoveryClient, ElectedHost, AuthDenied, DiscoveryError)
 relays = [r for r in os.environ["SKCHAT_NOSTR_RELAYS"].split(",") if r.strip()]
 space_id = os.environ["SPACE_ID"]
-joiner   = os.environ["JOINER_FQID"]          # jarvis@chef.skworld — must match the signing key
+joiner   = os.environ["JOINER_FQID"]          # jarvis@chef.skworld.io — must match the signing key
 client = FederationDiscoveryClient(relays=relays)
 host = client.discover_and_elect(space_id)
 try:

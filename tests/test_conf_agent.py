@@ -24,7 +24,7 @@ from skchat.conf.room import ConfRegistry
 from skchat.conf.routes import register_conf_routes
 
 _KEY, _SECRET = "test-key", "test-secret-0123456789"
-_HOST = "lumina@chef.skworld"
+_HOST = "lumina@chef.skworld.io"
 
 
 class RecordingRunner:

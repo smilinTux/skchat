@@ -17,14 +17,14 @@ def _reset():
 
 
 def test_resolve_fqid_paired_and_barename(monkeypatch):
-    monkeypatch.setattr(pc, "_list_peers", lambda: {"lumina@chef.skworld": {}})
-    assert pc.resolve_fqid("lumina@chef.skworld") == "lumina@chef.skworld"
-    assert pc.resolve_fqid("lumina") == "lumina@chef.skworld"
+    monkeypatch.setattr(pc, "_list_peers", lambda: {"lumina@chef.skworld.io": {}})
+    assert pc.resolve_fqid("lumina@chef.skworld.io") == "lumina@chef.skworld.io"
+    assert pc.resolve_fqid("lumina") == "lumina@chef.skworld.io"
 
 
 def test_resolve_fqid_rejects_unpaired_and_ambiguous(monkeypatch):
     monkeypatch.setattr(
-        pc, "_list_peers", lambda: {"lumina@chef.skworld": {}, "lumina@other.world": {}}
+        pc, "_list_peers", lambda: {"lumina@chef.skworld.io": {}, "lumina@other.world": {}}
     )
     with pytest.raises(ValueError):
         pc.resolve_fqid("nobody")
@@ -54,19 +54,19 @@ class _StubManager:
 
 
 def test_p2p_call_resolves_and_delegates(monkeypatch):
-    monkeypatch.setattr(pc, "_list_peers", lambda: {"lumina@chef.skworld": {}})
+    monkeypatch.setattr(pc, "_list_peers", lambda: {"lumina@chef.skworld.io": {}})
     pc._manager = _StubManager()
     out = asyncio.run(pc.p2p_call("lumina"))
-    assert out["peer_fqid"] == "lumina@chef.skworld"
+    assert out["peer_fqid"] == "lumina@chef.skworld.io"
     assert out["transport"] == "p2p"
-    assert pc._manager.calls == ["lumina@chef.skworld"]
+    assert pc._manager.calls == ["lumina@chef.skworld.io"]
 
 
 def test_p2p_listen_and_status(monkeypatch):
-    monkeypatch.setattr(pc, "_list_peers", lambda: {"lumina@chef.skworld": {}})
+    monkeypatch.setattr(pc, "_list_peers", lambda: {"lumina@chef.skworld.io": {}})
     pc._manager = _StubManager()
     assert asyncio.run(pc.p2p_listen())["listening"] is True
     assert pc._manager.started is True
     asyncio.run(pc.p2p_call("lumina"))
     st = pc.p2p_status()
-    assert st["active"] == [{"peer": "lumina@chef.skworld", "open": True}]
+    assert st["active"] == [{"peer": "lumina@chef.skworld.io", "open": True}]

@@ -2902,7 +2902,7 @@ async def api_ice_config():
     try:
         from skchat.connectivity import ice_config
 
-        cfg = ice_config("lumina@chef.skworld", "guest", {})
+        cfg = ice_config("lumina@chef.skworld.io", "guest", {})
         return JSONResponse(cfg.get("ice_servers", []))
     except Exception:
         return JSONResponse([])

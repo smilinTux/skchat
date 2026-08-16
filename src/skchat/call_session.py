@@ -21,7 +21,7 @@ def derive_room(fqid_a: str, fqid_b: str) -> str:
     """Return a stable, order-independent room name for a pair of FQIDs.
 
     Args:
-        fqid_a: one participant's capauth FQID (e.g. ``lumina@chef.skworld``).
+        fqid_a: one participant's capauth FQID (e.g. ``lumina@chef.skworld.io``).
         fqid_b: the other participant's FQID.
 
     Returns:

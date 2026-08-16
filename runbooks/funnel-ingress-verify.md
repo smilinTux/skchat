@@ -102,7 +102,7 @@ Cross-instance conf join (two hosts):
 # On host A, create conf
 CONF=$(curl -s http://localhost:8765/conf/create -X POST \
   -H 'Content-Type: application/json' \
-  -d '{"host_fqid":"lumina@chef.skworld","title":"Federated"}')
+  -d '{"host_fqid":"lumina@chef.skworld.io","title":"Federated"}')
 ROOM=$(echo "$CONF" | python3 -c "import sys,json; print(json.load(sys.stdin)['room'])")
 
 # Present capauth-signed assertion to host A's auth endpoint

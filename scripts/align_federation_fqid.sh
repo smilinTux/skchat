@@ -2,7 +2,7 @@
 # align_federation_fqid.sh — coord F0-fqid (84fb38da)
 #
 # Make ~/.skchat/federation-{trust.json,peers} consistent with the canonical
-# FQID form <agent>@<operator>.<realm> (e.g. lumina@chef.skworld), so that
+# FQID form <agent>@<operator>.<realm> (e.g. lumina@chef.skworld.io), so that
 # cross-realm conf-token mint verifies: every trusted signer's pubkey is pinned
 # under its canonical FQID filename, matching what resolve_agent_identity().fqid
 # emits at sign time.

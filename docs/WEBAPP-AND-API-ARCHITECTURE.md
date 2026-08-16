@@ -53,7 +53,7 @@ All routes below are declared on `router = APIRouter(prefix="/api")` in
 `src/skchat/daemon_proxy.py`. Identity constants used throughout:
 
 ```python
-LUMINA_ID   = "lumina@chef.skworld"              # fqid-form (see §4)
+LUMINA_ID   = "lumina@chef.skworld.io"           # fqid-form (see §4)
 LUMINA_URI  = "capauth:lumina@skworld.io"         # capauth wire-form
 LUMINA_NAME = "Lumina"
 OPERATOR_ID = "chef@skworld.io"                   # bare-form (no capauth: prefix)
@@ -250,14 +250,14 @@ ACL/`get_member`/routing checks to work, and mismatches between them cause
 | Form | Example | Produced by |
 |---|---|---|
 | **capauth (wire)** | `capauth:chef@skworld.io` | `capauth.resolve_agent_identity().capauth_uri` — always `capauth:<agent>@skworld.io` |
-| **fqid (sovereign, three-tier)** | `chef@chef.skworld` | `capauth.resolve_agent_identity().fqid` — `<agent>@<operator>.<realm>`, requires `cluster.json` |
+| **fqid (sovereign, three-tier)** | `chef@chef.skworld.io` | `capauth.resolve_agent_identity().fqid` — `<agent>@<operator>.<realm>`, requires `cluster.json` |
 | **bare** | `chef@skworld.io` | ad-hoc — just `<handle>@skworld.io`, no `capauth:` prefix |
 
 **Concrete proof this is a real trap, not a hypothetical:** in
 `daemon_proxy.py` itself:
 
 ```python
-LUMINA_ID   = "lumina@chef.skworld"       # <- fqid form
+LUMINA_ID   = "lumina@chef.skworld.io"    # <- fqid form
 LUMINA_URI  = "capauth:lumina@skworld.io" # <- capauth form
 OPERATOR_ID = "chef@skworld.io"           # <- bare form
 ```
@@ -279,7 +279,7 @@ def _handle(u: str) -> str:
     return (u or "").lower().split(":", 1)[-1].split("@", 1)[0]
 ```
 
-So `chef@skworld.io`, `capauth:chef@skworld.io`, and `chef@chef.skworld`
+So `chef@skworld.io`, `capauth:chef@skworld.io`, and `chef@chef.skworld.io`
 all resolve to the member stored as any one of those forms, because they
 all reduce to the handle `chef`. **This is the safety net** — but it only
 works inside `group.py`. Code that does a raw string `==` comparison

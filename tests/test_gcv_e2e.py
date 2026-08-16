@@ -40,8 +40,8 @@ def test_funnel_join_url():
 
 
 def test_conf_page_url():
-    u = gcv.conf_page_url("https://host:10000", "conf-1", "lumina@chef.skworld")
-    assert u == "https://host:10000/conf/conf-1?identity=lumina%40chef.skworld"
+    u = gcv.conf_page_url("https://host:10000", "conf-1", "lumina@chef.skworld.io")
+    assert u == "https://host:10000/conf/conf-1?identity=lumina%40chef.skworld.io"
 
 
 def test_livekit_page_url_has_all_params():
@@ -249,10 +249,10 @@ def test_mint_conf_omits_slug_when_absent(monkeypatch):
         return {"room": "conf-1", "token": "t"}
 
     monkeypatch.setattr(gcv, "_request", fake_request)
-    gcv.mint_conf("https://h", "lumina@chef.skworld", "Title")
+    gcv.mint_conf("https://h", "lumina@chef.skworld.io", "Title")
     assert captured["url"] == "https://h/conf/create"
     assert "slug" not in captured["body"]
-    assert captured["body"]["host_fqid"] == "lumina@chef.skworld"
+    assert captured["body"]["host_fqid"] == "lumina@chef.skworld.io"
 
 
 def test_fetch_ice_encodes_peer(monkeypatch):

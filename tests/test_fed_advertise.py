@@ -48,7 +48,7 @@ def test_advertise_focus_publishes_descriptor_space_and_membership(monkeypatch):
     monkeypatch.setenv("SKCHAT_LIVEKIT_PUBLIC_URL", "wss://noroc2027.tail204f0c.ts.net/livekit-ws")
     rec = _Recorder()
     ok = advertise_focus(
-        host_fqid="lumina@chef.skworld",
+        host_fqid="lumina@chef.skworld.io",
         room="conf-abc",
         title="Standup",
         mint_path="/conf/conf-abc/federated-token",
@@ -67,12 +67,12 @@ def test_advertise_focus_publishes_descriptor_space_and_membership(monkeypatch):
     assert content["auth_url"] == (
         "https://noroc2027.tail204f0c.ts.net/conf/conf-abc/federated-token"
     )
-    assert content["host_fqid"] == "lumina@chef.skworld"
+    assert content["host_fqid"] == "lumina@chef.skworld.io"
 
     # membership ties the room to this host as its preferred focus
     member = next(e for e in rec.published if e["kind"] == MEMBERSHIP_KIND)
     tags = {t[0]: t[1] for t in member["tags"]}
-    assert tags["foci_preferred"] == "lumina@chef.skworld"
+    assert tags["foci_preferred"] == "lumina@chef.skworld.io"
     assert tags["a"] == f"{SPACE_KIND}:conf-abc"
 
 
@@ -142,14 +142,15 @@ def conf_client(tmp_path, monkeypatch):
 
 def test_conf_create_triggers_focus_advertise(conf_client):
     r = conf_client.post(
-        "/conf/create", json={"host_fqid": "lumina@chef.skworld", "title": "Standup", "slug": "su"}
+        "/conf/create",
+        json={"host_fqid": "lumina@chef.skworld.io", "title": "Standup", "slug": "su"},
     )
     assert r.status_code == 200
     room = r.json()["room"]
     # the injected advertiser was called exactly once with the created room
     assert len(conf_client.advertise_calls) == 1
     call = conf_client.advertise_calls[0]
-    assert call["host_fqid"] == "lumina@chef.skworld"
+    assert call["host_fqid"] == "lumina@chef.skworld.io"
     assert call["room"] == room
     assert call["title"] == "Standup"
 
@@ -185,13 +186,13 @@ def test_published_focus_is_discoverable_and_elected(monkeypatch):
 
     # producer side: instance publishes its focus for room conf-fed
     advertise_conf(
-        host_fqid="lumina@chef.skworld", room="conf-fed", title="Town Hall", nostr=rec.nostr()
+        host_fqid="lumina@chef.skworld.io", room="conf-fed", title="Town Hall", nostr=rec.nostr()
     )
 
     # consumer side: a peer discovers + elects over the SAME relay store
     client = FederationDiscoveryClient(nostr=rec.nostr())
     elected = client.discover_and_elect("conf-fed")
-    assert elected.fqid == "lumina@chef.skworld"
+    assert elected.fqid == "lumina@chef.skworld.io"
     assert elected.sfu_ws_url == "wss://h.example/livekit-ws"
     assert elected.auth_url == "https://h.example/conf/conf-fed/federated-token"
 
@@ -205,7 +206,7 @@ def test_conf_candidates_lists_advertised_confs(tmp_path, monkeypatch):
 
     rec = _Recorder()
     advertise_conf(
-        host_fqid="lumina@chef.skworld", room="conf-fed", title="Town Hall", nostr=rec.nostr()
+        host_fqid="lumina@chef.skworld.io", room="conf-fed", title="Town Hall", nostr=rec.nostr()
     )
 
     # patch FederationNostr so the route's internal construction uses our recorder
@@ -218,7 +219,7 @@ def test_conf_candidates_lists_advertised_confs(tmp_path, monkeypatch):
     client = TestClient(app)
     confs = client.get("/conf/candidates").json()["confs"]
     found = next(c for c in confs if c["room"] == "conf-fed")
-    assert found["host_fqid"] == "lumina@chef.skworld"
+    assert found["host_fqid"] == "lumina@chef.skworld.io"
     assert found["sfu_ws_url"] == "wss://h.example/livekit-ws"
     assert found["auth_url"] == "https://h.example/conf/conf-fed/federated-token"
     assert found["is_conf"] is True

@@ -8,7 +8,7 @@ pin directory.
 
 This intentionally does NOT fall back to local agent/operator keys, and does NOT
 key on the bare agent component — both would let a different realm impersonate a
-trusted peer (`lumina@chef.skworld` vs `lumina@evil.attacker` MUST be distinct).
+trusted peer (`lumina@chef.skworld.io` vs `lumina@evil.attacker` MUST be distinct).
 """
 
 from __future__ import annotations

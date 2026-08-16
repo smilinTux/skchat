@@ -31,7 +31,7 @@ echo ""
 echo "── Phase 1: Conf creation ──"
 CONF=$(curl -sf "$SKCHAT/conf/create" -X POST \
   -H 'Content-Type: application/json' \
-  -d '{"host_fqid":"lumina@chef.skworld","title":"E2E Verify","slug":"e2e-verify"}') || { fail "create conf"; ROOM=""; }
+  -d '{"host_fqid":"lumina@chef.skworld.io","title":"E2E Verify","slug":"e2e-verify"}') || { fail "create conf"; ROOM=""; }
 if [ -n "$CONF" ]; then
   ROOM=$(echo "$CONF" | python3 -c "import sys,json; print(json.load(sys.stdin)['room'])" 2>/dev/null) || ROOM=""
   CONF_ID=$(echo "$CONF" | python3 -c "import sys,json; print(json.load(sys.stdin)['conf_id'])" 2>/dev/null) || CONF_ID=""
@@ -47,7 +47,7 @@ echo "── Phase 2: Token minting ──"
 if [ -n "$ROOM" ]; then
   TOKEN_R=$(curl -sf "$SKCHAT/conf/$ROOM/token" -X POST \
     -H 'Content-Type: application/json' \
-    -d '{"identity":"chef@chef.skworld","name":"Chef"}') && pass "minted conf token" || fail "mint conf token"
+    -d '{"identity":"chef@chef.skworld.io","name":"Chef"}') && pass "minted conf token" || fail "mint conf token"
 
   # Verify token is a valid JWT
   if [ -n "$TOKEN_R" ]; then
@@ -129,7 +129,7 @@ if os.path.exists(secret_file):
     os.environ['SKCHAT_TURN_SECRET'] = open(secret_file).read().strip()
 os.environ['SKCHAT_TURN_URLS'] = 'turn:noroc2027.tail204f0c.ts.net:3478'
 from skchat.connectivity import ice_config
-cfg = ice_config('lumina@chef.skworld', 'public@guest', {'on_tailnet': False})
+cfg = ice_config('lumina@chef.skworld.io', 'public@guest', {'on_tailnet': False})
 servers = cfg['ice_servers']
 print(f'servers={len(servers)}')
 for s in servers:
@@ -181,7 +181,7 @@ echo "── Phase 9: End conf ──"
 if [ -n "$ROOM" ]; then
   END_R=$(curl -sf "$SKCHAT/conf/$ROOM/end" -X POST \
     -H 'Content-Type: application/json' \
-    -d '{"requester":"lumina@chef.skworld"}') && pass "ended conf" || fail "end conf"
+    -d '{"requester":"lumina@chef.skworld.io"}') && pass "ended conf" || fail "end conf"
   if echo "$END_R" | python3 -c "import sys,json; sys.exit(0 if json.load(sys.stdin).get('ok') else 1)" 2>/dev/null; then
     pass "end conf returned ok=true"
   fi

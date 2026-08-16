@@ -15,8 +15,8 @@ def test_alert_operator_includes_topic_and_link(monkeypatch):
     monkeypatch.setattr(co, "_mint_chef_token", lambda room: "TOK")
     monkeypatch.setattr(co, "_sk_alert", lambda msg: sent.append(msg))
     co.alert_operator(
-        from_fqid="opus@chef.skworld",
-        to_fqid="lumina@chef.skworld",
+        from_fqid="opus@chef.skworld.io",
+        to_fqid="lumina@chef.skworld.io",
         room="call-abc",
         topic="debugging the ingest pipeline",
     )
@@ -32,7 +32,9 @@ def test_alert_operator_without_topic(monkeypatch):
     sent = []
     monkeypatch.setattr(co, "_mint_chef_token", lambda room: "TOK")
     monkeypatch.setattr(co, "_sk_alert", lambda msg: sent.append(msg))
-    co.alert_operator(from_fqid="opus@chef.skworld", to_fqid="lumina@chef.skworld", room="call-q")
+    co.alert_operator(
+        from_fqid="opus@chef.skworld.io", to_fqid="lumina@chef.skworld.io", room="call-q"
+    )
     assert "opus & lumina" in sent[0]
     assert "topic:" not in sent[0]
 

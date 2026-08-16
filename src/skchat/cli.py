@@ -5117,7 +5117,7 @@ def conf_join_federated(remote_host: str, room: str, fqid: str | None, as_json: 
     """Mint a cross-instance conf token from a remote host and print it.
 
     Builds a capauth-signed FQID assertion (canonical fqid, e.g.
-    ``lumina@chef.skworld``) and POSTs it to the remote
+    ``lumina@chef.skworld.io``) and POSTs it to the remote
     ``POST /conf/{room}/federated-token``. On success prints the minted
     LiveKit token + SFU websocket url so the Flutter app / a browser can join
     the remote conference.

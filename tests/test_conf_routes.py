@@ -32,7 +32,7 @@ def _video(token):
 
 
 def _create(client, **over):
-    body = {"host_fqid": "lumina@chef.skworld", "title": "Standup"}
+    body = {"host_fqid": "lumina@chef.skworld.io", "title": "Standup"}
     body.update(over)
     return client.post("/conf/create", json=body)
 
@@ -84,7 +84,9 @@ def test_create_503_without_creds(client, monkeypatch):
 
 def test_token_defaults_to_participant_and_is_a_jwt(client):
     room = _create(client, slug="s").json()["room"]
-    r = client.post(f"/conf/{room}/token", json={"identity": "opus@chef.skworld", "name": "Opus"})
+    r = client.post(
+        f"/conf/{room}/token", json={"identity": "opus@chef.skworld.io", "name": "Opus"}
+    )
     assert r.status_code == 200
     body = r.json()
     assert body["role"] == "participant"
@@ -142,7 +144,7 @@ def test_end_marks_not_live_host_gated(client):
     # non-host cannot end
     assert client.post(f"/conf/{room}/end", json={"requester": "rando@x.y"}).status_code == 403
     # host can end
-    r = client.post(f"/conf/{room}/end", json={"requester": "lumina@chef.skworld"})
+    r = client.post(f"/conf/{room}/end", json={"requester": "lumina@chef.skworld.io"})
     assert r.status_code == 200
     assert r.json()["ok"] is True
     live = client.get("/conf").json()["confs"]
@@ -151,7 +153,7 @@ def test_end_marks_not_live_host_gated(client):
 
 def test_token_on_ended_conf_404(client):
     room = _create(client, slug="s").json()["room"]
-    client.post(f"/conf/{room}/end", json={"requester": "lumina@chef.skworld"})
+    client.post(f"/conf/{room}/end", json={"requester": "lumina@chef.skworld.io"})
     r = client.post(f"/conf/{room}/token", json={"identity": "x@y.z"})
     assert r.status_code == 404
 
@@ -211,7 +213,7 @@ def test_enter_waiting_room_and_admit(client):
     r = client.post(
         f"/conf/{room}/admit",
         json={
-            "requester": "lumina@chef.skworld",
+            "requester": "lumina@chef.skworld.io",
             "identity": "guest:abc123",
         },
     )
@@ -233,7 +235,7 @@ def test_deny_guest(client):
     r = client.post(
         f"/conf/{room}/deny",
         json={
-            "requester": "lumina@chef.skworld",
+            "requester": "lumina@chef.skworld.io",
             "identity": "guest:denied1",
         },
     )
@@ -250,7 +252,7 @@ def test_admit_nonexistent_guest_graceful(client):
     r = client.post(
         f"/conf/{room}/admit",
         json={
-            "requester": "lumina@chef.skworld",
+            "requester": "lumina@chef.skworld.io",
             "identity": "guest:nobody",
         },
     )
@@ -267,7 +269,7 @@ def test_waiting_conf_not_found(client):
         client.post(
             "/conf/conf-nonexistent/admit",
             json={
-                "requester": "lumina@chef.skworld",
+                "requester": "lumina@chef.skworld.io",
                 "identity": "guest:x",
             },
         ).status_code
@@ -377,7 +379,7 @@ def test_public_conf_token_does_NOT_stamp_fingerprint(client):
     room = _create(client).json()["room"]
     r = client.post(
         f"/conf/{room}/token",
-        json={"identity": "lumina@chef.skworld", "name": "Impostor"},
+        json={"identity": "lumina@chef.skworld.io", "name": "Impostor"},
     )
     assert r.status_code == 200
     assert not _full_claims(r.json()["token"]).get("metadata")
