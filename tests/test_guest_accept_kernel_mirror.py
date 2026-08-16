@@ -35,7 +35,6 @@ from skchat.guest_accept import ConsumedNonces
 pytestmark = pytest.mark.usefixtures("stub_token_signing")
 
 
-
 @pytest.fixture
 def durable_store(tmp_path, monkeypatch):
     monkeypatch.delenv("SKCHAT_PAIRING_KERNEL", raising=False)  # default ON

@@ -53,7 +53,6 @@ from skchat.operator_auth_routes import register_operator_auth_routes
 pytestmark = pytest.mark.usefixtures("stub_token_signing")
 
 
-
 def _canon(obj):
     return json.dumps(obj, sort_keys=True, separators=(",", ":")).encode()
 

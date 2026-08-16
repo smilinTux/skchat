@@ -34,7 +34,6 @@ from capauth.testing import stub_token_signing  # noqa: F401
 pytestmark = pytest.mark.usefixtures("stub_token_signing")
 
 
-
 @pytest.fixture
 def home(tmp_path, monkeypatch):
     # capauth default_base_dir() == Path.home()/.skcapstone; pin home to tmp.

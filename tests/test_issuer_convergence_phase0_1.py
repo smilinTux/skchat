@@ -52,7 +52,6 @@ from skchat import dataplane_auth
 pytestmark = pytest.mark.usefixtures("stub_token_signing")
 
 
-
 # --------------------------------------------------------------------------- #
 # Helpers
 # --------------------------------------------------------------------------- #
