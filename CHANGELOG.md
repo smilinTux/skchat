@@ -13,6 +13,27 @@ standards.
 ## [Unreleased]
 
 ### Fixed
+- **fqid fixtures brought onto the canonical grammar (test + docs only).**
+  `sk-standards/standards/IDENTITY_NAMING_STANDARD.md` (ratified 2026-08-14) makes
+  `<agent>@<operator>.<org-domain>` the one legal subject spelling, plus `device:<hex>`
+  for device seats, and capauth enforces it in `capauth.subject.canonical_subject` at
+  `enroll_device`. `tests/test_guest_accept_kernel_mirror.py` still enrolled subjects
+  like `peerfp1` and `op@host`, which are neither hex nor fqid-shaped, so nothing could
+  translate them: capauth refused, `skchat.pairing_mirror` swallowed the error
+  (best-effort by design, so a mirror failure can never break live guest admission), and
+  the tests saw an empty capauth store. Its two NEGATIVE tests (in-memory store, kernel
+  off) also moved onto canonical subjects, because asserting an empty store under a
+  subject capauth would refuse anyway made them pass for the wrong reason. Fixtures,
+  docs, runbooks and src docstrings now use the canonical form, along with the values
+  coupled to them (federation-trust host suffixes, `.asc` pin filename stems, the
+  percent-encoded identity in the gcv URL assertion). New
+  `tests/test_canonical_fqid_regression.py` pins the rule, including the ONE deliberate
+  exception: a bare hex fingerprint is resolved as shorthand by `enroll_device`, on
+  purpose and by name, because `mirror_admission` presents `subject=peer_fp`. No
+  production identity string changed and no stored record was touched.
+- **`docs/WEBAPP-AND-API-ARCHITECTURE.md` was stale about `LUMINA_ID`.** It documented
+  `lumina@chef.skworld`; `daemon_proxy.py:42` has said `lumina@chef.skworld.io` for a
+  while. The doc now matches the code.
 - **The `/api/v1/audience-token` mint endpoint no longer persists a file.**
   `mint_agent_audience_token` is now called with `store=False`: this endpoint
   mints a self-contained audience token per request, so writing a file per mint
