@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from typing import Optional
 
 from .pairing_gate import kernel_enabled
@@ -30,6 +31,41 @@ logger = logging.getLogger("skchat.pairing_mirror")
 #: Default scopes a guest device is granted (chat read/send). The authz PDP can
 #: later require a minimum enrollment mode per scope; the mode carries the trust.
 _DEFAULT_SCOPES = ["chat.read", "chat.send"]
+
+#: A skchat peer pin that is a bare PGP fingerprint. capauth's fqid grammar
+#: (IDENTITY_NAMING_STANDARD.md sec 1) admits exactly two shapes, and a bare
+#: fingerprint is NEITHER: it needs the ``device:`` seat prefix. The bound
+#: matches capauth's own ``device:[0-9a-f]{16,64}`` so the two cannot drift.
+_BARE_FINGERPRINT_RE = re.compile(r"[0-9a-fA-F]{16,64}")
+
+
+def _capauth_subject(pin: str) -> str:
+    """Map a skchat pin to capauth's canonical subject form.
+
+    A skchat pin is either a peer PGP fingerprint (a device seat) or an
+    operator fqid; :meth:`GuestTrustStore.revoke_pin` takes either. capauth's
+    grammar admits only ``device:<16-64 hex>`` or ``<local>@...<org-domain>``,
+    and since the canonical-subject work on capauth main it REFUSES anything
+    else outright rather than storing it verbatim as 0.3.1 did.
+
+    ALL THREE mirror paths must agree on this mapping, which is why it lives in
+    one function instead of at each call site. If admission enrolls under
+    ``device:<fp>`` while revocation looks up a bare ``<fp>``,
+    :func:`capauth.pairing.list_devices` matches nothing and the revoke is a
+    silent no-op. That is the one failure mode here that loses a security
+    property rather than a record, and nothing downstream would report it.
+
+    Raises:
+        capauth.exceptions.SubjectNamingError: ``pin`` is neither a bare
+            fingerprint nor a canonicalizable fqid. Callers swallow this into a
+            WARNING; it means capauth and skchat's SQLite have diverged for
+            this pin, not that the pin is untrusted.
+    """
+    from capauth.subject import canonical_subject
+
+    if _BARE_FINGERPRINT_RE.fullmatch(pin):
+        return canonical_subject(f"device:{pin}")
+    return canonical_subject(pin)
 
 
 def _base_dir() -> Optional[str]:
@@ -55,7 +91,7 @@ def mirror_admission(
             peer_pubkey or peer_fp,
             list(_DEFAULT_SCOPES),
             mode="tofu",
-            subject=peer_fp,
+            subject=_capauth_subject(peer_fp),
             operator_id=operator_id or None,
             base_dir=base,
         )
@@ -101,7 +137,7 @@ def mirror_trusted_operator(
                     operator_pubkey,
                     list(_DEFAULT_SCOPES),
                     mode="attested",
-                    subject=operator_id,
+                    subject=_capauth_subject(operator_id),
                     operator_id=operator_id,
                     operator_pubkey=operator_pubkey,
                     attestation=attestation,
@@ -128,7 +164,7 @@ def mirror_trusted_operator(
                 operator_pubkey,
                 list(_DEFAULT_SCOPES),
                 mode="tofu",
-                subject=operator_id,
+                subject=_capauth_subject(operator_id),
                 operator_id=operator_id,
                 operator_pubkey=operator_pubkey,
                 base_dir=base,
@@ -139,7 +175,19 @@ def mirror_trusted_operator(
 
 
 def mirror_revocation(pin: str) -> None:
-    """Revoke every capauth device whose subject is this pin (peer_fp or op id)."""
+    """Revoke every capauth device whose subject is this pin (peer_fp or op id).
+
+    Deliberately passes the RAW pin, not :func:`_capauth_subject` of it.
+    :func:`capauth.pairing.list_devices` already matches a subject filter
+    against both the raw spelling as given and, when it canonicalizes, the
+    canonical fqid (capauth card N3). So a bare fingerprint here still finds
+    the ``device:<fp>`` record that :func:`mirror_admission` enrolled, AND a
+    legacy record stored verbatim under a non-canonical subject still matches
+    its raw form. Canonicalizing first would actually be a REGRESSION: it
+    would stop matching those legacy raw records, which are precisely the
+    oldest and longest-trusted ones. Migrating them is capauth's own job, via
+    :func:`capauth.pairing.canonicalize.apply_canonical_rewrite`.
+    """
     if not kernel_enabled() or not pin:
         return
     try:
