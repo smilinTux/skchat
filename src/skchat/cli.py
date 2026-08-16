@@ -5939,5 +5939,93 @@ def devices_deny(device_fp: str) -> None:
     click.echo(_json.dumps(report, indent=2))
 
 
+@main.group("browser-qa")
+def browser_qa_group() -> None:
+    """The skwatchdog browser QA lane: a scripted, report-only walk of skchat web.
+
+    Renders the real app in a real Chrome over raw CDP, captures a screenshot
+    and the console per step, grades the IMAGE (this app paints into a canvas,
+    so text assertions are worthless), and writes one result artifact the skos
+    watchdog folds into the daily digest.
+
+    It never joins a Space: joining inserts a participant into a live call and
+    can publish audio. If a run needs a room it creates its own and ends it in
+    the same run, including on the failure path (--with-space).
+
+    Examples:
+
+        skchat browser-qa run
+
+        skchat browser-qa run --base-url http://127.0.0.1:8765 --json
+
+        skchat browser-qa show
+    """
+
+
+@browser_qa_group.command("run")
+@click.option("--base-url", default=None, help="skchat web base URL under test.")
+@click.option("--cdp-port", default=None, type=int, help="CDP port (never 9229/9222/9223).")
+@click.option("--settle", default=None, type=float, help="Seconds to wait for the shell to boot.")
+@click.option(
+    "--with-space/--no-space",
+    default=None,
+    help="Also create a Space over HTTP and end it in the same run. Off by default.",
+)
+@click.option(
+    "--route",
+    "routes",
+    multiple=True,
+    help="Extra in-app route to render, e.g. '/app/#/settings'. Room routes are refused.",
+)
+@click.option("--json", "as_json", is_flag=True, help="Print the full result artifact as JSON.")
+def browser_qa_run(base_url, cdp_port, settle, with_space, routes, as_json) -> None:
+    """Walk the lane once and write the result artifact."""
+    import json as _json
+
+    from .browser_qa.lane import run_lane as _run_lane
+
+    result = _run_lane(
+        base_url=base_url or "",
+        cdp_port=cdp_port,
+        settle_s=settle,
+        with_space=with_space,
+        extra_routes=tuple(routes),
+    )
+    if as_json:
+        click.echo(_json.dumps(result.to_dict(), indent=2, sort_keys=True))
+        return
+    click.echo(f"{result.severity.upper()}: {result.summary}")
+    for step in result.steps:
+        click.echo(f"  [{'ok' if step.ok else 'FAIL'}] {step.name}: {step.detail}")
+    for gap in result.gaps:
+        click.echo(f"  [gap] {gap}")
+    for note in result.notes:
+        click.echo(f"  [note] {note}")
+    click.echo(f"  artifact: {result.artifact_dir}/result.json")
+
+
+@browser_qa_group.command("show")
+@click.option("--json", "as_json", is_flag=True, help="Print the raw artifact.")
+def browser_qa_show(as_json: bool) -> None:
+    """Print the most recent lane result without running anything."""
+    import json as _json
+    import os as _os
+    from pathlib import Path as _Path
+
+    from .browser_qa.lane import DEFAULT_ROOT as _DEFAULT_ROOT
+
+    root = _Path(_os.environ.get("SKCHAT_BROWSER_QA_DIR") or _DEFAULT_ROOT)
+    latest = root / "latest.json"
+    if not latest.exists():
+        raise click.ClickException(f"no lane result yet under {root}")
+    data = _json.loads(latest.read_text())
+    if as_json:
+        click.echo(_json.dumps(data, indent=2, sort_keys=True))
+        return
+    click.echo(f"{str(data.get('severity', '')).upper()}: {data.get('summary', '')}")
+    click.echo(f"  run {data.get('run_id')} finished {data.get('finished_at')}")
+    click.echo(f"  artifact: {data.get('artifact_dir')}/result.json")
+
+
 if __name__ == "__main__":
     main()
