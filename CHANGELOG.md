@@ -212,6 +212,15 @@ standards.
   exception TYPE + host:port rather than `str(exc)` (which is frequently
   empty on an httpx connect timeout). Gated the same as `GET /api/v1/status`
   (`skchat.status` capability) since it leaks internal backend hostnames/ports.
+  STT/TTS/LLM are each probed at their own dedicated `/health` path (derived
+  from the configured base URL, never hardcoded); the response status is
+  classified rather than treated as a blanket "up" — 2xx/401/403 is "up" (an
+  auth challenge is proof the right service answered), a 5xx is "down" (it
+  answered and is failing), any other 4xx is "unknown" (reached but
+  unconfirmed). A `/health` 404 falls back to a bare reachability probe of the
+  base URL, capped at "unknown" even on a 200 — reachability is not the same
+  claim as a confirmed health check. The SFU has no known dedicated health
+  path and is probed at its base URL under the same status classification.
 - **Group threads carry per-member participants (unified conversation list).**
   `daemon_proxy` `/conversations` group threads now carry per-member
   participants with server-resolved `soul_fingerprint`, feeding the client's

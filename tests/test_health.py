@@ -13,6 +13,17 @@ from the card:
      redden ``test_detail_survives_an_exception_with_empty_str`` — the exact
      bug (empty ``str()`` on an httpx connect timeout) that produced five
      useless "STT failed: " log lines during the 2026-08-13 incident.
+  4. A 500 response classifying as "up" must redden
+     ``test_probe_url_5xx_is_down_not_up`` (generic probe) and
+     ``test_probe_backend_5xx_on_health_path_is_down_not_up`` (health-path
+     probe) — a broken-but-listening service must not show green.
+  5. A 404 response classifying as "up" must redden
+     ``test_probe_url_404_is_unknown_not_up`` — reached-but-unconfirmed is
+     not proof of life.
+  6. A 401 response classifying as anything other than "up" must redden
+     ``test_probe_url_401_is_up_not_down_or_unknown`` — an auth challenge IS
+     proof the right service is alive; getting this backwards reads every
+     gated service as broken.
 """
 
 from __future__ import annotations
@@ -29,8 +40,11 @@ from skchat.health import (
     STATE_UP,
     ServiceHealth,
     _as_http,
+    _classify_response_status,
+    _derive_health_url,
     _failure_detail,
     build_health_payload,
+    probe_backend_with_health_path,
     probe_url,
     resolve_service_urls,
 )
@@ -41,13 +55,14 @@ def _client(handler) -> httpx.AsyncClient:
 
 
 # --------------------------------------------------------------------------- #
-# probe_url — the "up" path
+# probe_url — generic base-URL probe (used for the SFU, which has no known
+# dedicated health path).
 # --------------------------------------------------------------------------- #
 
 
 async def _run_probe(handler, url="http://backend.test:9999/health"):
     async with _client(handler) as client:
-        return await probe_url(client, "stt", "Speech to text", url)
+        return await probe_url(client, "sfu", "Call server", url)
 
 
 def test_probe_url_up_on_200():
@@ -56,8 +71,8 @@ def test_probe_url_up_on_200():
 
     result = asyncio.run(_run_probe(handler))
     assert result.state == STATE_UP
-    assert result.id == "stt"
-    assert result.label == "Speech to text"
+    assert result.id == "sfu"
+    assert result.label == "Call server"
     assert "200" in result.detail
     assert "ms" in result.detail
     assert isinstance(result.latency_ms, int)
@@ -65,15 +80,62 @@ def test_probe_url_up_on_200():
     assert result.checked_at.endswith("Z")
 
 
-def test_probe_url_up_on_non_2xx_status():
-    """Any HTTP response proves the backend is reachable, even 404/405."""
+# --------------------------------------------------------------------------- #
+# probe_url — mutation targets #4-6: status classification must not invent
+# green (5xx/other-4xx) or misread a real proof-of-life signal (401/403).
+# --------------------------------------------------------------------------- #
 
+
+def test_probe_url_5xx_is_down_not_up():
+    async def handler(request):
+        return httpx.Response(500, text="internal error")
+
+    result = asyncio.run(_run_probe(handler))
+    assert result.state == STATE_DOWN
+    assert result.state != STATE_UP
+    assert "500" in result.detail
+
+
+def test_probe_url_404_is_unknown_not_up():
+    """Reached-but-unconfirmed (wrong path, nothing there) is "unknown"."""
+
+    async def handler(request):
+        return httpx.Response(404, text="not found")
+
+    result = asyncio.run(_run_probe(handler))
+    assert result.state == STATE_UNKNOWN
+    assert result.state != STATE_UP
+    assert "404" in result.detail
+
+
+def test_probe_url_405_is_unknown_not_up():
     async def handler(request):
         return httpx.Response(405, text="method not allowed")
 
     result = asyncio.run(_run_probe(handler))
-    assert result.state == STATE_UP
+    assert result.state == STATE_UNKNOWN
     assert "405" in result.detail
+
+
+def test_probe_url_401_is_up_not_down_or_unknown():
+    """An auth challenge proves the RIGHT service is alive -- it is "up"."""
+
+    async def handler(request):
+        return httpx.Response(401, text="unauthorized")
+
+    result = asyncio.run(_run_probe(handler))
+    assert result.state == STATE_UP
+    assert result.state != STATE_DOWN
+    assert result.state != STATE_UNKNOWN
+    assert "401" in result.detail
+
+
+def test_probe_url_403_is_up():
+    async def handler(request):
+        return httpx.Response(403, text="forbidden")
+
+    result = asyncio.run(_run_probe(handler))
+    assert result.state == STATE_UP
 
 
 # --------------------------------------------------------------------------- #
@@ -121,6 +183,35 @@ def test_probe_url_blank_url_is_unknown():
     result = asyncio.run(_run_probe(handler, url="   "))
     assert result.state == STATE_UNKNOWN
     assert result.state != STATE_DOWN
+
+
+# --------------------------------------------------------------------------- #
+# _classify_response_status — the pure classifier, tested directly.
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("code", [200, 201, 204, 299])
+def test_classify_2xx_is_up(code):
+    state, _reason = _classify_response_status(code)
+    assert state == STATE_UP
+
+
+@pytest.mark.parametrize("code", [401, 403])
+def test_classify_auth_challenge_is_up(code):
+    state, _reason = _classify_response_status(code)
+    assert state == STATE_UP
+
+
+@pytest.mark.parametrize("code", [500, 502, 503, 504])
+def test_classify_5xx_is_down(code):
+    state, _reason = _classify_response_status(code)
+    assert state == STATE_DOWN
+
+
+@pytest.mark.parametrize("code", [400, 404, 405, 429])
+def test_classify_other_4xx_is_unknown(code):
+    state, _reason = _classify_response_status(code)
+    assert state == STATE_UNKNOWN
 
 
 # --------------------------------------------------------------------------- #
@@ -185,7 +276,7 @@ def test_probe_url_never_raises(exc):
 
 
 # --------------------------------------------------------------------------- #
-# _as_http — ws/wss -> http/https for the SFU probe.
+# _as_http / _derive_health_url
 # --------------------------------------------------------------------------- #
 
 
@@ -201,6 +292,114 @@ def test_as_http_passes_through_http():
     assert _as_http("http://localhost:18783/v1/chat/completions") == (
         "http://localhost:18783/v1/chat/completions"
     )
+
+
+def test_derive_health_url_same_host_port_different_path():
+    assert (
+        _derive_health_url("http://skworld-100:18794/v1/audio/transcriptions")
+        == "http://skworld-100:18794/health"
+    )
+    assert _derive_health_url("http://localhost:18783/v1/chat/completions") == (
+        "http://localhost:18783/health"
+    )
+    assert _derive_health_url("http://skworld-100:18796/audio/speech") == (
+        "http://skworld-100:18796/health"
+    )
+
+
+def test_derive_health_url_never_raises_on_garbage():
+    assert _derive_health_url("not a url at all") == "/health" or "/health" in _derive_health_url(
+        "not a url at all"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# probe_backend_with_health_path — the STT/TTS/LLM path (real /health first).
+# --------------------------------------------------------------------------- #
+
+
+async def _run_backend_probe(handler, base_url="http://backend.test:9999/v1/whatever"):
+    async with _client(handler) as client:
+        return await probe_backend_with_health_path(client, "stt", "Speech to text", base_url)
+
+
+def test_probe_backend_up_on_health_200():
+    seen = []
+
+    async def handler(request):
+        seen.append(str(request.url))
+        return httpx.Response(200, text="ok")
+
+    result = asyncio.run(_run_backend_probe(handler))
+    assert result.state == STATE_UP
+    assert "200" in result.detail
+    # the /health path was actually hit, derived from the base URL's host:port
+    assert seen == ["http://backend.test:9999/health"]
+
+
+def test_probe_backend_5xx_on_health_path_is_down_not_up():
+    async def handler(request):
+        return httpx.Response(503, text="unhealthy")
+
+    result = asyncio.run(_run_backend_probe(handler))
+    assert result.state == STATE_DOWN
+    assert result.state != STATE_UP
+    assert "503" in result.detail
+
+
+def test_probe_backend_401_on_health_path_is_up():
+    async def handler(request):
+        return httpx.Response(401, text="unauthorized")
+
+    result = asyncio.run(_run_backend_probe(handler))
+    assert result.state == STATE_UP
+
+
+def test_probe_backend_falls_back_and_reports_unknown_on_health_404():
+    """No /health deployed: fall back to the base URL, but NEVER call it "up"."""
+    seen = []
+
+    async def handler(request):
+        seen.append(str(request.url))
+        if str(request.url).endswith("/health"):
+            return httpx.Response(404, text="not found")
+        return httpx.Response(200, text="looks fine, but unconfirmed")
+
+    result = asyncio.run(_run_backend_probe(handler, base_url="http://backend.test:9999/v1/x"))
+    assert result.state == STATE_UNKNOWN
+    assert result.state != STATE_UP
+    assert seen == ["http://backend.test:9999/health", "http://backend.test:9999/v1/x"]
+    assert "404" in result.detail
+    assert "200" in result.detail  # base URL's own status is still surfaced
+
+
+def test_probe_backend_fallback_down_if_base_url_also_fails():
+    async def handler(request):
+        if str(request.url).endswith("/health"):
+            return httpx.Response(404, text="not found")
+        raise httpx.ConnectError("refused")
+
+    result = asyncio.run(_run_backend_probe(handler))
+    assert result.state == STATE_DOWN
+    assert "ConnectError" in result.detail
+
+
+def test_probe_backend_down_on_health_path_connect_failure():
+    async def handler(request):
+        raise httpx.ConnectTimeout("")
+
+    result = asyncio.run(_run_backend_probe(handler))
+    assert result.state == STATE_DOWN
+    assert "ConnectTimeout" in result.detail
+
+
+def test_probe_backend_unconfigured_is_unknown():
+    async def handler(request):
+        raise AssertionError("must not probe an unconfigured URL")
+
+    result = asyncio.run(_run_backend_probe(handler, base_url=""))
+    assert result.state == STATE_UNKNOWN
+    assert "not configured" in result.detail
 
 
 # --------------------------------------------------------------------------- #
@@ -270,6 +469,11 @@ def test_build_health_payload_shape(monkeypatch):
     assert webui["state"] == STATE_UP
     assert webui["label"] == "App server"
 
+    # stt/tts/llm all got a genuine 200 on /health -> up. sfu (no health
+    # path, base-URL probe) also got 200 -> up.
+    for sid in ("stt", "tts", "llm", "sfu"):
+        assert next(s for s in payload["services"] if s["id"] == sid)["state"] == STATE_UP
+
 
 def test_build_health_payload_never_raises_on_mixed_failures(monkeypatch):
     """One dead backend cannot prevent the others from being reported."""
@@ -292,8 +496,6 @@ def test_build_health_payload_never_raises_on_mixed_failures(monkeypatch):
     assert len(by_id) == 5  # every catalog entry present every time
     assert by_id["tts"]["state"] == STATE_UNKNOWN
     assert by_id["webui"]["state"] == STATE_UP
-    # stt/llm URLs don't distinguish in this fake host, but nothing raised
-    # and every service still has a well-formed entry.
     for sid in ("stt", "tts", "llm", "sfu", "webui"):
         assert by_id[sid]["state"] in (STATE_UP, STATE_DOWN, STATE_UNKNOWN)
 
