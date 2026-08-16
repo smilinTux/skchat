@@ -981,13 +981,13 @@ _HAS_SKSECURITY = _ilu.find_spec("sksecurity") is not None
 
 
 def _has_lumina_peer_fingerprint() -> bool:
-    # The fingerprint tests resolve "lumina@chef.skworld" to the real capauth
+    # The fingerprint tests resolve "lumina@chef.skworld.io" to the real capauth
     # fingerprint via the operator's local peer store (daemon_proxy). Absent in
     # a bare CI runner -> resolution is "" (keyless) and the assertions can't hold.
     try:
         from skchat.daemon_proxy import fingerprint_for_identity
 
-        return bool(fingerprint_for_identity("lumina@chef.skworld"))
+        return bool(fingerprint_for_identity("lumina@chef.skworld.io"))
     except Exception:
         return False
 

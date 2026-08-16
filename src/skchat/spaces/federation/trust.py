@@ -1,7 +1,7 @@
 """Per-FQID trust policy (spec §7) — the allowlist analog, cryptographic by FQID.
 
 Config (~/.skchat/federation-trust.json):
-  {"full_access": ["chef.skworld", "opus@chef.skworld"], "default": "subscribe"|"deny"}
+  {"full_access": ["chef.skworld", "opus@chef.skworld.io"], "default": "subscribe"|"deny"}
 An entry matches a full FQID (`a@b.c`) OR a host suffix (`b.c`). `default` applies
 to anything unmatched. Missing config => deny (safe default)."""
 

@@ -906,16 +906,16 @@ class TestCallPeer:
             lambda peer: {
                 "room": "call-xyz",
                 "token": "tok",
-                "peer_fqid": "lumina@chef.skworld",
+                "peer_fqid": "lumina@chef.skworld.io",
                 "livekit_url": "wss://x:8443",
-                "identity": "opus@chef.skworld",
+                "identity": "opus@chef.skworld.io",
             },
         )
         sent = []
         monkeypatch.setattr(m, "_ring_peer", lambda **kw: sent.append(kw))
         out = m.call_peer("lumina")
         assert out["room"] == "call-xyz"
-        assert out["peer_fqid"] == "lumina@chef.skworld"
+        assert out["peer_fqid"] == "lumina@chef.skworld.io"
         assert len(sent) == 1
         assert set(out) == {"room", "token", "livekit_url", "peer_fqid", "identity"}
 

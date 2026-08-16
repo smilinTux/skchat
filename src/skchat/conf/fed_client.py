@@ -56,7 +56,7 @@ def _self_fqid() -> str:
     """Canonical sovereign FQID for the running agent (``agent@operator.realm``).
 
     Same resolver the call routes and audio federation use
-    (``capauth.resolve_agent_identity().fqid``) — e.g. ``lumina@chef.skworld``.
+    (``capauth.resolve_agent_identity().fqid``) — e.g. ``lumina@chef.skworld.io``.
     """
     from capauth import resolve_agent_identity
 

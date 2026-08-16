@@ -323,7 +323,7 @@ class ChatTransport:
         matches a skcomms peer that advertises an ``https-s2s`` inbox_url (i.e. a
         reachable remote node). Accepts the recipient as a bare name (``lumina``),
         a capauth URI (``capauth:lumina@skworld.io``), or an FQID
-        (``lumina@chef.skworld``). Returns None for local/unknown recipients so
+        (``lumina@chef.skworld.io``). Returns None for local/unknown recipients so
         the caller falls back to the legacy local transports.
         """
         try:

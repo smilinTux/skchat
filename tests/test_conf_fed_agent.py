@@ -65,7 +65,7 @@ def test_mint_uses_explicit_host_and_skips_discovery():
 
     def _mint(auth_url, room, *, fqid=None):
         assert auth_url == "http://box-a:8765"
-        return {"token": "JWT", "url": "wss://box-a/lk", "identity": "lumina@chef.skworld"}
+        return {"token": "JWT", "url": "wss://box-a/lk", "identity": "lumina@chef.skworld.io"}
 
     out = mint_federated_agent_token(
         "standup", host="http://box-a:8765", discover=_discover, mint=_mint
@@ -127,7 +127,7 @@ def test_join_spawns_against_remote_sfu_with_env_creds():
         mint=lambda a, r, **k: {
             "token": "JWT",
             "url": "wss://box-a/lk",
-            "identity": "lumina@chef.skworld",
+            "identity": "lumina@chef.skworld.io",
             "role": "participant",
         },
         spawn=spawn,
@@ -137,7 +137,7 @@ def test_join_spawns_against_remote_sfu_with_env_creds():
     assert out["ok"] is True
     assert out["unit"] == fed_agent_unit("standup")
     assert out["url"] == "wss://box-a/lk"
-    assert out["identity"] == "lumina@chef.skworld"
+    assert out["identity"] == "lumina@chef.skworld.io"
 
     assert len(spawn.calls) == 1
     cmd, env = spawn.calls[0]
@@ -216,14 +216,14 @@ def test_invite_agent_federated_route_remote_room(monkeypatch, tmp_path):
             "unit": "lumina-fedconf-remote",
             "room": room,
             "url": "wss://box-a/lk",
-            "identity": "lumina@chef.skworld",
+            "identity": "lumina@chef.skworld.io",
             "role": "participant",
         }
 
     client, _reg = _route_client(monkeypatch, tmp_path, fake_join=fake_join)
     r = client.post(
         "/conf/remote-room/invite-agent-federated",
-        json={"requester": "anyone@chef.skworld", "host": "http://box-a:8765"},
+        json={"requester": "anyone@chef.skworld.io", "host": "http://box-a:8765"},
     )
     assert r.status_code == 200, r.text
     assert r.json()["unit"] == "lumina-fedconf-remote"
@@ -243,7 +243,7 @@ def test_invite_agent_federated_503_without_systemd_run(monkeypatch, tmp_path):
     )
     r = client.post(
         "/conf/x/invite-agent-federated",
-        json={"requester": "a@chef.skworld"},
+        json={"requester": "a@chef.skworld.io"},
     )
     assert r.status_code == 503
 
@@ -255,6 +255,6 @@ def test_invite_agent_federated_502_on_join_failure(monkeypatch, tmp_path):
     client, _reg = _route_client(monkeypatch, tmp_path, fake_join=fake_join)
     r = client.post(
         "/conf/x/invite-agent-federated",
-        json={"requester": "a@chef.skworld"},
+        json={"requester": "a@chef.skworld.io"},
     )
     assert r.status_code == 502

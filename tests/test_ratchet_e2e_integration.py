@@ -122,7 +122,7 @@ def test_first_contact_fetch_then_anon_bidirectional_roundtrip(crypto, sk_home, 
         return {"prekey": jarvis_bundle}
 
     fetched = fetch_peer_prekey(
-        "jarvis@chef.skworld", http_get=stub_get, inbox_resolver=_INBOX_RESOLVER
+        "jarvis@chef.skworld.io", http_get=stub_get, inbox_resolver=_INBOX_RESOLVER
     )
     # The exchange path composed: it routed to the remote prekey endpoint and
     # stored a ratchet-capable (pqdr1) bundle.

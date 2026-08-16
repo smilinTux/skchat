@@ -106,9 +106,9 @@ def test_maybe_fetch_stores_remote_pqdr1_bundle(tmp_path, alice_keys, pq):
         return {"prekey": bundle}
 
     tx._prekey_http_get = stub_get
-    tx._federation_target = lambda r: "jarvis@chef.skworld"
+    tx._federation_target = lambda r: "jarvis@chef.skworld.io"
 
-    assert tx._maybe_fetch_remote_prekey("jarvis@chef.skworld") is True
+    assert tx._maybe_fetch_remote_prekey("jarvis@chef.skworld.io") is True
     # GET hit the remote daemon's prekey endpoint for the short name.
     assert calls == ["https://remote-node.example/api/v1/prekey/jarvis"]
     stored = pq.load_peer_bundle("jarvis")
@@ -127,8 +127,8 @@ def test_disabled_when_ratchet_flag_off(tmp_path, alice_keys, monkeypatch):
         raise AssertionError("http_get must not run when SKCHAT_DM_RATCHET is off")
 
     tx._prekey_http_get = stub_get
-    tx._federation_target = lambda r: "jarvis@chef.skworld"
-    assert tx._maybe_fetch_remote_prekey("jarvis@chef.skworld") is False
+    tx._federation_target = lambda r: "jarvis@chef.skworld.io"
+    assert tx._maybe_fetch_remote_prekey("jarvis@chef.skworld.io") is False
 
 
 def test_unroutable_peer_is_downgrade_safe(tmp_path, alice_keys, pq):
@@ -153,10 +153,10 @@ def test_fetch_is_one_shot_per_process(tmp_path, alice_keys, pq):
         return None  # malformed/empty → fetch_peer_prekey stores nothing
 
     tx._prekey_http_get = stub_get
-    tx._federation_target = lambda r: "ghost@chef.skworld"
+    tx._federation_target = lambda r: "ghost@chef.skworld.io"
 
-    assert tx._maybe_fetch_remote_prekey("ghost@chef.skworld") is False
-    assert tx._maybe_fetch_remote_prekey("ghost@chef.skworld") is False
+    assert tx._maybe_fetch_remote_prekey("ghost@chef.skworld.io") is False
+    assert tx._maybe_fetch_remote_prekey("ghost@chef.skworld.io") is False
     assert calls == ["https://remote-node.example/api/v1/prekey/ghost"]  # only once
 
 
@@ -173,7 +173,7 @@ def test_send_to_federated_peer_fetches_then_ratchets(tmp_path, alice_keys, pq):
         return {"prekey": bundle}
 
     tx._prekey_http_get = stub_get
-    tx._federation_target = lambda r: "jarvis@chef.skworld"
+    tx._federation_target = lambda r: "jarvis@chef.skworld.io"
 
     msg = ChatMessage(sender="lumina", recipient="jarvis", content="cross-node hello")
     # recipient_public_armor present so the crypto branch is taken; the ratchet
@@ -214,7 +214,7 @@ def test_receive_from_federated_peer_prewarms_prekey(tmp_path, alice_keys, pq):
         return {"prekey": bundle}
 
     tx._prekey_http_get = stub_get
-    tx._federation_target = lambda r: "jarvis@chef.skworld"
+    tx._federation_target = lambda r: "jarvis@chef.skworld.io"
 
     inbound = ChatMessage(
         sender="capauth:jarvis@skworld.io", recipient=tx.identity, content="classical inbound"

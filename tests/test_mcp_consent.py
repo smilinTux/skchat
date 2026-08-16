@@ -55,24 +55,24 @@ def test_list_contact_requests_empty(consent_env):
 
 
 def test_list_contact_requests_surfaces_pending(consent_env):
-    _seed_request("testagent", "alice@home.skworld", envelope_id="env-42")
+    _seed_request("testagent", "alice@home.skworld.io", envelope_id="env-42")
     result = asyncio.run(mcp_server.call_tool("list_contact_requests", {}))
     data = _payload(result)
     assert data["count"] == 1
     req = data["requests"][0]
-    assert req["sender"] == "alice@home.skworld"
+    assert req["sender"] == "alice@home.skworld.io"
     assert req["envelope_id"] == "env-42"
     assert "received_at" in req
 
 
 def test_accept_contact_request_promotes_and_mints_token(consent_env):
-    _seed_request("testagent", "bob@home.skworld")
+    _seed_request("testagent", "bob@home.skworld.io")
     result = asyncio.run(
-        mcp_server.call_tool("accept_contact_request", {"sender": "bob@home.skworld"})
+        mcp_server.call_tool("accept_contact_request", {"sender": "bob@home.skworld.io"})
     )
     data = _payload(result)
     assert data["result"] == "accepted"
-    assert data["sender"] == "bob@home.skworld"
+    assert data["sender"] == "bob@home.skworld.io"
     # on_accept mints a per-contact delivery token.
     assert data.get("token")
     assert isinstance(data["token"], str)
@@ -81,7 +81,7 @@ def test_accept_contact_request_promotes_and_mints_token(consent_env):
     from skcomms import consent_requests
 
     assert consent_requests.list_requests("testagent") == []
-    assert "bob@home.skworld" in consent_requests.list_known("testagent")
+    assert "bob@home.skworld.io" in consent_requests.list_known("testagent")
 
 
 def test_accept_requires_sender(consent_env):
@@ -91,27 +91,27 @@ def test_accept_requires_sender(consent_env):
 
 
 def test_decline_contact_request_clears_queue(consent_env):
-    _seed_request("testagent", "carol@home.skworld")
+    _seed_request("testagent", "carol@home.skworld.io")
     result = asyncio.run(
-        mcp_server.call_tool("decline_contact_request", {"sender": "carol@home.skworld"})
+        mcp_server.call_tool("decline_contact_request", {"sender": "carol@home.skworld.io"})
     )
     data = _payload(result)
     assert data["result"] == "declined"
-    assert data["sender"] == "carol@home.skworld"
+    assert data["sender"] == "carol@home.skworld.io"
 
     from skcomms import consent_requests
 
     assert consent_requests.list_requests("testagent") == []
     # Declined (not blocked) → not promoted to known.
-    assert "carol@home.skworld" not in consent_requests.list_known("testagent")
+    assert "carol@home.skworld.io" not in consent_requests.list_known("testagent")
 
 
 def test_decline_contact_request_with_block(consent_env):
-    _seed_request("testagent", "dave@home.skworld")
+    _seed_request("testagent", "dave@home.skworld.io")
     result = asyncio.run(
         mcp_server.call_tool(
             "decline_contact_request",
-            {"sender": "dave@home.skworld", "block": True},
+            {"sender": "dave@home.skworld.io", "block": True},
         )
     )
     data = _payload(result)
@@ -119,7 +119,7 @@ def test_decline_contact_request_with_block(consent_env):
 
     from skcomms.consent import ContactStore
 
-    assert ContactStore("testagent").is_blocked("dave@home.skworld")
+    assert ContactStore("testagent").is_blocked("dave@home.skworld.io")
 
 
 def test_decline_requires_sender(consent_env):

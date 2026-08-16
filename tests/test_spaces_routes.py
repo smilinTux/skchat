@@ -27,7 +27,7 @@ def _video(token):
 def test_create_returns_host_token_and_registers(client):
     r = client.post(
         "/spaces/create",
-        json={"host_fqid": "lumina@chef.skworld", "title": "Town Hall", "slug": "town-hall"},
+        json={"host_fqid": "lumina@chef.skworld.io", "title": "Town Hall", "slug": "town-hall"},
     )
     assert r.status_code == 200
     body = r.json()
@@ -51,15 +51,15 @@ def test_list_spaces_returns_newest_first(client, monkeypatch):
 
     first = client.post(
         "/spaces/create",
-        json={"host_fqid": "lumina@chef.skworld", "title": "Oldest", "slug": "oldest"},
+        json={"host_fqid": "lumina@chef.skworld.io", "title": "Oldest", "slug": "oldest"},
     ).json()["space_id"]
     second = client.post(
         "/spaces/create",
-        json={"host_fqid": "lumina@chef.skworld", "title": "Middle", "slug": "middle"},
+        json={"host_fqid": "lumina@chef.skworld.io", "title": "Middle", "slug": "middle"},
     ).json()["space_id"]
     third = client.post(
         "/spaces/create",
-        json={"host_fqid": "lumina@chef.skworld", "title": "Newest", "slug": "newest"},
+        json={"host_fqid": "lumina@chef.skworld.io", "title": "Newest", "slug": "newest"},
     ).json()["space_id"]
 
     ids = [s["space_id"] for s in client.get("/spaces").json()["spaces"]]
@@ -70,22 +70,24 @@ def test_create_rejects_overlong_title(client):
     """C1 defense-in-depth: cap title length server-side (cheap XSS-blast guard)."""
     r = client.post(
         "/spaces/create",
-        json={"host_fqid": "lumina@chef.skworld", "title": "x" * 121, "slug": "long"},
+        json={"host_fqid": "lumina@chef.skworld.io", "title": "x" * 121, "slug": "long"},
     )
     assert r.status_code == 400
     # a 120-char title is still accepted
     ok = client.post(
         "/spaces/create",
-        json={"host_fqid": "lumina@chef.skworld", "title": "x" * 120, "slug": "ok"},
+        json={"host_fqid": "lumina@chef.skworld.io", "title": "x" * 120, "slug": "ok"},
     )
     assert ok.status_code == 200
 
 
 def test_member_join_gets_listener_token(client):
     sid = client.post(
-        "/spaces/create", json={"host_fqid": "lumina@chef.skworld", "title": "T", "slug": "s"}
+        "/spaces/create", json={"host_fqid": "lumina@chef.skworld.io", "title": "T", "slug": "s"}
     ).json()["space_id"]
-    r = client.post(f"/spaces/{sid}/join", json={"identity": "opus@chef.skworld", "name": "Opus"})
+    r = client.post(
+        f"/spaces/{sid}/join", json={"identity": "opus@chef.skworld.io", "name": "Opus"}
+    )
     assert r.status_code == 200
     v = _video(r.json()["token"])
     assert v.get("canPublish", False) is False
@@ -99,10 +101,10 @@ def test_join_unknown_space_404(client):
 
 def test_end_marks_not_live(client):
     sid = client.post(
-        "/spaces/create", json={"host_fqid": "lumina@chef.skworld", "title": "T", "slug": "s"}
+        "/spaces/create", json={"host_fqid": "lumina@chef.skworld.io", "title": "T", "slug": "s"}
     ).json()["space_id"]
     assert (
-        client.post(f"/spaces/{sid}/end", json={"requester": "lumina@chef.skworld"}).status_code
+        client.post(f"/spaces/{sid}/end", json={"requester": "lumina@chef.skworld.io"}).status_code
         == 200
     )
     live = client.get("/spaces").json()["spaces"]
@@ -111,17 +113,17 @@ def test_end_marks_not_live(client):
 
 def test_non_host_cannot_end(client):
     sid = client.post(
-        "/spaces/create", json={"host_fqid": "lumina@chef.skworld", "title": "T", "slug": "s"}
+        "/spaces/create", json={"host_fqid": "lumina@chef.skworld.io", "title": "T", "slug": "s"}
     ).json()["space_id"]
     assert client.post(f"/spaces/{sid}/end", json={"requester": "rando@x.y"}).status_code == 403
 
 
 def test_join_host_mints_host_token_for_host_only(client):
     sid = client.post(
-        "/spaces/create", json={"host_fqid": "lumina@chef.skworld", "title": "T", "slug": "s"}
+        "/spaces/create", json={"host_fqid": "lumina@chef.skworld.io", "title": "T", "slug": "s"}
     ).json()["space_id"]
     # host gets a host token (roomAdmin + publish)
-    r = client.post(f"/spaces/{sid}/join-host", json={"requester": "lumina@chef.skworld"})
+    r = client.post(f"/spaces/{sid}/join-host", json={"requester": "lumina@chef.skworld.io"})
     assert r.status_code == 200
     assert r.json()["role"] == "host"
     assert _video(r.json()["token"])["roomAdmin"] is True
@@ -158,7 +160,7 @@ def test_moderator_prefers_api_url_over_public_funnel_url(tmp_path, monkeypatch)
     register_spaces_routes(app, registry=SpaceRegistry(path=tmp_path / "spaces.json"))
     c = TestClient(app)
     sid = c.post(
-        "/spaces/create", json={"host_fqid": "lumina@chef.skworld", "title": "T", "slug": "s"}
+        "/spaces/create", json={"host_fqid": "lumina@chef.skworld.io", "title": "T", "slug": "s"}
     ).json()["space_id"]
     c.post(f"/spaces/{sid}/raise-hand", json={"identity": "alice@x.y"})
 
@@ -190,7 +192,7 @@ def test_moderator_falls_back_to_public_url_when_api_url_unset(tmp_path, monkeyp
     register_spaces_routes(app, registry=SpaceRegistry(path=tmp_path / "spaces.json"))
     c = TestClient(app)
     sid = c.post(
-        "/spaces/create", json={"host_fqid": "lumina@chef.skworld", "title": "T", "slug": "s"}
+        "/spaces/create", json={"host_fqid": "lumina@chef.skworld.io", "title": "T", "slug": "s"}
     ).json()["space_id"]
     c.post(f"/spaces/{sid}/raise-hand", json={"identity": "alice@x.y"})
 
@@ -210,7 +212,7 @@ def test_public_space_join_does_NOT_stamp_fingerprint(client):
     identity). Proven Space joins get their badge via the federation authd path."""
     create = client.post(
         "/spaces/create",
-        json={"host_fqid": "lumina@chef.skworld", "title": "T", "slug": "t"},
+        json={"host_fqid": "lumina@chef.skworld.io", "title": "T", "slug": "t"},
     )
     assert create.status_code == 200
     assert not _meta(create.json()["token"])  # host token: no metadata claim
@@ -218,7 +220,7 @@ def test_public_space_join_does_NOT_stamp_fingerprint(client):
     sid = create.json()["space_id"]
     join = client.post(
         f"/spaces/{sid}/join",
-        json={"identity": "lumina@chef.skworld", "name": "Impostor"},
+        json={"identity": "lumina@chef.skworld.io", "name": "Impostor"},
     )
     assert join.status_code == 200
     assert not _meta(join.json()["token"])  # a spoof-claim of Lumina carries NO badge

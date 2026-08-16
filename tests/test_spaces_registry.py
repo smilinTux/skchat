@@ -5,7 +5,7 @@ from skchat.spaces.space import Space, SpaceStatus
 def _space(sid="space-aaaa1111aaaa1111", created_at=0.0):
     return Space(
         space_id=sid,
-        host_fqid="lumina@chef.skworld",
+        host_fqid="lumina@chef.skworld.io",
         title="Town Hall",
         slug="town-hall",
         created_at=created_at,

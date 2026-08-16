@@ -30,9 +30,9 @@ def signed_space(signed):
 
 def test_full_access_gets_host_token():
     out = authorize(
-        _signed("lumina@chef.skworld", "space-x"),
+        _signed("lumina@chef.skworld.io", "space-x"),
         sfu_ws_url="wss://h:8443",
-        _verify=_verify_to("lumina@chef.skworld"),
+        _verify=_verify_to("lumina@chef.skworld.io"),
         _access=lambda f: AccessLevel.FULL,
         _mint=lambda identity, role, space: f"TOKEN:{role}:{space}",
     )
@@ -69,7 +69,7 @@ def test_replay_same_nonce_is_rejected():
     nc = NonceCache()
     # a verifier that always returns the SAME fqid+nonce (a replayed assertion)
     fixed = Assertion(
-        fqid="lumina@chef.skworld",
+        fqid="lumina@chef.skworld.io",
         space_id="space-x",
         issued_at=int(time.time()),
         nonce="replay-nonce",
@@ -85,10 +85,10 @@ def test_replay_same_nonce_is_rejected():
         _mint=lambda identity, role, space: "TOKEN",
         _nonce=nc,
     )
-    out = authorize(_signed("lumina@chef.skworld", "space-x"), **kwargs)
+    out = authorize(_signed("lumina@chef.skworld.io", "space-x"), **kwargs)
     assert out["token"] == "TOKEN"
     with pytest.raises(AuthDenied, match="replay"):
-        authorize(_signed("lumina@chef.skworld", "space-x"), **kwargs)
+        authorize(_signed("lumina@chef.skworld.io", "space-x"), **kwargs)
 
 
 def test_sfu_get_route_rejects_malformed_body():
@@ -123,7 +123,7 @@ def test_verify_failure_aborts_before_minting():
 
     with pytest.raises(FedAssertionError):
         authorize(
-            _signed("lumina@chef.skworld", "space-x"),
+            _signed("lumina@chef.skworld.io", "space-x"),
             sfu_ws_url="wss://h",
             _verify=_bad_verify,
             _access=lambda f: AccessLevel.FULL,
@@ -140,7 +140,7 @@ def test_replay_checked_before_space_and_access():
 
     nc = NonceCache()
     fixed = Assertion(
-        fqid="lumina@chef.skworld", space_id="space-x", issued_at=int(time.time()), nonce="rn"
+        fqid="lumina@chef.skworld.io", space_id="space-x", issued_at=int(time.time()), nonce="rn"
     )
     kwargs = dict(
         sfu_ws_url="wss://h",
@@ -150,9 +150,9 @@ def test_replay_checked_before_space_and_access():
         _mint=lambda i, r, s: "TOKEN",
         _nonce=nc,
     )
-    authorize(_signed("lumina@chef.skworld", "space-x"), **kwargs)  # first ok
+    authorize(_signed("lumina@chef.skworld.io", "space-x"), **kwargs)  # first ok
     with pytest.raises(AuthDenied, match="replay"):
-        authorize(_signed("lumina@chef.skworld", "space-x"), **kwargs)
+        authorize(_signed("lumina@chef.skworld.io", "space-x"), **kwargs)
 
 
 def test_denied_access_does_not_consume_nonce_slot_for_other_fqid():
@@ -165,7 +165,10 @@ def test_denied_access_does_not_consume_nonce_slot_for_other_fqid():
         fqid="ghost@nowhere", space_id="space-x", issued_at=int(time.time()), nonce="shared"
     )
     allowed = Assertion(
-        fqid="lumina@chef.skworld", space_id="space-x", issued_at=int(time.time()), nonce="shared"
+        fqid="lumina@chef.skworld.io",
+        space_id="space-x",
+        issued_at=int(time.time()),
+        nonce="shared",
     )
     with pytest.raises(AuthDenied):
         authorize(
@@ -178,7 +181,7 @@ def test_denied_access_does_not_consume_nonce_slot_for_other_fqid():
         )
     # the trusted fqid (different key) still works with the same nonce string
     out = authorize(
-        _signed("lumina@chef.skworld", "space-x"),
+        _signed("lumina@chef.skworld.io", "space-x"),
         sfu_ws_url="wss://h",
         _verify=lambda s, **k: allowed,
         _access=lambda f: AccessLevel.FULL,
@@ -209,13 +212,13 @@ def test_identity_and_space_echoed_in_response():
     from skchat.spaces.federation.nonce import NonceCache
 
     out = authorize(
-        _signed("lumina@chef.skworld", "space-x"),
+        _signed("lumina@chef.skworld.io", "space-x"),
         sfu_ws_url="wss://h:8443",
-        _verify=_verify_to("lumina@chef.skworld"),
+        _verify=_verify_to("lumina@chef.skworld.io"),
         _access=lambda f: AccessLevel.FULL,
         _mint=lambda i, r, s: "T",
         _nonce=NonceCache(),
     )
-    assert out["identity"] == "lumina@chef.skworld"
+    assert out["identity"] == "lumina@chef.skworld.io"
     assert out["space_id"] == "space-x"
     assert out["sfu_ws_url"] == "wss://h:8443"

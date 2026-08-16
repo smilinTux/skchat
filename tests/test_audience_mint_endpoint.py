@@ -99,7 +99,7 @@ def _reset_env(monkeypatch):
 
 
 class _StubIdentity:
-    fqid = "lumina@chef.skworld"
+    fqid = "lumina@chef.skworld.io"
     uri = "capauth:lumina@skworld.io"
 
 
@@ -333,7 +333,7 @@ class TestMintRealSignature:
         monkeypatch.setenv("GNUPGHOME", str(gnupghome))
 
         home = _agent_home(tmp_path, fingerprint=fp)
-        subject = "lumina@chef.skworld"
+        subject = "lumina@chef.skworld.io"
         _ident = type("I", (), {"fqid": subject, "uri": "capauth:lumina@skworld.io"})()
         monkeypatch.setattr("capauth.resolve_capauth_home", lambda: home)
         # Subject is server-derived. mint_agent_audience_token resolves it via the

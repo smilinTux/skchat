@@ -83,39 +83,39 @@ SPACE_ID = "space-preflight"
 # Three members. Oldest issued_at -> its preferred focus wins (focus.py rule).
 MEMBERSHIPS = [
     build_membership(
-        fqid="c@chef.skworld",
+        fqid="c@chef.skworld.io",
         space_id=SPACE_ID,
-        foci_preferred="lumina@chef.skworld",
+        foci_preferred="lumina@chef.skworld.io",
         issued_at=300,
     ),
     build_membership(
-        fqid="b@chef.skworld",
+        fqid="b@chef.skworld.io",
         space_id=SPACE_ID,
-        foci_preferred="jarvis@chef.skworld",
+        foci_preferred="jarvis@chef.skworld.io",
         issued_at=200,
     ),
     build_membership(
-        fqid="a@chef.skworld",
+        fqid="a@chef.skworld.io",
         space_id=SPACE_ID,
-        foci_preferred="opus@chef.skworld",
+        foci_preferred="opus@chef.skworld.io",
         issued_at=100,  # OLDEST -> opus is the deterministic elected focus
     ),
 ]
-EXPECTED_FOCUS = "opus@chef.skworld"
+EXPECTED_FOCUS = "opus@chef.skworld.io"
 
 FOCUS_DESCRIPTORS = [
     build_focus_descriptor(
-        host_fqid="opus@chef.skworld",
+        host_fqid="opus@chef.skworld.io",
         auth_url="https://opus.skworld/sfu/get",
         sfu_ws_url="wss://opus.skworld:8443",
     ),
     build_focus_descriptor(
-        host_fqid="lumina@chef.skworld",
+        host_fqid="lumina@chef.skworld.io",
         auth_url="https://lumina.skworld/sfu/get",
         sfu_ws_url="wss://lumina.skworld:8443",
     ),
     build_focus_descriptor(
-        host_fqid="jarvis@chef.skworld",
+        host_fqid="jarvis@chef.skworld.io",
         auth_url="https://jarvis.skworld/sfu/get",
         sfu_ws_url="wss://jarvis.skworld:8443",
     ),
@@ -158,17 +158,17 @@ def check_discover_and_elect_oldest_host_wins() -> str:
 def check_build_signed_assertion_shape() -> str:
     relay = _FakeRelay()
     client = FederationDiscoveryClient(nostr=_nostr(relay), sign=lambda payload: "FAKE-SIG")
-    signed = client.build_signed_assertion(fqid="a@chef.skworld", space_id=SPACE_ID)
+    signed = client.build_signed_assertion(fqid="a@chef.skworld.io", space_id=SPACE_ID)
     _check(set(signed.keys()) == {"claim", "sig"}, f"signed body must be {{claim,sig}}: {signed}")
     _check(signed["sig"] == "FAKE-SIG", "injected sign() was not used")
     claim = json.loads(signed["claim"])
-    _check(claim["fqid"] == "a@chef.skworld", "claim.fqid mismatch")
+    _check(claim["fqid"] == "a@chef.skworld.io", "claim.fqid mismatch")
     _check(claim["space_id"] == SPACE_ID, "claim.space_id mismatch")
     _check(bool(claim["nonce"]), "claim.nonce must be a fresh non-empty nonce")
     _check("issued_at" in claim, "claim.issued_at missing")
     # fresh nonce per call (replay-distinct redeems)
     n2 = json.loads(
-        client.build_signed_assertion(fqid="a@chef.skworld", space_id=SPACE_ID)["claim"]
+        client.build_signed_assertion(fqid="a@chef.skworld.io", space_id=SPACE_ID)["claim"]
     )["nonce"]
     _check(n2 != claim["nonce"], "nonce must be fresh on each build")
     return "build_signed_assertion -> {claim, sig}, fresh nonce per call"
@@ -191,7 +191,7 @@ def check_get_token_request_shape_200() -> str:
                 "token": "JWT-CROSS-HOST",
                 "role": "speaker",
                 "sfu_ws_url": host.sfu_ws_url,
-                "identity": "a@chef.skworld",
+                "identity": "a@chef.skworld.io",
                 "space_id": SPACE_ID,
             },
         )
@@ -199,13 +199,13 @@ def check_get_token_request_shape_200() -> str:
     client = FederationDiscoveryClient(
         nostr=_nostr(_FakeRelay()), post=fake_post, sign=lambda p: "FAKE-SIG"
     )
-    out = client.get_token(host, fqid="a@chef.skworld", space_id=SPACE_ID)
+    out = client.get_token(host, fqid="a@chef.skworld.io", space_id=SPACE_ID)
     # request shape: POSTed to the elected host's auth_url with a {claim, sig} body
     _check(captured["url"] == host.auth_url, f"POST url must be {host.auth_url!r}")
     _check(set(captured["body"].keys()) == {"claim", "sig"}, "POST body must be {claim, sig}")
     _check(captured["body"]["sig"] == "FAKE-SIG", "POST body.sig mismatch")
     claim = json.loads(captured["body"]["claim"])
-    _check(claim["fqid"] == "a@chef.skworld" and claim["space_id"] == SPACE_ID, "POST claim shape")
+    _check(claim["fqid"] == "a@chef.skworld.io" and claim["space_id"] == SPACE_ID, "POST claim shape")
     # response passthrough
     _check(out["token"] == "JWT-CROSS-HOST", "token not returned from authd payload")
     _check(out["role"] == "speaker", "role not returned from authd payload")
@@ -242,7 +242,7 @@ def check_get_token_500_discovery_error() -> str:
         sign=lambda p: "FAKE-SIG",
     )
     try:
-        client.get_token(host, fqid="a@chef.skworld", space_id=SPACE_ID)
+        client.get_token(host, fqid="a@chef.skworld.io", space_id=SPACE_ID)
     except DiscoveryError:
         return "get_token non-2xx (500) -> DiscoveryError"
     raise CheckFail("a non-2xx (non-403) from /sfu/get must raise DiscoveryError")
@@ -271,7 +271,7 @@ def check_sfu_candidates_route_shape() -> str:
     # advertise our 3 fake focus descriptors (plus a dup + a malformed event to
     # exercise dedup/skip), through the real route's relay query path.
     dup = build_focus_descriptor(
-        host_fqid="opus@chef.skworld",
+        host_fqid="opus@chef.skworld.io",
         auth_url="https://opus.skworld/sfu/get",
         sfu_ws_url="wss://opus.skworld:8443",
     )
@@ -288,7 +288,7 @@ def check_sfu_candidates_route_shape() -> str:
     hosts = body["hosts"]
     fqids = {h["fqid"] for h in hosts}
     _check(
-        fqids == {"opus@chef.skworld", "lumina@chef.skworld", "jarvis@chef.skworld"},
+        fqids == {"opus@chef.skworld.io", "lumina@chef.skworld.io", "jarvis@chef.skworld.io"},
         f"candidate fqids mismatch (dedup/skip): {fqids}",
     )
     for h in hosts:

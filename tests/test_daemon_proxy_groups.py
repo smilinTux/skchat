@@ -504,7 +504,7 @@ def test_fingerprint_for_identity_matches_peer_store(tmp_path, monkeypatch):
             {
                 "identity": "capauth:steward@skworld.io",
                 "handle": "steward@skworld.io",
-                "fqid": "steward@chef.skworld",
+                "fqid": "steward@chef.skworld.io",
                 "fingerprint": "4E06A71935D1DF1FB9848112D8634AB3E7B55236",
             }
         )
@@ -516,7 +516,7 @@ def test_fingerprint_for_identity_matches_peer_store(tmp_path, monkeypatch):
     # Full, realm-qualified forms match.
     assert fpi("capauth:steward@skworld.io") == expect
     assert fpi("steward@skworld.io") == expect
-    assert fpi("steward@chef.skworld") == expect
+    assert fpi("steward@chef.skworld.io") == expect
     assert fpi("capauth:lumina@skworld.io") == daemon_proxy.LUMINA_FINGERPRINT
     # A BARE short name does NOT match (would cross-realm-collide in the swarm).
     assert fpi("steward") == ""

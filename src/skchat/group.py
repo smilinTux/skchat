@@ -323,7 +323,7 @@ class GroupChat(BaseModel):
         same handle *and* the same realm.
 
         Different realms/operators sharing the same short handle are NOT the
-        same principal — ``lumina@chef.skworld`` and ``lumina@bob.skworld``
+        same principal — ``lumina@chef.skworld.io`` and ``lumina@bob.skworld.io``
         are two different operators' agents that happen to share a name, and
         must never collide (that collision was a cross-tenant admin/tool-scope
         bypass). So: handles must always match; if BOTH sides carry a realm,
@@ -397,7 +397,7 @@ class GroupChat(BaseModel):
 
         This match is realm-scoped: it will NOT collapse two DIFFERENT
         realms/operators that happen to share a bare handle (e.g.
-        ``lumina@chef.skworld`` vs ``lumina@bob.skworld`` are different
+        ``lumina@chef.skworld.io`` vs ``lumina@bob.skworld.io`` are different
         principals and never match each other), which would otherwise be a
         cross-tenant admin/tool-scope bypass. See :meth:`_same_principal`.
 

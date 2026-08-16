@@ -134,7 +134,7 @@ What good looks like:
 
        curl -sS -X POST http://127.0.0.1:8765/conf/create \
          -H 'content-type: application/json' \
-         -d '{"host_fqid":"lumina@chef.skworld","title":"Demo Conf"}' \
+         -d '{"host_fqid":"lumina@chef.skworld.io","title":"Demo Conf"}' \
          | python3 -m json.tool
 
    Response carries `room`, a SOVEREIGN host `token` (room_admin), and
@@ -159,13 +159,13 @@ What good looks like:
 
          curl -sS -X POST http://127.0.0.1:8765/conf/<room>/admit \
            -H 'content-type: application/json' \
-           -d '{"requester":"lumina@chef.skworld","identity":"<guest-identity>"}'
+           -d '{"requester":"lumina@chef.skworld.io","identity":"<guest-identity>"}'
 
    - Deny a guest by identity (they get 403 on retry):
 
          curl -sS -X POST http://127.0.0.1:8765/conf/<room>/deny \
            -H 'content-type: application/json' \
-           -d '{"requester":"lumina@chef.skworld","identity":"<guest-identity>"}'
+           -d '{"requester":"lumina@chef.skworld.io","identity":"<guest-identity>"}'
 
    `requester` must be the conf host (enforced by `_require_host`). In the
    Flutter PWA the host sees the pending lobby and taps Admit/Deny directly
@@ -178,7 +178,7 @@ What good looks like:
 
        curl -sS -X POST http://127.0.0.1:8765/conf/<room>/invite-agent \
          -H 'content-type: application/json' \
-         -d '{"requester":"lumina@chef.skworld","greeting":"Hi all"}'
+         -d '{"requester":"lumina@chef.skworld.io","greeting":"Hi all"}'
 
 6. End the conf (host only): `POST /conf/<room>/end` with `{"requester":"<host>"}`.
 
@@ -240,7 +240,7 @@ different machines) through the live Funnel and asserts real WebRTC:
     ~/.skenv/bin/python scripts/gcv_e2e.py --scenario all \
       --base https://noroc2027.tail204f0c.ts.net:10000 \
       --operator-token "$SKCHAT_GUEST_OPERATOR_TOKEN" \
-      --host-fqid lumina@chef.skworld
+      --host-fqid lumina@chef.skworld.io
 
 Scenarios: `guest-join-conf`, `call-1to1`, `admit-deny`, `turn-path` (asserts the
 sovereign `turn:<realm>:443` is present and openrelay is absent). Each Chrome

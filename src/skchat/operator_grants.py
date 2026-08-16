@@ -118,7 +118,7 @@ OPERATOR_CAPABILITIES = [
 #: an empty constant for back-compat with callers/tests that reference it.
 OPERATOR_DEFERRED_CAPABILITIES: list[str] = []
 
-#: The full agent bundle (subjects like ``lumina@chef.skworld`` / ``opus@chef.skworld``),
+#: The full agent bundle (subjects like ``lumina@chef.skworld.io`` / ``opus@chef.skworld.io``),
 #: which enroll ``verified`` and so hold all eight capabilities (L2.4). The base
 #: three (``send``/``inbox``/``prekey``) already live in the token store; the other
 #: five are the proposed additions the agent backfill tops up.
@@ -456,7 +456,7 @@ def backfill_operator_capabilities(base_dir=None) -> int:
 def grant_agent_capabilities(subject: str, base_dir=None) -> bool:
     """Issue the full agent capability bundle to ``subject`` (token-only, L2.4).
 
-    Agents (``lumina@chef.skworld`` etc.) already enroll ``verified`` on the agent
+    Agents (``lumina@chef.skworld.io`` etc.) already enroll ``verified`` on the agent
     enrollment path, so this mints ONLY a non-expiring capability token granting
     :data:`AGENT_CAPABILITIES`; it does NOT enroll a device or touch any enrollment
     mode (that stays the pairing layer's job). Best-effort: any capauth error is
@@ -486,7 +486,7 @@ def backfill_agent_capabilities(subjects=None, base_dir=None) -> int:
     ``subjects`` may be an explicit iterable of agent subject strings. When None,
     agents are auto-discovered as subjects that already hold an ACTIVE token
     granting ``skchat.send`` and are NOT ``operator:`` seats (the live store's
-    ``lumina@chef.skworld`` / ``opus@chef.skworld``). A subject already carrying
+    ``lumina@chef.skworld.io`` / ``opus@chef.skworld.io``). A subject already carrying
     every bundle capability in one active token is skipped. Idempotent; returns the
     number of subjects updated. Read-then-grant only, never enrolls or re-modes.
     """

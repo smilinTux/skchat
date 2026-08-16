@@ -2,7 +2,7 @@
 # Shape-B FEDERATED call proof (PASSED 2026-06-20): a conf hosted on .158's reachable SFU,
 # joined by jarvis using a SOVEREIGN CROSS-REALM token (jarvis signs an assertion -> lumina
 # validates trust+pinned key -> mints with lumina's SFU secret), discovered via the relay.
-# Result: lumina sees jarvis@chef.skworld w/ video, jarvis sees lumina w/ video — both ways.
+# Result: lumina sees jarvis@chef.skworld.io w/ video, jarvis sees lumina w/ video — both ways.
 # Prereqs: reuse call.html from runbooks/cross-instance-call-test/; write /tmp/b4test/{sfu,lumtok,jartok}.
 #   ROOM minted on lumina (POST /conf/create + /conf/{room}/token); jartok via:
 #   ssh .41 'SKAGENT=jarvis skchat conf join-federated --host https://noroc2027.tail204f0c.ts.net --room $ROOM --json'

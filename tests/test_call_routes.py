@@ -14,8 +14,10 @@ from skchat.call_session import build_invite_body, derive_room
 
 @pytest.fixture
 def client(monkeypatch):
-    monkeypatch.setattr(cr, "_list_peers", lambda: {"lumina@chef.skworld": {"fingerprint": "FP"}})
-    monkeypatch.setattr(cr, "_self_fqid", lambda: "opus@chef.skworld")
+    monkeypatch.setattr(
+        cr, "_list_peers", lambda: {"lumina@chef.skworld.io": {"fingerprint": "FP"}}
+    )
+    monkeypatch.setattr(cr, "_self_fqid", lambda: "opus@chef.skworld.io")
     monkeypatch.setattr(cr, "_have_creds", lambda: True)
     monkeypatch.setattr(
         cr, "_mint_token", lambda identity, name, room, ttl: f"tok::{identity}::{room}"
@@ -41,21 +43,21 @@ def test_call_start_rejects_unpaired(client):
 
 
 def test_call_start_mints_and_rings(client):
-    r = client.post("/call/start", json={"peer": "lumina@chef.skworld"})
+    r = client.post("/call/start", json={"peer": "lumina@chef.skworld.io"})
     assert r.status_code == 200
     data = r.json()
-    expected_room = derive_room("opus@chef.skworld", "lumina@chef.skworld")
+    expected_room = derive_room("opus@chef.skworld.io", "lumina@chef.skworld.io")
     assert data["room"] == expected_room
-    assert data["token"] == f"tok::opus@chef.skworld::{expected_room}"
-    assert data["peer_fqid"] == "lumina@chef.skworld"
+    assert data["token"] == f"tok::opus@chef.skworld.io::{expected_room}"
+    assert data["peer_fqid"] == "lumina@chef.skworld.io"
     assert len(client._sent) == 1
 
 
 def test_call_answer_mints_same_room_without_ringing(client):
-    r = client.post("/call/answer", json={"peer": "lumina@chef.skworld"})
+    r = client.post("/call/answer", json={"peer": "lumina@chef.skworld.io"})
     assert r.status_code == 200
     data = r.json()
-    assert data["room"] == derive_room("opus@chef.skworld", "lumina@chef.skworld")
+    assert data["room"] == derive_room("opus@chef.skworld.io", "lumina@chef.skworld.io")
     assert len(client._sent) == 0
 
 
@@ -75,11 +77,11 @@ def _env(subject, from_fqid, to_fqid, room):
 def test_incoming_returns_only_invites_for_self(client, monkeypatch):
     inbox = [
         (
-            _env("CALL_INVITE", "lumina@chef.skworld", "opus@chef.skworld", "call-r1"),
+            _env("CALL_INVITE", "lumina@chef.skworld.io", "opus@chef.skworld.io", "call-r1"),
             SimpleNamespace(valid=True),
         ),
         (
-            _env("text/plain note", "lumina@chef.skworld", "opus@chef.skworld", "call-x"),
+            _env("text/plain note", "lumina@chef.skworld.io", "opus@chef.skworld.io", "call-x"),
             SimpleNamespace(valid=True),
         ),
         (
@@ -92,7 +94,7 @@ def test_incoming_returns_only_invites_for_self(client, monkeypatch):
     assert r.status_code == 200
     invites = r.json()["invites"]
     assert len(invites) == 1
-    assert invites[0]["from_fqid"] == "lumina@chef.skworld"
+    assert invites[0]["from_fqid"] == "lumina@chef.skworld.io"
     assert invites[0]["room"] == "call-r1"
 
 
@@ -100,7 +102,7 @@ def test_incoming_returns_only_invites_for_self(client, monkeypatch):
 
 
 def test_connectivity_ice_for_paired_peer(client):
-    r = client.get("/connectivity/ice", params={"peer": "lumina@chef.skworld"})
+    r = client.get("/connectivity/ice", params={"peer": "lumina@chef.skworld.io"})
     assert r.status_code == 200
     data = r.json()
     assert "ice_servers" in data and "preferred_tier" in data
@@ -124,8 +126,10 @@ def test_connectivity_ice_unpaired_peer_falls_back_not_404(client, monkeypatch):
 def test_connectivity_ice_guest_offtailnet_gets_sovereign_turn(monkeypatch):
     # A guest (peer "guest-903ekz", never paired) off the tailnet must receive
     # the SOVEREIGN turns: relay with a fresh ephemeral HMAC cred, not a 404.
-    monkeypatch.setattr(cr, "_list_peers", lambda: {"lumina@chef.skworld": {"fingerprint": "FP"}})
-    monkeypatch.setattr(cr, "_self_fqid", lambda: "opus@chef.skworld")
+    monkeypatch.setattr(
+        cr, "_list_peers", lambda: {"lumina@chef.skworld.io": {"fingerprint": "FP"}}
+    )
+    monkeypatch.setattr(cr, "_self_fqid", lambda: "opus@chef.skworld.io")
     monkeypatch.setenv("SKCHAT_TURN_SECRET", "s3cr3t")
     monkeypatch.setenv("SKCHAT_TURN_URLS", "turns:turn.skworld.io:5349,turn:turn.skworld.io:3478")
     app = FastAPI()
@@ -147,8 +151,10 @@ def test_connectivity_ice_guest_offtailnet_gets_sovereign_turn(monkeypatch):
 def test_connectivity_ice_guest_ontailnet_gets_relay_free_path(monkeypatch):
     # An on-tailnet request with an unpaired guest peer gets the direct Tier-1
     # (relay-free) config, same as a paired peer would from that client.
-    monkeypatch.setattr(cr, "_list_peers", lambda: {"lumina@chef.skworld": {"fingerprint": "FP"}})
-    monkeypatch.setattr(cr, "_self_fqid", lambda: "opus@chef.skworld")
+    monkeypatch.setattr(
+        cr, "_list_peers", lambda: {"lumina@chef.skworld.io": {"fingerprint": "FP"}}
+    )
+    monkeypatch.setattr(cr, "_self_fqid", lambda: "opus@chef.skworld.io")
     app = FastAPI()
     cr.register_call_routes(app)
     tailnet_client = TestClient(app, client=("100.64.0.5", 12345))
@@ -163,8 +169,10 @@ def test_connectivity_ice_guest_ontailnet_gets_relay_free_path(monkeypatch):
 def test_connectivity_ice_no_peer_arg_still_returns_config(monkeypatch):
     # The peer arg is now optional: a conf client may omit it entirely and still
     # get an ICE config classified from its own connection.
-    monkeypatch.setattr(cr, "_list_peers", lambda: {"lumina@chef.skworld": {"fingerprint": "FP"}})
-    monkeypatch.setattr(cr, "_self_fqid", lambda: "opus@chef.skworld")
+    monkeypatch.setattr(
+        cr, "_list_peers", lambda: {"lumina@chef.skworld.io": {"fingerprint": "FP"}}
+    )
+    monkeypatch.setattr(cr, "_self_fqid", lambda: "opus@chef.skworld.io")
     monkeypatch.delenv("SKCHAT_TURN_SECRET", raising=False)
     monkeypatch.setenv("SKCHAT_PUBLIC_TURN_ENABLED", "true")
     app = FastAPI()
@@ -184,7 +192,7 @@ def test_connectivity_ice_offtailnet_caller_gets_relay_servers(client, monkeypat
     # must fall through to the STUN/TURN relay tier instead of an empty list.
     monkeypatch.delenv("SKCHAT_TURN_SECRET", raising=False)
     monkeypatch.setenv("SKCHAT_PUBLIC_TURN_ENABLED", "true")
-    r = client.get("/connectivity/ice", params={"peer": "lumina@chef.skworld"})
+    r = client.get("/connectivity/ice", params={"peer": "lumina@chef.skworld.io"})
     assert r.status_code == 200
     data = r.json()
     assert data["on_tailnet"] is False
@@ -195,13 +203,15 @@ def test_connectivity_ice_offtailnet_caller_gets_relay_servers(client, monkeypat
 
 
 def test_connectivity_ice_tailnet_caller_gets_tailnet_path(monkeypatch):
-    monkeypatch.setattr(cr, "_list_peers", lambda: {"lumina@chef.skworld": {"fingerprint": "FP"}})
-    monkeypatch.setattr(cr, "_self_fqid", lambda: "opus@chef.skworld")
+    monkeypatch.setattr(
+        cr, "_list_peers", lambda: {"lumina@chef.skworld.io": {"fingerprint": "FP"}}
+    )
+    monkeypatch.setattr(cr, "_self_fqid", lambda: "opus@chef.skworld.io")
     app = FastAPI()
     cr.register_call_routes(app)
     # A caller connecting from a Tailscale CGNAT address (100.64.0.0/10).
     tailnet_client = TestClient(app, client=("100.64.0.5", 12345))
-    r = tailnet_client.get("/connectivity/ice", params={"peer": "lumina@chef.skworld"})
+    r = tailnet_client.get("/connectivity/ice", params={"peer": "lumina@chef.skworld.io"})
     assert r.status_code == 200
     data = r.json()
     assert data["on_tailnet"] is True
@@ -215,8 +225,10 @@ def test_connectivity_ice_funnel_loopback_caller_gets_relay(monkeypatch):
     # (127.0.0.1). It must NOT be misclassified as on-tailnet. The real client
     # (a public IP) is carried in X-Forwarded-For + the Tailscale-Funnel-Request
     # signal, so the caller must fall through to the STUN/TURN relay tier.
-    monkeypatch.setattr(cr, "_list_peers", lambda: {"lumina@chef.skworld": {"fingerprint": "FP"}})
-    monkeypatch.setattr(cr, "_self_fqid", lambda: "opus@chef.skworld")
+    monkeypatch.setattr(
+        cr, "_list_peers", lambda: {"lumina@chef.skworld.io": {"fingerprint": "FP"}}
+    )
+    monkeypatch.setattr(cr, "_self_fqid", lambda: "opus@chef.skworld.io")
     monkeypatch.delenv("SKCHAT_TURN_SECRET", raising=False)
     monkeypatch.setenv("SKCHAT_PUBLIC_TURN_ENABLED", "true")
     app = FastAPI()
@@ -225,7 +237,7 @@ def test_connectivity_ice_funnel_loopback_caller_gets_relay(monkeypatch):
     funnel_client = TestClient(app, client=("127.0.0.1", 54321))
     r = funnel_client.get(
         "/connectivity/ice",
-        params={"peer": "lumina@chef.skworld"},
+        params={"peer": "lumina@chef.skworld.io"},
         headers={
             "Tailscale-Funnel-Request": "?1",
             "X-Forwarded-For": "203.0.113.7",  # the real off-tailnet client
@@ -244,14 +256,16 @@ def test_connectivity_ice_forwarded_tailnet_client_stays_direct(monkeypatch):
     # A real tailnet client (100.64.0.0/10) reaching us via the loopback proxy
     # (X-Forwarded-For carries its 100.x address) must still be treated as
     # on-tailnet and get the relay-free Tier-1 path.
-    monkeypatch.setattr(cr, "_list_peers", lambda: {"lumina@chef.skworld": {"fingerprint": "FP"}})
-    monkeypatch.setattr(cr, "_self_fqid", lambda: "opus@chef.skworld")
+    monkeypatch.setattr(
+        cr, "_list_peers", lambda: {"lumina@chef.skworld.io": {"fingerprint": "FP"}}
+    )
+    monkeypatch.setattr(cr, "_self_fqid", lambda: "opus@chef.skworld.io")
     app = FastAPI()
     cr.register_call_routes(app)
     proxied = TestClient(app, client=("127.0.0.1", 54321))
     r = proxied.get(
         "/connectivity/ice",
-        params={"peer": "lumina@chef.skworld"},
+        params={"peer": "lumina@chef.skworld.io"},
         headers={"X-Forwarded-For": "100.100.5.9"},
     )
     assert r.status_code == 200
@@ -264,12 +278,14 @@ def test_connectivity_ice_forwarded_tailnet_client_stays_direct(monkeypatch):
 def test_connectivity_ice_lan_caller_stays_direct(monkeypatch):
     # A LAN 192.168.x caller behaves as before: on-tailnet-equivalent direct
     # path (Tier 1, no relay).
-    monkeypatch.setattr(cr, "_list_peers", lambda: {"lumina@chef.skworld": {"fingerprint": "FP"}})
-    monkeypatch.setattr(cr, "_self_fqid", lambda: "opus@chef.skworld")
+    monkeypatch.setattr(
+        cr, "_list_peers", lambda: {"lumina@chef.skworld.io": {"fingerprint": "FP"}}
+    )
+    monkeypatch.setattr(cr, "_self_fqid", lambda: "opus@chef.skworld.io")
     app = FastAPI()
     cr.register_call_routes(app)
     lan_client = TestClient(app, client=("192.168.0.42", 40000))
-    r = lan_client.get("/connectivity/ice", params={"peer": "lumina@chef.skworld"})
+    r = lan_client.get("/connectivity/ice", params={"peer": "lumina@chef.skworld.io"})
     assert r.status_code == 200
     data = r.json()
     assert data["on_tailnet"] is True
@@ -281,14 +297,16 @@ def test_connectivity_ice_bare_loopback_no_forward_gets_relay(monkeypatch):
     # Bare loopback with no forwarding info can no longer prove tailnet
     # membership (it could be a Funnel request that stripped headers), so it is
     # classified OFF-tailnet and reaches the relay tier.
-    monkeypatch.setattr(cr, "_list_peers", lambda: {"lumina@chef.skworld": {"fingerprint": "FP"}})
-    monkeypatch.setattr(cr, "_self_fqid", lambda: "opus@chef.skworld")
+    monkeypatch.setattr(
+        cr, "_list_peers", lambda: {"lumina@chef.skworld.io": {"fingerprint": "FP"}}
+    )
+    monkeypatch.setattr(cr, "_self_fqid", lambda: "opus@chef.skworld.io")
     monkeypatch.delenv("SKCHAT_TURN_SECRET", raising=False)
     monkeypatch.setenv("SKCHAT_PUBLIC_TURN_ENABLED", "true")
     app = FastAPI()
     cr.register_call_routes(app)
     loopback_client = TestClient(app, client=("127.0.0.1", 12345))
-    r = loopback_client.get("/connectivity/ice", params={"peer": "lumina@chef.skworld"})
+    r = loopback_client.get("/connectivity/ice", params={"peer": "lumina@chef.skworld.io"})
     assert r.status_code == 200
     data = r.json()
     assert data["on_tailnet"] is False
@@ -298,7 +316,7 @@ def test_connectivity_ice_bare_loopback_no_forward_gets_relay(monkeypatch):
 
 def test_call_start_503_no_creds(client, monkeypatch):
     monkeypatch.setattr(cr, "_have_creds", lambda: False)
-    r = client.post("/call/start", json={"peer": "lumina@chef.skworld"})
+    r = client.post("/call/start", json={"peer": "lumina@chef.skworld.io"})
     assert r.status_code == 503
 
 
@@ -306,7 +324,7 @@ def test_call_start_rejects_ambiguous_bare_name(client, monkeypatch):
     monkeypatch.setattr(
         cr,
         "_list_peers",
-        lambda: {"lumina@chef.skworld": {}, "lumina@other.world": {}},
+        lambda: {"lumina@chef.skworld.io": {}, "lumina@other.world": {}},
     )
     r = client.post("/call/start", json={"peer": "lumina"})
     assert r.status_code == 409
@@ -316,7 +334,7 @@ def test_call_start_rejects_ambiguous_bare_name(client, monkeypatch):
 def test_call_start_bare_name_resolves(client):
     r = client.post("/call/start", json={"peer": "lumina"})
     assert r.status_code == 200
-    assert r.json()["peer_fqid"] == "lumina@chef.skworld"
+    assert r.json()["peer_fqid"] == "lumina@chef.skworld.io"
 
 
 def test_call_start_missing_peer_400(client):
@@ -325,11 +343,11 @@ def test_call_start_missing_peer_400(client):
 
 
 def test_incoming_skips_malformed_invite(client, monkeypatch):
-    good = _env("CALL_INVITE", "lumina@chef.skworld", "opus@chef.skworld", "call-good")
+    good = _env("CALL_INVITE", "lumina@chef.skworld.io", "opus@chef.skworld.io", "call-good")
     bad = SimpleNamespace(
         subject="CALL_INVITE",
-        from_fqid="lumina@chef.skworld",
-        to_fqid="opus@chef.skworld",
+        from_fqid="lumina@chef.skworld.io",
+        to_fqid="opus@chef.skworld.io",
         body="{not json",
     )
     monkeypatch.setattr(
@@ -350,14 +368,14 @@ def test_incoming_rejects_spoofed_from_fqid(client, monkeypatch):
     # sender. The body's from_fqid is the sender's own unattested claim.
     spoofed_body = build_invite_body(
         from_fqid="chef@skworld.io",  # attacker-controlled claim inside the JSON
-        to_fqid="opus@chef.skworld",
+        to_fqid="opus@chef.skworld.io",
         room="call-spoofed",
         livekit_url="wss://x:8443",
     )
     envelope = SimpleNamespace(
         subject="CALL_INVITE",
         from_fqid="stranger@x.y",  # the envelope's actual, verified sender
-        to_fqid="opus@chef.skworld",
+        to_fqid="opus@chef.skworld.io",
         body=spoofed_body,
     )
     monkeypatch.setattr(cr, "_read_inbox", lambda: [(envelope, SimpleNamespace(valid=True))])
@@ -369,11 +387,11 @@ def test_incoming_rejects_spoofed_from_fqid(client, monkeypatch):
 def test_incoming_accepts_matching_from_fqid(client, monkeypatch):
     envelope = SimpleNamespace(
         subject="CALL_INVITE",
-        from_fqid="lumina@chef.skworld",
-        to_fqid="opus@chef.skworld",
+        from_fqid="lumina@chef.skworld.io",
+        to_fqid="opus@chef.skworld.io",
         body=build_invite_body(
-            from_fqid="lumina@chef.skworld",
-            to_fqid="opus@chef.skworld",
+            from_fqid="lumina@chef.skworld.io",
+            to_fqid="opus@chef.skworld.io",
             room="call-legit",
             livekit_url="wss://x:8443",
         ),
@@ -395,7 +413,7 @@ def test_incoming_empty_inbox(client, monkeypatch):
 def test_incoming_skips_unverified_invite(client, monkeypatch):
     from types import SimpleNamespace
 
-    env = _env("CALL_INVITE", "lumina@chef.skworld", "opus@chef.skworld", "call-unsigned")
+    env = _env("CALL_INVITE", "lumina@chef.skworld.io", "opus@chef.skworld.io", "call-unsigned")
     monkeypatch.setattr(cr, "_read_inbox", lambda: [(env, SimpleNamespace(valid=False))])
     r = client.get("/call/incoming")
     assert r.json()["invites"] == []
@@ -415,8 +433,8 @@ def test_call_peers_lists_paired(client):
     r = client.get("/call/peers")
     assert r.status_code == 200
     peers = r.json()["peers"]
-    assert any(p["fqid"] == "lumina@chef.skworld" for p in peers)
-    lumina = next(p for p in peers if p["fqid"] == "lumina@chef.skworld")
+    assert any(p["fqid"] == "lumina@chef.skworld.io" for p in peers)
+    lumina = next(p for p in peers if p["fqid"] == "lumina@chef.skworld.io")
     assert lumina["fingerprint"] == "FP"
 
 
@@ -424,7 +442,7 @@ def test_call_start_threads_topic_and_alerts(client, monkeypatch):
     alerts = []
     monkeypatch.setattr(cr, "_alert_operator", lambda **kw: alerts.append(kw))
     r = client.post(
-        "/call/start", json={"peer": "lumina@chef.skworld", "topic": "ingest debugging"}
+        "/call/start", json={"peer": "lumina@chef.skworld.io", "topic": "ingest debugging"}
     )
     assert r.status_code == 200
     assert client._sent[0]["topic"] == "ingest debugging"  # invite carried the topic
@@ -440,8 +458,10 @@ def test_call_start_threads_topic_and_alerts(client, monkeypatch):
 
 
 def _gated_app(monkeypatch):
-    monkeypatch.setattr(cr, "_list_peers", lambda: {"lumina@chef.skworld": {"fingerprint": "FP"}})
-    monkeypatch.setattr(cr, "_self_fqid", lambda: "opus@chef.skworld")
+    monkeypatch.setattr(
+        cr, "_list_peers", lambda: {"lumina@chef.skworld.io": {"fingerprint": "FP"}}
+    )
+    monkeypatch.setattr(cr, "_self_fqid", lambda: "opus@chef.skworld.io")
     monkeypatch.setattr(cr, "_have_creds", lambda: True)
     monkeypatch.setattr(
         cr, "_mint_token", lambda identity, name, room, ttl: f"tok::{identity}::{room}"
@@ -461,14 +481,14 @@ def _gated_client(app: FastAPI, *, host: str) -> TestClient:
 def test_call_start_public_caller_without_token_rejected(monkeypatch):
     monkeypatch.delenv("SKCHAT_GUEST_OPERATOR_TOKEN", raising=False)
     c = _gated_client(_gated_app(monkeypatch), host="8.8.8.8")
-    r = c.post("/call/start", json={"peer": "lumina@chef.skworld"})
+    r = c.post("/call/start", json={"peer": "lumina@chef.skworld.io"})
     assert r.status_code in (401, 403), r.text
 
 
 def test_call_answer_public_caller_without_token_rejected(monkeypatch):
     monkeypatch.delenv("SKCHAT_GUEST_OPERATOR_TOKEN", raising=False)
     c = _gated_client(_gated_app(monkeypatch), host="8.8.8.8")
-    r = c.post("/call/answer", json={"peer": "lumina@chef.skworld"})
+    r = c.post("/call/answer", json={"peer": "lumina@chef.skworld.io"})
     assert r.status_code in (401, 403), r.text
 
 
@@ -494,13 +514,13 @@ def test_call_peers_tailnet_caller_passes_gate(monkeypatch):
     c = _gated_client(_gated_app(monkeypatch), host="100.101.102.103")
     r = c.get("/call/peers")
     assert r.status_code == 200, r.text
-    assert any(p["fqid"] == "lumina@chef.skworld" for p in r.json()["peers"])
+    assert any(p["fqid"] == "lumina@chef.skworld.io" for p in r.json()["peers"])
 
 
 def test_call_start_tailnet_caller_passes_gate(monkeypatch):
     monkeypatch.delenv("SKCHAT_GUEST_OPERATOR_TOKEN", raising=False)
     c = _gated_client(_gated_app(monkeypatch), host="100.101.102.103")
-    r = c.post("/call/start", json={"peer": "lumina@chef.skworld"})
+    r = c.post("/call/start", json={"peer": "lumina@chef.skworld.io"})
     assert r.status_code == 200, r.text
 
 
@@ -508,11 +528,11 @@ def test_call_start_public_caller_with_valid_operator_token_allowed(monkeypatch)
     monkeypatch.setenv("SKCHAT_GUEST_OPERATOR_TOKEN", "op-token-xyz")
     c = _gated_client(_gated_app(monkeypatch), host="8.8.8.8")
     # Wrong/missing token -> 401.
-    assert c.post("/call/start", json={"peer": "lumina@chef.skworld"}).status_code == 401
+    assert c.post("/call/start", json={"peer": "lumina@chef.skworld.io"}).status_code == 401
     # Correct token -> passes the gate.
     r = c.post(
         "/call/start",
-        json={"peer": "lumina@chef.skworld"},
+        json={"peer": "lumina@chef.skworld.io"},
         headers={"Authorization": "Bearer op-token-xyz"},
     )
     assert r.status_code == 200, r.text
@@ -527,4 +547,4 @@ def test_resolve_peer_accepts_capauth_and_drifted_realm(monkeypatch):
     assert CR._resolve_peer("opus@chef.skworld.io") == "opus@chef.skworld.io"
     assert CR._resolve_peer("opus") == "opus@chef.skworld.io"
     assert CR._resolve_peer("capauth:opus@skworld.io") == "opus@chef.skworld.io"
-    assert CR._resolve_peer("opus@chef.skworld") == "opus@chef.skworld.io"
+    assert CR._resolve_peer("opus@chef.skworld.io") == "opus@chef.skworld.io"

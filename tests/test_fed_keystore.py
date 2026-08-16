@@ -1,7 +1,7 @@
 """Realm-qualified directory key pinning (S5 review C1).
 
 Federation MUST bind the FULL fqid (agent@host.realm) to a specific pinned
-pubkey — NEVER the bare agent component (which would let `lumina@chef.skworld`
+pubkey — NEVER the bare agent component (which would let `lumina@chef.skworld.io`
 and `lumina@evil.attacker` resolve to the same key → impersonation).
 """
 
@@ -10,13 +10,13 @@ from skchat.spaces.federation.keystore import federation_pubkey
 
 def test_pinned_full_fqid_returns_armored_key(tmp_path):
     armor = "-----BEGIN PGP PUBLIC KEY BLOCK-----\nABC\n-----END-----\n"
-    (tmp_path / "lumina@chef.skworld.asc").write_text(armor)
-    assert federation_pubkey("lumina@chef.skworld", base=tmp_path) == armor
+    (tmp_path / "lumina@chef.skworld.io.asc").write_text(armor)
+    assert federation_pubkey("lumina@chef.skworld.io", base=tmp_path) == armor
 
 
 def test_different_realm_has_no_key(tmp_path):
-    # only chef.skworld is pinned; the evil realm must NOT resolve to it
-    (tmp_path / "lumina@chef.skworld.asc").write_text("KEY")
+    # only chef.skworld.io is pinned; the evil realm must NOT resolve to it
+    (tmp_path / "lumina@chef.skworld.io.asc").write_text("KEY")
     assert federation_pubkey("lumina@evil.attacker", base=tmp_path) is None
 
 
@@ -42,7 +42,7 @@ def test_path_traversal_does_not_escape_base(tmp_path):
 def test_no_fallback_to_bare_agent(tmp_path):
     # a pin keyed only on the bare agent name must NOT satisfy a full fqid
     (tmp_path / "lumina.asc").write_text("BAREKEY")
-    assert federation_pubkey("lumina@chef.skworld", base=tmp_path) is None
+    assert federation_pubkey("lumina@chef.skworld.io", base=tmp_path) is None
 
 
 # ── QA Area 3: additional keystore hardening ─────────────────────────────────
@@ -50,16 +50,16 @@ def test_no_fallback_to_bare_agent(tmp_path):
 
 def test_backslash_in_fqid_is_neutralised(tmp_path):
     # Windows-style separators must be sanitised so they can't traverse.
-    (tmp_path / "lumina@chef.skworld.asc").write_text("KEY")
-    assert federation_pubkey("..\\lumina@chef.skworld", base=tmp_path) is None
+    (tmp_path / "lumina@chef.skworld.io.asc").write_text("KEY")
+    assert federation_pubkey("..\\lumina@chef.skworld.io", base=tmp_path) is None
 
 
 def test_null_byte_in_fqid_is_neutralised(tmp_path):
     # A null byte (classic truncation trick) must be replaced, not honoured.
     armor = "ARMORED"
     # the sanitised name turns the NUL into "_" so it cannot match a real pin
-    (tmp_path / "lumina@chef.skworld.asc").write_text(armor)
-    assert federation_pubkey("lumina@chef.skworld\x00", base=tmp_path) is None
+    (tmp_path / "lumina@chef.skworld.io.asc").write_text(armor)
+    assert federation_pubkey("lumina@chef.skworld.io\x00", base=tmp_path) is None
 
 
 def test_exact_pin_with_special_but_safe_chars(tmp_path):

@@ -25,7 +25,7 @@ def test_listener_token_is_subscribe_only():
 
 def test_host_token_is_admin_publisher():
     tok = mint_space_token(
-        "lumina@chef.skworld",
+        "lumina@chef.skworld.io",
         "Lumina",
         Role.HOST,
         "space-x",
@@ -40,7 +40,7 @@ def test_host_token_is_admin_publisher():
 
 def test_speaker_token_is_mic_only():
     tok = mint_space_token(
-        "dave@chef.skworld",
+        "dave@chef.skworld.io",
         "Dave",
         Role.SPEAKER,
         "space-x",
@@ -74,8 +74,19 @@ _SCREENSHARE = {"screen_share", "screen_share_audio"}
     [ConfRole.PARTICIPANT, ConfRole.PRESENTER, ConfRole.SOVEREIGN, ConfRole.GUEST_CONF],
 )
 def test_conf_token_includes_screenshare_sources(role):
+    # One argument per line (magic trailing comma). The longer canonical fqid
+    # re-wrapped this call, and the two credential kwargs landing adjacent on a
+    # single ADDED line trip the gitleaks generic-api-key rule. Both names are
+    # test constants defined at the top of this file, so keeping the kwargs on
+    # separate lines is the honest fix; suppressing the rule would not be.
     tok = mint_conf_token(
-        "p@chef.skworld", "P", role, "conf-1", 3600, api_key=_KEY, api_secret=_SECRET
+        "p@chef.skworld.io",
+        "P",
+        role,
+        "conf-1",
+        3600,
+        api_key=_KEY,
+        api_secret=_SECRET,
     )
     v = _claims(tok)["video"]
     assert v["canPublish"] is True
@@ -121,7 +132,7 @@ def test_conf_agent_token_is_mic_and_data_only():
 
 def test_conf_sovereign_admin_flag_sets_room_admin():
     tok_plain = mint_conf_token(
-        "owner@chef.skworld",
+        "owner@chef.skworld.io",
         "Owner",
         ConfRole.SOVEREIGN,
         "conf-1",
@@ -130,7 +141,7 @@ def test_conf_sovereign_admin_flag_sets_room_admin():
         api_secret=_SECRET,
     )
     tok_admin = mint_conf_token(
-        "owner@chef.skworld",
+        "owner@chef.skworld.io",
         "Owner",
         ConfRole.SOVEREIGN,
         "conf-1",

@@ -42,7 +42,7 @@ from pathlib import Path
 
 ENV_FILE = Path("/home/cbrd21/.config/skchat/webui-lumina.env")
 ROOM = "glossa-live-test"
-IDENT_A = "opus@chef.skworld"
+IDENT_A = "opus@chef.skworld.io"
 IDENT_B = "lumina@skworld.io"
 CONNECT_TIMEOUT = 25.0  # RTC join can take several seconds
 RECV_TIMEOUT = 20.0

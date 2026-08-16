@@ -57,7 +57,7 @@ def _default_resolve_pubkey(fqid: str) -> Optional[str]:
     # resolve the pubkey from a TOFU/directory pin keyed on the FULL fqid
     # (agent@host.realm). The bare-agent skcomms resolver
     # (skcomms.mailbox._load_verifier_key) is intentionally NOT used here: it
-    # discards the realm, so `lumina@chef.skworld` and `lumina@evil.attacker`
+    # discards the realm, so `lumina@chef.skworld.io` and `lumina@evil.attacker`
     # would collide → impersonation (S5 review C1).
     from skchat.spaces.federation.keystore import federation_pubkey
 

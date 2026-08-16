@@ -223,10 +223,10 @@ class TestGroupChatCreation:
         be able to remove (or be mistaken for) a same-handle member in a
         different realm.
         """
-        group.add_member(identity_uri="capauth:lumina@chef.skworld")
-        removed = group.remove_member("lumina@bob.skworld")
+        group.add_member(identity_uri="capauth:lumina@chef.skworld.io")
+        removed = group.remove_member("lumina@bob.skworld.io")
         assert removed is False
-        assert group.get_member("lumina@chef.skworld") is not None
+        assert group.get_member("lumina@chef.skworld.io") is not None
 
     def test_get_member(self, group: GroupChat) -> None:
         """Members can be looked up by URI."""
@@ -249,27 +249,27 @@ class TestGroupChatCreation:
         """Different operators/realms sharing a bare handle must NOT collide.
 
         Regression test for the cross-tenant bypass: a group has
-        ``lumina@chef.skworld`` as an admin member. A different operator's
-        unrelated agent, ``lumina@bob.skworld``, shares only the bare handle
+        ``lumina@chef.skworld.io`` as an admin member. A different operator's
+        unrelated agent, ``lumina@bob.skworld.io``, shares only the bare handle
         ``lumina`` — it must not be treated as the same principal, or it
         would inherit admin/tool-scope access via ``is_admin``/
         ``can_invoke_tool``/``set_tool_scope``.
         """
         group.add_member(
-            identity_uri="capauth:lumina@chef.skworld",
+            identity_uri="capauth:lumina@chef.skworld.io",
             participant_type=ParticipantType.AGENT,
             role=MemberRole.ADMIN,
         )
 
         # The real principal, in its stored form, is found.
-        assert group.get_member("lumina@chef.skworld") is not None
-        assert group.is_admin("lumina@chef.skworld") is True
+        assert group.get_member("lumina@chef.skworld.io") is not None
+        assert group.is_admin("lumina@chef.skworld.io") is True
 
         # A different-realm agent with the same bare handle is NOT the same
         # principal and must not be found / must not inherit admin rights.
-        assert group.get_member("lumina@bob.skworld") is None
-        assert group.is_admin("lumina@bob.skworld") is False
-        assert group.can_invoke_tool("lumina@bob.skworld", "any.tool") is False
+        assert group.get_member("lumina@bob.skworld.io") is None
+        assert group.is_admin("lumina@bob.skworld.io") is False
+        assert group.can_invoke_tool("lumina@bob.skworld.io", "any.tool") is False
 
     def test_touch_increments(self, group: GroupChat) -> None:
         """touch() updates timestamp and message count."""

@@ -9,7 +9,7 @@ import skchat.call_orchestrator as co
 
 @pytest.fixture(autouse=True)
 def _resolve(monkeypatch):
-    monkeypatch.setattr(co, "_resolve", lambda peer: "lumina@chef.skworld")
+    monkeypatch.setattr(co, "_resolve", lambda peer: "lumina@chef.skworld.io")
 
 
 def test_uses_p2p_when_it_opens(monkeypatch):
@@ -21,7 +21,7 @@ def test_uses_p2p_when_it_opens(monkeypatch):
     monkeypatch.setattr(co, "_livekit_fallback", lambda fqid: pytest.fail("should not fall back"))
     out = asyncio.run(co.connect_with_fallback("lumina"))
     assert out["transport"] == "p2p"
-    assert out["peer_fqid"] == "lumina@chef.skworld"
+    assert out["peer_fqid"] == "lumina@chef.skworld.io"
 
 
 def test_falls_back_to_livekit_on_p2p_timeout(monkeypatch):
@@ -37,14 +37,14 @@ def test_falls_back_to_livekit_on_p2p_timeout(monkeypatch):
             "token": "tok",
             "livekit_url": "wss://x:8443",
             "peer_fqid": fqid,
-            "identity": "opus@chef.skworld",
+            "identity": "opus@chef.skworld.io",
         },
     )
     out = asyncio.run(co.connect_with_fallback("lumina", p2p_timeout=0.1))
     assert out["transport"] == "livekit"
     assert out["status"] == "fallback"
     assert out["room"] == "call-xyz"
-    assert out["peer_fqid"] == "lumina@chef.skworld"
+    assert out["peer_fqid"] == "lumina@chef.skworld.io"
 
 
 def test_falls_back_on_p2p_error(monkeypatch):
@@ -60,7 +60,7 @@ def test_falls_back_on_p2p_error(monkeypatch):
             "token": "t",
             "livekit_url": "u",
             "peer_fqid": fqid,
-            "identity": "opus@chef.skworld",
+            "identity": "opus@chef.skworld.io",
         },
     )
     out = asyncio.run(co.connect_with_fallback("lumina"))

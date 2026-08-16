@@ -2,8 +2,8 @@ from skchat.spaces.space import Space, SpaceStatus, derive_space_id
 
 
 def test_space_id_is_deterministic_and_prefixed():
-    a = derive_space_id("lumina@chef.skworld", "town-hall")
-    b = derive_space_id("lumina@chef.skworld", "town-hall")
+    a = derive_space_id("lumina@chef.skworld.io", "town-hall")
+    b = derive_space_id("lumina@chef.skworld.io", "town-hall")
     assert a == b
     assert a.startswith("space-")
     # 16 base32 chars after the prefix
@@ -12,18 +12,18 @@ def test_space_id_is_deterministic_and_prefixed():
 
 
 def test_space_id_varies_by_host_and_slug():
-    assert derive_space_id("lumina@chef.skworld", "town-hall") != derive_space_id(
-        "opus@chef.skworld", "town-hall"
+    assert derive_space_id("lumina@chef.skworld.io", "town-hall") != derive_space_id(
+        "opus@chef.skworld.io", "town-hall"
     )
-    assert derive_space_id("lumina@chef.skworld", "town-hall") != derive_space_id(
-        "lumina@chef.skworld", "after-party"
+    assert derive_space_id("lumina@chef.skworld.io", "town-hall") != derive_space_id(
+        "lumina@chef.skworld.io", "after-party"
     )
 
 
 def test_space_dataclass_defaults_and_room_equals_id():
     s = Space(
         space_id="space-abcd1234abcd1234",
-        host_fqid="lumina@chef.skworld",
+        host_fqid="lumina@chef.skworld.io",
         title="Town Hall",
         slug="town-hall",
     )

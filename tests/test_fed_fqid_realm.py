@@ -1,7 +1,7 @@
 """F0-fqid (84fb38da): canonical FQID realm sign->verify round-trip.
 
 The canonical federation FQID is ``<agent>@<operator>.<realm>`` (e.g.
-``lumina@chef.skworld``) — the same form ``resolve_agent_identity().fqid``
+``lumina@chef.skworld.io``) — the same form ``resolve_agent_identity().fqid``
 emits, ``federation-trust.json`` lists, and the pinned-key filename uses. This
 proves the FULL chain (real capauth signing -> keystore pin resolution ->
 real verification) closes when the emitted FQID equals the pinned filename.
@@ -27,7 +27,7 @@ from skchat.spaces.federation.assertion import (
 )
 from skchat.spaces.federation.keystore import federation_pubkey
 
-CANONICAL_FQID = "lumina@chef.skworld"
+CANONICAL_FQID = "lumina@chef.skworld.io"
 _LUMINA_KEYS = Path.home() / ".skcapstone" / "agents" / "lumina" / "capauth" / "identity"
 
 

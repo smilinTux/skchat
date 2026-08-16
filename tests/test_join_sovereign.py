@@ -78,20 +78,20 @@ def _mint_real(identity: str, space_id: str, *, sovereign_admin: bool) -> str:
 
 def test_valid_assertion_mints_sovereign_token_with_proven_identity():
     out = authorize_sovereign(
-        _signed("lumina@chef.skworld", "conf-1"),
+        _signed("lumina@chef.skworld.io", "conf-1"),
         conf_ws_url="wss://h:8443",
         _verify=_verify,
         _mint=_mint_real,
         _nonce=NonceCache(),
     )
     assert out["role"] == "sovereign"
-    assert out["identity"] == "lumina@chef.skworld"
+    assert out["identity"] == "lumina@chef.skworld.io"
     assert out["space_id"] == "conf-1"
     assert out["conf_ws_url"] == "wss://h:8443"
 
     v = _claims(out["token"])["video"]
     # LiveKit identity is the PROVEN fqid (sub claim), not a caller string.
-    assert _claims(out["token"])["sub"] == "lumina@chef.skworld"
+    assert _claims(out["token"])["sub"] == "lumina@chef.skworld.io"
     assert v["room"] == "conf-1"
     assert v["canPublish"] is True
     srcs = set(v["canPublishSources"])
@@ -102,14 +102,14 @@ def test_valid_assertion_mints_sovereign_token_with_proven_identity():
 
 def test_sovereign_admin_flag_sets_room_admin():
     plain = authorize_sovereign(
-        _signed("owner@chef.skworld", "conf-1", nonce="a"),
+        _signed("owner@chef.skworld.io", "conf-1", nonce="a"),
         conf_ws_url="wss://h",
         _verify=_verify,
         _mint=_mint_real,
         _nonce=NonceCache(),
     )
     admin = authorize_sovereign(
-        _signed("owner@chef.skworld", "conf-1", nonce="b"),
+        _signed("owner@chef.skworld.io", "conf-1", nonce="b"),
         conf_ws_url="wss://h",
         sovereign_admin=True,
         _verify=_verify,
@@ -132,14 +132,14 @@ def test_replayed_nonce_is_rejected():
         _mint=_mint_real,
         _nonce=nc,
     )
-    first = authorize_sovereign(_signed("lumina@chef.skworld", "conf-1", "dup"), **kwargs)
-    assert first["identity"] == "lumina@chef.skworld"
+    first = authorize_sovereign(_signed("lumina@chef.skworld.io", "conf-1", "dup"), **kwargs)
+    assert first["identity"] == "lumina@chef.skworld.io"
     with pytest.raises(JoinDenied, match="replay"):
-        authorize_sovereign(_signed("lumina@chef.skworld", "conf-1", "dup"), **kwargs)
+        authorize_sovereign(_signed("lumina@chef.skworld.io", "conf-1", "dup"), **kwargs)
 
 
 def test_bad_signature_is_rejected():
-    signed = _signed("lumina@chef.skworld", "conf-1")
+    signed = _signed("lumina@chef.skworld.io", "conf-1")
     signed["sig"] = "SIG(forged)"  # no longer matches the canonical claim bytes
     minted: list = []
     with pytest.raises(FedAssertionError, match="signature"):
@@ -159,7 +159,7 @@ def test_tampered_fqid_is_rejected():
     # fail and no token is minted.
     signed = _signed("rando@other.realm", "conf-1")
     swapped = dict(json.loads(signed["claim"]))
-    swapped["fqid"] = "lumina@chef.skworld"
+    swapped["fqid"] = "lumina@chef.skworld.io"
     signed["claim"] = json.dumps(swapped, sort_keys=True, separators=(",", ":"))
     minted: list = []
     with pytest.raises(FedAssertionError, match="signature"):
@@ -178,13 +178,13 @@ def test_caller_cannot_inject_identity_only_proven_fqid_used():
     # is the PROVEN fqid from the assertion — the endpoint ignores any
     # caller-supplied identity (it isn't a parameter at all).
     out = authorize_sovereign(
-        _signed("real@chef.skworld", "conf-1"),
+        _signed("real@chef.skworld.io", "conf-1"),
         conf_ws_url="wss://h",
         _verify=_verify,
         _mint=_mint_real,
         _nonce=NonceCache(),
     )
-    assert _claims(out["token"])["sub"] == "real@chef.skworld"
+    assert _claims(out["token"])["sub"] == "real@chef.skworld.io"
 
 
 # ── route-level: thin parse + status mapping ──────────────────────────────────
@@ -225,17 +225,17 @@ def test_route_happy_path_returns_proven_identity_token(monkeypatch):
 
     monkeypatch.setattr(jr, "verify_signed", _verify)
     client = _client(monkeypatch)
-    signed = _signed("opus@chef.skworld", "conf-9")
+    signed = _signed("opus@chef.skworld.io", "conf-9")
     resp = client.post(
         "/join/sovereign",
         json={"claim": signed["claim"], "sig": signed["sig"], "sovereign_admin": True},
     )
     assert resp.status_code == 200, resp.text
     out = resp.json()
-    assert out["identity"] == "opus@chef.skworld"
+    assert out["identity"] == "opus@chef.skworld.io"
     assert out["role"] == "sovereign"
     assert out["conf_ws_url"] == "wss://route-host:8443"
     v = _claims(out["token"])["video"]
-    assert _claims(out["token"])["sub"] == "opus@chef.skworld"
+    assert _claims(out["token"])["sub"] == "opus@chef.skworld.io"
     assert v["roomAdmin"] is True
     assert _SCREENSHARE.issubset(set(v["canPublishSources"]))

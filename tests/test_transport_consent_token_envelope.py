@@ -62,7 +62,7 @@ class FakeSkcommsLegacyFed:
         return FakeReport(True)
 
 
-RECIPIENT = "lumina@chef.skworld"
+RECIPIENT = "lumina@chef.skworld.io"
 TOKEN = "a1b2c3" * 10  # 60 hex chars
 
 

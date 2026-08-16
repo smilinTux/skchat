@@ -27,8 +27,8 @@ def _assert_no_non_sovereign_turn(cfg: dict) -> None:
 def test_tier1_both_on_tailnet_has_no_relay(monkeypatch):
     monkeypatch.delenv("SKCHAT_TURN_SECRET", raising=False)
     cfg = ice_config(
-        local_fqid="lumina@chef.skworld",
-        peer_fqid="opus@chef.skworld",
+        local_fqid="lumina@chef.skworld.io",
+        peer_fqid="opus@chef.skworld.io",
         peer_hint={"on_tailnet": True},
     )
     assert cfg["preferred_tier"] == 1
@@ -40,8 +40,8 @@ def test_tier3_cross_nat_emits_ephemeral_turn(monkeypatch):
     monkeypatch.setenv("SKCHAT_TURN_SECRET", "s3cr3t")
     monkeypatch.setenv("SKCHAT_TURN_URLS", "turn:turn.example.com:3478?transport=udp")
     cfg = ice_config(
-        local_fqid="lumina@chef.skworld",
-        peer_fqid="opus@chef.skworld",
+        local_fqid="lumina@chef.skworld.io",
+        peer_fqid="opus@chef.skworld.io",
         peer_hint={"on_tailnet": False},
     )
     assert cfg["preferred_tier"] == 3
@@ -50,7 +50,7 @@ def test_tier3_cross_nat_emits_ephemeral_turn(monkeypatch):
     entry = turn[0]
     assert ":" in entry["username"]
     expiry, _, who = entry["username"].partition(":")
-    assert who == "lumina@chef.skworld"
+    assert who == "lumina@chef.skworld.io"
     expected = base64.b64encode(
         hmac.HMAC(b"s3cr3t", entry["username"].encode(), hashlib.sha1).digest()
     ).decode()
@@ -60,8 +60,8 @@ def test_tier3_cross_nat_emits_ephemeral_turn(monkeypatch):
 def test_tier2_same_subnet_has_no_relay(monkeypatch):
     monkeypatch.delenv("SKCHAT_TURN_SECRET", raising=False)
     cfg = ice_config(
-        local_fqid="lumina@chef.skworld",
-        peer_fqid="opus@chef.skworld",
+        local_fqid="lumina@chef.skworld.io",
+        peer_fqid="opus@chef.skworld.io",
         peer_hint={"same_subnet": True},
     )
     assert cfg["preferred_tier"] == 2
@@ -186,12 +186,12 @@ def test_sovereign_only_when_configured(monkeypatch):
         "turn:noroc2027.tail204f0c.ts.net:443?transport=tls,"
         "turn:noroc2027.tail204f0c.ts.net:3478?transport=udp",
     )
-    cfg = ice_config("lumina@chef.skworld", "b@x.y", peer_hint={"on_tailnet": False})
+    cfg = ice_config("lumina@chef.skworld.io", "b@x.y", peer_hint={"on_tailnet": False})
     # Sovereign TURN present, ephemeral-credentialed, both TLS + udp forms.
     turn = next(s for s in cfg["ice_servers"] if any("turn:" in u for u in s["urls"]))
     assert "turn:noroc2027.tail204f0c.ts.net:443?transport=tls" in turn["urls"]
     assert "turn:noroc2027.tail204f0c.ts.net:3478?transport=udp" in turn["urls"]
-    assert ":" in turn["username"] and turn["username"].endswith("lumina@chef.skworld")
+    assert ":" in turn["username"] and turn["username"].endswith("lumina@chef.skworld.io")
     # Exactly one relay entry - sovereign only, nothing appended alongside it.
     relay_entries = [s for s in cfg["ice_servers"] if s.get("credential")]
     assert len(relay_entries) == 1

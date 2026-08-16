@@ -38,7 +38,7 @@ def setup(tmp_path, monkeypatch):
     register_spaces_routes(app, registry=reg, moderator=mod, consent=led)
     c = TestClient(app)
     sid = c.post(
-        "/spaces/create", json={"host_fqid": "lumina@chef.skworld", "title": "T", "slug": "s"}
+        "/spaces/create", json={"host_fqid": "lumina@chef.skworld.io", "title": "T", "slug": "s"}
     ).json()["space_id"]
     return c, sid, mod, reg, led
 
@@ -53,7 +53,8 @@ def test_listener_can_raise_own_hand(setup):
 def test_host_can_invite(setup):
     c, sid, mod, reg, led = setup
     r = c.post(
-        f"/spaces/{sid}/invite", json={"requester": "lumina@chef.skworld", "identity": "alice@x.y"}
+        f"/spaces/{sid}/invite",
+        json={"requester": "lumina@chef.skworld.io", "identity": "alice@x.y"},
     )
     assert r.status_code == 200
     assert r.json()["on_stage"] is True
@@ -65,7 +66,8 @@ def test_invite_to_stage_adds_authoritative_speaker(setup):
     the directory `${speakers} on stage` count reflects reg.speakers."""
     c, sid, mod, reg, led = setup
     c.post(
-        f"/spaces/{sid}/invite", json={"requester": "lumina@chef.skworld", "identity": "alice@x.y"}
+        f"/spaces/{sid}/invite",
+        json={"requester": "lumina@chef.skworld.io", "identity": "alice@x.y"},
     )
     assert reg.get(sid).speakers == ["alice@x.y"]
     live = c.get("/spaces").json()["spaces"]
@@ -77,7 +79,7 @@ def test_remove_from_stage_drops_authoritative_speaker(setup):
     reg.add_speaker(sid, "alice@x.y")
     r = c.post(
         f"/spaces/{sid}/remove-from-stage",
-        json={"requester": "lumina@chef.skworld", "identity": "alice@x.y"},
+        json={"requester": "lumina@chef.skworld.io", "identity": "alice@x.y"},
     )
     assert r.status_code == 200
     assert reg.get(sid).speakers == []
@@ -101,14 +103,18 @@ def test_host_can_kick_and_mute(setup):
     assert (
         c.post(
             f"/spaces/{sid}/kick",
-            json={"requester": "lumina@chef.skworld", "identity": "troll@x.y"},
+            json={"requester": "lumina@chef.skworld.io", "identity": "troll@x.y"},
         ).status_code
         == 200
     )
     assert (
         c.post(
             f"/spaces/{sid}/mute",
-            json={"requester": "lumina@chef.skworld", "identity": "loud@x.y", "track_sid": "TR_1"},
+            json={
+                "requester": "lumina@chef.skworld.io",
+                "identity": "loud@x.y",
+                "track_sid": "TR_1",
+            },
         ).status_code
         == 200
     )
@@ -130,7 +136,7 @@ def test_host_can_disable_sharing(setup):
     c, sid, mod, reg, led = setup
     r = c.post(
         f"/spaces/{sid}/set-sharing",
-        json={"requester": "lumina@chef.skworld", "identity": "alice@x.y", "allow": False},
+        json={"requester": "lumina@chef.skworld.io", "identity": "alice@x.y", "allow": False},
     )
     assert r.status_code == 200
     assert r.json() == {"ok": True, "sharing": False}
@@ -141,7 +147,7 @@ def test_host_can_re_allow_sharing(setup):
     c, sid, mod, reg, led = setup
     r = c.post(
         f"/spaces/{sid}/set-sharing",
-        json={"requester": "lumina@chef.skworld", "identity": "alice@x.y", "allow": True},
+        json={"requester": "lumina@chef.skworld.io", "identity": "alice@x.y", "allow": True},
     )
     assert r.status_code == 200
     assert r.json() == {"ok": True, "sharing": True}
@@ -152,7 +158,7 @@ def test_set_sharing_unknown_space_404s(setup):
     c, sid, mod, reg, led = setup
     r = c.post(
         "/spaces/nope-space-000000000/set-sharing",
-        json={"requester": "lumina@chef.skworld", "identity": "alice@x.y", "allow": False},
+        json={"requester": "lumina@chef.skworld.io", "identity": "alice@x.y", "allow": False},
     )
     assert r.status_code == 404
 
@@ -198,7 +204,8 @@ def test_promote_while_recording_blocks_unconsented(setup):
     c, sid, mod, reg, led = setup
     reg.set_recording(sid, True, "EG_x")
     r = c.post(
-        f"/spaces/{sid}/invite", json={"requester": "lumina@chef.skworld", "identity": "alice@x.y"}
+        f"/spaces/{sid}/invite",
+        json={"requester": "lumina@chef.skworld.io", "identity": "alice@x.y"},
     )
     assert r.status_code == 409
     assert "consent" in r.json()["detail"].lower()
@@ -213,7 +220,8 @@ def test_promote_while_recording_allows_consented(setup):
     c.post(f"/spaces/{sid}/consent", json={"identity": "alice@x.y"})
     reg.set_recording(sid, True, "EG_x")
     r = c.post(
-        f"/spaces/{sid}/invite", json={"requester": "lumina@chef.skworld", "identity": "alice@x.y"}
+        f"/spaces/{sid}/invite",
+        json={"requester": "lumina@chef.skworld.io", "identity": "alice@x.y"},
     )
     assert r.status_code == 200
     assert reg.get(sid).speakers == ["alice@x.y"]

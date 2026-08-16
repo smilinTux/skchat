@@ -91,7 +91,7 @@ from skchat.daemon_proxy import LUMINA_FINGERPRINT, soul_metadata_for
 def test_soul_metadata_for_strict_resolution():
     # Lumina (special-case) resolves; an unknown/cross-realm identity is keyless.
     assert (
-        json.loads(soul_metadata_for("lumina@chef.skworld"))["soul_fingerprint"]
+        json.loads(soul_metadata_for("lumina@chef.skworld.io"))["soul_fingerprint"]
         == LUMINA_FINGERPRINT
     )
     assert json.loads(soul_metadata_for("ghost@otherrealm.io"))["soul_fingerprint"] == ""
@@ -103,7 +103,7 @@ def test_proven_sovereign_join_stamps_fingerprint(monkeypatch):
     monkeypatch.setenv("SKCHAT_LIVEKIT_API_SECRET", _SECRET)
     from skchat import join_routes
 
-    tok = join_routes._default_mint("lumina@chef.skworld", "room1", sovereign_admin=True)
+    tok = join_routes._default_mint("lumina@chef.skworld.io", "room1", sovereign_admin=True)
     assert json.loads(_claims(tok)["metadata"])["soul_fingerprint"] == LUMINA_FINGERPRINT
 
 
@@ -114,5 +114,5 @@ def test_proven_space_federation_stamps_fingerprint(monkeypatch):
     from skchat.spaces.federation import authd
     from skchat.spaces.roles import Role
 
-    tok = authd._default_mint("lumina@chef.skworld", Role.SPEAKER, "space1")
+    tok = authd._default_mint("lumina@chef.skworld.io", Role.SPEAKER, "space1")
     assert json.loads(_claims(tok)["metadata"])["soul_fingerprint"] == LUMINA_FINGERPRINT

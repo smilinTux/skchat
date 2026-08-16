@@ -36,18 +36,18 @@ def _client() -> TestClient:
 
 def test_status_shape_with_injected_seams():
     out = fs.build_federation_status(
-        fqid_fn=lambda: "lumina@chef.skworld",
+        fqid_fn=lambda: "lumina@chef.skworld.io",
         relays_fn=lambda: ["wss://relay.example"],
         trust_fn=lambda errs: {
             "configured": True,
-            "full_access": ["jarvis@chef.skworld"],
+            "full_access": ["jarvis@chef.skworld.io"],
             "default": "subscribe",
             "remote_max_role": "speaker",
         },
-        peers_fn=lambda errs: ["jarvis@chef.skworld"],
+        peers_fn=lambda errs: ["jarvis@chef.skworld.io"],
         discover_fn=lambda relays, errs: [
             {
-                "fqid": "jarvis@chef.skworld",
+                "fqid": "jarvis@chef.skworld.io",
                 "auth_url": "http://box-a:8765/conf/x/federated-token",
                 "sfu_ws_url": "wss://box-a/livekit-ws",
             }
@@ -56,11 +56,11 @@ def test_status_shape_with_injected_seams():
     )
     assert out["service"] == "skchat-federation"
     assert out["status"] == "ok"
-    assert out["identity"]["fqid"] == "lumina@chef.skworld"
+    assert out["identity"]["fqid"] == "lumina@chef.skworld.io"
     assert out["relays"] == ["wss://relay.example"]
-    assert out["trust"]["full_access"] == ["jarvis@chef.skworld"]
-    assert out["pinned_peers"] == ["jarvis@chef.skworld"]
-    assert out["discovered_focus"][0]["fqid"] == "jarvis@chef.skworld"
+    assert out["trust"]["full_access"] == ["jarvis@chef.skworld.io"]
+    assert out["pinned_peers"] == ["jarvis@chef.skworld.io"]
+    assert out["discovered_focus"][0]["fqid"] == "jarvis@chef.skworld.io"
     assert out["counts"]["live_confs"] == 2
     assert out["counts"]["live_spaces"] == 1
     # token counters are merged into counts
@@ -105,13 +105,13 @@ def test_default_trust_view_degrades_when_unconfigured(tmp_path, monkeypatch):
 def test_pinned_peers_lists_asc_stems(tmp_path, monkeypatch):
     base = tmp_path / ".skchat" / "federation-peers"
     base.mkdir(parents=True)
-    (base / "jarvis@chef.skworld.asc").write_text("KEY", encoding="utf-8")
-    (base / "ava@chef.skworld.asc").write_text("KEY", encoding="utf-8")
+    (base / "jarvis@chef.skworld.io.asc").write_text("KEY", encoding="utf-8")
+    (base / "ava@chef.skworld.io.asc").write_text("KEY", encoding="utf-8")
     (base / "notakey.txt").write_text("x", encoding="utf-8")
     monkeypatch.setattr(fs.Path, "home", staticmethod(lambda: tmp_path))
     errors: list = []
     peers = fs._pinned_peers(errors)
-    assert peers == ["ava@chef.skworld", "jarvis@chef.skworld"]
+    assert peers == ["ava@chef.skworld.io", "jarvis@chef.skworld.io"]
     assert errors == []
 
 
@@ -119,7 +119,7 @@ def test_pinned_peers_lists_asc_stems(tmp_path, monkeypatch):
 
 
 def test_route_returns_200_and_shape(monkeypatch):
-    monkeypatch.setattr(fs, "_self_fqid", lambda: "lumina@chef.skworld")
+    monkeypatch.setattr(fs, "_self_fqid", lambda: "lumina@chef.skworld.io")
     monkeypatch.setattr(fs, "_relays", lambda: [])
     client = _client()
     r = client.get("/federation/status")
@@ -174,7 +174,7 @@ def test_discovered_focus_joins_relay_descriptors(monkeypatch):
             return [
                 {
                     "content": (
-                        '{"host_fqid":"jarvis@chef.skworld",'
+                        '{"host_fqid":"jarvis@chef.skworld.io",'
                         '"auth_url":"http://box-a:8765/conf/x/federated-token",'
                         '"sfu_ws_url":"wss://box-a/livekit-ws"}'
                     )
@@ -186,5 +186,5 @@ def test_discovered_focus_joins_relay_descriptors(monkeypatch):
     errors: list = []
     hosts = fs._discovered_focus(["wss://relay"], errors)
     assert len(hosts) == 1
-    assert hosts[0]["fqid"] == "jarvis@chef.skworld"
+    assert hosts[0]["fqid"] == "jarvis@chef.skworld.io"
     assert errors == []

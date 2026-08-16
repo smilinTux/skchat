@@ -24,12 +24,12 @@ def _fake_verify_ok(payload: bytes, sig: str, pub: str) -> bool:
 
 def test_build_and_verify_roundtrip():
     a = Assertion(
-        fqid="lumina@chef.skworld", space_id="space-x", issued_at=int(time.time()), nonce="abc"
+        fqid="lumina@chef.skworld.io", space_id="space-x", issued_at=int(time.time()), nonce="abc"
     )
     signed = build_signed(a, sign=_fake_sign)
     assert signed["sig"]
     out = verify_signed(signed, resolve_pubkey=lambda f: "PUB", verify=_fake_verify_ok)
-    assert out.fqid == "lumina@chef.skworld"
+    assert out.fqid == "lumina@chef.skworld.io"
     assert out.space_id == "space-x"
 
 
@@ -72,7 +72,7 @@ def test_small_future_skew_is_tolerated():
     assert out.fqid == "x@y.z"
 
 
-@pytest.mark.parametrize("bad", ["@chef.skworld", "chef.skworld", "a@b@c", "a@", ""])
+@pytest.mark.parametrize("bad", ["@chef.skworld.io", "chef.skworld", "a@b@c", "a@", ""])
 def test_malformed_fqid_rejected(bad):
     a = Assertion(fqid=bad, space_id="space-x", issued_at=int(time.time()), nonce="n")
     signed = build_signed(a, sign=_fake_sign)
@@ -96,7 +96,7 @@ def test_tampered_claim_body_rejected():
     # escalate the space or change the fqid). The sig no longer matches the new
     # claim bytes, so verification must fail. This is the core forgery defence.
     a = Assertion(
-        fqid="lumina@chef.skworld", space_id="space-x", issued_at=int(time.time()), nonce="n"
+        fqid="lumina@chef.skworld.io", space_id="space-x", issued_at=int(time.time()), nonce="n"
     )
     signed = build_signed(a, sign=_fake_sign)
     tampered = dict(json.loads(signed["claim"]))
@@ -114,7 +114,7 @@ def test_fqid_swap_with_kept_signature_rejected():
     )
     signed = build_signed(a, sign=_fake_sign)
     swapped = dict(json.loads(signed["claim"]))
-    swapped["fqid"] = "lumina@chef.skworld"  # impersonate a trusted peer
+    swapped["fqid"] = "lumina@chef.skworld.io"  # impersonate a trusted peer
     signed["claim"] = json.dumps(swapped, sort_keys=True, separators=(",", ":"))
     with pytest.raises(FedAssertionError, match="signature"):
         verify_signed(signed, resolve_pubkey=lambda f: "PUB", verify=_fake_verify_ok)
@@ -178,9 +178,11 @@ def test_empty_signed_dict_rejected():
 
 def test_resolve_pubkey_is_called_with_full_fqid():
     # The resolver MUST receive the realm-qualified fqid (not the bare agent) —
-    # otherwise lumina@chef.skworld and lumina@evil.attacker collide (S5 C1).
+    # otherwise lumina@chef.skworld.io and lumina@evil.attacker collide (S5 C1).
     seen = []
-    a = Assertion(fqid="lumina@chef.skworld", space_id="s", issued_at=int(time.time()), nonce="n")
+    a = Assertion(
+        fqid="lumina@chef.skworld.io", space_id="s", issued_at=int(time.time()), nonce="n"
+    )
     signed = build_signed(a, sign=_fake_sign)
 
     def _resolver(fqid):
@@ -188,4 +190,4 @@ def test_resolve_pubkey_is_called_with_full_fqid():
         return "PUB"
 
     verify_signed(signed, resolve_pubkey=_resolver, verify=_fake_verify_ok)
-    assert seen == ["lumina@chef.skworld"]
+    assert seen == ["lumina@chef.skworld.io"]

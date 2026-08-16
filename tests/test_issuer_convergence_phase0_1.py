@@ -144,14 +144,14 @@ class TestExtractSubjectAudienceBranch:
         home = _agent_home(tmp_path)
         tok = mint_audience_token(
             home=home,
-            subject="lumina@chef.skworld",
+            subject="lumina@chef.skworld.io",
             audience="skchat",
             scopes=["chat.send"],
             sign=False,
         )
         monkeypatch.setattr("capauth.tokens.verify_token", lambda t, h=None: True)
         monkeypatch.setenv(dataplane_auth.ACCEPT_AUDIENCE_ENV_FLAG, "1")
-        assert dataplane_auth._extract_subject(_wire(tok)) == "lumina@chef.skworld"
+        assert dataplane_auth._extract_subject(_wire(tok)) == "lumina@chef.skworld.io"
 
     def test_audience_branch_inert_when_flag_off(self, tmp_path, monkeypatch):
         """Flag OFF: the audience branch is never consulted -> None (byte-identical)."""

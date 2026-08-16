@@ -54,26 +54,26 @@ def test_discover_and_elect_oldest_host_wins():
     # two members advertise different foci; oldest issued_at wins (focus.py rule)
     memberships = [
         build_membership(
-            fqid="b@chef.skworld",
+            fqid="b@chef.skworld.io",
             space_id="space-x",
-            foci_preferred="lumina@chef.skworld",
+            foci_preferred="lumina@chef.skworld.io",
             issued_at=200,
         ),
         build_membership(
-            fqid="a@chef.skworld",
+            fqid="a@chef.skworld.io",
             space_id="space-x",
-            foci_preferred="opus@chef.skworld",
+            foci_preferred="opus@chef.skworld.io",
             issued_at=100,  # oldest -> its preferred focus wins
         ),
     ]
     focus = [
         build_focus_descriptor(
-            host_fqid="opus@chef.skworld",
+            host_fqid="opus@chef.skworld.io",
             auth_url="https://opus.skworld/sfu/get",
             sfu_ws_url="wss://opus.skworld:8443",
         ),
         build_focus_descriptor(
-            host_fqid="lumina@chef.skworld",
+            host_fqid="lumina@chef.skworld.io",
             auth_url="https://lumina.skworld/sfu/get",
             sfu_ws_url="wss://lumina.skworld:8443",
         ),
@@ -82,22 +82,22 @@ def test_discover_and_elect_oldest_host_wins():
     client = FederationDiscoveryClient(nostr=_nostr(relay))
     host = client.discover_and_elect("space-x")
     assert isinstance(host, ElectedHost)
-    assert host.fqid == "opus@chef.skworld"
+    assert host.fqid == "opus@chef.skworld.io"
     assert host.auth_url == "https://opus.skworld/sfu/get"
     assert host.sfu_ws_url == "wss://opus.skworld:8443"
 
 
 def test_discover_skips_malformed_membership_events():
     good = build_membership(
-        fqid="a@chef.skworld",
+        fqid="a@chef.skworld.io",
         space_id="space-x",
-        foci_preferred="lumina@chef.skworld",
+        foci_preferred="lumina@chef.skworld.io",
         issued_at=100,
     )
     bad = "not even an event"  # would crash a naive parser
     focus = [
         build_focus_descriptor(
-            host_fqid="lumina@chef.skworld",
+            host_fqid="lumina@chef.skworld.io",
             auth_url="https://lumina.skworld/sfu/get",
             sfu_ws_url="wss://lumina.skworld:8443",
         )
@@ -105,7 +105,7 @@ def test_discover_skips_malformed_membership_events():
     relay = _FakeRelay(membership_events=[bad, good], focus_events=focus)
     client = FederationDiscoveryClient(nostr=_nostr(relay))
     host = client.discover_and_elect("space-x")
-    assert host.fqid == "lumina@chef.skworld"
+    assert host.fqid == "lumina@chef.skworld.io"
 
 
 def test_discover_no_members_raises_discovery_error():
@@ -119,9 +119,9 @@ def test_discover_elected_host_without_descriptor_raises():
     # membership elects a focus that has NO advertised descriptor
     memberships = [
         build_membership(
-            fqid="a@chef.skworld",
+            fqid="a@chef.skworld.io",
             space_id="space-x",
-            foci_preferred="ghost@chef.skworld",
+            foci_preferred="ghost@chef.skworld.io",
             issued_at=100,
         )
     ]
@@ -134,12 +134,12 @@ def test_discover_elected_host_without_descriptor_raises():
 def test_build_signed_assertion_uses_injected_sign():
     relay = _FakeRelay()
     client = FederationDiscoveryClient(nostr=_nostr(relay), sign=lambda payload: "SIG")
-    signed = client.build_signed_assertion(fqid="a@chef.skworld", space_id="space-x")
+    signed = client.build_signed_assertion(fqid="a@chef.skworld.io", space_id="space-x")
     assert signed["sig"] == "SIG"
     import json
 
     claim = json.loads(signed["claim"])
-    assert claim["fqid"] == "a@chef.skworld"
+    assert claim["fqid"] == "a@chef.skworld.io"
     assert claim["space_id"] == "space-x"
     assert claim["nonce"]  # a fresh nonce was minted
 
@@ -155,7 +155,7 @@ def test_build_signed_assertion_mints_fresh_nonce_each_call():
 
 def test_get_token_happy_path():
     host = ElectedHost(
-        fqid="opus@chef.skworld",
+        fqid="opus@chef.skworld.io",
         auth_url="https://opus.skworld/sfu/get",
         sfu_ws_url="wss://opus.skworld:8443",
     )
@@ -169,7 +169,7 @@ def test_get_token_happy_path():
     client = FederationDiscoveryClient(
         nostr=_nostr(_FakeRelay()), post=fake_post, sign=lambda p: "SIG"
     )
-    out = client.get_token(host, fqid="a@chef.skworld", space_id="space-x")
+    out = client.get_token(host, fqid="a@chef.skworld.io", space_id="space-x")
     assert out["token"] == "JWT"
     assert out["role"] == "speaker"
     # the signed assertion was posted to the elected host's auth_url
@@ -180,7 +180,7 @@ def test_get_token_happy_path():
 
 def test_get_token_403_raises_auth_denied():
     host = ElectedHost(
-        fqid="opus@chef.skworld",
+        fqid="opus@chef.skworld.io",
         auth_url="https://opus.skworld/sfu/get",
         sfu_ws_url="wss://opus.skworld:8443",
     )
@@ -195,7 +195,7 @@ def test_get_token_403_raises_auth_denied():
 
 def test_get_token_non_2xx_raises_discovery_error():
     host = ElectedHost(
-        fqid="opus@chef.skworld",
+        fqid="opus@chef.skworld.io",
         auth_url="https://opus.skworld/sfu/get",
         sfu_ws_url="wss://opus.skworld:8443",
     )
@@ -205,4 +205,4 @@ def test_get_token_non_2xx_raises_discovery_error():
         sign=lambda p: "SIG",
     )
     with pytest.raises(DiscoveryError):
-        client.get_token(host, fqid="a@chef.skworld", space_id="space-x")
+        client.get_token(host, fqid="a@chef.skworld.io", space_id="space-x")

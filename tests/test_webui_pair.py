@@ -7,7 +7,7 @@ def _fake_bundle():
     from skcomms.pairing import PairingBundle
 
     return PairingBundle(
-        fqid="lumina@chef.skworld",
+        fqid="lumina@chef.skworld.io",
         fingerprint="AB" * 20,
         syncthing_device_id="DEV-9",
         tailscale="lumina.ts.net",
@@ -66,22 +66,22 @@ def test_pair_accept_ok(monkeypatch):
 
     def _accept(src, **kw):
         seen["src"] = src
-        return {"fqid": "opus@chef.skworld", "fingerprint": "CD" * 20}
+        return {"fqid": "opus@chef.skworld.io", "fingerprint": "CD" * 20}
 
     monkeypatch.setattr(P, "accept_pairing", _accept)
     r = TestClient(webui.app).post(
-        "/pair/accept", json={"uri": "skp://pair?v=1&fqid=opus@chef.skworld&fp=CDCD"}
+        "/pair/accept", json={"uri": "skp://pair?v=1&fqid=opus@chef.skworld.io&fp=CDCD"}
     )
     assert r.status_code == 200, r.text
     assert seen["src"].startswith("skp://pair?")
-    assert r.json()["fqid"] == "opus@chef.skworld"
+    assert r.json()["fqid"] == "opus@chef.skworld.io"
 
 
 def test_pair_accept_mismatch_is_400(monkeypatch):
     import skcomms.pairing as P
 
     def _accept(src, **kw):
-        raise ValueError("fingerprint mismatch for opus@chef.skworld — refusing to pair")
+        raise ValueError("fingerprint mismatch for opus@chef.skworld.io — refusing to pair")
 
     monkeypatch.setattr(P, "accept_pairing", _accept)
     r = TestClient(webui.app).post("/pair/accept", json={"uri": "skp://pair?v=1&fqid=x&fp=00"})
@@ -115,7 +115,7 @@ def test_pair_qr_embed_too_big_falls_back_to_compact(monkeypatch):
 
     def _bundle(agent=None, embed_key=False):
         b = P.PairingBundle(
-            fqid="opus@chef.skworld", fingerprint="CD" * 20, syncthing_device_id="DEV-2"
+            fqid="opus@chef.skworld.io", fingerprint="CD" * 20, syncthing_device_id="DEV-2"
         )
         if embed_key:
             b.pubkey = "-----BEGIN PGP PUBLIC KEY BLOCK-----\n" + big + "\n-----END-----\n"

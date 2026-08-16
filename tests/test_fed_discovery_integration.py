@@ -30,12 +30,12 @@ def test_candidates_empty_when_no_relays_configured(app_client, monkeypatch):
 def test_candidates_lists_advertised_focus_hosts(app_client, monkeypatch):
     descriptors = [
         build_focus_descriptor(
-            host_fqid="lumina@chef.skworld",
+            host_fqid="lumina@chef.skworld.io",
             auth_url="https://lumina.skworld/sfu/get",
             sfu_ws_url="wss://lumina.skworld:8443",
         ),
         build_focus_descriptor(
-            host_fqid="opus@chef.skworld",
+            host_fqid="opus@chef.skworld.io",
             auth_url="https://opus.skworld/sfu/get",
             sfu_ws_url="wss://opus.skworld:8443",
         ),
@@ -49,21 +49,21 @@ def test_candidates_lists_advertised_focus_hosts(app_client, monkeypatch):
     assert r.status_code == 200
     hosts = r.json()["hosts"]
     fqids = {h["fqid"] for h in hosts}
-    assert fqids == {"lumina@chef.skworld", "opus@chef.skworld"}
-    lumina = next(h for h in hosts if h["fqid"] == "lumina@chef.skworld")
+    assert fqids == {"lumina@chef.skworld.io", "opus@chef.skworld.io"}
+    lumina = next(h for h in hosts if h["fqid"] == "lumina@chef.skworld.io")
     assert lumina["auth_url"] == "https://lumina.skworld/sfu/get"
     assert lumina["sfu_ws_url"] == "wss://lumina.skworld:8443"
 
 
 def test_candidates_dedups_and_skips_malformed(app_client, monkeypatch):
     good = build_focus_descriptor(
-        host_fqid="lumina@chef.skworld",
+        host_fqid="lumina@chef.skworld.io",
         auth_url="https://lumina.skworld/sfu/get",
         sfu_ws_url="wss://lumina.skworld:8443",
     )
     # a duplicate of the same host + a malformed (non-JSON content) event
     dup = build_focus_descriptor(
-        host_fqid="lumina@chef.skworld",
+        host_fqid="lumina@chef.skworld.io",
         auth_url="https://lumina.skworld/sfu/get",
         sfu_ws_url="wss://lumina.skworld:8443",
     )
@@ -77,7 +77,7 @@ def test_candidates_dedups_and_skips_malformed(app_client, monkeypatch):
     assert r.status_code == 200
     hosts = r.json()["hosts"]
     assert len(hosts) == 1
-    assert hosts[0]["fqid"] == "lumina@chef.skworld"
+    assert hosts[0]["fqid"] == "lumina@chef.skworld.io"
 
 
 def test_candidates_never_500_on_relay_failure(app_client, monkeypatch):
