@@ -10,6 +10,7 @@ carry a valid device signature over the canonical challenge payload.
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 
@@ -17,7 +18,7 @@ from fastapi import APIRouter, FastAPI, HTTPException, Request
 
 from . import operator_auth as oa
 from .guest import _require_operator
-from .operator_grants import grant_operator_prekey_capability
+from .operator_grants import grant_operator_capabilities_detailed
 from .pairing_gate import PairingGate
 
 _pairing = PairingGate(max_accepts_per_window=1)  # operator enroll: 1 device per window
@@ -198,7 +199,45 @@ def register_operator_auth_routes(app: FastAPI, *, device_store: oa.DeviceStore)
     async def enroll_open(request: Request):
         _require_operator_or_link_code(request)
         window = _pairing.open_window()
-        return {"window_nonce": window["nonce"], "exp": window["expires_at"]}
+        out = {"window_nonce": window["nonce"], "exp": window["expires_at"]}
+
+        # capauth card N10: a `verified` enrollment must carry the device's
+        # signature over capauth's own domain-separated challenge. Those bytes
+        # are a pure function of the device's PUBLIC key, so a client that sends
+        # its pubkey here gets them back with no extra round trip and nothing
+        # secret disclosed. Deriving them SERVER-side (from capauth's exported
+        # helpers) rather than making the client re-implement capauth's
+        # fingerprint and subject canonicalization is the point: a client that
+        # hardcoded either would silently start producing rejected proofs, and
+        # the failure mode of a rejected proof is a quiet tier downgrade.
+        #
+        # Optional and additive: the shipped web build POSTs no body at all, so
+        # a missing/blank/unparseable body must return the original two-key
+        # response rather than 400.
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 - no body is the pre-existing contract
+            body = None
+        pub = (body or {}).get("device_pubkey") if isinstance(body, dict) else None
+        if isinstance(pub, str) and pub.strip():
+            try:
+                from .operator_grants import verified_enrollment_challenge
+
+                # Derive from the key EXACTLY as presented, never a stripped
+                # copy: /enroll fingerprints the raw string it is sent, so
+                # challenging a normalized variant would hand back bytes whose
+                # signature that enroll then rejects, i.e. the silent tier
+                # downgrade this whole change exists to remove.
+                out["capauth_challenge"] = base64.b64encode(
+                    verified_enrollment_challenge(pub)
+                ).decode()
+            except Exception:  # pragma: no cover - never block opening a window
+                logging.getLogger("skchat.operator_auth_routes").warning(
+                    "could not derive the capauth enrollment challenge; this device "
+                    "will be unable to enroll 'verified' and will fall back to 'tofu'",
+                    exc_info=True,
+                )
+        return out
 
     @router.post("/enroll")
     async def enroll(request: Request):
@@ -227,11 +266,28 @@ def register_operator_auth_routes(app: FastAPI, *, device_store: oa.DeviceStore)
             raise HTTPException(401, "device signature invalid")
         _pairing.consume()
         device_fp = device_store.enroll(pub)
-        # Grant the enrolled device the skchat.prekey capability so a POST
+        # Grant the enrolled device its skchat capabilities so a POST
         # /api/v1/prekey from its session is AUTHORIZED (not just authenticated)
         # when the authz PDP is enforcing. Best-effort: a grant failure is logged
         # inside and never breaks the enrollment response.
-        grant_operator_prekey_capability(device_fp, pub)
+        #
+        # `capauth_proof` is the device's signature over the `capauth_challenge`
+        # handed back by /enroll/open (capauth card N10). It is a SEPARATE
+        # signature from `sig` above and cannot be derived from it: `sig` covers
+        # skchat's own {nonce, device_pubkey} payload, while capauth requires its
+        # own domain-separated challenge bytes, deliberately so that a signature
+        # made for one purpose can never be replayed as proof for another. Both
+        # come from the same device key, so verifying `sig` first means an
+        # unauthenticated caller never reaches the grant.
+        #
+        # A client that does not send one is NOT locked out: the grant enrolls it
+        # at `tofu`, the tier it can actually prove, and logs the downgrade with
+        # the capabilities it costs. The mode reached is reported below so the
+        # degradation is visible to the client instead of surfacing later as an
+        # unexplained PDP denial.
+        outcome = grant_operator_capabilities_detailed(
+            device_fp, pub, capauth_proof=body.get("capauth_proof")
+        )
         _record_enrollment(request, device_fp, label=body.get("label"))
         _claim_bootstrap_window(device_fp)
         # Tell the caller whether it is pending approval (Phase 3): a missing
@@ -242,7 +298,16 @@ def register_operator_auth_routes(app: FastAPI, *, device_store: oa.DeviceStore)
 
         row = DR.get_device(device_fp)
         approved = True if row is None else DR.is_approved(row)
-        return {"device_fp": device_fp, "approved": approved}
+        return {
+            "device_fp": device_fp,
+            "approved": approved,
+            # The enrollment mode ACTUALLY recorded, never the one requested.
+            "enrollment_mode": outcome.mode,
+            # Present only when the intended tier was not reached, so a client
+            # (and anyone reading a capture) can tell a degraded link from a full
+            # one without waiting for a capability to mysteriously 403.
+            **({"enrollment_downgrade_reason": outcome.reason} if outcome.reason else {}),
+        }
 
     @router.get("/challenge")
     async def challenge():
