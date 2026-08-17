@@ -55,6 +55,20 @@ standards.
   morning for behaving correctly. Runbook: `runbooks/browser-qa-lane.md`.
 
 ### Fixed
+- **`capauth` is bounded, not floating.** capauth carries AUTHORIZATION GATES,
+  so a release can change what is permitted with no skchat commit at all. That
+  is not hypothetical: capauth card N10 made `enroll_device(mode="verified")`
+  require a possession proof, and a floating `>=0.3.1` picked the new gate up
+  on its own. Nobody broke main; it broke itself when a dependency moved, and
+  the blame landed on whoever merged last.
+
+  The same day, the same drift produced a second, subtler failure: CI installs
+  capauth from `git+...@main`, so a fix verified locally against the installed
+  release passed while CI went red, and the error (`SubjectNamingError`) named
+  a rule that did not exist in the version under the author's fingers. A
+  bounded dependency makes the next such change a DELIBERATE act: someone
+  raises the ceiling and reads what moved.
+
 - **The `/api/v1/audience-token` mint endpoint no longer persists a file.**
   `mint_agent_audience_token` is now called with `store=False`: this endpoint
   mints a self-contained audience token per request, so writing a file per mint
