@@ -124,6 +124,9 @@ _ROUTE_CAPABILITY_RULES: tuple[tuple[str, str, str], ...] = (
     ("GET", "/groups", CAP_INBOX),
     # --- skchat.status (read operational metadata) -------------------------- #
     ("GET", "/api/v1/status", CAP_STATUS),  # incident (b) route
+    # Per-service backend health (card f2e6c451): leaks internal
+    # hostnames/ports (STT/TTS/LLM/SFU targets), same bar as /api/v1/status.
+    ("GET", "/api/v1/health", CAP_STATUS),
     ("GET", "/api/v1/peers", CAP_STATUS),
     ("GET", "/api/v1/household/agents", CAP_STATUS),
     ("GET", "/api/v1/geo/units", CAP_STATUS),
