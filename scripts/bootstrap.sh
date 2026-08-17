@@ -26,7 +26,7 @@ if [ ! -f "$SKCHAT_DIR/config.yml" ]; then
   cp "$SKCHAT_SRC/config.yml.example" "$SKCHAT_DIR/config.yml" 2>/dev/null || \
   cat > "$SKCHAT_DIR/config.yml" << 'EOF'
 daemon:
-  poll_interval: 5.0
+  poll_interval: 30.0
   log_file: ~/.skchat/daemon.log
   quiet: false
 
@@ -97,7 +97,7 @@ After=network-online.target
 Type=forking
 WorkingDirectory=%h
 PIDFile=%h/.skchat/daemon.pid
-ExecStart=${HOME}/.pyenv/shims/skchat daemon start --interval 5 --log-file %h/.skchat/daemon.log
+ExecStart=${HOME}/.pyenv/shims/skchat daemon start --interval 30 --log-file %h/.skchat/daemon.log
 Restart=on-failure
 RestartSec=10
 
@@ -111,7 +111,7 @@ fi
 
 # 6. Start daemon from home dir (avoids skmemory namespace collision)
 if ! skchat daemon status 2>/dev/null | grep -q "running"; then
-  cd "$HOME" && skchat daemon start --interval 5 --log-file ~/.skchat/daemon.log
+  cd "$HOME" && skchat daemon start --interval 30 --log-file ~/.skchat/daemon.log
   echo "Daemon started"
 else
   echo "Daemon already running"
