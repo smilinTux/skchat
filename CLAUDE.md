@@ -545,12 +545,40 @@ git -C ~/clawd/skcapstone-repos/skchat checkout main && git pull --ff-only
 #    no-op deploy: it commits, it succeeds, and the fix is not in it.
 git -C ~/clawd/skcapstone-repos/skworld-app checkout main && git pull --ff-only
 
+# 2b. THE APP CHECKOUT MUST BE CLEAN TOO. Build from a clean worktree if not.
+#     On 2026-08-16 that checkout held 37 uncommitted files from another
+#     session, including a STAGED DELETE of me_logs_screen.dart. The build read
+#     their tree, so the deployed bundle silently shipped without a feature that
+#     was merged on main hours earlier.
+#     NOTHING WARNED: `git pull --ff-only` succeeded (their edits did not
+#     conflict), and `--check` passed, because .source_commit records the app's
+#     HEAD, NOT whether the tree matches it. Every signal said the deploy was
+#     good. Do not skip this because the last one was fine.
+git -C ~/clawd/skcapstone-repos/skworld-app status --short | grep -v '^??'   # MUST be empty
+#     If it is NOT empty, do NOT stash or reset: that is another session's live
+#     work. Build from a detached clean worktree instead, which the script
+#     supports via SKWORLD_APP_DIR:
+git -C ~/clawd/skcapstone-repos/skworld-app worktree add --detach \
+    ~/skworld-worktrees/clean-deploy origin/main
+SKWORLD_APP_DIR=~/skworld-worktrees/clean-deploy ./scripts/deploy-app-web.sh
+
 # 3. Confirm what is actually stale, then build, commit and push.
 ./scripts/deploy-app-web.sh --check      # deployed vs app main
 ./scripts/deploy-app-web.sh              # builds, stamps, COMMITS
 git push                                 # the commit IS the deploy
 systemctl --user restart skchat-webui@lumina
 ```
+
+**4. Verify the bundle by CONTENT, not by provenance.** `.source_commit` and
+`--check` only prove which commit the build was *told* to use. Grep the built
+bundle for a string unique to what you are shipping, e.g. after adding Me > Logs:
+
+```bash
+grep -c 'me/logs' src/skchat/static/app/main.dart.js   # 0 means it is NOT in there
+```
+
+Then grep the SERVED file over the real URL, not just the local copy. That is the
+only check that would have caught the 2026-08-16 deploy above.
 
 Then verify the provenance really moved, rather than trusting the success
 message: `cat src/skchat/static/app/.source_commit` must equal
