@@ -144,7 +144,9 @@ def test_tld_less_fqid_literals_do_not_increase():
     for f in sorted(root.glob("*.py")):
         if f.name == pathlib.Path(__file__).name:
             continue
-        if re.search(r"@[a-z-]+\.skworld(?![.a-z])", f.read_text(encoding="utf-8", errors="replace")):
+        if re.search(
+            r"@[a-z-]+\.skworld(?![.a-z])", f.read_text(encoding="utf-8", errors="replace")
+        ):
             hits.add(f.name)
     assert len(hits) <= 49, (
         f"TLD-less fqid literals INCREASED to {len(hits)} (ceiling 49). "
