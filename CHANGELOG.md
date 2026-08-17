@@ -55,6 +55,15 @@ standards.
   morning for behaving correctly. Runbook: `runbooks/browser-qa-lane.md`.
 
 ### Fixed
+- **`operator_subject()` emits `device:<fp>`, the one permitted prefixed
+  class.** It returned the legacy `operator:<fp>` spelling
+  (`IDENTITY_NAMING_STANDARD.md` sec 1, coord card N6). Nothing was visibly
+  broken, because capauth's `canonical_subject` rewrites `operator:` to
+  `device:` on the way in, so the deprecated form kept working through a
+  compatibility shim rather than on its own merits. Emitting the canonical form
+  directly means the shim is no longer load-bearing, and the subject skchat
+  logs matches the subject capauth stores.
+
 - **`capauth` is bounded, not floating.** capauth carries AUTHORIZATION GATES,
   so a release can change what is permitted with no skchat commit at all. That
   is not hypothetical: capauth card N10 made `enroll_device(mode="verified")`

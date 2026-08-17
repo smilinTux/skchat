@@ -1,7 +1,7 @@
 """Parallel operator-audience token issuance (CR-3.4 AC1 / Phase 1).
 
 Mints a capauth audience token (``audience=skchat``) whose subject is
-``operator:<device_fp>``, ALONGSIDE the HS256 operator session, at the device
+``device:<device_fp>``, ALONGSIDE the HS256 operator session, at the device
 challenge-response handshake (``POST /api/v1/auth/session``). This is ADDITIVE and
 PARALLEL: the HS256 session stays the primary credential the client uses; the
 audience token is issued only when ``SKCHAT_OPERATOR_AUDIENCE_ISSUE`` is on, and
@@ -97,7 +97,7 @@ def operator_audience_issue_enabled() -> bool:
 
 
 def mint_operator_audience_token(device_fp: str):
-    """Mint an operator-audience capauth token for ``operator:<device_fp>``.
+    """Mint an operator-audience capauth token for ``device:<device_fp>``.
 
     Signs with THIS daemon's capauth key (``resolve_capauth_home``) exactly as the
     daemon-self mint route does, and returns the capauth ``SignedToken``. Raises on

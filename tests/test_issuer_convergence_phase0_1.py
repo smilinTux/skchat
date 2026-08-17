@@ -201,7 +201,9 @@ class TestHS256Unchanged:
         monkeypatch.setenv("SKCHAT_OPERATOR_TOKEN_SECRET", "operator-secret-value")
         token = oa.mint_operator_session(device_fp="fpLEGACY01", ttl=60)
         assert dataplane_auth.CapAuthValidator().validate(token) is True
-        assert dataplane_auth._extract_subject(token) == "operator:fpLEGACY01"
+        # The HS256 wire mechanism is unchanged; the resolved subject now uses
+        # the device: prefix (coord card N6), not the retired operator: one.
+        assert dataplane_auth._extract_subject(token) == "device:fpLEGACY01"
 
     def test_hs256_resolution_precedes_audience_even_with_flag_on(self, monkeypatch):
         from skchat import operator_auth as oa
@@ -210,7 +212,7 @@ class TestHS256Unchanged:
         monkeypatch.setenv(dataplane_auth.ACCEPT_AUDIENCE_ENV_FLAG, "1")
         token = oa.mint_operator_session(device_fp="fpFIRST22", ttl=60)
         # First branch (HS256) wins; audience branch never consulted for a JWT.
-        assert dataplane_auth._extract_subject(token) == "operator:fpFIRST22"
+        assert dataplane_auth._extract_subject(token) == "device:fpFIRST22"
 
 
 # --------------------------------------------------------------------------- #
@@ -404,10 +406,10 @@ class TestSessionDualMint:
         assert body["session_token"]  # HS256 stays primary
         assert body["audience_token"]  # additive audience token present
         assert body["audience_expires_at"]
-        # The audience token resolves to the same operator subject.
+        # The audience token resolves to the same device subject.
         monkeypatch.setattr("capauth.tokens.verify_token", lambda t, h=None: True)
         monkeypatch.setenv(dataplane_auth.ACCEPT_AUDIENCE_ENV_FLAG, "1")
-        assert dataplane_auth._extract_subject(body["audience_token"]) == f"operator:{fp}"
+        assert dataplane_auth._extract_subject(body["audience_token"]) == f"device:{fp}"
 
     def test_mint_failure_is_non_fatal(self, session_client, monkeypatch):
         priv, _pub, fp = _enroll_and_fp(session_client)
@@ -452,14 +454,14 @@ class TestIssuerShadow:
         return hs
 
     def test_no_divergence_when_subjects_match(self, tmp_path, monkeypatch, caplog):
-        hs = self._hs_and_twin(tmp_path, monkeypatch, "operator:fpSHADOW1")
+        hs = self._hs_and_twin(tmp_path, monkeypatch, "device:fpSHADOW1")
         req = _FakeRequest(method="GET", path="/health")  # capability None: subject-only
         with caplog.at_level("INFO", logger="skchat.dataplane_auth"):
             dataplane_auth._issuer_shadow_compare(req, hs)
         assert "issuer-shadow divergence" not in caplog.text
 
     def test_logs_divergence_on_subject_mismatch(self, tmp_path, monkeypatch, caplog):
-        hs = self._hs_and_twin(tmp_path, monkeypatch, "operator:WRONGFP")
+        hs = self._hs_and_twin(tmp_path, monkeypatch, "device:WRONGFP")
         req = _FakeRequest(method="GET", path="/health")
         with caplog.at_level("WARNING", logger="skchat.dataplane_auth"):
             dataplane_auth._issuer_shadow_compare(req, hs)

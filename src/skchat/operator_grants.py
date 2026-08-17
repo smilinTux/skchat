@@ -9,7 +9,9 @@ exact gap that stopped Chef's web device link from taking on 2026-08-02:
 authentication passed, authorization did not.
 
 ``decide`` allows a capability only when BOTH hold for the subject
-``operator:<device_fp>``:
+``device:<device_fp>`` (IDENTITY_NAMING_STANDARD.md sec 1; the retired
+``operator:<device_fp>`` shape is still recognized on read during the coord
+card N6 migration window, see :data:`_DEVICE_SEAT_PREFIXES`):
 
   1. a non-revoked pairing ``DeviceRecord`` whose enrollment mode is at least the
      capability's ``minimum_mode``, and
@@ -76,6 +78,17 @@ from typing import NamedTuple, Optional
 from .dataplane_auth import operator_subject
 
 logger = logging.getLogger("skchat.operator_grants")
+
+#: Both device-seat subject prefixes this backfill/audit tooling must recognize
+#: during the migration window (coord card N6, IDENTITY_NAMING_STANDARD.md sec
+#: 1/2.5): ``device:`` is what :func:`skchat.dataplane_auth.operator_subject`
+#: mints now, ``operator:`` is the retired shape roughly 140 live capauth
+#: records still carry until the separate one-shot store-rewrite card lands.
+#: A classifier that only recognized ``device:`` would stop finding any
+#: not-yet-rewritten legacy record; one that only recognized ``operator:``
+#: would miss every device enrolled after this card shipped. Drop the
+#: ``operator:`` arm once the store rewrite is confirmed complete fleet-wide.
+_DEVICE_SEAT_PREFIXES = ("device:", "operator:")
 
 #: Prekey-publish capability (min enrollment mode ``attested``).
 PREKEY_CAPABILITY = "skchat.prekey"
@@ -421,7 +434,7 @@ def backfill_operator_capabilities(base_dir=None) -> int:
     all_operators: set[str] = set()
     for t in list_tokens(base):
         subj = getattr(t.payload, "subject", None)
-        if subj and str(subj).startswith("operator:"):
+        if subj and str(subj).startswith(_DEVICE_SEAT_PREFIXES):
             all_operators.add(subj)
 
     updated = 0
@@ -485,8 +498,10 @@ def backfill_agent_capabilities(subjects=None, base_dir=None) -> int:
 
     ``subjects`` may be an explicit iterable of agent subject strings. When None,
     agents are auto-discovered as subjects that already hold an ACTIVE token
-    granting ``skchat.send`` and are NOT ``operator:`` seats (the live store's
-    ``lumina@chef.skworld`` / ``opus@chef.skworld``). A subject already carrying
+    granting ``skchat.send`` and are NOT device seats (neither the current
+    ``device:`` prefix nor the migration-window-legacy ``operator:`` one; the
+    live store's ``lumina@chef.skworld`` / ``opus@chef.skworld``). A subject
+    already carrying
     every bundle capability in one active token is skipped. Idempotent; returns the
     number of subjects updated. Read-then-grant only, never enrolls or re-modes.
     """
@@ -504,7 +519,7 @@ def backfill_agent_capabilities(subjects=None, base_dir=None) -> int:
         discovered: set[str] = set()
         for t in list_tokens(base):
             subj = getattr(t.payload, "subject", None)
-            if not subj or str(subj).startswith("operator:"):
+            if not subj or str(subj).startswith(_DEVICE_SEAT_PREFIXES):
                 continue
             caps = getattr(t.payload, "capabilities", []) or []
             if t.payload.is_active and SEND_CAPABILITY in caps:
@@ -538,7 +553,8 @@ def audit_grants(subjects, capabilities_by_subject=None, base_dir=None) -> list[
     ``capauth.authz.decide`` (NOT a re-implementation of its logic) and collect the
     denials. ``capabilities_by_subject`` maps a subject to the capability list to
     check; when None each subject is audited against :data:`OPERATOR_CAPABILITIES`
-    if it is an ``operator:`` seat, else :data:`AGENT_CAPABILITIES`. Returns a list
+    if it is a device seat (``device:`` or the migration-window-legacy
+    ``operator:`` prefix), else :data:`AGENT_CAPABILITIES`. Returns a list
     of ``(subject, capability, reason)`` for every DENY (empty == clean audit).
     Catches both missing grants AND insufficient enrollment modes in one pass.
     """
@@ -554,7 +570,7 @@ def audit_grants(subjects, capabilities_by_subject=None, base_dir=None) -> list[
     for subject in subjects:
         if capabilities_by_subject is not None:
             caps = capabilities_by_subject.get(subject, [])
-        elif str(subject).startswith("operator:"):
+        elif str(subject).startswith(_DEVICE_SEAT_PREFIXES):
             caps = OPERATOR_CAPABILITIES
         else:
             caps = AGENT_CAPABILITIES
