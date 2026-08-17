@@ -28,7 +28,6 @@ from __future__ import annotations
 
 import pathlib
 import re
-from pathlib import Path
 
 import pytest
 
@@ -140,8 +139,6 @@ def test_tld_less_fqid_literals_do_not_increase():
     a ceiling: the number may fall as the migration proceeds, and this test fails
     if anyone adds a new one. Lower the ceiling as you migrate; the target is 0.
     """
-    import subprocess
-
     root = pathlib.Path(__file__).resolve().parent
     hits = set()
     for f in sorted(root.glob("*.py")):
