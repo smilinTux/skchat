@@ -496,11 +496,20 @@ def _capability_for_path(path: str) -> Optional[str]:
 def operator_subject(device_fp: str) -> str:
     """The PDP subject id for an enrolled operator device.
 
-    Single source of truth for the ``operator:<device_fp>`` subject string so the
+    Single source of truth for the ``device:<device_fp>`` subject string so the
     capability grant issued at enrollment (see :mod:`skchat.operator_grants`) and
     the subject :func:`_extract_subject` hands the PDP can never drift apart.
+
+    ``device:`` is the ONE permitted prefixed subject class under
+    sk-standards IDENTITY_NAMING_STANDARD.md (coord card N6); the older
+    ``operator:`` spelling is retired. The live pairing store was rewritten to
+    the canonical form by the capauth N5 migration, and both
+    ``capauth.pairing.list_devices`` and ``capauth.authz._subject_tokens``
+    dual-read the legacy spelling, so a seat enrolled under either resolves
+    during the transition. Verified against the live store before this landed:
+    a lookup under each spelling returns the same records and the same decision.
     """
-    return f"operator:{device_fp}"
+    return f"device:{device_fp}"
 
 
 def _extract_subject(token: str) -> Optional[str]:

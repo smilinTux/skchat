@@ -75,6 +75,14 @@ from typing import NamedTuple, Optional
 
 from .dataplane_auth import operator_subject
 
+#: Subject prefixes that denote a device seat. ``device:`` is the canonical
+#: form (sk-standards IDENTITY_NAMING_STANDARD.md, coord card N6);
+#: ``operator:`` is the retired spelling, still recognized so a seat enrolled
+#: before the capauth N5 store migration is not silently reclassified as an
+#: agent subject. Drop the legacy entry once no live record carries it.
+_DEVICE_SEAT_PREFIXES = ("device:", "operator:")
+
+
 logger = logging.getLogger("skchat.operator_grants")
 
 #: Prekey-publish capability (min enrollment mode ``attested``).
@@ -421,7 +429,7 @@ def backfill_operator_capabilities(base_dir=None) -> int:
     all_operators: set[str] = set()
     for t in list_tokens(base):
         subj = getattr(t.payload, "subject", None)
-        if subj and str(subj).startswith("operator:"):
+        if subj and str(subj).startswith(_DEVICE_SEAT_PREFIXES):
             all_operators.add(subj)
 
     updated = 0
@@ -504,7 +512,7 @@ def backfill_agent_capabilities(subjects=None, base_dir=None) -> int:
         discovered: set[str] = set()
         for t in list_tokens(base):
             subj = getattr(t.payload, "subject", None)
-            if not subj or str(subj).startswith("operator:"):
+            if not subj or str(subj).startswith(_DEVICE_SEAT_PREFIXES):
                 continue
             caps = getattr(t.payload, "capabilities", []) or []
             if t.payload.is_active and SEND_CAPABILITY in caps:
@@ -554,7 +562,7 @@ def audit_grants(subjects, capabilities_by_subject=None, base_dir=None) -> list[
     for subject in subjects:
         if capabilities_by_subject is not None:
             caps = capabilities_by_subject.get(subject, [])
-        elif str(subject).startswith("operator:"):
+        elif str(subject).startswith(_DEVICE_SEAT_PREFIXES):
             caps = OPERATOR_CAPABILITIES
         else:
             caps = AGENT_CAPABILITIES

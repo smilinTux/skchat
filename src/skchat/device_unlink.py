@@ -252,6 +252,21 @@ def revoke_capauth_subject(device_fp: str) -> tuple[bool, int]:
         subject = operator_subject(device_fp)
         base = default_base_dir()
         devices = list_devices(subject, base_dir=base, include_revoked=False)
+
+        # Migration-window fallback (coord card N6). operator_subject() now
+        # mints device:<fp>, but a seat enrolled before the capauth N5 store
+        # migration may still sit under the retired operator:<fp> spelling.
+        # This is a REVOKE path, so a lookup that quietly finds nothing turns a
+        # security action into a silent no-op rather than a visible failure.
+        # Deduplicated by device_id, since the same record can surface twice.
+        seen = {d.device_id for d in devices}
+        for legacy in (f"operator:{device_fp}",):
+            if legacy == subject:
+                continue
+            for d in list_devices(legacy, base_dir=base, include_revoked=False):
+                if d.device_id not in seen:
+                    seen.add(d.device_id)
+                    devices.append(d)
     except Exception:
         logger.debug("capauth revoke unavailable for %s (best-effort)", device_fp, exc_info=True)
         return False, 0
