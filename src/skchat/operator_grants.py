@@ -197,17 +197,33 @@ def verified_enrollment_challenge(
     either derivation the suite fails loudly, rather than production sliding
     silently back to the tofu floor.
 
-    capauth has no public helper for this today; if it grows one, delete this and
-    call it.
+    capauth grew that helper in 0.3.2, so this now delegates to
+    ``capauth.pairing.enrollment_challenge`` instead of re-deriving anything.
+
+    It still resolves the subject ITSELF, and that is load-bearing rather than
+    leftover. The two defaults are NOT the same: skchat defaults to
+    :func:`skchat.operator_auth.device_fingerprint`, a 16-char id, while
+    capauth's own default is the full 40-char ``fingerprint_for``. Measured on
+    the same key:
+
+        skchat  ... :device:22670578b35a8f6d
+        capauth ... :device:22670578b35a8f6d30b6adcf241a609bf8fe54e3
+
+    So calling ``enrollment_challenge(pub)`` with no subject would hand the
+    device DIFFERENT bytes from the ones ``enroll_device`` later challenges,
+    because that call is made with skchat's 16-char subject. The device would
+    sign honestly, capauth would reject the proof, and the enrollment would
+    slide to the tofu floor with a 200 response and no error anywhere: exactly
+    the silent downgrade this whole path exists to remove. Passing the subject
+    explicitly makes the two byte-identical, which
+    ``tests/test_verified_enrollment_proof.py`` pins.
     """
-    from capauth.pairing import verified_challenge
-    from capauth.pairing.store import fingerprint_for
-    from capauth.subject import canonical_subject
+    from capauth.pairing import enrollment_challenge
 
     from .operator_auth import device_fingerprint
 
     subject = subject or operator_subject(device_fingerprint(device_pubkey_b64))
-    return verified_challenge(fingerprint_for(device_pubkey_b64), canonical_subject(subject))
+    return enrollment_challenge(device_pubkey_b64, subject=subject, mode="verified")
 
 
 def _capabilities_denied_at(subject: str, base) -> list[str]:
