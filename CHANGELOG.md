@@ -55,6 +55,29 @@ standards.
   morning for behaving correctly. Runbook: `runbooks/browser-qa-lane.md`.
 
 ### Fixed
+- **`verified_enrollment_challenge` delegates to capauth instead of
+  re-deriving the bytes.** capauth 0.3.2 ships
+  `capauth.pairing.enrollment_challenge`, which is the public helper the old
+  implementation's own docstring asked for ("capauth has no public helper for
+  this today; if it grows one, delete this and call it"). Floor raised to
+  `capauth>=0.3.2` accordingly, since the symbol does not exist in 0.3.1.
+
+  It still resolves the subject on skchat's side, and that is deliberate. The
+  two defaults are NOT the same: skchat defaults to the 16-char
+  `device_fingerprint`, capauth to the full 40-char `fingerprint_for`. On one
+  key:
+
+      skchat  ...:device:22670578b35a8f6d
+      capauth ...:device:22670578b35a8f6d30b6adcf241a609bf8fe54e3
+
+  Calling the helper with no subject would hand the device different bytes
+  from the ones `enroll_device` later challenges, since that call carries
+  skchat's 16-char subject. The device would sign honestly, capauth would
+  reject the proof, and enrollment would slide to the tofu floor behind a 200
+  response with no error raised: the exact silent downgrade card N10 exists to
+  remove. Passing the subject explicitly makes them byte-identical, verified
+  against the previous derivation on randomly generated P-256 keys.
+
 - **`operator_subject()` emits `device:<fp>`, the one permitted prefixed
   class.** It returned the legacy `operator:<fp>` spelling
   (`IDENTITY_NAMING_STANDARD.md` sec 1, coord card N6). Nothing was visibly

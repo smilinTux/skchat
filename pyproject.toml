@@ -98,7 +98,7 @@ dev = [
     # The ceiling makes the next such change a DELIBERATE act: capauth 0.4 will
     # not install until someone raises this bound and reads what changed. Raise
     # it in the same PR that adapts to the new behaviour, never on its own.
-    "capauth>=0.3.1,<0.4",  # 0.3.1 ships capauth.testing, the gpg test seam CI needs
+    "capauth>=0.3.2,<0.4",  # 0.3.2 ships pairing.enrollment_challenge (see operator_grants)
     # the skcode ws-proxy tests dial a real websocket client; same story as
     # capauth above (published, just never declared).
     "websockets>=12.0",
