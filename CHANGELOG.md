@@ -12,6 +12,31 @@ standards.
 
 ## [Unreleased]
 
+### Changed
+- **Device seats use the canonical `device:<fp>` subject (coord card N6).**
+  `operator_subject()` now mints `device:<device_fp>`, the ONE permitted
+  prefixed subject class under sk-standards `IDENTITY_NAMING_STANDARD.md`. The
+  `operator:` spelling is retired. This was the dominant shape in the live
+  pairing store, roughly 140 of ~146 device records.
+
+  Crypto-relevant: the subject string is what `capauth.authz.decide()` matches
+  on, so this changes what a device seat is authorized AS. Three sites move
+  together, not one:
+  - the mint site (`dataplane_auth.operator_subject`),
+  - the grant classifiers (`operator_grants`), which dual-accept both prefixes
+    so a seat enrolled under the retired spelling is not silently reclassified
+    as an agent subject,
+  - the revoke lookup (`device_unlink.revoke_capauth_subject`), which also
+    queries the legacy spelling. That one is load-bearing: it is a REVOKE path,
+    so a lookup that quietly finds nothing turns a security action into a
+    silent no-op rather than a visible failure.
+
+  Safe to ship now because the capauth N5 store migration has run (253 subjects
+  rewritten, 0 non-canonical remaining) and both `capauth.pairing.list_devices`
+  and `capauth.authz._subject_tokens` dual-read the retired spelling. Verified
+  against the live store before landing: a lookup under either spelling returns
+  the same records and the same decision.
+
 ### Added
 - **Browser QA lane (skwatchdog WD-10, card `01b304a5`).** `skchat browser-qa run`
   walks skchat web in a real Chrome over raw CDP, captures a screenshot plus the
