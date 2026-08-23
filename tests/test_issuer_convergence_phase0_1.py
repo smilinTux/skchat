@@ -112,6 +112,12 @@ class TestExtractSubjectAudienceBranch:
             sign=False,
         )
         monkeypatch.setattr("capauth.tokens.verify_token", lambda t, h=None: True)
+        # capauth now gates decide() on the token signature (card N12/N12b).
+        # This home is hermetic (tmp_path) with no signing key, so the mint
+        # above is legitimately unsigned. Stub the signature check that
+        # authz imports so this test still exercises RESOLUTION and
+        # AUTHORIZATION, which is what it is for, rather than signing.
+        monkeypatch.setattr("capauth.authz.signature_verifies", lambda t: True)
         monkeypatch.setenv(dataplane_auth.ACCEPT_AUDIENCE_ENV_FLAG, "1")
         assert dataplane_auth._extract_subject(_wire(tok)) == "operator:abc123def456"
 

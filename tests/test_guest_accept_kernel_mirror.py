@@ -29,28 +29,28 @@ def _devices(subject, base):
 
 def test_admission_mirrors_tofu_device(durable_store):
     store, base = durable_store
-    store.record_admission("peerfp1", "op@host", "{}", "sigA", "sigB")
-    devs = _devices("peerfp1", base)
+    store.record_admission("aa11bb22cc33dd44", "op@chef.skworld.io", "{}", "sigA", "sigB")
+    devs = _devices("aa11bb22cc33dd44", base)
     assert len(devs) == 1
     assert devs[0].mode.value == "tofu"
-    assert devs[0].subject == "peerfp1"
+    assert devs[0].subject == "device:aa11bb22cc33dd44"
     assert not devs[0].revoked
 
 
 def test_trust_operator_mirrors_attested_device(durable_store):
     store, base = durable_store
-    store.trust_operator("op2@host", "PUBKEY-ARMOR")
-    devs = _devices("op2@host", base)
+    store.trust_operator("op2@chef.skworld.io", "PUBKEY-ARMOR")
+    devs = _devices("op2@chef.skworld.io", base)
     assert len(devs) == 1
     assert devs[0].mode.value == "attested"
 
 
 def test_revocation_mirrors_revoke(durable_store):
     store, base = durable_store
-    store.record_admission("peerfp3", "op@host", "{}", "s1", "s2")
-    assert not _devices("peerfp3", base)[0].revoked
-    store.revoke_pin("peerfp3")
-    assert all(d.revoked for d in _devices("peerfp3", base))
+    store.record_admission("cc33dd44ee55ff66", "op@chef.skworld.io", "{}", "s1", "s2")
+    assert not _devices("cc33dd44ee55ff66", base)[0].revoked
+    store.revoke_pin("cc33dd44ee55ff66")
+    assert all(d.revoked for d in _devices("cc33dd44ee55ff66", base))
 
 
 def test_in_memory_store_never_mirrors(tmp_path, monkeypatch):
@@ -59,9 +59,9 @@ def test_in_memory_store_never_mirrors(tmp_path, monkeypatch):
     base = str(tmp_path / "capauth")
     monkeypatch.setenv("SKCHAT_PAIRING_KERNEL_BASE", base)
     store = ConsumedNonces(db_path=":memory:")
-    store.record_admission("peerfpX", "op@host", "{}", "s1", "s2")
+    store.record_admission("dd44ee55ff667788", "op@chef.skworld.io", "{}", "s1", "s2")
     store.trust_operator("opX@host", "PUB")
-    assert _devices("peerfpX", base) == []
+    assert _devices("dd44ee55ff667788", base) == []
     assert _devices("opX@host", base) == []
 
 
@@ -75,7 +75,7 @@ def test_mirror_failure_never_breaks_admission(tmp_path, monkeypatch):
     monkeypatch.setattr("capauth.pairing.enroll_device", _boom)
     store = ConsumedNonces(db_path=str(tmp_path / "nonces.db"))
     # The admission must still succeed in SQLite despite the mirror blowing up.
-    store.record_admission("peerfp4", "op@host", "{}", "s1", "s2")
+    store.record_admission("peerfp4", "op@chef.skworld.io", "{}", "s1", "s2")
     assert store.is_admitted("peerfp4") is True
     store.close()
 
@@ -85,6 +85,6 @@ def test_kernel_disabled_skips_mirror(tmp_path, monkeypatch):
     base = str(tmp_path / "capauth")
     monkeypatch.setenv("SKCHAT_PAIRING_KERNEL_BASE", base)
     store = ConsumedNonces(db_path=str(tmp_path / "nonces.db"))
-    store.record_admission("peerfp5", "op@host", "{}", "s1", "s2")
+    store.record_admission("peerfp5", "op@chef.skworld.io", "{}", "s1", "s2")
     assert _devices("peerfp5", base) == []  # kernel off -> no mirror
     store.close()
