@@ -392,7 +392,7 @@ def _verify_capauth_credential(token: str) -> bool:
     # Operator-session JWT (the app's Bearer credential). Try this first;
     # fall through to the OpenPGP assertion path for daemon/agent callers.
     try:
-        from .operator_auth import OperatorAuthError, verify_operator_session
+        from capauth.pairing import OperatorAuthError, verify_operator_session
 
         verify_operator_session(token)
         return True
@@ -531,7 +531,7 @@ def _extract_subject(token: str) -> Optional[str]:
     raises (a missing subject just means the PDP denies, which shadow only logs).
     """
     try:
-        from .operator_auth import verify_operator_session
+        from capauth.pairing import verify_operator_session
 
         session = verify_operator_session(token)
         return operator_subject(session.device_fp)
@@ -726,7 +726,7 @@ def _issuer_shadow_compare(request: Request, token: str) -> None:
     raises into the request path and NEVER changes the response.
     """
     try:
-        from .operator_auth import verify_operator_session
+        from capauth.pairing import verify_operator_session
 
         try:
             session = verify_operator_session(token)
@@ -782,7 +782,7 @@ def _stash_operator_session(request: Request, token: str) -> None:
     leaves the attribute unset, and callers treat that as "unknown device".
     """
     try:
-        from .operator_auth import verify_operator_session
+        from capauth.pairing import verify_operator_session
 
         request.state.operator_session = verify_operator_session(token)
         from .device_registry import touch_throttled

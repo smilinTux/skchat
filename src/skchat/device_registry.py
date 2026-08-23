@@ -302,6 +302,17 @@ def set_approved(device_fp: str, approved: bool) -> bool:
     A device whose ``record_enroll`` failed has no row, which
     :func:`approval_for` reads as pending. Approving it therefore has to work
     without a pre-existing row, or the only recovery would be hand-editing JSON.
+
+    An approval (never an un-approval -- nothing in this codebase calls this
+    with ``approved=False``) is also mirrored into capauth's operator device
+    standing (``capauth.pairing.approve_device``), which is what
+    ``capauth.pairing.verify_operator_session`` actually consults now that
+    ``skchat.operator_auth`` has moved there (Unified Consent Plane Phase 1,
+    coord ``3731ae06``). This LOCAL row remains the source of truth for the
+    UI/CLI's own approval display and for :func:`list_pending`; the mirror is
+    best-effort and additive so a capauth hiccup never blocks recording the
+    local approval. See :func:`migrate_approvals_to_capauth` for backfilling
+    devices approved before this mirroring existed.
     """
     if not device_fp:
         return False
@@ -324,7 +335,53 @@ def set_approved(device_fp: str, approved: bool) -> bool:
         row["approved"] = bool(approved)
         data[device_fp] = row
         _save(data)
-        return True
+    if approved:
+        try:
+            from capauth.pairing import approve_device
+
+            approve_device(device_fp, approved_by="skchat")
+        except Exception:  # pragma: no cover - best-effort, never break approval
+            logger.debug("capauth approve_device mirror failed (best-effort)", exc_info=True)
+    return True
+
+
+def migrate_approvals_to_capauth() -> int:
+    """One-time backfill: mirror every currently-approved local device into capauth.
+
+    ``set_approved`` mirrors approvals into capauth going forward, but a device
+    approved BEFORE this mirroring existed has no capauth standing row.
+    ``capauth.pairing.verify_operator_session`` reads capauth's row and defaults
+    a MISSING row to NOT approved (the fail-open this whole move closes, see
+    ``capauth.pairing.operator_session``'s module docstring), so an unmigrated
+    already-linked device would start failing session verification the moment
+    this deploy's capauth-backed ``verify_operator_session`` lands.
+
+    Run once, before or immediately after deploying this change:
+    ``python3 -c "from skchat.device_registry import migrate_approvals_to_capauth
+    as m; print(m())"`` (or ``skchat devices migrate-capauth``). Idempotent --
+    safe to run more than once, and skips revoked devices (a revoked device has
+    no business getting a fresh approved standing).
+
+    Returns:
+        int: how many devices were mirrored as approved.
+    """
+    from capauth.pairing import approve_device
+
+    migrated = 0
+    with _lock:
+        rows = list(_load().values())
+    for row in rows:
+        fp = row.get("device_fp")
+        if not fp or row.get("revoked"):
+            continue
+        if not is_approved(row):
+            continue
+        try:
+            approve_device(fp, approved_by="migration")
+            migrated += 1
+        except Exception:
+            logger.warning("capauth approve_device migration failed for %s", fp, exc_info=True)
+    return migrated
 
 
 def list_pending() -> list[dict]:

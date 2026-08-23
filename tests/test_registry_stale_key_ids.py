@@ -99,8 +99,9 @@ def test_pruning_makes_the_no_slots_warning_fire_again():
     With a stale id preserved, ``registry_had_no_slots`` reads False and unlink
     reports a clean result while removing nothing.
     """
+    from capauth.pairing import DeviceStore
+
     from skchat import device_unlink as DU
-    from skchat.operator_auth import DeviceStore
 
     fp = "dd" * 8
     _enroll(fp)

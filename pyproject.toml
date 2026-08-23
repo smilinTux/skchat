@@ -41,6 +41,32 @@ dependencies = [
     # match production and keep the route-registration tests meaningful.
     "fastapi>=0.110,<0.136",
     "uvicorn>=0.29",
+    # PyJWT + cryptography back the HS256 operator/guest/embed token machinery
+    # (guest.py, guest_groups.py, embed_auth.py, and now capauth.pairing.
+    # operator_session, coord 3731ae06). Same story as fastapi above: imported
+    # at module/call load without ever being declared here.
+    "PyJWT>=2.8",
+    "cryptography>=41.0",
+    # capauth.pairing.operator_session is now the mint/verify/device-standing
+    # primitive skchat's operator session runs on (moved out of skchat's own
+    # operator_auth.py, coord 3731ae06) -- a core runtime path (guest.py,
+    # dataplane_auth.py, cli.py, webui.py, device_routes.py,
+    # operator_auth_routes.py), not just a test/dev integration. Promoted out
+    # of the dev-only extra below for that reason.
+    #
+    # Bounded, not floating. capauth carries AUTHORIZATION GATES, so a release
+    # can change what is permitted without any skchat commit. That is not
+    # hypothetical: capauth card N10 made `enroll_device(mode="verified")`
+    # require a possession proof, and skchat's main went red for 37 hours
+    # (last green 2026-08-14T22:57) with merges still landing into it, because
+    # a floating `>=0.3.1` picked the new gate up on its own. Nobody broke it;
+    # it broke itself when a dependency moved, and the blame landed on whoever
+    # merged last.
+    #
+    # The ceiling makes the next such change a DELIBERATE act: capauth 0.4 will
+    # not install until someone raises this bound and reads what changed. Raise
+    # it in the same PR that adapts to the new behaviour, never on its own.
+    "capauth>=0.3.2,<0.4",  # 0.3.2 ships pairing.enrollment_challenge (see operator_grants)
 ]
 
 [project.optional-dependencies]
@@ -82,23 +108,9 @@ dev = [
     "textual>=0.50",
     "skcomms>=0.1.0",
     "skmemory>=0.9",
-    # capauth backs the PDP/authz + pairing-gate surfaces that ~15 tests import
-    # at module load. It is published on PyPI and was simply never declared, so
-    # CI (a clean install) collected ModuleNotFoundError while dev machines,
-    # which have it installed already, stayed green.
-    # Bounded, not floating. capauth carries AUTHORIZATION GATES, so a release
-    # can change what is permitted without any skchat commit. That is not
-    # hypothetical: capauth card N10 made `enroll_device(mode="verified")`
-    # require a possession proof, and skchat's main went red for 37 hours
-    # (last green 2026-08-14T22:57) with merges still landing into it, because
-    # a floating `>=0.3.1` picked the new gate up on its own. Nobody broke it;
-    # it broke itself when a dependency moved, and the blame landed on whoever
-    # merged last.
-    #
-    # The ceiling makes the next such change a DELIBERATE act: capauth 0.4 will
-    # not install until someone raises this bound and reads what changed. Raise
-    # it in the same PR that adapts to the new behaviour, never on its own.
-    "capauth>=0.3.2,<0.4",  # 0.3.2 ships pairing.enrollment_challenge (see operator_grants)
+    # capauth is now a core runtime dependency (see [project.dependencies]
+    # above, which carries the same bounded pin and the ceiling rationale); no
+    # separate dev-extra entry needed.
     # the skcode ws-proxy tests dial a real websocket client; same story as
     # capauth above (published, just never declared).
     "websockets>=12.0",

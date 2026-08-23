@@ -240,7 +240,17 @@ def _load_revoked_devices(conn: sqlite3.Connection) -> None:
 
 
 def revoke_device(device_fp: str) -> None:
-    """Revoke every session belonging to *device_fp*. Idempotent."""
+    """Revoke every session belonging to *device_fp*. Idempotent.
+
+    Also mirrors the revocation into capauth (``capauth.pairing.revoke_device``),
+    best-effort. That mirror is the one that actually matters now: since
+    ``skchat.operator_auth`` moved into capauth (Unified Consent Plane Phase 1,
+    coord ``3731ae06``), it is capauth's OWN device-standing store that
+    ``capauth.pairing.verify_operator_session`` consults, not this local SQLite
+    table. The local table is kept (and still backs :func:`is_device_revoked`)
+    for the existing tests and any other local reader, but it is no longer the
+    table that actually stops a revoked device's session from verifying.
+    """
     if not device_fp:
         return
     with _store_lock:
@@ -254,10 +264,19 @@ def revoke_device(device_fp: str) -> None:
         finally:
             conn.close()
         _revoked_devices.add(device_fp)
+    try:
+        from capauth.pairing import revoke_device as _capauth_revoke_device
+
+        _capauth_revoke_device(device_fp, reason="skchat device unlink")
+    except Exception:  # pragma: no cover - best-effort, never break revocation
+        logger.debug("capauth revoke_device mirror failed (best-effort)", exc_info=True)
 
 
 def unrevoke_device(device_fp: str) -> None:
-    """Clear a device revocation, so re-enrolling the same key works again."""
+    """Clear a device revocation, so re-enrolling the same key works again.
+
+    Mirrors into capauth as well, see :func:`revoke_device`.
+    """
     if not device_fp:
         return
     with _store_lock:
@@ -268,6 +287,12 @@ def unrevoke_device(device_fp: str) -> None:
         finally:
             conn.close()
         _revoked_devices.discard(device_fp)
+    try:
+        from capauth.pairing import unrevoke_device as _capauth_unrevoke_device
+
+        _capauth_unrevoke_device(device_fp)
+    except Exception:  # pragma: no cover - best-effort, never break re-enrollment
+        logger.debug("capauth unrevoke_device mirror failed (best-effort)", exc_info=True)
 
 
 def is_device_revoked(device_fp: str) -> bool:
@@ -387,7 +412,7 @@ def _presented_operator_session_ok(presented: str) -> bool:
     widens the trust boundary beyond enrolled operators.
     """
     try:
-        from .operator_auth import verify_operator_session
+        from capauth.pairing import verify_operator_session
 
         verify_operator_session(presented)
         return True

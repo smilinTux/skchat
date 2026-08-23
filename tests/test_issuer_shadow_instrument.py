@@ -41,12 +41,16 @@ def test_shadow_ok_heartbeat_fires_every_hundredth(caplog):
 
 
 def test_extract_subject_logs_a_swallowed_operator_error(caplog, monkeypatch):
-    import skchat.operator_auth as oa
+    import capauth.pairing as capauth_pairing
 
     def boom(_token):
         raise RuntimeError("gpg verify died mid-shutdown")
 
-    monkeypatch.setattr(oa, "verify_operator_session", boom)
+    # _extract_subject does `from capauth.pairing import verify_operator_session`
+    # (the re-export on the capauth.pairing PACKAGE), not
+    # capauth.pairing.operator_session directly, so that is the attribute that
+    # must be patched for the swallowed-import inside _extract_subject to see it.
+    monkeypatch.setattr(capauth_pairing, "verify_operator_session", boom)
     with caplog.at_level(logging.DEBUG, logger="skchat.dataplane_auth"):
         result = dpa._extract_subject("not-a-valid-token")
     assert result is None

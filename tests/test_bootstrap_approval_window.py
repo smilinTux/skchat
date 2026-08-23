@@ -137,10 +137,10 @@ def _enroll_through_the_real_route(client, seed: str) -> dict:
 
 @pytest.fixture
 def enroll_client(tmp_path, monkeypatch):
+    from capauth.pairing import operator_session as OA
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
-    from skchat import operator_auth as OA
     from skchat.operator_auth_routes import register_operator_auth_routes
 
     monkeypatch.setenv("SKCHAT_DEVICE_REGISTRY", str(tmp_path / "registry.json"))

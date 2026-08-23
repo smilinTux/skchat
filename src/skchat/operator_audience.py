@@ -12,8 +12,10 @@ The subject is derived server-side from the verified device fingerprint (the
 session route has already checked a fresh device signature over the challenge
 nonce), never from request input, so no anti-forgery contract is weakened.
 
-Kept in its own module so ``operator_auth.py`` (pure HS256) stays deletable in the
-final retirement phase (Phase 5) without disturbing the audience path.
+Kept in its own module so the pure-HS256 mint/verify primitive (now
+``capauth.pairing.operator_session``, moved out of skchat's former
+``operator_auth.py`` in coord ``3731ae06``) stays independently retireable in
+the final retirement phase (Phase 5) without disturbing the audience path.
 """
 
 from __future__ import annotations

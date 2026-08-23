@@ -108,9 +108,9 @@ def test_challenge_is_the_exact_bytes_capauth_accepts(home):
     silently sliding back to the tofu floor in production.
     """
     from capauth.pairing import enroll_device
+    from capauth.pairing.operator_session import device_fingerprint
 
     from skchat.dataplane_auth import operator_subject
-    from skchat.operator_auth import device_fingerprint
     from skchat.operator_grants import verified_enrollment_challenge
 
     priv, pub = _kp()
@@ -135,10 +135,10 @@ def test_challenge_cannot_be_replayed_as_an_attestation(home):
     """The verified proof must not satisfy the attested check, and vice versa."""
     from capauth.pairing import attested_challenge
     from capauth.pairing.kernel import PairingError, enroll_device
+    from capauth.pairing.operator_session import device_fingerprint
     from capauth.pairing.store import fingerprint_for
 
     from skchat.dataplane_auth import operator_subject
-    from skchat.operator_auth import device_fingerprint
     from skchat.operator_grants import verified_enrollment_challenge
 
     priv, pub = _kp()
@@ -184,9 +184,9 @@ def test_grant_with_real_proof_enrolls_verified_and_the_pdp_allows_send(home):
     merely returned truthy or did not raise.
     """
     from capauth.authz import decide
+    from capauth.pairing.operator_session import device_fingerprint
 
     from skchat.dataplane_auth import operator_subject
-    from skchat.operator_auth import device_fingerprint
     from skchat.operator_grants import (
         SEND_CAPABILITY,
         grant_operator_capabilities,
@@ -215,9 +215,9 @@ def test_grant_without_proof_enrolls_tofu_and_never_claims_verified(home, caplog
     PDP rather than granted on an unproven claim.
     """
     from capauth.authz import decide
+    from capauth.pairing.operator_session import device_fingerprint
 
     from skchat.dataplane_auth import operator_subject
-    from skchat.operator_auth import device_fingerprint
     from skchat.operator_grants import (
         INBOX_CAPABILITY,
         SEND_CAPABILITY,
@@ -251,8 +251,9 @@ def test_grant_with_a_forged_proof_does_not_reach_verified(home, caplog):
     Negative control for the test above: if a bad proof were accepted, the
     passing "with proof" test would prove nothing.
     """
+    from capauth.pairing.operator_session import device_fingerprint
+
     from skchat.dataplane_auth import operator_subject
-    from skchat.operator_auth import device_fingerprint
     from skchat.operator_grants import grant_operator_capabilities
 
     priv, pub = _kp()
@@ -271,8 +272,9 @@ def test_grant_with_a_forged_proof_does_not_reach_verified(home, caplog):
 
 def test_grant_with_a_proof_from_a_different_key_does_not_reach_verified(home):
     """Possession of some private key is not possession of THIS device's key."""
+    from capauth.pairing.operator_session import device_fingerprint
+
     from skchat.dataplane_auth import operator_subject
-    from skchat.operator_auth import device_fingerprint
     from skchat.operator_grants import grant_operator_capabilities, verified_enrollment_challenge
 
     _priv, pub = _kp()
@@ -295,10 +297,10 @@ def test_backfill_never_re_modes_a_device_it_cannot_prove(home, caplog):
     cannot prove or silently DOWNGRADING an already-verified device record to
     tofu. Both would be wrong; the second would be a live regression.
     """
+    from capauth.pairing.operator_session import device_fingerprint
     from capauth.tokens import issue_token
 
     from skchat.dataplane_auth import operator_subject
-    from skchat.operator_auth import device_fingerprint
     from skchat.operator_grants import (
         INBOX_CAPABILITY,
         SEND_CAPABILITY,

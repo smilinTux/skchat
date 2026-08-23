@@ -13,6 +13,20 @@ standards.
 ## [Unreleased]
 
 ### Added
+- **Operator session primitive lifted into `capauth.pairing.operator_session`
+  (Unified Consent Plane Phase 1, card P11 / coord 3731ae06).** Mint, verify,
+  and device-standing logic that lived in skchat's own `operator_auth.py`
+  now lives in capauth so it can be shared across the consent plane; skchat
+  imports it as `capauth.pairing.operator_session`. `capauth` is promoted
+  from a dev-only extra to a core runtime dependency (bounded
+  `>=0.3.2,<0.4`), and `PyJWT`/`cryptography` are declared explicitly since
+  both were already imported at module load without being declared.
+  `operator_grants.py`'s `device_fingerprint` import and
+  `test_verified_enrollment_proof.py`'s callers of it move to the new
+  location too (same sha256-16-hex algorithm, unchanged). Coverage for the
+  retired `operator_auth.py` now lives against `capauth.pairing.operator_session`
+  directly; `test_operator_auth_device.py`/`test_operator_auth_session.py` are
+  removed.
 - **Browser QA lane (skwatchdog WD-10, card `01b304a5`).** `skchat browser-qa run`
   walks skchat web in a real Chrome over raw CDP, captures a screenshot plus the
   console per step, grades the **image**, and writes one result artifact

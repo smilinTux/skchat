@@ -186,7 +186,7 @@ def verified_enrollment_challenge(
     fail:
 
       * the fingerprint is CAPAUTH's (``fingerprint_for``: a 40-char UPPERCASE
-        hex), not skchat's 16-char :func:`skchat.operator_auth.device_fingerprint`;
+        hex), not skchat's 16-char :func:`capauth.pairing.operator_session.device_fingerprint`;
       * the identity is the CANONICALIZED subject, so the ``operator:<fp>``
         skchat passes is recorded, and challenged, as ``device:<fp>``.
 
@@ -202,7 +202,7 @@ def verified_enrollment_challenge(
 
     It still resolves the subject ITSELF, and that is load-bearing rather than
     leftover. The two defaults are NOT the same: skchat defaults to
-    :func:`skchat.operator_auth.device_fingerprint`, a 16-char id, while
+    :func:`capauth.pairing.operator_session.device_fingerprint`, a 16-char id, while
     capauth's own default is the full 40-char ``fingerprint_for``. Measured on
     the same key:
 
@@ -219,8 +219,7 @@ def verified_enrollment_challenge(
     ``tests/test_verified_enrollment_proof.py`` pins.
     """
     from capauth.pairing import enrollment_challenge
-
-    from .operator_auth import device_fingerprint
+    from capauth.pairing.operator_session import device_fingerprint
 
     subject = subject or operator_subject(device_fingerprint(device_pubkey_b64))
     return enrollment_challenge(device_pubkey_b64, subject=subject, mode="verified")

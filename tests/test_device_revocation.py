@@ -1,11 +1,22 @@
-"""Revocation by device_fp: one write kills every session a device holds."""
+"""Revocation by device_fp: one write kills every session a device holds.
+
+``verify_operator_session`` now lives in capauth
+(``capauth.pairing.operator_session``, Unified Consent Plane Phase 1, coord
+``3731ae06``) and requires an EXPLICIT approved standing before it will verify
+anything (the fail-open closure: see that module's docstring). Every test
+below that needs a session to actually verify therefore approves the device
+first via ``DR.set_approved`` -- skchat's own approval call, which mirrors
+into capauth (see ``device_registry.set_approved``) -- so these tests exercise
+the real production call path, not capauth directly.
+"""
 
 from __future__ import annotations
 
 import pytest
+from capauth.pairing import operator_session as OA
 
+from skchat import device_registry as DR
 from skchat import guest as G
-from skchat import operator_auth as OA
 
 
 @pytest.fixture(autouse=True)
@@ -28,6 +39,7 @@ def test_a_revoked_device_fp_is_reported_revoked_and_survives_a_cache_drop():
 
 def test_every_session_of_a_revoked_device_dies_at_once():
     fp = "bb" * 8
+    DR.set_approved(fp, True)
     first = OA.mint_operator_session(device_fp=fp)
     second = OA.mint_operator_session(device_fp=fp)
     assert OA.verify_operator_session(first).device_fp == fp
@@ -42,6 +54,7 @@ def test_every_session_of_a_revoked_device_dies_at_once():
 
 
 def test_revoking_one_device_leaves_another_devices_session_working():
+    DR.set_approved("cc" * 8, True)
     keep = OA.mint_operator_session(device_fp="cc" * 8)
     G.revoke_device("dd" * 8)
     assert OA.verify_operator_session(keep).device_fp == "cc" * 8
@@ -49,6 +62,7 @@ def test_revoking_one_device_leaves_another_devices_session_working():
 
 def test_unrevoke_lets_a_relinked_device_authenticate_again():
     fp = "ee" * 8
+    DR.set_approved(fp, True)
     G.revoke_device(fp)
     token_after_relink = OA.mint_operator_session(device_fp=fp)
     with pytest.raises(OA.OperatorAuthError):

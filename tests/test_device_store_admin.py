@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 import json
 
-from skchat.operator_auth import DeviceStore
+from capauth.pairing import DeviceStore
 
 
 def _pub(seed: str) -> str:

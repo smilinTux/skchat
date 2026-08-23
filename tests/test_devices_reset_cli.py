@@ -7,10 +7,10 @@ import json
 import os
 
 import pytest
+from capauth.pairing import operator_session as OA
 from click.testing import CliRunner
 
 from skchat import device_registry as DR
-from skchat import operator_auth as OA
 from skchat import pq_prekeys as PQ
 
 # The CLI's top-level click.Group is named `main` in skchat.cli, not `cli` (a

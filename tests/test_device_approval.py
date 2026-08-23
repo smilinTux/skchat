@@ -6,6 +6,17 @@ THE THING THAT MUST NOT GO WRONG: the operator's 3 live devices have registry
 rows with no ``approved`` key at all. A row with no ``approved`` key MUST be
 read as approved, or all 3 lose the ability to authenticate at once with no
 approved device left to approve from. That case is proven first, explicitly.
+
+**Since the capauth move (Unified Consent Plane Phase 1, coord ``3731ae06``)**
+that local read and actual session verification are two different things.
+``guest.is_device_approved`` (this local, still-grandfathering read) is
+unchanged and still what the UI/CLI approval display and
+``device_registry.list_pending`` use. Session verification itself now runs
+through ``capauth.pairing.verify_operator_session``, whose OWN device-standing
+store defaults an unknown fingerprint to NOT approved -- a deliberate fail-open
+closure, see ``capauth.pairing.operator_session``'s module docstring. See
+``test_a_pre_phase3_devices_row_reads_approved_locally_but_its_session_does_not_verify``
+and ``test_migrate_approvals_to_capauth_backfills_a_pre_phase3_device`` below.
 """
 
 from __future__ import annotations
@@ -13,13 +24,13 @@ from __future__ import annotations
 import base64
 
 import pytest
+from capauth.pairing import operator_session as OA
 from click.testing import CliRunner
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from skchat import daemon_proxy
 from skchat import device_registry as DR
-from skchat import operator_auth as OA
 from skchat import pq_prekeys as PQ
 from skchat.cli import main as cli
 from skchat.device_routes import register_device_routes
@@ -120,9 +131,26 @@ def test_a_device_with_no_registry_row_at_all_reads_as_approved(store):
     assert G.is_device_approved("neverregisteredaa") is True
 
 
-def test_a_pre_phase3_devices_session_still_verifies(store):
-    """End-to-end version of the above: a session for a device whose row
-    predates `approved` must still verify."""
+def test_a_pre_phase3_devices_row_reads_approved_locally_but_its_session_does_not_verify(
+    store,
+):
+    """End-to-end version of the above, updated for the capauth move.
+
+    ``guest.is_device_approved`` (checked above) still reads a missing-key row
+    as approved -- that LOCAL read is unchanged, and still what the UI/CLI
+    display and :func:`skchat.device_registry.list_pending` show.
+
+    But session verification itself moved into capauth
+    (``capauth.pairing.verify_operator_session``, Unified Consent Plane Phase
+    1, coord ``3731ae06``), and capauth's OWN device-standing store starts
+    empty: a fingerprint with no capauth row is NOT approved there, full stop,
+    regardless of what skchat's local registry says (see
+    ``capauth.pairing.operator_session``'s module docstring: this is a
+    deliberate fail-open closure, not a bug). A device grandfathered in
+    locally therefore cannot mint a WORKING session until it is migrated --
+    see :func:`test_migrate_approvals_to_capauth_backfills_a_pre_phase3_device`
+    directly below for the fix.
+    """
     fp = store.enroll(base64.b64encode(b"livebox".ljust(32, b"\0")).decode())
     DR.record_enroll(fp, label="livebox", label_source="derived", platform="web", user_agent="UA")
     row = DR.get_device(fp)
@@ -132,6 +160,34 @@ def test_a_pre_phase3_devices_session_still_verifies(store):
     DR._save(data)
 
     token = OA.mint_operator_session(device_fp=fp)
+    with pytest.raises(OA.OperatorAuthError, match="pending approval"):
+        OA.verify_operator_session(token)
+
+
+def test_migrate_approvals_to_capauth_backfills_a_pre_phase3_device(store):
+    """The documented fix for the case directly above.
+
+    ``migrate_approvals_to_capauth()`` is the one-time backfill operators run
+    before/after deploying the capauth move: it mirrors every LOCALLY-approved
+    device (missing-key rows included, using the same grandfather read
+    ``is_approved`` already applies) into capauth, so an already-linked device
+    is not locked out the moment capauth-backed verification lands.
+    """
+    fp = store.enroll(base64.b64encode(b"livebox2").ljust(32, b"\0").decode())
+    DR.record_enroll(fp, label="livebox2", label_source="derived", platform="web", user_agent="UA")
+    row = DR.get_device(fp)
+    del row["approved"]
+    data = DR._load()
+    data[fp] = row
+    DR._save(data)
+
+    token = OA.mint_operator_session(device_fp=fp)
+    with pytest.raises(OA.OperatorAuthError):
+        OA.verify_operator_session(token)
+
+    migrated = DR.migrate_approvals_to_capauth()
+    assert migrated == 1
+
     assert OA.verify_operator_session(token).device_fp == fp
 
 

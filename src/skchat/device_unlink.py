@@ -80,7 +80,7 @@ def unlink_device(device_fp: str, *, device_store, owner: str = "chef") -> dict:
 
     Args:
         device_fp: The device to unlink.
-        device_store: The live :class:`skchat.operator_auth.DeviceStore`.
+        device_store: The live :class:`capauth.pairing.DeviceStore`.
         owner: Short name whose prekey slots hold this device (default ``chef``).
 
     Returns:

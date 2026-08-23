@@ -241,8 +241,9 @@ except ImportError as _e:
 # live but nothing is gated on their output until the enforcement middleware
 # is added in a later task.
 try:
-    from .operator_auth import DeviceStore as _DeviceStore
-    from .operator_auth import default_device_store_path as _default_device_store_path
+    from capauth.pairing import DeviceStore as _DeviceStore
+    from capauth.pairing import default_device_store_path as _default_device_store_path
+
     from .operator_auth_routes import (
         register_operator_auth_routes as _register_operator_auth_routes,
     )

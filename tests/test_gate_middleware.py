@@ -94,11 +94,11 @@ def test_favicon_ico_is_exempt():
     assert is_gated("GET", "/favicon.ico") is False
 
 
+from capauth.pairing import operator_session as oa
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from starlette.responses import JSONResponse
 
-from skchat import operator_auth as oa
 from skchat.dataplane_auth import dataplane_auth_enabled, enforce_dataplane_auth
 
 
@@ -142,6 +142,10 @@ def test_flag_on_blocks_unauthed(monkeypatch):
 def test_flag_on_allows_valid_session(monkeypatch):
     monkeypatch.setenv("SKCHAT_DATAPLANE_AUTH", "1")
     monkeypatch.setenv("SKCHAT_OPERATOR_TOKEN_SECRET", "sec")
+    # capauth.pairing.verify_operator_session requires an explicit approved
+    # standing (Unified Consent Plane Phase 1's closed fail-open, see
+    # capauth.pairing.operator_session's module docstring).
+    oa.approve_device("abc")
     tok = oa.mint_operator_session(device_fp="abc", ttl=60)
     c = TestClient(_build_app())
     assert (

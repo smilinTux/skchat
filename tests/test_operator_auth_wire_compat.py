@@ -22,8 +22,7 @@ import shutil
 import subprocess
 
 import pytest
-
-from skchat.operator_auth import device_fingerprint, verify_device_signature
+from capauth.pairing import device_fingerprint, verify_device_signature
 
 APP_DIR = os.path.expanduser("~/clawd/skcapstone-repos/skchat-app")
 FLUTTER_BIN = "/home/cbrd21/flutter/bin"

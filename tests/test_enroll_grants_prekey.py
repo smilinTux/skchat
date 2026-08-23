@@ -19,6 +19,7 @@ import json
 from pathlib import Path
 
 import pytest
+from capauth.pairing import operator_session as oa
 
 # CapAuth signs capability tokens with gpg, and since capauth 0d412ab a signing
 # failure RAISES instead of quietly producing an unsigned token that decide()
@@ -47,7 +48,6 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from skchat import daemon_proxy
-from skchat import operator_auth as oa
 from skchat.operator_auth_routes import register_operator_auth_routes
 
 pytestmark = pytest.mark.usefixtures("stub_token_signing")
@@ -184,7 +184,22 @@ def test_enroll_open_without_a_pubkey_keeps_its_original_shape(client):
 def test_never_enrolled_session_is_still_denied(client):
     """A well-formed operator session for a device that never enrolled has no
     grant, so the enforce-mode PDP must still 403 it (proves the grant, not the
-    JWT alone, is what authorizes prekey publish)."""
+    JWT alone, is what authorizes prekey publish).
+
+    Approved-but-ungranted, not unapproved: since the capauth move (Unified
+    Consent Plane Phase 1, coord 3731ae06), an UNAPPROVED device now fails at
+    AUTHENTICATION (401, capauth.pairing.verify_operator_session itself
+    raises) rather than reaching the PDP at all -- see
+    test_unapproved_ghost_session_is_denied_at_authentication below for that
+    case. To isolate the thing THIS test is actually about (a real,
+    authenticated device with no capability grant), the ghost device is
+    approved directly against capauth so authentication passes, while never
+    going through the real /enroll route, so it never receives the
+    skchat.prekey grant that route mints.
+    """
+    from capauth.pairing import approve_device
+
+    approve_device("0000never0000")
     ghost = oa.mint_operator_session(device_fp="0000never0000", ttl=60)
     resp = client.post(
         "/api/v1/prekey",
@@ -192,3 +207,19 @@ def test_never_enrolled_session_is_still_denied(client):
         json={"suite": "x25519-mlkem768", "hybrid_public_hex": "cd" * 32, "key_id": "deadbeef"},
     )
     assert resp.status_code == 403, resp.text
+
+
+def test_unapproved_ghost_session_is_denied_at_authentication(client):
+    """A device that was never even approved fails at authentication (401),
+    before the PDP capability check is ever reached. This is the fail-open
+    closure this move makes: previously a device with no registry row at all
+    read as approved (see the OLD skchat.device_registry.approval_for
+    docstring), so this exact scenario reached the PDP and 403'd there
+    instead. Now it 401s -- a stronger guarantee, not a weaker one."""
+    ghost = oa.mint_operator_session(device_fp="totally-unapproved-fp", ttl=60)
+    resp = client.post(
+        "/api/v1/prekey",
+        headers={"Authorization": f"Bearer {ghost}"},
+        json={"suite": "x25519-mlkem768", "hybrid_public_hex": "ef" * 32, "key_id": "cafebabe"},
+    )
+    assert resp.status_code == 401, resp.text

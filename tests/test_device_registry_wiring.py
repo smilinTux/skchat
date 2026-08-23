@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import pytest
+from capauth.pairing import operator_session as OA
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from skchat import daemon_proxy
 from skchat import device_registry as DR
-from skchat import operator_auth as OA
 
 
 @pytest.fixture
