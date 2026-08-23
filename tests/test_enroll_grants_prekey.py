@@ -19,6 +19,7 @@ import json
 from pathlib import Path
 
 import pytest
+from capauth.pairing import operator_session as oa
 
 # CapAuth signs capability tokens with gpg, and since capauth 0d412ab a signing
 # failure RAISES instead of quietly producing an unsigned token that decide()
@@ -40,7 +41,6 @@ import pytest
 # genuine coverage of the real signing path into coverage of the stub, which is
 # the exact "passes for the wrong reason" failure this seam is meant to avoid.
 from capauth.testing import stub_token_signing  # noqa: F401
-from capauth.pairing import operator_session as oa
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
