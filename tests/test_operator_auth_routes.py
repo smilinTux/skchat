@@ -12,13 +12,13 @@ import json
 from pathlib import Path
 
 import pytest
+from capauth.pairing import operator_session as oa
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from skchat import operator_auth as oa
 from skchat import operator_auth_routes as oar
 from skchat.operator_auth_routes import register_operator_auth_routes
 from skchat.pairing_gate import PairingGate

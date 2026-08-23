@@ -5,10 +5,10 @@ from __future__ import annotations
 import base64
 
 import pytest
+from capauth.pairing import operator_session as OA
 
 from skchat import device_registry as DR
 from skchat import device_unlink as DU
-from skchat import operator_auth as OA
 from skchat import pq_prekeys as PQ
 
 

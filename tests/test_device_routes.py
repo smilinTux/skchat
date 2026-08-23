@@ -5,11 +5,11 @@ from __future__ import annotations
 import base64
 
 import pytest
+from capauth.pairing import operator_session as OA
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from skchat import device_registry as DR
-from skchat import operator_auth as OA
 from skchat import pq_prekeys as PQ
 from skchat.device_routes import register_device_routes
 

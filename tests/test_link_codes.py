@@ -135,7 +135,8 @@ def test_time_actually_passes_by_default():
 
 @pytest.fixture
 def enroll_client(tmp_path, monkeypatch):
-    from skchat import operator_auth as OA
+    from capauth.pairing import operator_session as OA
+
     from skchat.operator_auth_routes import register_operator_auth_routes
 
     monkeypatch.setenv("SKCHAT_LINK_CODES", str(tmp_path / "link_codes.json"))

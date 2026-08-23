@@ -166,6 +166,22 @@ def _isolate_capauth_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
             continue
         if hasattr(mod, "default_base_dir"):
             monkeypatch.setattr(mod, "default_base_dir", lambda root=root: root, raising=False)
+    # capauth.resolve_capauth_home() is a SEPARATE default from
+    # capauth.pairing.default_base_dir() above (it resolves to
+    # ~/.skcapstone/capauth, capauth's own subdir, used by capauth.tokens'
+    # revocation file and by capauth.pairing.operator_session -- the module
+    # skchat's device approve/revoke/mint/verify calls now delegate into,
+    # Unified Consent Plane Phase 1, coord 3731ae06). Patching only
+    # default_base_dir left this one pointed at the operator's real home for
+    # every operator-session test.
+    try:
+        import capauth as _capauth
+
+        monkeypatch.setattr(
+            _capauth, "resolve_capauth_home", lambda base_dir=None: root / "capauth"
+        )
+    except Exception:  # pragma: no cover - capauth optional in some envs
+        pass
     yield
 
 
@@ -235,6 +251,11 @@ _LIVE_STATE_ROOTS = (
     "~/.skchat/read-state.json",
     "~/.skcapstone/peers",
     "~/.skcapstone/pairing",
+    # capauth.resolve_capauth_home()'s default (~/.skcapstone/capauth):
+    # operator device standing (approve/revoke) and session revocation now
+    # live here (capauth.pairing.operator_session), so an unisolated test
+    # would flip the operator's REAL devices' approval/revocation state.
+    "~/.skcapstone/capauth",
 )
 
 

@@ -11,9 +11,9 @@ a guest/peer credential (the signing-oracle invariant).
 """
 
 import pytest
+from capauth.pairing import operator_session as oa
 
 from skchat import guest
-from skchat import operator_auth as oa
 
 
 class _Req:
@@ -31,6 +31,7 @@ def _bearer(tok: str) -> dict:
 def test_valid_operator_session_bearer_is_accepted(monkeypatch):
     monkeypatch.setenv("SKCHAT_OPERATOR_TOKEN_SECRET", "test-secret")
     monkeypatch.setenv(guest._OPERATOR_TOKEN_ENV, "the-shared-secret")
+    oa.approve_device("abc123")
     session = oa.mint_operator_session(device_fp="abc123", ttl=60)
 
     # A remote (non-private) client presenting only the session JWT must pass.

@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import pytest
+from capauth.pairing import operator_session as OA
 from fastapi import Depends, FastAPI, Request
 from fastapi.testclient import TestClient
 
-from skchat import operator_auth as OA
 from skchat.dataplane_auth import require_dataplane_auth
 
 
@@ -35,6 +35,7 @@ def client(tmp_path, monkeypatch):
 
 
 def test_the_route_sees_the_device_fp_of_the_session_that_authenticated_it(client):
+    OA.approve_device("a1b2c3d4e5f60718")
     token = OA.mint_operator_session(device_fp="a1b2c3d4e5f60718")
     r = client.get("/probe", headers={"Authorization": f"Bearer {token}"})
     assert r.status_code == 200
@@ -42,6 +43,8 @@ def test_the_route_sees_the_device_fp_of_the_session_that_authenticated_it(clien
 
 
 def test_two_devices_are_told_apart_by_their_own_sessions(client):
+    OA.approve_device("aa" * 8)
+    OA.approve_device("bb" * 8)
     one = OA.mint_operator_session(device_fp="aa" * 8)
     two = OA.mint_operator_session(device_fp="bb" * 8)
     first = client.get("/probe", headers={"Authorization": f"Bearer {one}"})

@@ -6,6 +6,12 @@ enforcement middleware is added in a later task. Enrollment is operator-gated
 guest._require_operator; challenge/session are open by design, they only mint
 a session for a device whose key is already enrolled and the request must
 carry a valid device signature over the canonical challenge payload.
+
+The mint/verify/challenge primitive itself (``oa`` below) now lives in
+capauth (``capauth.pairing.operator_session``), lifted from what used to be
+``skchat.operator_auth`` (Unified Consent Plane Phase 1, coord ``3731ae06``).
+This module keeps the HTTP handshake -- it is skchat's front door onto the
+one shared operator identity, not a second implementation of it.
 """
 
 from __future__ import annotations
@@ -14,9 +20,9 @@ import base64
 import json
 import logging
 
+from capauth.pairing import operator_session as oa
 from fastapi import APIRouter, FastAPI, HTTPException, Request
 
-from . import operator_auth as oa
 from .guest import _require_operator
 from .operator_grants import grant_operator_capabilities_detailed
 from .pairing_gate import PairingGate

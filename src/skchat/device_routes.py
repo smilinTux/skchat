@@ -62,7 +62,7 @@ def _current_device_fp(request: Request) -> str:
     if not token:
         return ""
     try:
-        from skchat.operator_auth import verify_operator_session
+        from capauth.pairing import verify_operator_session
 
         return verify_operator_session(token).device_fp
     except Exception:

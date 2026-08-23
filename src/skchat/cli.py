@@ -5778,12 +5778,13 @@ def devices_reset(yes: bool) -> None:
     already closes, not a parallel, weaker mechanism that only clears the
     store and slots and leaves live sessions and PDP grants behind.
     """
+    from capauth.pairing import DeviceStore as _DeviceStore
+    from capauth.pairing import default_device_store_path as _default_device_store_path
+
     from . import device_registry as _DR
     from . import guest as _G
     from .device_registry import clear_all as _clear_registry
     from .device_unlink import revoke_capauth_subject as _revoke_capauth_subject
-    from .operator_auth import DeviceStore as _DeviceStore
-    from .operator_auth import default_device_store_path as _default_device_store_path
     from .pq_prekeys import _pqc_dir as _pq_pqc_dir
     from .pq_prekeys import _short as _pq_short
     from .pq_prekeys import load_peer_bundles as _load_peer_bundles
@@ -5901,8 +5902,9 @@ def devices_approve(device_fp: str) -> None:
 
     Bootstrap path: no operator session required (see `devices pending`).
     """
+    from capauth.pairing import DeviceStore, default_device_store_path
+
     from . import device_registry as _DR
-    from .operator_auth import DeviceStore, default_device_store_path
 
     # A row-less but ENROLLED device is the recovery case (its registry write
     # failed), so approving it creates the row. An unknown fingerprint is a
@@ -5912,6 +5914,24 @@ def devices_approve(device_fp: str) -> None:
         raise click.ClickException(f"no such device: {device_fp}")
     _DR.set_approved(device_fp, True)
     click.echo(f"Approved {device_fp}.")
+
+
+@devices.command("migrate-capauth")
+def devices_migrate_capauth() -> None:
+    """One-time backfill: mirror every locally-approved device into capauth.
+
+    Run this ONCE, before or immediately after upgrading to the capauth-backed
+    operator session (Unified Consent Plane Phase 1, coord 3731ae06). capauth's
+    device-standing store starts empty and `capauth.pairing.verify_operator_session`
+    now requires an EXPLICIT approved row there -- a device approved only in
+    this node's local registry (including a pre-Phase-3 row with no `approved`
+    key, which reads as approved locally) will otherwise fail session
+    verification the moment this deploy lands. Idempotent; safe to re-run.
+    """
+    from . import device_registry as _DR
+
+    count = _DR.migrate_approvals_to_capauth()
+    click.echo(f"Mirrored {count} approved device(s) into capauth.")
 
 
 @devices.command("deny")
@@ -5926,9 +5946,10 @@ def devices_deny(device_fp: str) -> None:
     """
     import json as _json
 
+    from capauth.pairing import DeviceStore as _DeviceStore
+    from capauth.pairing import default_device_store_path as _default_device_store_path
+
     from .device_unlink import unlink_device as _unlink_device
-    from .operator_auth import DeviceStore as _DeviceStore
-    from .operator_auth import default_device_store_path as _default_device_store_path
 
     store = _DeviceStore(_default_device_store_path())
     try:

@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import base64
 import json
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -52,13 +54,76 @@ from skchat import dataplane_auth
 pytestmark = pytest.mark.usefixtures("stub_token_signing")
 
 
+def _gen_gpg_key(gnupghome: Path) -> str | None:
+    """Generate a real ephemeral signing key, return its fingerprint or None.
+
+    Same pattern as test_audience_mint_endpoint.py's TestMintRealSignature: a
+    hermetic identity for a test that exercises REAL gpg signing rather than
+    stubbing it out, so a genuine ``sign=True`` path (like
+    ``operator_audience.mint_operator_audience_token``, which passes no
+    ``sign=`` override) gets tested end to end instead of skipped entirely.
+    """
+    if not shutil.which("gpg"):
+        return None
+    gnupghome.mkdir(parents=True, exist_ok=True)
+    gnupghome.chmod(0o700)
+    import os
+
+    env = {**dict(os.environ), "GNUPGHOME": str(gnupghome)}
+    try:
+        subprocess.run(
+            [
+                "gpg",
+                "--batch",
+                "--yes",
+                "--passphrase",
+                "",
+                "--pinentry-mode",
+                "loopback",
+                "--quick-generate-key",
+                "issuer-convergence-test@local",
+                "ed25519",
+                "sign",
+                "0",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=env,
+        )
+        out = subprocess.run(
+            ["gpg", "--batch", "--with-colons", "--list-secret-keys"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            env=env,
+        )
+        for line in out.stdout.splitlines():
+            if line.startswith("fpr:"):
+                return line.split(":")[9]
+    except (subprocess.SubprocessError, OSError):
+        return None
+    return None
+
+
 # --------------------------------------------------------------------------- #
 # Helpers
 # --------------------------------------------------------------------------- #
 def _agent_home(
-    tmp_path: Path, fingerprint: str = "AABBCCDDEE1122334455AABBCCDDEE1122334455"
+    tmp_path: Path,
+    fingerprint: str = "AABBCCDDEE1122334455AABBCCDDEE1122334455",
+    home_dir_name: str | None = None,
 ) -> Path:
-    home = tmp_path / ".skcapstone"
+    """Seed a hermetic capauth identity, returning the ``home`` it lives under.
+
+    Most callers pass this straight to ``mint_audience_token(home=...)``, so the
+    default ``tmp_path/.skcapstone`` is fine. ``operator_audience.py`` instead
+    resolves its own home via ``resolve_capauth_home()`` (patched by conftest's
+    ``_isolate_capauth_store`` to ``tmp_path/.skcapstone/capauth``, one segment
+    deeper) -- callers exercising THAT path pass ``home_dir_name="capauth"`` so
+    the identity lands where the code under test will actually look for it.
+    """
+    home = tmp_path / ".skcapstone" / home_dir_name if home_dir_name else tmp_path / ".skcapstone"
     (home / "identity").mkdir(parents=True, exist_ok=True)
     (home / "security").mkdir(parents=True, exist_ok=True)
     (home / "identity" / "identity.json").write_text(
@@ -196,9 +261,10 @@ class TestExtractSubjectAudienceBranch:
 # --------------------------------------------------------------------------- #
 class TestHS256Unchanged:
     def test_legacy_session_authenticates_and_resolves(self, monkeypatch):
-        from skchat import operator_auth as oa
+        from capauth.pairing import operator_session as oa
 
         monkeypatch.setenv("SKCHAT_OPERATOR_TOKEN_SECRET", "operator-secret-value")
+        oa.approve_device("fpLEGACY01")
         token = oa.mint_operator_session(device_fp="fpLEGACY01", ttl=60)
         assert dataplane_auth.CapAuthValidator().validate(token) is True
         # The HS256 wire mechanism is unchanged; the resolved subject now uses
@@ -206,10 +272,11 @@ class TestHS256Unchanged:
         assert dataplane_auth._extract_subject(token) == "device:fpLEGACY01"
 
     def test_hs256_resolution_precedes_audience_even_with_flag_on(self, monkeypatch):
-        from skchat import operator_auth as oa
+        from capauth.pairing import operator_session as oa
 
         monkeypatch.setenv("SKCHAT_OPERATOR_TOKEN_SECRET", "operator-secret-value")
         monkeypatch.setenv(dataplane_auth.ACCEPT_AUDIENCE_ENV_FLAG, "1")
+        oa.approve_device("fpFIRST22")
         token = oa.mint_operator_session(device_fp="fpFIRST22", ttl=60)
         # First branch (HS256) wins; audience branch never consulted for a JWT.
         assert dataplane_auth._extract_subject(token) == "device:fpFIRST22"
@@ -245,10 +312,11 @@ class TestPrimaryCredentialRule:
         assert dataplane_auth._credential_is_audience_token(wire) is True
 
     def test_operator_session_is_primary(self, monkeypatch):
-        from skchat import operator_auth as oa
+        from capauth.pairing import operator_session as oa
 
         monkeypatch.setenv("SKCHAT_OPERATOR_TOKEN_SECRET", "operator-secret-value")
         dataplane_auth.set_validator(None)
+        oa.approve_device("fpPRIM01")
         token = oa.mint_operator_session(device_fp="fpPRIM01", ttl=60)
         req = _FakeRequest(headers={"Authorization": "Bearer " + token})
         assert dataplane_auth.request_is_primary_authenticated(req) is True
@@ -349,7 +417,8 @@ def _sig(priv, payload):
 
 @pytest.fixture
 def session_client(tmp_path, monkeypatch):
-    from skchat import operator_auth as oa
+    from capauth.pairing import operator_session as oa
+
     from skchat.operator_auth_routes import register_operator_auth_routes
 
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
@@ -397,7 +466,23 @@ class TestSessionDualMint:
         assert body["session_token"]  # HS256 session unchanged
         assert "audience_token" not in body  # additive field absent when flag off
 
-    def test_dual_mints_audience_token_when_flag_on(self, session_client, monkeypatch):
+    def test_dual_mints_audience_token_when_flag_on(self, session_client, monkeypatch, tmp_path):
+        # operator_audience.mint_operator_audience_token passes no sign= override
+        # (defaults to real gpg signing) and resolves its home via
+        # resolve_capauth_home(), which conftest's _isolate_capauth_store patches
+        # to a hermetic tmp_path/.skcapstone/capauth. Without a real key living
+        # there, signing fails closed (capauth.tokens.TokenSigningError) and the
+        # additive audience_token is silently absent (best-effort, never fatal to
+        # the HS256 session) -- so this needs an actual ephemeral signing
+        # identity, not a stub, to exercise the real path. Same pattern as
+        # test_audience_mint_endpoint.py::TestMintRealSignature.
+        fp_key = _gen_gpg_key(tmp_path / "gnupg")
+        if not fp_key:
+            pytest.skip("gpg key generation unavailable in this sandbox")
+        monkeypatch.setenv("GNUPGHOME", str(tmp_path / "gnupg"))
+        identity_home = _agent_home(tmp_path, fingerprint=fp_key, home_dir_name="capauth")
+        monkeypatch.setattr("capauth.resolve_capauth_home", lambda: identity_home)
+
         priv, _pub, fp = _enroll_and_fp(session_client)
         monkeypatch.setenv("SKCHAT_OPERATOR_AUDIENCE_ISSUE", "1")
         r = _open_session(session_client, priv, fp)
@@ -432,11 +517,11 @@ class TestSessionDualMint:
 # --------------------------------------------------------------------------- #
 class TestIssuerShadow:
     def _hs_and_twin(self, tmp_path, monkeypatch, twin_subject: str):
+        from capauth.pairing import operator_session as oa
         from capauth.tokens import mint_audience_token
 
-        from skchat import operator_auth as oa
-
         monkeypatch.setenv("SKCHAT_OPERATOR_TOKEN_SECRET", "operator-secret-value")
+        oa.approve_device("fpSHADOW1")
         hs = oa.mint_operator_session(device_fp="fpSHADOW1", ttl=60)
         home = _agent_home(tmp_path)
         twin = mint_audience_token(
@@ -468,7 +553,7 @@ class TestIssuerShadow:
         assert "issuer-shadow divergence" in caplog.text
 
     def test_never_raises_on_twin_mint_failure(self, tmp_path, monkeypatch):
-        from skchat import operator_auth as oa
+        from capauth.pairing import operator_session as oa
 
         monkeypatch.setenv("SKCHAT_OPERATOR_TOKEN_SECRET", "operator-secret-value")
         hs = oa.mint_operator_session(device_fp="fpSHADOW2", ttl=60)
