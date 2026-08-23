@@ -167,6 +167,34 @@ def test_observe_auth_off_fires():
     assert _conditions(op.observe(probe))["AuthEnforced"] == "False"
 
 
+def test_observe_auth_unknown_is_not_collapsed_to_true():
+    # Card 504d0046 (ATLAS Eyes PR #178): when NEITHER the daemon body NOR
+    # SKCHAT_DATAPLANE_AUTH has told us anything, AuthEnforced must read
+    # Unknown, not a confidently invented True. Atlas's in-process seat adapter
+    # already got this right; this CLI's own probe used to collapse the same
+    # None into a hardcoded True, so the two lanes disagreed about the fleet's
+    # own auth posture on every unreachable/unset node.
+    probe = lambda: {  # noqa: E731
+        "daemon_ready": True,
+        "bridge_alive": True,
+        "outbox_depth": 0,
+        "outbox_limit": 1000,
+        "auth_enforced": None,
+    }
+    assert _conditions(op.observe(probe))["AuthEnforced"] == "Unknown"
+
+
+def test_default_probe_auth_enforced_is_none_when_unset(monkeypatch, tmp_path):
+    # The real default probe: an unreachable daemon and an unset env flag must
+    # leave auth_enforced as None (Unknown), never collapse it to True here.
+    monkeypatch.setenv("SKCHAT_DAEMON_HEALTH", "http://127.0.0.1:1/health")
+    monkeypatch.delenv("SKCHAT_DATAPLANE_AUTH", raising=False)
+    monkeypatch.setenv("SKCHAT_BRIDGE_HEARTBEAT", str(tmp_path / "absent.ts"))
+    monkeypatch.setenv("SKCOMMS_OUTBOX_DIR", str(tmp_path / "empty-outbox"))
+    st = op._default_probe()
+    assert st["auth_enforced"] is None
+
+
 def test_count_outbox_counts_files(tmp_path):
     (tmp_path / "a.msg").write_text("x")
     (tmp_path / "b.msg").write_text("y")

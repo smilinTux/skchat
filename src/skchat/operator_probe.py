@@ -27,7 +27,17 @@ The observe probes are REAL and injectable (tests never touch a live skchat):
 
 Every probe fails SAFE (reports healthy) rather than raising a false alarm when
 skchat is unreachable, matching the operator facet's fail-safe posture (spec
-2.3, failure semantics #3).
+2.3, failure semantics #3). ``AuthEnforced`` is the one deliberate exception:
+"fails safe" means an inability to probe never raises a false ALARM, not that
+an inability to probe reports a confident health reading with no evidence
+behind it. Card 504d0046 (ATLAS Eyes PR #178's first real run) caught exactly
+that: with neither the daemon body nor ``SKCHAT_DATAPLANE_AUTH`` reporting
+anything, this CLI answered a confident ``AuthEnforced=True`` while Atlas's
+in-process seat adapter (which already preserved the tri-state) honestly
+answered Unknown, a live disagreement about the fleet's own auth posture that
+"a lying lane must not be promoted to source of truth" exists to catch. So
+``AuthEnforced`` is tri-state (``_tri``): a real True/False when either side has
+actually reported one, and Unknown, never True, when neither has.
 
 The act verb maps the two reversible standard actions (restart-daemon,
 restart-telegram-bridge) onto ``systemctl --user restart <unit>`` through an
@@ -102,6 +112,16 @@ _AUTH_TRUTHY = {"1", "true", "yes", "on"}
 
 def _b(value: bool) -> str:
     return "True" if value else "False"
+
+
+def _tri(value: Optional[bool]) -> str:
+    """Tri-state condition status: an explicit ``None`` (genuinely unknown, not
+    merely absent) reports ``Unknown`` rather than collapsing into a confident
+    default. See ``AuthEnforced`` in :func:`observe` and the module docstring's
+    "card 504d0046" note."""
+    if value is None:
+        return "Unknown"
+    return _b(bool(value))
 
 
 def _agent() -> str:
@@ -225,8 +245,9 @@ def _probe_bridge_poll_age() -> Optional[float]:
 def _probe_auth_enforced() -> Optional[bool]:
     """The dataplane-auth state from the env, when the daemon did not report it.
 
-    None means the flag is unset (unknown), which the default probe fails SAFE
-    to enforced so it never cries a false 'auth off'.
+    None means the flag is genuinely unset: nobody, daemon or env, has told us
+    whether dataplane auth is enforced. That is Unknown, not a green light; see
+    the card 504d0046 note in :func:`observe`.
     """
     val = os.environ.get(_AUTH_FLAG)
     if val is None:
@@ -247,8 +268,12 @@ def _default_probe() -> dict:
         "bridge_alive": _bridge_alive(poll_age, daemon_ready),
         "outbox_depth": _unified_outbox_depth(),
         "outbox_limit": _OUTBOX_LIMIT,
-        # Unknown auth fails safe to enforced (True): never cry a false 'auth off'.
-        "auth_enforced": True if auth is None else bool(auth),
+        # auth stays None (Unknown) when NEITHER the daemon NOR the env told us
+        # anything: see card 504d0046 (ATLAS Eyes PR #178's first run found this
+        # CLI reporting a confident AuthEnforced=True with zero real signal
+        # behind it, while Atlas's in-process seat adapter honestly read
+        # Unknown). A probe with no evidence must say so, not invent healthy.
+        "auth_enforced": auth,
         # Unknown calling health fails safe to ready (True).
         "calling_ready": calling_ready,
     }
@@ -290,7 +315,7 @@ def observe(probe: Optional[Callable[[], dict]] = None) -> dict:
             {"type": "OutboxBounded", "status": _b(depth <= limit), "object": "outbox"},
             {
                 "type": "AuthEnforced",
-                "status": _b(bool(st.get("auth_enforced", True))),
+                "status": _tri(st.get("auth_enforced", True)),
                 "object": "dataplane-auth",
             },
             {
