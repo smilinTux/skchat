@@ -12,6 +12,17 @@ standards.
 
 ## [Unreleased]
 
+### Fixed
+- **`AuthEnforced` no longer collapses Unknown into a confident True (card
+  504d0046).** ATLAS Eyes' first real run (PR skcapstone#178) found this CLI's
+  `operator_probe.observe()` reporting `AuthEnforced=True` with zero real
+  evidence (neither the daemon health body nor `SKCHAT_DATAPLANE_AUTH` had
+  reported anything), while Atlas's in-process seat adapter honestly read
+  Unknown for the same node, a live lane conflict about the fleet's own auth
+  posture. `AuthEnforced` is now tri-state (`_tri`): a real True/False only
+  when either side actually reports one, Unknown otherwise. Added regression
+  coverage in `tests/test_operator_cli.py`.
+
 ### Added
 - **Operator session primitive lifted into `capauth.pairing.operator_session`
   (Unified Consent Plane Phase 1, card P11 / coord 3731ae06).** Mint, verify,
