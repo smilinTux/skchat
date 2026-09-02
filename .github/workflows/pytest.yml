@@ -74,8 +74,8 @@ jobs:
       - name: Install sibling SK* packages from source (published wheels lag)
         run: |
           pip install --force-reinstall --no-deps --no-cache-dir \
-            "capauth @ git+https://github.com/smilinTux/capauth@main" \
-            "skcomms @ git+https://github.com/smilinTux/skcomms@main"
+            "capauth @ git+https://github.com/smilinTux/capauth@d8942ac86d90" \
+            "skcomms @ git+https://github.com/smilinTux/skcomms@2152e30f8ce7"
 
       - name: Run pytest (headless-safe markers only)
         # ONE combined marker expression — see header note on the -m override.
