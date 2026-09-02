@@ -19,6 +19,17 @@ LIVE ⏳ leg this runbook closes.**
 
 ---
 
+## Scope: cross-HOST, one estate
+
+Both hosts here resolve identity through the same `~/.skcapstone` and emit FQIDs
+under the same operator segment (`@chef.skworld`), so this exercises federation
+**between hosts inside one estate**, not between estates. An estate is one control
+plane, one Syncthing ring, one trust root, one operator, per
+[`SITE_AND_HOST_NAMING_STANDARD.md`](https://github.com/smilinTux/sk-standards/blob/main/standards/SITE_AND_HOST_NAMING_STANDARD.md);
+a peer estate has a different operator segment and is reached through a bridge
+node, which is a separate runbook that does not exist yet. Shared tailnet
+membership is transport, not estate membership.
+
 ## Purpose
 
 Prove the end-to-end federated join path with real infra:
