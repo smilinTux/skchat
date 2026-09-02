@@ -12,6 +12,16 @@ standards.
 
 ## [Unreleased]
 
+### Changed
+- **Docs: the federation boundary is an estate, and today's federation is inside
+  one.** `runbooks/federation-fqid-realm.md`, `runbooks/cross-host-federation.md`
+  and `docs/WEBAPP-AND-API-ARCHITECTURE.md` now say that the fqid's `<operator>`
+  segment carries the estate (one `~/.skcapstone`, one Syncthing ring, one trust
+  root, one operator) per `SITE_AND_HOST_NAMING_STANDARD`, that every FQID skchat
+  mints today shares one operator segment so the cross-host work is intra-estate,
+  and that a peer estate is reached through a bridge node rather than by shared
+  tailnet membership. No code, no hostname and no `cluster.json` path changed.
+
 ### Fixed
 - **`AuthEnforced` no longer collapses Unknown into a confident True (card
   504d0046).** ATLAS Eyes' first real run (PR skcapstone#178) found this CLI's

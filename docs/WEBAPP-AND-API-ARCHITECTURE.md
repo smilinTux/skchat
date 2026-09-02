@@ -253,6 +253,14 @@ ACL/`get_member`/routing checks to work, and mismatches between them cause
 | **fqid (sovereign, three-tier)** | `chef@chef.skworld` | `capauth.resolve_agent_identity().fqid` — `<agent>@<operator>.<realm>`, requires `cluster.json` |
 | **bare** | `chef@skworld.io` | ad-hoc — just `<handle>@skworld.io`, no `capauth:` prefix |
 
+The `<operator>` segment of the fqid form is what carries the **estate**: one
+control plane (one `~/.skcapstone`), one Syncthing ring, one trust root, one
+operator, per
+[`SITE_AND_HOST_NAMING_STANDARD.md`](https://github.com/smilinTux/sk-standards/blob/main/standards/SITE_AND_HOST_NAMING_STANDARD.md).
+Every identity SKChat mints today sits under one operator segment, so all three
+forms above are intra-estate spellings of the same member. A peer estate shows up
+as a different operator segment, never as a different hostname prefix.
+
 **Concrete proof this is a real trap, not a hypothetical:** in
 `daemon_proxy.py` itself:
 

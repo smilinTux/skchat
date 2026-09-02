@@ -39,6 +39,28 @@ transport only; it is never used as a federation FQID. So the apparent
 "`@chef.skworld` vs `@skworld.io` mismatch" is a namespace confusion, not a code
 bug — the two are intentionally different and the federation layer uses the FQID.
 
+## What the operator segment means: this is one estate
+
+The `<operator>` segment is the **estate**, in the sense fixed by
+[`SITE_AND_HOST_NAMING_STANDARD.md`](https://github.com/smilinTux/sk-standards/blob/main/standards/SITE_AND_HOST_NAMING_STANDARD.md):
+one control plane (one `~/.skcapstone`), one Syncthing ring, one PGP trust root,
+one operator. Estates are peers, never branches of a parent.
+
+Every FQID in this runbook resolves through the same `~/.skcapstone` and lands on
+the same operator segment, `@chef.skworld`. So the federation exercised here is
+**intra-estate**: several hosts, one control plane. That is why one alignment
+script run on both boxes is enough to make them verify each other.
+
+True cross-estate federation is a different boundary. A peer estate has its own
+operator segment (`...@cakjr.skworld.io`), its own trust root, and its own pins,
+and it is reached through a designated **bridge node** carrying one enumerated
+application-layer exchange, not through general reachability (rules 16 to 19 of
+that standard). Being on the same tailnet is not being in the same estate: the
+tailnet is transport, and it also carries a client tenant.
+
+`cluster.json` keeps its filename. It is a literal path read by
+`resolve_agent_identity()`, not a claim that the unit is a cluster.
+
 ## The real gap: missing pins (config, not code)
 
 `~/.skchat/federation-peers/` only had `jarvis@chef.skworld.asc`. There was **no
