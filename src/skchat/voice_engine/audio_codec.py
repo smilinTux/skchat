@@ -1,4 +1,4 @@
-"""Pure audio helpers — PCM↔WAV and RMS. No network, no logging."""
+"""Pure audio helpers — PCM↔WAV, RMS, and format sniffing. No network, no logging."""
 
 from __future__ import annotations
 
@@ -24,3 +24,20 @@ def rms(pcm_bytes: bytes) -> int:
         return audioop.rms(pcm_bytes, 2)
     except Exception:
         return 0
+
+
+def detect_audio_format(data: bytes | None) -> str:
+    """Sniff the audio container format from leading magic bytes. Never raises."""
+    if not data:
+        return ""
+    if data[:4] == b"RIFF" and data[8:12] == b"WAVE":
+        return "wav"
+    if data[:4] == b"\x1aE\xdf\xa3":
+        return "webm"
+    if data[:4] == b"OggS":
+        return "ogg"
+    if data[:3] == b"ID3" or data[:2] == b"\xff\xfb":
+        return "mp3"
+    if data[4:8] == b"ftyp":
+        return "m4a"
+    return ""
