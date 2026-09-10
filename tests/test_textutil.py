@@ -1,8 +1,8 @@
-"""Tests for the truncate_middle text helper."""
+"""Tests for the truncate_middle and humanize_bytes text helpers."""
 
 from __future__ import annotations
 
-from skchat.textutil import truncate_middle
+from skchat.textutil import humanize_bytes, truncate_middle
 
 
 class TestTruncateMiddle:
@@ -60,3 +60,59 @@ class TestTruncateMiddle:
         result = truncate_middle("abcdef", max_len=1)
         assert result == "…"
         assert len(result) == 1
+
+
+class TestHumanizeBytes:
+    """Tests for humanize_bytes."""
+
+    def test_zero_bytes(self) -> None:
+        """Zero is formatted as a whole number of bytes."""
+        assert humanize_bytes(0) == "0 B"
+
+    def test_small_byte_count(self) -> None:
+        """Byte counts under 1 KB are whole numbers with a 'B' suffix."""
+        assert humanize_bytes(512) == "512 B"
+
+    def test_byte_boundary_just_under_kb(self) -> None:
+        """1023 bytes stays in the B unit."""
+        assert humanize_bytes(1023) == "1023 B"
+
+    def test_kb_boundary(self) -> None:
+        """Exactly 1024 bytes is 1.0 KB."""
+        assert humanize_bytes(1024) == "1.0 KB"
+
+    def test_kb_with_fraction(self) -> None:
+        """1536 bytes is 1.5 KB."""
+        assert humanize_bytes(1536) == "1.5 KB"
+
+    def test_mb_boundary(self) -> None:
+        """Exactly 1024 KB is 1.0 MB."""
+        assert humanize_bytes(1048576) == "1.0 MB"
+
+    def test_gb_boundary(self) -> None:
+        """Exactly 1024 MB is 1.0 GB."""
+        assert humanize_bytes(1024**3) == "1.0 GB"
+
+    def test_tb_boundary(self) -> None:
+        """Exactly 1024 GB is 1.0 TB."""
+        assert humanize_bytes(1024**4) == "1.0 TB"
+
+    def test_beyond_tb_stays_in_tb(self) -> None:
+        """Values beyond 1024 TB stay in the TB unit (no PB support)."""
+        assert humanize_bytes(1024**5) == "1024.0 TB"
+
+    def test_none_input_returns_zero_bytes(self) -> None:
+        """None input never raises and returns '0 B'."""
+        assert humanize_bytes(None) == "0 B"
+
+    def test_non_numeric_input_returns_zero_bytes(self) -> None:
+        """Non-numeric input never raises and returns '0 B'."""
+        assert humanize_bytes("not a number") == "0 B"  # type: ignore[arg-type]
+
+    def test_negative_input_masked_to_zero_bytes(self) -> None:
+        """Negative byte counts are masked to '0 B', not a signed form."""
+        assert humanize_bytes(-100) == "0 B"
+
+    def test_float_input(self) -> None:
+        """Float byte counts are accepted and formatted like ints."""
+        assert humanize_bytes(1536.0) == "1.5 KB"
