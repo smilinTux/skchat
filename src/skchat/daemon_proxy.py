@@ -191,6 +191,48 @@ def _persist(
     return msg
 
 
+def _self_deliver_own_devices(msg, raw_body: str) -> None:
+    """Fan an outbound DM back to the SENDER's own OTHER device inboxes.
+
+    Completes Task 9's multi-device fanout (Phase 1): the app already SEALS an
+    outbound DM to every PEER device slot AND every SENDER-own device slot (a
+    single ``pqdm2:`` envelope), but until now the daemon only ever DELIVERED
+    that send to the peer — the sender's own sibling devices never received a
+    copy of their own outbound post, so it (and any reply-quote referencing it)
+    never rendered there. The envelope already wraps the sender's own slots, so
+    no re-seal is needed here — only the routing.
+
+    Gated on the sender having MORE than one published prekey slot (i.e. an
+    actual sibling device exists); a single-device sender is a no-op, and the
+    classical ``pqdm1:``/plaintext single-recipient path is otherwise untouched.
+    Relays the RAW body exactly as received (sealed or not) — reusing ``msg.id``
+    as the delivered copy's id so a receiving daemon's own dedup collapses a
+    resend/re-poll to one message (idempotent; never echoes onto the
+    originating device, which never polls this inbox for its own send).
+    Same-box delivery only (:func:`daemon_proxy_groups.local_deliver_to_agent`);
+    best-effort — NEVER raises, so a failure here can't break the primary send.
+    """
+    try:
+        from skchat import daemon_proxy_groups as G
+        from skchat import pq_prekeys as PQ
+        from skchat.models import ChatMessage
+
+        sender_short = _short_name(msg.sender)
+        if len(PQ.load_peer_bundles(sender_short)) <= 1:
+            return  # no sibling device published — nothing to fan out to
+        self_copy = ChatMessage(
+            id=msg.id,
+            sender=msg.sender,
+            recipient=msg.sender,
+            content=raw_body,
+            thread_id=msg.thread_id,
+            reply_to_id=msg.reply_to_id,
+        )
+        G.local_deliver_to_agent(self_copy)
+    except Exception:
+        logger.debug("self-delivery to sender's own devices failed (send unaffected)", exc_info=True)
+
+
 # --------------------------------------------------------------------------- #
 # SEAM 2/4 — single-writer message log (flag-gated shadow write)
 #
@@ -2244,6 +2286,10 @@ async def api_send(request: Request):
     # with Lumina's hybrid private key so the brain + history see plaintext. The
     # conversation is recorded hybrid so the reply is sealed back symmetrically.
     convo_is_hybrid = False
+    # Captured BEFORE any hybrid-open below: the sender's own-device fanout
+    # delivery (Task 11) relays this exact wire body — sealed or not — to the
+    # sender's sibling devices, since only their own private key can open it.
+    raw_body = content
     if content.startswith("pqdm1:") or content.startswith("pqdm2:"):
         opened = _open_hybrid_inbound(content, sender_short="chef")
         if opened is not None:
@@ -2401,6 +2447,7 @@ async def api_send(request: Request):
             quoted_sender=quoted_sender,
             quoted_id=quoted_id,
         )
+        _self_deliver_own_devices(msg, raw_body)
         return JSONResponse(
             _apply_contract(
                 {
@@ -2444,6 +2491,7 @@ async def api_send(request: Request):
             quoted_sender=quoted_sender,
             quoted_id=quoted_id,
         )
+        _self_deliver_own_devices(user_msg, raw_body)
 
         # 2. Build the prior-turn history for context (oldest-first role/content).
         prior = _lumina_messages(limit=40)
