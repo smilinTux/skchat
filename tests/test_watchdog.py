@@ -123,6 +123,39 @@ class TestCheck:
 
         mock_transport.reconnect.assert_called_once()
 
+    def test_long_streak_keeps_retrying_reconnect(self, watchdog, mock_transport):
+        """A reconnect that does not fix the problem must not disable all later ones.
+
+        Regression for the noroc2027 watchdog observed at consecutive=13954
+        against a threshold of 3, climbing since 2026-08-16 with exactly ONE
+        reconnect ever attempted: _reconnect_pending latched True and cleared
+        only on a successful ping, which never came.
+        """
+        with patch("httpx.get", side_effect=ConnectionError("down")):
+            for _ in range(200):
+                watchdog.check()
+
+        # Backoff means far fewer than 200, but a stuck peer must still be retried.
+        assert mock_transport.reconnect.call_count > 1, (
+            "watchdog latched off after its first reconnect; a failed reconnect "
+            "must re-arm, not disable recovery forever"
+        )
+        assert mock_transport.reconnect.call_count < 40, (
+            "watchdog is hammering reconnect instead of backing off"
+        )
+
+    def test_backoff_gap_is_capped(self, watchdog, mock_transport):
+        """The gap between reconnect attempts stops widening at the cap."""
+        from skchat.watchdog import _MAX_RECONNECT_GAP
+
+        with patch("httpx.get", side_effect=ConnectionError("down")):
+            for _ in range(3000):
+                watchdog.check()
+
+        # Once capped, attempts arrive every _MAX_RECONNECT_GAP failures, so a
+        # 3000-failure streak must produce at least a few dozen attempts.
+        assert mock_transport.reconnect.call_count >= 3000 // _MAX_RECONNECT_GAP - 5
+
     def test_reconnect_rearmed_after_recovery(self, watchdog, mock_transport):
         """After recovery, a new failure streak can trigger another reconnect."""
         fail_resp = MagicMock(status_code=503)
