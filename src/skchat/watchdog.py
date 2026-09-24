@@ -78,7 +78,9 @@ class TransportWatchdog:
             import httpx
 
             resp = httpx.get(self._health_url, timeout=_PING_TIMEOUT)
-            if resp.status_code == 200:
+            payload = resp.json() if callable(getattr(resp, "json", None)) else None
+            degraded = isinstance(payload, dict) and payload.get("status") == "degraded"
+            if resp.status_code == 200 and not degraded:
                 if self.consecutive_failures > 0:
                     logger.info(
                         "Watchdog: SKComms healthy again (was %d consecutive failures)",

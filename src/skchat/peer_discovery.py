@@ -113,18 +113,18 @@ class PeerDiscovery:
 
         for peer in self.list_peers():
             # 1–2: handle field
-            peer_handle = peer.get("handle", "").lower()
+            peer_handle = (peer.get("handle") or "").lower()
             if query == peer_handle:
                 return peer
             if peer_handle and query == peer_handle.split("@")[0]:
                 return peer
 
             # 3: name field
-            if query == peer.get("name", "").lower():
+            if query == (peer.get("name") or "").lower():
                 return peer
 
             # 4: email field
-            peer_email = peer.get("email", "").lower()
+            peer_email = (peer.get("email") or "").lower()
             if peer_email and (query == peer_email or query == peer_email.split("@")[0]):
                 return peer
 
@@ -144,7 +144,7 @@ class PeerDiscovery:
                         return peer
 
             # 8: direct fingerprint field match — handles bare hex and scheme-prefixed forms
-            peer_fp = peer.get("fingerprint", "").lower()
+            peer_fp = (peer.get("fingerprint") or "").lower()
             if peer_fp and query:
                 if query == peer_fp or query_body == peer_fp:
                     return peer
@@ -155,7 +155,7 @@ class PeerDiscovery:
                     return peer
 
             # 9: identity field (e.g. "capauth:lumina@skworld.io")
-            peer_id = peer.get("identity", "").lower()
+            peer_id = (peer.get("identity") or "").lower()
             if peer_id:
                 if query == peer_id:
                     return peer
