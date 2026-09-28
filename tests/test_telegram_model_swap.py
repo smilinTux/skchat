@@ -27,16 +27,26 @@ REPO = Path(__file__).resolve().parent.parent
 SCRIPTS = REPO / "scripts"
 SKCOMMS_SRC = REPO.parent / "skcomms" / "src"
 
-_SRC_REGISTRY = Path.home() / ".skcapstone" / "models" / "registry.yaml"
+#: A fixture registry owned by this suite, NOT the operator's live
+#: ``~/.skcapstone/models/registry.yaml``.
+#:
+#: These tests cover the /model swap MECHANISM: writing a ``contexts:`` toggle,
+#: flipping resolution, and picking an external edit up live. Which models the
+#: operator actually runs is not part of that contract, but the fixture used to
+#: copy the live registry and then assert on names found inside it
+#: (``qwen-vl``, ``Qwen3.6-27b-abliterated-Q4_K_M``, a default of ``ornith``).
+#: That made every assertion a hostage to the operator's model choices: when
+#: sk-vision was consolidated onto ``qwen38`` and the default role moved to
+#: ``sk-auto``, four tests went red with nothing in this repo having changed,
+#: and the failure read as a regression rather than as configuration drift.
+_FIXTURE_REGISTRY = Path(__file__).resolve().parent / "fixtures" / "model_registry.yaml"
 
 
 @pytest.fixture()
 def bridge(tmp_path, monkeypatch):
-    """Import telegram_bridge with a dummy token + a temp registry copy."""
-    if not _SRC_REGISTRY.exists():
-        pytest.skip("skmodels registry.yaml not present")
+    """Import telegram_bridge with a dummy token + this suite's own registry."""
     reg = tmp_path / "registry.yaml"
-    reg.write_text(_SRC_REGISTRY.read_text())
+    reg.write_text(_FIXTURE_REGISTRY.read_text())
     monkeypatch.setenv("SKMODELS_REGISTRY", str(reg))
     monkeypatch.setenv("TELEGRAM_OPUS_BOT_TOKEN", "dummy-token")
     monkeypatch.setenv("SKC_BRIDGE_LLM_URL", "http://example.invalid/v1/chat/completions")
