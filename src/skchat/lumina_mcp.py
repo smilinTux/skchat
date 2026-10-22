@@ -376,7 +376,7 @@ class MCPServerHandle:
             await asyncio.wait_for(session.initialize(), timeout=CONNECT_TIMEOUT_S)
             tool_resp = await asyncio.wait_for(session.list_tools(), timeout=CONNECT_TIMEOUT_S)
         except Exception as e:
-            logger.warning("lumina_mcp.py: %s", e)
+            log.warning("lumina_mcp.py: %s", e)
             await stack.aclose()
             errlog.close()
             raise
