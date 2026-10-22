@@ -23,6 +23,16 @@ standards.
   tailnet membership. No code, no hostname and no `cluster.json` path changed.
 
 ### Fixed
+- **The MCP connect handler logged through an undefined name, destroying the
+  error it existed to report.** `MCPServerHandle` wrapped `session.initialize()`
+  and `session.list_tools()` in a try/except that called `logger.warning(...)`.
+  This module defines `log` (line 41) and uses it at all 16 other call sites;
+  `logger` was the only one in the repo and does not exist. The branch therefore
+  raised `NameError` on its first line, replacing the real connect failure in
+  the traceback and skipping both `await stack.aclose()` and `errlog.close()`,
+  so a failed connect also leaked the async exit stack and the open error-log
+  handle. Only reachable on the error path, which is why it survived. Note that
+  `ruff`'s `F821` catches this and `pyproject.toml` blanket-ignores it.
 - **`AuthEnforced` no longer collapses Unknown into a confident True (card
   504d0046).** ATLAS Eyes' first real run (PR skcapstone#178) found this CLI's
   `operator_probe.observe()` reporting `AuthEnforced=True` with zero real
