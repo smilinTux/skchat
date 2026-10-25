@@ -9,8 +9,11 @@ Wants=skchat-webui@%i.service
 
 [Service]
 Type=simple
-Environment=PATH=%h/.skenv/bin:/usr/local/bin:/usr/bin:/bin
-Environment=VIRTUAL_ENV=%h/.skenv
+# Runs from ~/.skenv-call (livekit >= 1.1.17, so the SDK negotiates WARP with
+# livekit-server 1.13.11). ~/.skenv cannot take that SDK: livekit-agents there
+# pulls an AVX-only build that SIGILLs on this AVX-less VM (2026-10-25).
+Environment=PATH=%h/.skenv-call/bin:/usr/local/bin:/usr/bin:/bin
+Environment=VIRTUAL_ENV=%h/.skenv-call
 Environment=PYTHONUNBUFFERED=1
 Environment=SKAGENT=%i
 Environment=SKCAPSTONE_AGENT=%i
@@ -24,7 +27,7 @@ Environment=SKCHAT_ANSWERER_POLL_S=3
 # Co-located answerer joins the local SFU directly (livekit-server binds the
 # tailnet IP :7880, not loopback). Overrides the advertised public/funnel URL.
 Environment=SKCHAT_ANSWERER_LIVEKIT_URL=ws://100.108.59.57:7880
-ExecStart=%h/.skenv/bin/python %h/clawd/skcapstone-repos/skchat/scripts/call_answerer.py
+ExecStart=%h/.skenv-call/bin/python %h/clawd/skcapstone-repos/skchat/scripts/call_answerer.py
 Restart=on-failure
 RestartSec=5
 
