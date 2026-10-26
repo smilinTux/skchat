@@ -13,6 +13,18 @@ standards.
 ## [Unreleased]
 
 ### Changed
+- **Voice: persona and memory context are built once per session, never per
+  turn.** `VoiceEngine.respond()` rebuilt the persona (soul + FEB from disk)
+  and ran a skmemory search on every turn of every LiveKit call and WebSocket
+  connection. The system prompt (persona, runtime fact, memory block, brevity
+  rule) is now built once per register and cached on the engine, so every turn
+  sends the same prompt. New `voice_engine/memory_context.py` (ported from
+  skcall PR #16) loads whisper.md, the newest reflection under 7 days and the
+  meaningful journal tail under `SKVOICE_CONTEXT_BUDGET` tokens (default 3000);
+  private register only unless `SKVOICE_CONTEXT_GROUP=1`; `SKVOICE_CONTEXT=0`
+  turns it off. The per-turn search is behind `SKVOICE_PER_TURN_RECALL=1`,
+  default off; mid-call recall stays on demand via `search_memory`. The cache is
+  dropped on `CLEAR_HISTORY`, WebSocket disconnect and LiveKit session end.
 - **Docs: the federation boundary is an estate, and today's federation is inside
   one.** `runbooks/federation-fqid-realm.md`, `runbooks/cross-host-federation.md`
   and `docs/WEBAPP-AND-API-ARCHITECTURE.md` now say that the fqid's `<operator>`

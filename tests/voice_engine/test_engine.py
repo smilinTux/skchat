@@ -5,7 +5,7 @@ from skchat.voice_engine.engine import VoiceEngine
 
 
 @pytest.mark.asyncio
-async def test_legacy_per_turn_recall_when_flag_on():
+async def test_respond_builds_persona_prefetches_memory_and_calls_llm():
     # Per-turn recall is OFF by default (Chef's rule, 2026-10-26: memory goes in
     # once at session start). This covers the opt-in SKVOICE_PER_TURN_RECALL=1
     # path, which must still frame the hits correctly when someone turns it on.
