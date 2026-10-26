@@ -6,6 +6,9 @@ from skchat.voice_engine.engine import VoiceEngine
 
 @pytest.mark.asyncio
 async def test_respond_builds_persona_prefetches_memory_and_calls_llm():
+    # Per-turn recall is OFF by default (Chef's rule, 2026-10-26: memory goes in
+    # once at session start). This covers the opt-in SKVOICE_PER_TURN_RECALL=1
+    # path, which must still frame the hits correctly when someone turns it on.
     seen = {}
 
     class FakeLLM:
@@ -28,12 +31,13 @@ async def test_respond_builds_persona_prefetches_memory_and_calls_llm():
             return f"You are {agent} ({mode})."
 
     eng = VoiceEngine(
-        VoiceConfig.from_env(env={}),
+        VoiceConfig.from_env(env={"SKVOICE_PER_TURN_RECALL": "1"}),
         agent="lumina",
         llm=FakeLLM(),
         memory=FakeMem(),
         persona=FakePersona(),
         registry=None,
+        context_loader=lambda agent, budget: ("", {}),
     )
     out = await eng.respond(
         "tell me a story", history=[], mode="sacred", speaker_id="chef", is_operator=True

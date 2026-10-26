@@ -107,6 +107,9 @@ def build_app(
                 if text == "CLEAR_HISTORY":
                     history.clear()
                     group_suffix.clear()
+                    # A cleared conversation is a fresh session: the explicit
+                    # refresh point for the once-per-session persona + memory.
+                    _engine_call(engine, "refresh_context")
                     await ws.send_json({"type": "status", "state": "history_cleared"})
                     log.info("History cleared: %s", conn_id)
                     continue
@@ -203,11 +206,22 @@ def build_app(
         except Exception as exc:
             log.error("WS error for %s: %s", conn_id, exc, exc_info=True)
         finally:
+            _engine_call(engine, "end_session")
             histories.pop(conn_id, None)
             pending_group.pop(conn_id, None)
             log.info("WS closed: %s", conn_id)
 
     return app
+
+
+def _engine_call(engine, name: str) -> None:
+    """Call an optional session hook on the engine (test fakes may lack it)."""
+    fn = getattr(engine, name, None)
+    if callable(fn):
+        try:
+            fn()
+        except Exception:  # noqa: BLE001 - a cache hook must never kill the socket
+            log.debug("engine.%s failed", name, exc_info=True)
 
 
 # ---------------------------------------------------------------------------
