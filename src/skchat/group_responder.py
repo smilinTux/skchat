@@ -1,9 +1,17 @@
 """GroupResponder — native per-agent skchat group auto-responder.
 
 Generalizes advocacy.py: when THIS agent is @-mentioned in a group message,
-build its soul+FEB prompt (skcapstone), recall memory (skmemory), generate via
-skgateway (role sk-default — registry-routed; see registry.yaml roles.sk-default),
-and return the reply. Talk-first (no tool-loop).
+build its soul+FEB prompt (skcapstone), generate via skgateway (role sk-default,
+registry-routed; see registry.yaml roles.sk-default), and return the reply.
+Talk-first (no tool-loop).
+
+Context is loaded ONCE per session (Chef's rule, 2026-10-26), see
+session_context.py: the soul+FEB prompt (and, for DMs, the agent's memory
+block) is built on a conversation's first message and reused verbatim until the
+session goes idle for SKCHAT_CONTEXT_IDLE_HOURS or is refreshed. A group
+session is keyed by (thread, sender) because the persona is addressed to the
+sender; a DM session by the sender. The old per-message skmemory recall is
+behind SKCHAT_PER_MESSAGE_RECALL=1 (default off).
 """
 
 from __future__ import annotations
@@ -15,6 +23,7 @@ from typing import Mapping, Optional
 
 from .advocacy import _token_match
 from .models import ChatMessage
+from .session_context import SessionContext, TextContextConfig
 
 logger = logging.getLogger("skchat.group_responder")
 
@@ -177,7 +186,7 @@ def store_turn(user_text: str, reply: str, gid: str, store=None) -> None:
 
 
 class GroupResponder:
-    """Per-agent group auto-responder: mention -> soul prompt -> recall -> generate."""
+    """Per-agent group auto-responder: mention -> session prompt -> generate."""
 
     def __init__(
         self,
@@ -186,13 +195,44 @@ class GroupResponder:
         prompt_builder=None,
         http=None,
         store=None,
+        context_cfg: Optional[TextContextConfig] = None,
+        context_loader=None,
     ):
         self.cfg = cfg
         self._builder = prompt_builder
         self._http = http
         self._store = store
+        self.context = SessionContext(
+            cfg.agent,
+            lambda peer: self._build_persona(peer_name=peer),
+            cfg=context_cfg,
+            context_loader=context_loader,
+        )
+        # Counter so a synthetic turn pair can prove turn 2 searches nothing.
+        self.memory_searches = 0
 
-    def _system_prompt(self, peer_name: Optional[str] = None) -> str:
+    def _system_prompt(
+        self, peer_name: Optional[str] = None, *, key: str = "", private: bool = False
+    ) -> str:
+        """The session's fixed system prompt (built once per session key)."""
+        peer = peer_name or "chef"
+        return self.context.system_prompt(key or f"peer:{peer}", peer=peer, private=private)
+
+    def refresh_context(self, key: Optional[str] = None) -> None:
+        """Explicit refresh: the next message in that session (or any) rebuilds."""
+        self.context.refresh(key)
+
+    def _user_turn(self, msg: ChatMessage) -> str:
+        """The user message; recalled memories only on the legacy opt-in path."""
+        mem = ""
+        if self.context.cfg.per_message_recall:
+            self.memory_searches += 1
+            mem = recall(msg.content[:200], store=self._store)
+        if mem:
+            return f"{mem}\n\nMessage from {msg.sender}:\n{msg.content}"
+        return f"Message from {msg.sender}:\n{msg.content}"
+
+    def _build_persona(self, peer_name: Optional[str] = None) -> str:
         if self._builder is not None:
             return self._builder.build(peer_name=peer_name or "chef")
         # live: build THIS agent's real soul+FEB prompt from its agent home
@@ -222,14 +262,10 @@ class GroupResponder:
     def respond(self, msg: ChatMessage) -> Optional[str]:
         if not should_respond(msg.content, msg.sender, self.cfg):
             return None
-        system = self._system_prompt(peer_name=_sender_handle(msg.sender))
-        mem = recall(msg.content[:200], store=self._store)
-        user = (
-            f"{mem}\n\nMessage from {msg.sender}:\n{msg.content}"
-            if mem
-            else f"Message from {msg.sender}:\n{msg.content}"
-        )
         gid = msg.thread_id or msg.recipient
+        peer = _sender_handle(msg.sender)
+        system = self._system_prompt(peer_name=peer, key=f"group:{gid}:{peer}", private=False)
+        user = self._user_turn(msg)
         messages = [{"role": "system", "content": system}]
         messages.extend(self._history_turns(gid))
         messages.append({"role": "user", "content": user})
@@ -287,13 +323,9 @@ class GroupResponder:
         # never one merely overheard/broadcast.
         if _sender_handle(msg.recipient) != self.cfg.agent:
             return None
-        system = self._system_prompt(peer_name=_sender_handle(msg.sender))
-        mem = recall(msg.content[:200], store=self._store)
-        user = (
-            f"{mem}\n\nMessage from {msg.sender}:\n{msg.content}"
-            if mem
-            else f"Message from {msg.sender}:\n{msg.content}"
-        )
+        peer = _sender_handle(msg.sender)
+        system = self._system_prompt(peer_name=peer, key=f"dm:{peer}", private=True)
+        user = self._user_turn(msg)
         messages = [
             {"role": "system", "content": system},
             {"role": "user", "content": user},

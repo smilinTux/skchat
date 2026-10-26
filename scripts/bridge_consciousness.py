@@ -5,8 +5,10 @@ The Telegram bridge (``telegram_bridge.py``) composes the soul/identity/FEB
 system prompt and a direct qwen3.6 call. This module adds the rest of the
 agent's living mind so the bot on Telegram is genuinely its full self:
 
-  * ``LiveMemory``  — per-message skmemory recall (peer + topical) injected into
-    the prompt, and interaction storage after each reply. Mirrors the
+  * ``LiveMemory``  — skmemory recall (peer + topical) and interaction storage
+    after each reply. Recall per message is the legacy opt-in
+    (SKCHAT_PER_MESSAGE_RECALL=1); by default context loads once per session
+    (skchat/session_context.py). Mirrors the
     consciousness loop's ``_fetch_sender_memories`` / ``_store_interaction_memory``.
   * ``McpToolRouter`` — spawns the agent's own MCP servers from
     ``<home>/config/<agent>-mcp.yaml`` over stdio, filters to that agent's
@@ -520,19 +522,36 @@ class LuminaBrain:
         self.ctx_tokens = ctx_tokens or int(os.environ.get("SKC_BRIDGE_CTX", "32768"))
         self._sys_budget_tok = int(os.environ.get("SKC_BRIDGE_SYS_BUDGET", "9000"))
         self._chars_per_tok = 3
-        self._system: Optional[str] = None
         try:
             self._mem: Optional[LiveMemory] = LiveMemory(self.home)
         except Exception:
             self._mem = None
+        # Session context (Chef's rule, 2026-10-26): persona + the agent's
+        # memory block are built ONCE per session and reused verbatim; see
+        # skchat/session_context.py for the session boundary. The legacy
+        # per-message skmemory recall runs only when per_message_recall is
+        # set (SKCHAT_PER_MESSAGE_RECALL=1); the interaction store still runs.
+        from skchat.session_context import SessionContext, TextContextConfig, memory_loader
+
+        cfg = TextContextConfig.from_env()
+        self.per_message_recall = cfg.per_message_recall
+        self.memory_searches = 0
+        self.context = SessionContext(
+            self.home.name or agent,
+            lambda _peer: self._build_system_prompt(),
+            cfg=cfg,
+            context_loader=memory_loader(self.home),
+        )
 
     # -- system prompt --------------------------------------------------- #
-    def system_prompt(self) -> str:
-        """Build (and cache) the agent's genuine soul/identity system prompt."""
-        if self._system is not None:
-            return self._system
-        self._system = self._build_system_prompt()
-        return self._system
+    def system_prompt(self, session: str = "chef") -> str:
+        """The session's fixed system prompt: persona, capped to the system
+        budget, plus the memory block. Built on the session's first message."""
+        return self.context.system_prompt(f"dm:{session}", peer=session, private=True)
+
+    def refresh_context(self, session: Optional[str] = None) -> None:
+        """Explicit refresh: the next message rebuilds persona + memory block."""
+        self.context.refresh(None if session is None else f"dm:{session}")
 
     def _build_system_prompt(self) -> str:
         try:
@@ -563,7 +582,7 @@ class LuminaBrain:
             log.info(
                 "LuminaBrain: loaded system prompt for %s (%d chars)", self.agent, len(sp)
             )
-            return sp
+            return sp[: self._sys_budget_tok * self._chars_per_tok]
         except Exception:
             log.exception("SystemPromptBuilder failed — minimal persona fallback")
             return (
@@ -577,13 +596,15 @@ class LuminaBrain:
     def _est(self, s: str) -> int:
         return len(s) // self._chars_per_tok + 1
 
-    def _fit_messages(self, history: list[dict], user_text: str, mem_block: str = "") -> list:
-        """Capped system (+ memory) + recent history that fits + new message.
+    def _fit_messages(
+        self, history: list[dict], user_text: str, mem_block: str = "", session: str = "chef"
+    ) -> list:
+        """Session system prompt (+ legacy recall) + recent history that fits + new message.
 
         ``history`` is a list of ``{"role": ..., "content": ...}`` dicts oldest
         -first (prior turns of this conversation).
         """
-        system = self.system_prompt()[: self._sys_budget_tok * self._chars_per_tok]
+        system = self.system_prompt(session)
         if mem_block:
             system = system + "\n\n" + mem_block
         msgs = [{"role": "system", "content": system}]
@@ -620,18 +641,20 @@ class LuminaBrain:
     def reply(self, user_text: str, history: list[dict] | None = None, sender: str = "chef") -> str:
         """Generate the agent's reply to *user_text* in her voice.
 
-        Best-effort skmemory recall is injected and the interaction stored back,
-        mirroring the Telegram path. Never raises — backend errors surface to the
+        The session's fixed system prompt is reused every turn; per-message
+        skmemory recall runs only on the legacy opt-in (per_message_recall), and
+        the interaction is stored back. Never raises — backend errors surface to the
         caller via an exception only from the actual HTTP call so the caller can
         persist a graceful fallback; memory failures are swallowed.
         """
         mem_block = ""
-        if self._mem is not None:
+        if self._mem is not None and self.per_message_recall:
+            self.memory_searches += 1
             try:
                 mem_block = self._mem.inject(sender, user_text)
             except Exception:
                 log.debug("memory inject failed", exc_info=True)
-        msgs = self._fit_messages(history or [], user_text, mem_block=mem_block)
+        msgs = self._fit_messages(history or [], user_text, mem_block=mem_block, session=sender)
         reply = self._call(msgs)
         if self._mem is not None:
             try:

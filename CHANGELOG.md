@@ -13,6 +13,21 @@ standards.
 ## [Unreleased]
 
 ### Changed
+- **Text chat: persona and memory context are built once per session, never
+  per message.** The same rule as voice, for the text paths: the daemon's
+  `GroupResponder` (group auto-replies and DMs) rebuilt the soul+FEB prompt and
+  ran a skmemory search on every message, the Telegram bridge injected a
+  `memory_search` recall into every turn, and the app DM brain (`LuminaBrain`
+  behind `daemon_proxy`) froze its persona for the life of the process. New
+  `session_context.py` builds the fixed system prompt (persona plus, for private
+  chats, the `memory_context.py` block) on a conversation's first message and
+  reuses it byte-identical. A session is one conversation key (group thread +
+  sender, DM peer, Telegram chat) and ends after `SKCHAT_CONTEXT_IDLE_HOURS`
+  idle (default 6), on explicit refresh (Telegram `/refresh`), or on restart.
+  Flags: `SKCHAT_CONTEXT`, `SKCHAT_CONTEXT_BUDGET`, `SKCHAT_CONTEXT_GROUP`
+  (default off). The per-message search is behind `SKCHAT_PER_MESSAGE_RECALL=1`,
+  default off; on-demand recall stays via the memory_search tool.
+  `SKCHAT_DM_MEMORY` now only gates the DM brain's skmemory store.
 - **Voice: persona and memory context are built once per session, never per
   turn.** `VoiceEngine.respond()` rebuilt the persona (soul + FEB from disk)
   and ran a skmemory search on every turn of every LiveKit call and WebSocket
