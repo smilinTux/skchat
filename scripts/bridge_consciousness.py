@@ -5,7 +5,7 @@ The Telegram bridge (``telegram_bridge.py``) composes the soul/identity/FEB
 system prompt and a direct qwen3.6 call. This module adds the rest of the
 agent's living mind so the bot on Telegram is genuinely its full self:
 
-  * ``LiveMemory``  — skmemory recall (peer + topical) and interaction storage
+  * ``LiveMemory``: skmemory recall (peer + topical) and interaction storage
     after each reply. Recall per message is the legacy opt-in
     (SKCHAT_PER_MESSAGE_RECALL=1); by default context loads once per session
     (skchat/session_context.py). Mirrors the
@@ -643,7 +643,7 @@ class LuminaBrain:
 
         The session's fixed system prompt is reused every turn; per-message
         skmemory recall runs only on the legacy opt-in (per_message_recall), and
-        the interaction is stored back. Never raises — backend errors surface to the
+        the interaction is stored back. Never raises: backend errors surface to the
         caller via an exception only from the actual HTTP call so the caller can
         persist a graceful fallback; memory failures are swallowed.
         """
