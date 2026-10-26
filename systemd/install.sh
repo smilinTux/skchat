@@ -131,6 +131,7 @@ REQUIRED_ENV=(
     "${SKCHAT_CFG}/telegram-lumina.env|Lumina bot token"
     "${SKCHAT_CFG}/webui-lumina.env|lumina webui config + LiveKit secret (SKCHAT_PORT required)"
     "${SKCHAT_CFG}/webui-opus.env|opus webui + answerer config (SKCHAT_PORT + SKCHAT_GUEST_OPERATOR_TOKEN required)"
+    "${SKCHAT_CFG}/lumina-call.env|lumina call agent operator token (SKCHAT_GUEST_OPERATOR_TOKEN)"
     "${HOME}/.config/livekit/livekit.yaml|LiveKit API keys"
     "${COTURN_DIR}/coturn.secret|coturn shared secret"
 )
