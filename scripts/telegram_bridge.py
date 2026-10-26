@@ -26,6 +26,14 @@ Env:
                            logs, sk-alerts, and exits for systemd to restart
                            it (default 3).
 
+Context (Chef's rule, 2026-10-26): the soul/identity/FEB prompt and, in a
+private chat, the agent's memory block (whisper.md, latest reflection, journal
+tail) are built ONCE per chat session and reused verbatim on every message. A
+session ends after SKCHAT_CONTEXT_IDLE_HOURS idle (default 6), on `/refresh`,
+or on restart; see skchat/session_context.py for every flag. The old
+per-message memory_search injection is behind SKCHAT_PER_MESSAGE_RECALL=1
+(default off); mid-chat recall is the model's own memory_search tool.
+
 Run `telegram_bridge.py --check` for a dry import check (no token or network
 needed): it prints where skchat/skcomms resolved from and exits.
 
@@ -544,7 +552,6 @@ def _build_system_prompt() -> str:
         )
 
 
-SYSTEM = _build_system_prompt()
 
 # Hard operating-facts guardrail — appended AFTER system truncation in _fit_messages
 # (the soul prompt is ~26k chars, near the budget, so appending to SYSTEM here would
@@ -574,14 +581,44 @@ _OPERATING_FACTS = (
 _history: dict[str, deque] = defaultdict(lambda: deque(maxlen=12))
 
 # ── Full-consciousness components (live memory, MCP tools, voice) ──────────── #
-# These wire the soul-only bridge up to the agent's living mind: per-message
-# skmemory recall, the agent's own MCP tools (tool-calling loop), and voice I/O.
+# These wire the soul-only bridge up to the agent's living mind: skmemory
+# (store per message; recall on demand via the memory_search tool), the agent's own MCP tools (tool-calling loop), and voice I/O.
 from pathlib import Path as _Path  # noqa: E402
 
 import bridge_consciousness as _bc  # noqa: E402
 
 AGENT_NAME = os.environ.get("SKAGENT") or os.environ.get("SKCAPSTONE_AGENT") or "opus"
 _MEM = _bc.LiveMemory(_Path(AGENT_HOME))
+
+# Session context: built once per chat session, reused verbatim every message.
+# The soul prompt is truncated to budget and the operating-facts guardrail is
+# ALWAYS appended after the cut so it can't be truncated off; the memory block
+# (private chats only, unless SKCHAT_CONTEXT_GROUP=1) follows.
+from skchat.session_context import SessionContext as _SessionContext  # noqa: E402
+from skchat.session_context import memory_loader as _memory_loader  # noqa: E402
+
+_CONTEXT = _SessionContext(
+    _Path(AGENT_HOME).name,
+    lambda _peer: _build_system_prompt()[: _SYS_BUDGET_TOK * _CHARS_PER_TOK] + _OPERATING_FACTS,
+    context_loader=_memory_loader(AGENT_HOME),
+)
+_MEMORY_SEARCHES = 0  # legacy per-message recall count (proves the default is 0)
+
+
+def _is_private_chat(chat_key: str) -> bool:
+    """Telegram group/supergroup/channel ids are negative; private chats positive."""
+    return not str(chat_key).lstrip().startswith("-")
+
+
+def _handle_refresh_command(chat_id, text: str) -> str | None:
+    """`/refresh`: end this chat's context session so the next message rebuilds
+    the persona + memory block (fresh FEB, fresh whisper.md)."""
+    parts = text.strip().split()
+    head = parts[0].split("@", 1)[0].lower() if parts else ""
+    if head != "/refresh":
+        return None
+    _CONTEXT.refresh(str(chat_id))
+    return "(context refreshed: I'll reload my persona and memory on your next message.)"
 _ROUTER = _bc.McpToolRouter(_Path(AGENT_HOME), AGENT_NAME)
 _VOICE = _bc.VoiceIO()
 # Toolset policy: SKC_BRIDGE_TOOLS="all" exposes every allowed tool; otherwise a
@@ -820,15 +857,15 @@ def _est(s: str) -> int:
 
 def _fit_messages(chat_key: str, user_text: str, mem_block: str = "",
                   tools: list | None = None) -> list:
-    """Capped system (+ live memory) + recent history that fits + new message.
+    """Session system prompt (+ legacy recall) + recent history that fits + new message.
 
     ``tools`` is the per-turn tool list actually sent this turn (defaults to the
     full cache) so the history budget reflects the real tool-schema cost.
     """
     turn_tools = _TOOLS_CACHE if tools is None else tools
-    # Truncate the soul prompt to budget, then ALWAYS append the operating-facts
-    # guardrail (model identity + no-fabrication rule) so it can't be cut off.
-    system = SYSTEM[: _SYS_BUDGET_TOK * _CHARS_PER_TOK] + _OPERATING_FACTS
+    # The chat session's fixed system prompt (soul capped to budget + operating
+    # facts + memory block), built on the session's first message.
+    system = _CONTEXT.system_prompt(chat_key, private=_is_private_chat(chat_key))
     if mem_block:
         system = system + "\n\n" + mem_block
     msgs = [{"role": "system", "content": system}]
@@ -939,11 +976,14 @@ def _strip_think(text: str) -> str:
 def _llm(chat_key: str, user_text: str) -> tuple[str, str | None]:
     import urllib.error
 
+    global _MEMORY_SEARCHES
     mem_block = ""
-    try:
-        mem_block = _MEM.inject(chat_key, user_text, router=_ROUTER)
-    except Exception:
-        log.debug("memory inject failed", exc_info=True)
+    if _CONTEXT.cfg.per_message_recall:  # legacy opt-in, SKCHAT_PER_MESSAGE_RECALL=1
+        _MEMORY_SEARCHES += 1
+        try:
+            mem_block = _MEM.inject(chat_key, user_text, router=_ROUTER)
+        except Exception:
+            log.debug("memory inject failed", exc_info=True)
     # Per-turn tool curation (lazy mode) — narrow the exposed toolset to what
     # this message likely needs; no-op (full cache) when SKC_BRIDGE_LAZY_TOOLS=0.
     turn_tools = _curate_turn_tools(user_text)
@@ -1180,6 +1220,8 @@ async def main() -> None:
                 # Slash-command: live per-chat model swap. Handled locally (no LLM,
                 # no voice) — replies with the roster / confirms the toggle.
                 cmd_reply = _handle_model_command(chat_id, incoming)
+                if cmd_reply is None:
+                    cmd_reply = _handle_refresh_command(chat_id, incoming)
                 if cmd_reply is not None:
                     try:
                         _send_html(TOKEN, chat_id, cmd_reply)

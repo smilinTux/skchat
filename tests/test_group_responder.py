@@ -166,8 +166,17 @@ def _mk(content, sender="chef@skworld.io", recipient="group:room1"):
 
 def test_respond_when_mentioned():
     http = _Http(_Resp(200, {"choices": [{"message": {"content": "teal, Chef."}}]}))
+    # Legacy opt-in path (SKCHAT_PER_MESSAGE_RECALL=1): recalled memories ride
+    # with the message. Default-off behaviour is covered in
+    # test_text_session_context.py.
+    from skchat.session_context import TextContextConfig
+
     r = GroupResponder(
-        _LUM, prompt_builder=_Builder(), http=http, store=_Mem([_Hit("likes teal")])
+        _LUM,
+        prompt_builder=_Builder(),
+        http=http,
+        store=_Mem([_Hit("likes teal")]),
+        context_cfg=TextContextConfig(per_message_recall=True),
     )
     out = r.respond(_mk("@lumina fav color?"))
     assert out == "teal, Chef."

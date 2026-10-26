@@ -116,16 +116,18 @@ def _get_brain():
         from bridge_consciousness import LuminaBrain  # type: ignore
 
         _BRAIN = LuminaBrain(home=_AGENT_HOME, agent=LUMINA_NAME)
-        # Per-message skmemory recall (_mem.inject) surfaces her stored memories
-        # into every DM reply. Those are currently polluted with the old
-        # voice-call / pqdm1 mess, so recall keeps dragging "PGP payloads / voice
-        # not deployed" into unrelated replies. Disable recall on the DM brain
-        # (this instance only; the Telegram bridge runs its own). Re-enable with
-        # SKCHAT_DM_MEMORY=1 once her memory is cleaned.
+        # Context is loaded ONCE per DM session (persona + her memory block from
+        # whisper.md / reflection / journal, see skchat/session_context.py),
+        # never per message (Chef's rule, 2026-10-26). The skmemory store on
+        # the DM brain (LiveMemory: interaction write-back, and the legacy
+        # per-message recall when SKCHAT_PER_MESSAGE_RECALL=1) stays off unless
+        # SKCHAT_DM_MEMORY=1: her stored memories were polluted with the old
+        # voice-call / pqdm1 mess and recall kept dragging "PGP payloads /
+        # voice not deployed" into unrelated replies.
         if os.getenv("SKCHAT_DM_MEMORY", "0").strip().lower() not in ("1", "true", "yes", "on"):
             try:
                 _BRAIN._mem = None
-                logger.info("DM brain: skmemory recall disabled (SKCHAT_DM_MEMORY=0)")
+                logger.info("DM brain: skmemory store/recall disabled (SKCHAT_DM_MEMORY=0)")
             except Exception:
                 logger.debug("could not disable DM brain memory", exc_info=True)
         # In-app 1:1 chat wants a FAST, reliable conversational reply, not the
