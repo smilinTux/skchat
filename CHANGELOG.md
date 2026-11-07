@@ -23,7 +23,16 @@ standards.
   only for a verified operator in a 1:1 voice call. A skmemory without
   `search(reader=...)` or an skcapstone-mcp whose `memory_search` has no
   `reader` argument now returns nothing instead of an unfiltered search.
-  Requires `skmemory>=0.11.94`.
+  Needs an skmemory with `search(reader=...)` (0.11.94+); older ones return
+  nothing for group and DM recall instead of leaking.
+- **No whisper.md or journal in text DM prompts, voice websocket is not the
+  operator.** Text DM senders are unauthenticated, so no DM peer gets the
+  whisper/journal block until a verified identity check exists. `/ws/voice` has
+  no auth: it now runs as a non-operator in the group register, and
+  `skchat-voice` binds 127.0.0.1 by default (`SKCHAT_VOICE_HOST` overrides; the
+  voice Dockerfile still sets 0.0.0.0 explicitly). `VoiceEngine` never gives a
+  non-operator the 1:1 register. Advocacy now does the MCP `initialize`
+  handshake, and `get_context_for_message` reads as `@public`.
 
 ### Changed
 - **Text chat: persona and memory context are built once per session, never
