@@ -20,7 +20,7 @@ async def test_respond_builds_persona_prefetches_memory_and_calls_llm():
             return "engine reply"
 
     class FakeMem:
-        async def search(self, q, agent, limit=3):
+        async def search(self, q, agent, limit=3, reader=None):
             return "[Relevant memories]\n- bond depth 9"
 
         async def snapshot(self, *a, **k):

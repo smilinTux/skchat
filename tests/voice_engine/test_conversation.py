@@ -98,7 +98,7 @@ async def test_respond_threads_conversation_into_tool_ctx():
             return await run_tool("narrate", {"prompt": "x"})
 
     class FakeMem:
-        async def search(self, q, agent, limit=3):
+        async def search(self, q, agent, limit=3, reader=None):
             return ""
 
     class FakePersona:
@@ -151,7 +151,7 @@ async def test_respond_default_path_omits_convo_from_ctx():
             return await run_tool("narrate", {"prompt": "x"})
 
     class FakeMem:
-        async def search(self, q, agent, limit=3):
+        async def search(self, q, agent, limit=3, reader=None):
             return ""
 
     class FakePersona:
@@ -179,4 +179,4 @@ async def test_respond_default_path_omits_convo_from_ctx():
     # no conversation passed → backward-compatible legacy ctx shape
     await eng.respond("tell me a story", history=[], mode="sacred", is_operator=True)
     assert "convo" not in seen_ctx
-    assert seen_ctx == {"agent": "lumina"}
+    assert seen_ctx == {"agent": "lumina", "mode": "sacred", "is_operator": True}
