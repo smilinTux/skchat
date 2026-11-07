@@ -12,7 +12,7 @@ tests assert two things the funnel path depends on:
     and relays a host handshake rejection as a 1008 policy close.
 
 Upstreams are monkeypatched so the tests never touch the tailnet host or a
-socket. Run from ~ per skchat/CLAUDE.md (skmemory namespace collision).
+socket. Run from ~ per skchat/AGENTS.md (skmemory namespace collision).
 """
 
 from __future__ import annotations

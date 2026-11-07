@@ -216,6 +216,15 @@ standards.
   The token and wire form are unchanged; no crypto behavior changes.
 
 ### Docs
+- **`CLAUDE.md` is now `AGENTS.md`, per sk-standards `AGENT_INSTRUCTIONS_STANDARD`.**
+  One agent instructions file for every runtime (Claude Code reads `AGENTS.md`
+  natively and skips it when a `CLAUDE.md` sits next to it). Reshaped from 743 to
+  about 120 lines in the standard's eight sections; commands now match CI exactly.
+  The web client deploy procedure moved to `docs/WEB_CLIENT_DEPLOY.md` and the linked
+  devices notes to `docs/LINKED_DEVICES.md`. Module map, MCP tool tables and systemd
+  unit lists are linked (`docs/ARCHITECTURE.md`, `docs/mcp-reference.md`,
+  `systemd/README.md`) instead of copied. Host-specific detail (hosts, IPs, bot
+  names, home paths, model backends) was dropped. References repointed.
 - **Declared a maturity tier for the first time.** skchat is a crypto component and had
   **no** `T0`-`T4` declaration in README or SOP, while `SECURITY.md` pointed at "`SOP.md`
   §9" for one. Now declared and backed by code: **T1 (Agile) + T2 (Hybrid KEM,

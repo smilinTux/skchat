@@ -284,6 +284,6 @@ flowchart TD
   endpoint on `:9385` (skcomms transport health on `:9384`). Companion units:
   `skchat-webui`, `skchat-lumina-call`, `jarvis-heartbeat`. Never run
   `skchat daemon start` by hand alongside the managed unit — see
-  [CLAUDE.md](../CLAUDE.md).
+  [AGENTS.md](../AGENTS.md).
 
 Part of the **[SKWorld](https://skworld.io)** sovereign ecosystem · 🐧 smilinTux

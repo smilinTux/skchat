@@ -53,7 +53,7 @@ SERVICE = "skchat"
 #: Fleet-scheduler job name for the reliable-outbox flush sweep.
 OUTBOX_JOB = "skchat_outbox_flush"
 
-#: Default health endpoint exposed by the skchat daemon (see CLAUDE.md).
+#: Default health endpoint exposed by the skchat daemon (see SOP.md).
 DEFAULT_HEALTH_URL = "http://127.0.0.1:9385/health"
 
 #: Default pid-file written by the systemd-managed daemon.

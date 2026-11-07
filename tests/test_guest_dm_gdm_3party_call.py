@@ -27,8 +27,8 @@ OPERATOR_ID`` constant, but the guest-dm invite mint path
 (lumina/opus/whatever ``SKAGENT`` resolves to), not the literal operator
 constant. Those two only agreed when the daemon happened to be running AS
 ``chef@skworld.io``. Under the documented default (the live daemon runs as the
-``lumina`` agent - see this repo's CLAUDE.md, "skchat-daemon.service: main
-receive daemon (**lumina**...)"), the two identities diverged and the
+``lumina`` agent - see this repo's systemd/README.md, "skchat-daemon.service:
+:9385, lumina receive daemon"), the two identities diverged and the
 operator's own official join route 403'd them out of a room their own guests
 were happily sitting in. ``_group_caller_uri`` now resolves the caller against
 the seat the group actually carries, restricted to the daemon's own identities.
@@ -256,7 +256,7 @@ def test_operator_can_join_their_own_gdm_under_the_documented_default(client, gd
 
     Every other test in this file pins ``identity_bridge.get_sovereign_
     identity`` to the literal ``daemon_proxy.OPERATOR_ID`` in the ``env``
-    fixture. That pin is NOT how the real daemon runs: this repo's CLAUDE.md
+    fixture. That pin is NOT how the real daemon runs: this repo's systemd/README.md
     documents the live daemon as ``skchat-daemon.service`` running the
     ``lumina`` agent, and ``guest_groups.create_dm_invite`` seeds a fresh
     dm/gdm group's operator seat from ``identity_bridge.get_sovereign_

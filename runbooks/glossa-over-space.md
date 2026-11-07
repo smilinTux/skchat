@@ -89,7 +89,7 @@ the running service sees them, not just your shell.
 ### Python / repo
 - `~/.skenv/bin/python` (editable install of `skchat-sovereign`).
 - **Always run pytest/scripts from `~`** to avoid the `skmemory` namespace
-  collision (see `CLAUDE.md` "Running").
+  collision (see `AGENTS.md` "Hazards").
 
 ---
 
