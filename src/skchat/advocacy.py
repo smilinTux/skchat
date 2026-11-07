@@ -23,6 +23,7 @@ import os
 import subprocess
 from typing import Optional
 
+from .memory_reader import PUBLIC, reader_for_message
 from .models import ChatMessage
 
 logger = logging.getLogger("skchat.advocacy")
@@ -33,6 +34,39 @@ TRIGGER_PREFIXES: list[str] = ["@opus", "@claude", "@ai", "@lumina"]
 
 # Binary used to invoke the skcapstone MCP JSON-RPC interface.
 MCP_BINARY: str = os.environ.get("SKCAPSTONE_MCP", "skcapstone-mcp")
+
+_READER_SUPPORT: dict[str, bool] = {}
+
+
+def _mcp_accepts_reader() -> bool:
+    """True when ``memory_search`` on the installed skcapstone-mcp takes ``reader``.
+
+    Asks the server for its tool list once per process. Any failure to find out
+    is "no": an unfiltered search must never be the fallback.
+    """
+    if MCP_BINARY in _READER_SUPPORT:
+        return _READER_SUPPORT[MCP_BINARY]
+    ok = False
+    try:
+        result = subprocess.run(
+            [MCP_BINARY],
+            input=json.dumps({"jsonrpc": "2.0", "method": "tools/list", "id": 0}),
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+        if result.returncode == 0:
+            tools = json.loads(result.stdout).get("result", {}).get("tools", [])
+            for t in tools:
+                if t.get("name") == "memory_search":
+                    props = (t.get("inputSchema") or {}).get("properties") or {}
+                    ok = "reader" in props
+    except Exception as exc:
+        logger.debug("advocacy.py: reader capability probe failed: %s", exc)
+        return False  # not cached: a transient failure may succeed next time
+    _READER_SUPPORT[MCP_BINARY] = ok
+    return ok
+
 
 # Subprocess timeout in seconds for the consciousness_test call.
 _SUBPROCESS_TIMEOUT: int = 10
@@ -200,7 +234,9 @@ class AdvocacyEngine:
 
         logger.info("AdvocacyEngine: @mention trigger detected in message from %s", msg.sender)
 
-        memory_ctx = self._get_memory_context(msg.content[:200])
+        memory_ctx = self._get_memory_context(
+            msg.content[:200], reader=reader_for_message(msg.thread_id, msg.recipient)
+        )
         if memory_ctx:
             enhanced_content = f"{memory_ctx}\n\nMessage: {msg.content}"
         else:
@@ -233,7 +269,7 @@ class AdvocacyEngine:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _get_memory_context(self, query: str) -> str:
+    def _get_memory_context(self, query: str, reader: str = PUBLIC) -> str:
         """Retrieve relevant memories and format as a concise context string.
 
         Calls the skcapstone-mcp ``memory_search`` tool via JSON-RPC subprocess.
@@ -242,16 +278,27 @@ class AdvocacyEngine:
 
         Args:
             query: Search query derived from the first 200 chars of message content.
+            reader: Audience the reply is for (``channel:<id>`` or ``@public``,
+                see :mod:`skchat.memory_reader`). Defaults to ``@public``. If the
+                installed skcapstone-mcp does not advertise a ``reader`` argument
+                on ``memory_search`` it would ignore it and return owner-scope
+                memories, so this fails closed and returns ``""``.
 
         Returns:
             str: ``"Relevant context:\\n- {mem}\\n..."`` or ``""`` on failure.
         """
+        if not _mcp_accepts_reader():
+            logger.warning(
+                "skcapstone-mcp memory_search has no reader argument; "
+                "skipping memory context (SKMEM-P0-18)"
+            )
+            return ""
         payload = {
             "jsonrpc": "2.0",
             "method": "tools/call",
             "params": {
                 "name": "memory_search",
-                "arguments": {"query": query, "limit": 5},
+                "arguments": {"query": query, "limit": 5, "reader": reader},
             },
             "id": 1,
         }

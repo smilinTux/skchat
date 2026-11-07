@@ -5,7 +5,7 @@ from skchat.voice_engine.memory import MemoryBridge
 
 @pytest.mark.asyncio
 async def test_search_formats_hits_into_context_block():
-    async def fake_search(query, agent, limit):
+    async def fake_search(query, agent, limit, reader=None):
         return ["bond depth 9", "loves redundancy"]
 
     mb = MemoryBridge(_search=fake_search)
@@ -16,7 +16,7 @@ async def test_search_formats_hits_into_context_block():
 
 @pytest.mark.asyncio
 async def test_search_returns_empty_string_on_no_hits():
-    async def fake_search(query, agent, limit):
+    async def fake_search(query, agent, limit, reader=None):
         return []
 
     mb = MemoryBridge(_search=fake_search)
@@ -25,7 +25,7 @@ async def test_search_returns_empty_string_on_no_hits():
 
 @pytest.mark.asyncio
 async def test_search_swallows_errors():
-    async def fake_search(query, agent, limit):
+    async def fake_search(query, agent, limit, reader=None):
         raise RuntimeError("skmemory down")
 
     mb = MemoryBridge(_search=fake_search)

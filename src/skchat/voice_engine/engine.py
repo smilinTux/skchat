@@ -22,6 +22,7 @@ from __future__ import annotations
 import logging
 from typing import Callable, Literal
 
+from skchat.memory_reader import voice_reader
 from skchat.voice_engine import memory_context
 from skchat.voice_engine.config import VoiceConfig
 from skchat.voice_engine.conversation import Conversation
@@ -216,7 +217,9 @@ class VoiceEngine:
         mem = ""
         if getattr(self.cfg, "per_turn_recall", False):
             self.memory_searches += 1
-            mem = await self.memory.search(transcript, self.agent)
+            mem = await self.memory.search(
+                transcript, self.agent, reader=voice_reader(mode, is_operator)
+            )
         memory_msg = (
             {
                 "role": "system",
@@ -261,7 +264,7 @@ class VoiceEngine:
         # tools and the handful this sentence could possibly need.
         tools = self.registry.openai_schemas(for_text=transcript) if self.registry else None
 
-        tool_ctx: dict = {"agent": self.agent}
+        tool_ctx: dict = {"agent": self.agent, "mode": mode, "is_operator": is_operator}
         if conversation is not None:
             tool_ctx["convo"] = conversation
 

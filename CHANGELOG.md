@@ -12,6 +12,19 @@ standards.
 
 ## [Unreleased]
 
+### Security
+- **Group and unknown surfaces no longer read owner-scope memory (SKMEM-P0-18).**
+  skmemory's `search` treats an undeclared reader as the owner, so group
+  auto-replies (`group_responder.recall`), the voice engine bridge and
+  `search_memory` tool, `advocacy` and `context` could put `@chef-only`
+  memories into replies other people read. New `skchat.memory_reader` declares
+  the reader: `channel:<id>` for a group or thread, `@public` for text DMs
+  (there is no verified-Chef check on that path) and anything unknown, owner
+  only for a verified operator in a 1:1 voice call. A skmemory without
+  `search(reader=...)` or an skcapstone-mcp whose `memory_search` has no
+  `reader` argument now returns nothing instead of an unfiltered search.
+  Requires `skmemory>=0.11.94`.
+
 ### Changed
 - **Text chat: persona and memory context are built once per session, never
   per message.** The same rule as voice, for the text paths: the daemon's

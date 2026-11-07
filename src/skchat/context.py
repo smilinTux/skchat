@@ -16,6 +16,8 @@ from __future__ import annotations
 import logging
 from typing import Any, Callable, Optional
 
+from .memory_reader import reader_for_message
+
 logger = logging.getLogger("skchat.context")
 
 DEFAULT_CONTEXT_MESSAGES = 5
@@ -26,7 +28,7 @@ DEFAULT_MEMORY_HITS = 3
 MemorySource = Callable[[str, int], list]
 
 
-def _default_memory_source(query: str, limit: int) -> list:
+def _default_memory_source(query: str, limit: int, reader: str = "@public") -> list:
     """Best-effort relevant-memory lookup via skcapstone's ``memory_search``.
 
     Reuses the same MCP JSON-RPC path that :mod:`skchat.advocacy` uses so the
@@ -38,6 +40,8 @@ def _default_memory_source(query: str, limit: int) -> list:
     Args:
         query: Free-text query (typically the triggering message content).
         limit: Maximum number of snippets to return.
+        reader: Audience the context is for (``channel:<id>`` or ``@public``);
+            never the owner (SKMEM-P0-18).
 
     Returns:
         list[str]: Memory snippet strings, or ``[]`` on any failure.
@@ -49,7 +53,7 @@ def _default_memory_source(query: str, limit: int) -> list:
         return []
 
     try:
-        raw = AdvocacyEngine()._get_memory_context(query[:200])
+        raw = AdvocacyEngine()._get_memory_context(query[:200], reader=reader)
     except Exception as exc:
         logger.debug("memory source query failed: %s", exc)
         return []
@@ -263,6 +267,10 @@ def fetch_context(
                 "",
             )
 
+        if memory_source is None:
+            # The default source reads as the thread's channel, else @public.
+            reader = reader_for_message(thread_id)
+            memory_source = lambda q, n: _default_memory_source(q, n, reader=reader)  # noqa: E731
         memory_block = _fetch_memory_block(query or "", memory_source, memory_hits)
 
         sections = [s for s in (memory_block, history_block) if s]
