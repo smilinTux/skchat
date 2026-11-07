@@ -193,14 +193,15 @@ def _group(text):
     )
 
 
-def test_dm_turn_pair_loads_once_and_searches_nothing():
+def test_dm_turn_pair_builds_once_and_never_loads_memory_block():
+    # SKMEM-P0-18: no verified identity check on text DMs, so no whisper/journal.
     r, builder, store, http, loader = _responder()
     r.respond_direct(_dm("hi"))
     r.respond_direct(_dm("how are you?"))
-    assert builder.builds == 1 and loader.calls == 1
+    assert builder.builds == 1 and loader.calls == 0
     assert store.searches == 0 and r.memory_searches == 0
     s1, s2 = (c["messages"][0]["content"] for c in http.calls)
-    assert s1 == s2 and MEM_BLOCK in s1
+    assert s1 == s2 and MEM_BLOCK not in s1
     # the user turn carries only the message, no recalled-memory preamble
     assert (
         http.calls[1]["messages"][-1]["content"] == "Message from chef@skworld.io:\nhow are you?"
@@ -229,7 +230,7 @@ def test_refresh_context_rebuilds_on_next_message():
     r.respond_direct(_dm("hi"))
     r.refresh_context()
     r.respond_direct(_dm("hi again"))
-    assert builder.builds == 2 and loader.calls == 2
+    assert builder.builds == 2 and loader.calls == 0
 
 
 # --------------------------------------------------------------------------- #

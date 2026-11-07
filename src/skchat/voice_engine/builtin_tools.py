@@ -19,6 +19,7 @@ import logging
 import os
 from pathlib import Path
 
+from skchat.memory_reader import search_as, voice_reader
 from skchat.voice_engine.config import VoiceConfig
 from skchat.voice_engine.tools import Tool, ToolRegistry
 
@@ -179,8 +180,11 @@ async def _handle_search_memory(args: dict, ctx: dict) -> str:
     try:
         from skmemory import MemoryStore  # noqa: PLC0415
 
+        # Owner scope only for a verified operator in a 1:1 call; the handler
+        # ctx without those keys (or a group room) reads as @public.
+        reader = voice_reader(ctx.get("mode"), ctx.get("is_operator"))
         store = MemoryStore()
-        results = store.search(query, limit=limit)
+        results = search_as(store, query, limit, reader)
     except Exception as exc:
         log.warning("search_memory failed: %s", exc)
         return f"search_memory error: {exc}"

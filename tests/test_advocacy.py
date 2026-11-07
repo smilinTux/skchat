@@ -331,7 +331,20 @@ class TestMemoryContext:
         )
         rpc = _json.dumps({"result": {"content": [{"type": "text", "text": mem_blocks}]}})
 
-        with patch("skchat.advocacy.subprocess.run", return_value=self._mcp_result(0, rpc)):
+        lst = _json.dumps(
+            {
+                "id": 2,
+                "result": {
+                    "tools": [
+                        {"name": "memory_search", "inputSchema": {"properties": {"reader": {}}}}
+                    ]
+                },
+            }
+        )
+        call = _json.dumps({"id": 3, **_json.loads(rpc)})
+        with patch(
+            "skchat.advocacy.subprocess.run", return_value=self._mcp_result(0, lst + "\n" + call)
+        ):
             ctx = engine._get_memory_context("release status")
 
         assert "Relevant context:" in ctx

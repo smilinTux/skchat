@@ -23,6 +23,7 @@ import os
 import subprocess
 from typing import Optional
 
+from .memory_reader import PUBLIC, reader_for_message
 from .models import ChatMessage
 
 logger = logging.getLogger("skchat.advocacy")
@@ -200,7 +201,9 @@ class AdvocacyEngine:
 
         logger.info("AdvocacyEngine: @mention trigger detected in message from %s", msg.sender)
 
-        memory_ctx = self._get_memory_context(msg.content[:200])
+        memory_ctx = self._get_memory_context(
+            msg.content[:200], reader=reader_for_message(msg.thread_id, msg.recipient)
+        )
         if memory_ctx:
             enhanced_content = f"{memory_ctx}\n\nMessage: {msg.content}"
         else:
@@ -233,7 +236,7 @@ class AdvocacyEngine:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _get_memory_context(self, query: str) -> str:
+    def _get_memory_context(self, query: str, reader: str = PUBLIC) -> str:
         """Retrieve relevant memories and format as a concise context string.
 
         Calls the skcapstone-mcp ``memory_search`` tool via JSON-RPC subprocess.
@@ -242,23 +245,47 @@ class AdvocacyEngine:
 
         Args:
             query: Search query derived from the first 200 chars of message content.
+            reader: Audience the reply is for (``channel:<id>`` or ``@public``,
+                see :mod:`skchat.memory_reader`). Defaults to ``@public``. If the
+                installed skcapstone-mcp does not advertise a ``reader`` argument
+                on ``memory_search`` it would ignore it and return owner-scope
+                memories, so this fails closed and returns ``""``.
 
         Returns:
             str: ``"Relevant context:\\n- {mem}\\n..."`` or ``""`` on failure.
         """
-        payload = {
-            "jsonrpc": "2.0",
-            "method": "tools/call",
-            "params": {
-                "name": "memory_search",
-                "arguments": {"query": query, "limit": 5},
+        # One stdio MCP session: initialize, initialized, tools/list, tools/call.
+        # skcapstone-mcp rejects any request sent before initialize. tools/list
+        # proves this server's memory_search takes ``reader``; an old server
+        # would ignore it and return owner-scope memories, so its answer is
+        # discarded (fail closed).
+        msgs = [
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": {"name": "skchat-advocacy", "version": "0"},
+                },
             },
-            "id": 1,
-        }
+            {"jsonrpc": "2.0", "method": "notifications/initialized"},
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+            {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {
+                    "name": "memory_search",
+                    "arguments": {"query": query, "limit": 5, "reader": reader},
+                },
+            },
+        ]
         try:
             result = subprocess.run(
                 [MCP_BINARY],
-                input=json.dumps(payload),
+                input="\n".join(json.dumps(m) for m in msgs) + "\n",
                 capture_output=True,
                 text=True,
                 timeout=3,
@@ -266,8 +293,29 @@ class AdvocacyEngine:
             if result.returncode != 0:
                 return ""
 
-            data = json.loads(result.stdout)
-            contents = data.get("result", {}).get("content", [])
+            replies: dict = {}
+            for line in result.stdout.splitlines():
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(obj, dict) and "id" in obj:
+                    replies[obj["id"]] = obj
+
+            tools = (replies.get(2) or {}).get("result", {}).get("tools", [])
+            accepts = any(
+                t.get("name") == "memory_search"
+                and "reader" in ((t.get("inputSchema") or {}).get("properties") or {})
+                for t in tools
+            )
+            if not accepts:
+                logger.warning(
+                    "skcapstone-mcp memory_search has no reader argument; "
+                    "skipping memory context (SKMEM-P0-18)"
+                )
+                return ""
+
+            contents = (replies.get(3) or {}).get("result", {}).get("content", [])
 
             lines: list[str] = []
             for block in contents:

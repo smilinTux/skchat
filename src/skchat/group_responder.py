@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from typing import Mapping, Optional
 
 from .advocacy import _token_match
+from .memory_reader import PUBLIC, channel_reader, search_as
 from .models import ChatMessage
 from .session_context import SessionContext, TextContextConfig
 
@@ -150,13 +151,18 @@ def _default_store():  # pragma: no cover - live skmemory
     return MemoryStore()
 
 
-def recall(query: str, store=None, limit: int = 5) -> str:
-    """Return a short 'Relevant memories' block for *query*, or '' on any failure."""
+def recall(query: str, store=None, limit: int = 5, reader: Optional[str] = PUBLIC) -> str:
+    """Return a short 'Relevant memories' block for *query*, or '' on any failure.
+
+    *reader* is who the reply is for (see :mod:`skchat.memory_reader`). It
+    defaults to ``@public``, never the owner, so a caller that forgets it cannot
+    leak owner-scope memories into a reply.
+    """
     if not (query or "").strip():
         return ""
     try:
         store = store or _default_store()
-        hits = store.search(query, limit=limit)
+        hits = search_as(store, query, limit, reader)
     except Exception as exc:
         logger.debug("group recall failed: %s", exc)
         return ""
@@ -212,22 +218,29 @@ class GroupResponder:
         self.memory_searches = 0
 
     def _system_prompt(
-        self, peer_name: Optional[str] = None, *, key: str = "", private: bool = False
+        self,
+        peer_name: Optional[str] = None,
+        *,
+        key: str = "",
+        private: bool = False,
+        inject_memory: Optional[bool] = None,
     ) -> str:
         """The session's fixed system prompt (built once per session key)."""
         peer = peer_name or "chef"
-        return self.context.system_prompt(key or f"peer:{peer}", peer=peer, private=private)
+        return self.context.system_prompt(
+            key or f"peer:{peer}", peer=peer, private=private, inject_memory=inject_memory
+        )
 
     def refresh_context(self, key: Optional[str] = None) -> None:
         """Explicit refresh: the next message in that session (or any) rebuilds."""
         self.context.refresh(key)
 
-    def _user_turn(self, msg: ChatMessage) -> str:
+    def _user_turn(self, msg: ChatMessage, reader: Optional[str] = PUBLIC) -> str:
         """The user message; recalled memories only on the legacy opt-in path."""
         mem = ""
         if self.context.cfg.per_message_recall:
             self.memory_searches += 1
-            mem = recall(msg.content[:200], store=self._store)
+            mem = recall(msg.content[:200], store=self._store, reader=reader)
         if mem:
             return f"{mem}\n\nMessage from {msg.sender}:\n{msg.content}"
         return f"Message from {msg.sender}:\n{msg.content}"
@@ -265,7 +278,8 @@ class GroupResponder:
         gid = msg.thread_id or msg.recipient
         peer = _sender_handle(msg.sender)
         system = self._system_prompt(peer_name=peer, key=f"group:{gid}:{peer}", private=False)
-        user = self._user_turn(msg)
+        # A group reply is readable by every member: recall as that channel.
+        user = self._user_turn(msg, reader=channel_reader(gid))
         messages = [{"role": "system", "content": system}]
         messages.extend(self._history_turns(gid))
         messages.append({"role": "user", "content": user})
@@ -324,8 +338,16 @@ class GroupResponder:
         if _sender_handle(msg.recipient) != self.cfg.agent:
             return None
         peer = _sender_handle(msg.sender)
-        system = self._system_prompt(peer_name=peer, key=f"dm:{peer}", private=True)
-        user = self._user_turn(msg)
+        # whisper.md and the journal tail are a digest of the whole store. No
+        # verified-identity check exists for a text DM sender (the sender string
+        # is unauthenticated here), so NO DM peer gets them until one does
+        # (SKMEM-P0-18). Flip inject_memory only behind such a check.
+        system = self._system_prompt(
+            peer_name=peer, key=f"dm:{peer}", private=True, inject_memory=False
+        )
+        # No verified-Chef check exists on the text DM path, so a DM reads as
+        # @public (SKMEM-P0-18). Owner scope needs a real identity check first.
+        user = self._user_turn(msg, reader=PUBLIC)
         messages = [
             {"role": "system", "content": system},
             {"role": "user", "content": user},

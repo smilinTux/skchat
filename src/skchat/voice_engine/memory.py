@@ -7,21 +7,24 @@ stays testable and skmemory stays an optional runtime dependency.
 from __future__ import annotations
 
 import logging
-from typing import Awaitable, Callable
+from typing import Awaitable, Callable, Optional
+
+from skchat.memory_reader import PUBLIC, search_as
 
 log = logging.getLogger("skchat.voice_engine.memory")
 
-SearchFn = Callable[[str, str, int], Awaitable[list[str]]]
+# (query, agent, limit, reader). reader None = the verified operator (owner scope).
+SearchFn = Callable[[str, str, int, Optional[str]], Awaitable[list[str]]]
 SnapshotFn = Callable[[str, str, str], Awaitable[bool]]
 
 
-async def _sdk_search(query: str, agent: str, limit: int) -> list[str]:
+async def _sdk_search(query: str, agent: str, limit: int, reader: Optional[str]) -> list[str]:
     from skmemory import MemoryStore  # imported lazily — optional dep
 
     # MemoryStore() resolves the agent from SKAGENT/SKCAPSTONE_AGENT env vars;
     # the `agent` parameter is kept for interface symmetry with the injected fakes.
     store = MemoryStore()
-    hits = store.search(query, limit=limit)
+    hits = search_as(store, query, limit, reader)
     return [getattr(h, "content", str(h)) for h in hits]
 
 
@@ -39,10 +42,16 @@ class MemoryBridge:
         self._search = _search or _sdk_search
         self._snapshot = _snapshot or _sdk_snapshot
 
-    async def search(self, query: str, agent: str, limit: int = 3) -> str:
-        """Return a prompt-ready context block, or '' if nothing/error."""
+    async def search(
+        self, query: str, agent: str, limit: int = 3, reader: Optional[str] = PUBLIC
+    ) -> str:
+        """Return a prompt-ready context block, or '' if nothing/error.
+
+        *reader* defaults to ``@public`` (SKMEM-P0-18): owner scope (``None``)
+        must be asked for explicitly, by a caller holding a verified operator.
+        """
         try:
-            hits = await self._search(query, agent, limit)
+            hits = await self._search(query, agent, limit, reader)
         except Exception as e:
             log.error("memory search failed: %s", e)
             return ""

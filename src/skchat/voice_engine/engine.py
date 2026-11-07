@@ -22,6 +22,7 @@ from __future__ import annotations
 import logging
 from typing import Callable, Literal
 
+from skchat.memory_reader import voice_reader
 from skchat.voice_engine import memory_context
 from skchat.voice_engine.config import VoiceConfig
 from skchat.voice_engine.conversation import Conversation
@@ -196,7 +197,10 @@ class VoiceEngine:
         """
         # 1. The session's fixed system prompt (persona + runtime fact + memory
         #    block + brevity rule), built on the first turn and reused verbatim.
-        system_msg = {"role": "system", "content": self.system_prompt(mode)}
+        # A speaker who is not the verified operator never gets the 1:1 register,
+        # which carries the whisper/journal memory block (SKMEM-P0-18).
+        prompt_mode = "group" if (is_operator is not True and mode in ONE_TO_ONE_MODES) else mode
+        system_msg = {"role": "system", "content": self.system_prompt(prompt_mode)}
 
         # 2. Fetch relevant memories. These go in their OWN system message, NOT
         #    glued onto the front of what the user said.
@@ -216,7 +220,9 @@ class VoiceEngine:
         mem = ""
         if getattr(self.cfg, "per_turn_recall", False):
             self.memory_searches += 1
-            mem = await self.memory.search(transcript, self.agent)
+            mem = await self.memory.search(
+                transcript, self.agent, reader=voice_reader(mode, is_operator)
+            )
         memory_msg = (
             {
                 "role": "system",
@@ -261,7 +267,7 @@ class VoiceEngine:
         # tools and the handful this sentence could possibly need.
         tools = self.registry.openai_schemas(for_text=transcript) if self.registry else None
 
-        tool_ctx: dict = {"agent": self.agent}
+        tool_ctx: dict = {"agent": self.agent, "mode": mode, "is_operator": is_operator}
         if conversation is not None:
             tool_ctx["convo"] = conversation
 
