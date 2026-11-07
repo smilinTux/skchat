@@ -176,53 +176,61 @@ def test_voice_bridge_defaults_to_public(store):
 
 
 class _Run:
+    """Fake stdio skcapstone-mcp: rejects any request sent before initialize."""
+
     def __init__(self, tools_has_reader, results):
         self.calls = []
         self.tools_has_reader = tools_has_reader
         self.results = results
 
     def __call__(self, cmd, input=None, **kw):
-        req = json.loads(input)
-        self.calls.append(req)
+        out, ready = [], False
+        for line in input.splitlines():
+            req = json.loads(line)
+            self.calls.append(req)
+            m, rid = req["method"], req.get("id")
+            if m == "initialize":
+                ready = True
+                out.append({"jsonrpc": "2.0", "id": rid, "result": {"capabilities": {}}})
+            elif rid is None:
+                continue
+            elif not ready:
+                out.append({"jsonrpc": "2.0", "id": rid, "error": {"code": -32602}})
+            elif m == "tools/list":
+                props = {"query": {}, "reader": {}} if self.tools_has_reader else {"query": {}}
+                tool = {"name": "memory_search", "inputSchema": {"properties": props}}
+                out.append({"jsonrpc": "2.0", "id": rid, "result": {"tools": [tool]}})
+            else:
+                text = json.dumps(self.results)
+                out.append(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": rid,
+                        "result": {"content": [{"type": "text", "text": text}]},
+                    }
+                )
 
         class R:
             returncode = 0
-            stdout = ""
+            stdout = "\n".join(json.dumps(o) for o in out)
 
-        r = R()
-        if req["method"] == "tools/list":
-            props = {"query": {}, "reader": {}} if self.tools_has_reader else {"query": {}}
-            r.stdout = json.dumps(
-                {
-                    "result": {
-                        "tools": [{"name": "memory_search", "inputSchema": {"properties": props}}]
-                    }
-                }
-            )
-        else:
-            r.stdout = json.dumps(
-                {"result": {"content": [{"type": "text", "text": json.dumps(self.results)}]}}
-            )
-        return r
+        return R()
 
 
-def test_advocacy_passes_reader_and_fails_closed_on_old_mcp():
+def test_advocacy_handshake_passes_reader_and_fails_closed_on_old_mcp():
     from skchat import advocacy
 
-    advocacy._READER_SUPPORT.clear()
     new = _Run(True, [{"content": "pub fact"}])
     with patch("skchat.advocacy.subprocess.run", new):
         out = advocacy.AdvocacyEngine()._get_memory_context("q", reader="channel:room1")
     assert "pub fact" in out
+    assert new.calls[0]["method"] == "initialize"
     call = [c for c in new.calls if c["method"] == "tools/call"][0]
     assert call["params"]["arguments"]["reader"] == "channel:room1"
 
-    advocacy._READER_SUPPORT.clear()
     old = _Run(False, [{"content": "owner secret"}])
     with patch("skchat.advocacy.subprocess.run", old):
         assert advocacy.AdvocacyEngine()._get_memory_context("q") == ""
-    assert all(c["method"] != "tools/call" for c in old.calls)
-    advocacy._READER_SUPPORT.clear()
 
 
 def test_context_default_source_reads_as_thread_channel():

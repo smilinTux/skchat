@@ -5,7 +5,7 @@ Replaces skvoice on port 18800 (drop-in compatible):
 
 Environment variables:
     SKCHAT_VOICE_PORT   — listen port (default 18800)
-    SKCHAT_VOICE_HOST   — bind host (default 0.0.0.0)
+    SKCHAT_VOICE_HOST   — bind host (default 127.0.0.1; the endpoint has no auth)
     SKVOICE_*           — all VoiceConfig keys are respected (see voice_engine/config.py)
 
 Operator migration (after validation):
@@ -25,7 +25,7 @@ def main() -> None:
     from skchat.transports.websocket import build_app  # noqa: PLC0415
 
     port = int(os.getenv("SKCHAT_VOICE_PORT", "18800"))
-    host = os.getenv("SKCHAT_VOICE_HOST", "0.0.0.0")
+    host = os.getenv("SKCHAT_VOICE_HOST", "127.0.0.1")
 
     app = build_app()  # uses real VoiceEngine factory from environment
 

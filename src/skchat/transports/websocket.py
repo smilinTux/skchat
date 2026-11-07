@@ -25,6 +25,17 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
 log = logging.getLogger("skchat.transports.websocket")
 
+# /ws/voice has NO authentication, so nobody on it is the verified operator:
+# no owner-scope memory, no whisper/journal block, no operator tools. The 1:1
+# ("sacred") register is never used here until a real auth check exists
+# (SKMEM-P0-18).
+_WS_SPEAKER = "ws-guest"
+_WS_IS_OPERATOR = False
+
+
+def _ws_mode(group_suffix) -> str:
+    return "group"
+
 
 # ---------------------------------------------------------------------------
 # Group-chat helpers (ported from skvoice/service.py)
@@ -276,10 +287,9 @@ async def _process_speech(
     peer_block = _drain_peer_context(conn_id, pending_group)
     llm_input = f"{peer_block}\n\n{transcript}" if peer_block else transcript
 
-    # Build mode/speaker from context (defaults for now — Phase 3 adds proper auth)
-    mode = "group" if group_suffix else "sacred"
+    mode = _ws_mode(group_suffix)
     response = await engine.respond(
-        llm_input, history, mode=mode, speaker_id="chef", is_operator=True
+        llm_input, history, mode=mode, speaker_id=_WS_SPEAKER, is_operator=_WS_IS_OPERATOR
     )
 
     history.append({"role": "user", "content": llm_input})
@@ -315,9 +325,9 @@ async def _process_text(
     peer_block = _drain_peer_context(conn_id, pending_group)
     llm_input = f"{peer_block}\n\n{text}" if peer_block else text
 
-    mode = "group" if group_suffix else "sacred"
+    mode = _ws_mode(group_suffix)
     response = await engine.respond(
-        llm_input, history, mode=mode, speaker_id="chef", is_operator=True
+        llm_input, history, mode=mode, speaker_id=_WS_SPEAKER, is_operator=_WS_IS_OPERATOR
     )
 
     history.append({"role": "user", "content": llm_input})

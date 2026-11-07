@@ -154,23 +154,36 @@ class SessionContext:
         idle = self.cfg.idle_hours
         return idle <= 0 or (now - s.last_used) < idle * 3600
 
-    def system_prompt(self, key: str, *, peer: str = "chef", private: bool = True) -> str:
-        """The session's fixed system prompt, built on its first message."""
+    def system_prompt(
+        self,
+        key: str,
+        *,
+        peer: str = "chef",
+        private: bool = True,
+        inject_memory: Optional[bool] = None,
+    ) -> str:
+        """The session's fixed system prompt, built on its first message.
+
+        ``inject_memory=False`` never adds the memory block (whisper.md, journal
+        tail), whatever ``private`` and the group opt-in say. ``None`` keeps the
+        old rule. Callers that cannot prove the peer is the verified operator
+        must pass False (SKMEM-P0-18).
+        """
         now = self._clock()
         with self._lock:
             s = self._sessions.get(key)
             if s is not None and self._fresh(s, now):
                 s.last_used = now
                 return s.text
-            text = self._build(peer, private)
+            text = self._build(peer, private, inject_memory)
             self._sessions[key] = _Session(text=text, last_used=now)
             self.sessions_started += 1
             return text
 
-    def _build(self, peer: str, private: bool) -> str:
+    def _build(self, peer: str, private: bool, inject_memory: Optional[bool] = None) -> str:
         self.persona_builds += 1
         text = self._build_persona(peer) or ""
-        if self.cfg.enabled and (private or self.cfg.group):
+        if self.cfg.enabled and inject_memory is not False and (private or self.cfg.group):
             try:
                 block, report = self._loader(self.agent, self.cfg.budget)
             except Exception:  # noqa: BLE001 - never fail a reply over context

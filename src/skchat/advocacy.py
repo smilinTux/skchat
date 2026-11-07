@@ -35,39 +35,6 @@ TRIGGER_PREFIXES: list[str] = ["@opus", "@claude", "@ai", "@lumina"]
 # Binary used to invoke the skcapstone MCP JSON-RPC interface.
 MCP_BINARY: str = os.environ.get("SKCAPSTONE_MCP", "skcapstone-mcp")
 
-_READER_SUPPORT: dict[str, bool] = {}
-
-
-def _mcp_accepts_reader() -> bool:
-    """True when ``memory_search`` on the installed skcapstone-mcp takes ``reader``.
-
-    Asks the server for its tool list once per process. Any failure to find out
-    is "no": an unfiltered search must never be the fallback.
-    """
-    if MCP_BINARY in _READER_SUPPORT:
-        return _READER_SUPPORT[MCP_BINARY]
-    ok = False
-    try:
-        result = subprocess.run(
-            [MCP_BINARY],
-            input=json.dumps({"jsonrpc": "2.0", "method": "tools/list", "id": 0}),
-            capture_output=True,
-            text=True,
-            timeout=3,
-        )
-        if result.returncode == 0:
-            tools = json.loads(result.stdout).get("result", {}).get("tools", [])
-            for t in tools:
-                if t.get("name") == "memory_search":
-                    props = (t.get("inputSchema") or {}).get("properties") or {}
-                    ok = "reader" in props
-    except Exception as exc:
-        logger.debug("advocacy.py: reader capability probe failed: %s", exc)
-        return False  # not cached: a transient failure may succeed next time
-    _READER_SUPPORT[MCP_BINARY] = ok
-    return ok
-
-
 # Subprocess timeout in seconds for the consciousness_test call.
 _SUBPROCESS_TIMEOUT: int = 10
 
@@ -287,25 +254,38 @@ class AdvocacyEngine:
         Returns:
             str: ``"Relevant context:\\n- {mem}\\n..."`` or ``""`` on failure.
         """
-        if not _mcp_accepts_reader():
-            logger.warning(
-                "skcapstone-mcp memory_search has no reader argument; "
-                "skipping memory context (SKMEM-P0-18)"
-            )
-            return ""
-        payload = {
-            "jsonrpc": "2.0",
-            "method": "tools/call",
-            "params": {
-                "name": "memory_search",
-                "arguments": {"query": query, "limit": 5, "reader": reader},
+        # One stdio MCP session: initialize, initialized, tools/list, tools/call.
+        # skcapstone-mcp rejects any request sent before initialize. tools/list
+        # proves this server's memory_search takes ``reader``; an old server
+        # would ignore it and return owner-scope memories, so its answer is
+        # discarded (fail closed).
+        msgs = [
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": {"name": "skchat-advocacy", "version": "0"},
+                },
             },
-            "id": 1,
-        }
+            {"jsonrpc": "2.0", "method": "notifications/initialized"},
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+            {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {
+                    "name": "memory_search",
+                    "arguments": {"query": query, "limit": 5, "reader": reader},
+                },
+            },
+        ]
         try:
             result = subprocess.run(
                 [MCP_BINARY],
-                input=json.dumps(payload),
+                input="\n".join(json.dumps(m) for m in msgs) + "\n",
                 capture_output=True,
                 text=True,
                 timeout=3,
@@ -313,8 +293,29 @@ class AdvocacyEngine:
             if result.returncode != 0:
                 return ""
 
-            data = json.loads(result.stdout)
-            contents = data.get("result", {}).get("content", [])
+            replies: dict = {}
+            for line in result.stdout.splitlines():
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(obj, dict) and "id" in obj:
+                    replies[obj["id"]] = obj
+
+            tools = (replies.get(2) or {}).get("result", {}).get("tools", [])
+            accepts = any(
+                t.get("name") == "memory_search"
+                and "reader" in ((t.get("inputSchema") or {}).get("properties") or {})
+                for t in tools
+            )
+            if not accepts:
+                logger.warning(
+                    "skcapstone-mcp memory_search has no reader argument; "
+                    "skipping memory context (SKMEM-P0-18)"
+                )
+                return ""
+
+            contents = (replies.get(3) or {}).get("result", {}).get("content", [])
 
             lines: list[str] = []
             for block in contents:

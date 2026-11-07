@@ -218,11 +218,18 @@ class GroupResponder:
         self.memory_searches = 0
 
     def _system_prompt(
-        self, peer_name: Optional[str] = None, *, key: str = "", private: bool = False
+        self,
+        peer_name: Optional[str] = None,
+        *,
+        key: str = "",
+        private: bool = False,
+        inject_memory: Optional[bool] = None,
     ) -> str:
         """The session's fixed system prompt (built once per session key)."""
         peer = peer_name or "chef"
-        return self.context.system_prompt(key or f"peer:{peer}", peer=peer, private=private)
+        return self.context.system_prompt(
+            key or f"peer:{peer}", peer=peer, private=private, inject_memory=inject_memory
+        )
 
     def refresh_context(self, key: Optional[str] = None) -> None:
         """Explicit refresh: the next message in that session (or any) rebuilds."""
@@ -331,7 +338,13 @@ class GroupResponder:
         if _sender_handle(msg.recipient) != self.cfg.agent:
             return None
         peer = _sender_handle(msg.sender)
-        system = self._system_prompt(peer_name=peer, key=f"dm:{peer}", private=True)
+        # whisper.md and the journal tail are a digest of the whole store. No
+        # verified-identity check exists for a text DM sender (the sender string
+        # is unauthenticated here), so NO DM peer gets them until one does
+        # (SKMEM-P0-18). Flip inject_memory only behind such a check.
+        system = self._system_prompt(
+            peer_name=peer, key=f"dm:{peer}", private=True, inject_memory=False
+        )
         # No verified-Chef check exists on the text DM path, so a DM reads as
         # @public (SKMEM-P0-18). Owner scope needs a real identity check first.
         user = self._user_turn(msg, reader=PUBLIC)

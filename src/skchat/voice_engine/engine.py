@@ -197,7 +197,10 @@ class VoiceEngine:
         """
         # 1. The session's fixed system prompt (persona + runtime fact + memory
         #    block + brevity rule), built on the first turn and reused verbatim.
-        system_msg = {"role": "system", "content": self.system_prompt(mode)}
+        # A speaker who is not the verified operator never gets the 1:1 register,
+        # which carries the whisper/journal memory block (SKMEM-P0-18).
+        prompt_mode = "group" if (is_operator is not True and mode in ONE_TO_ONE_MODES) else mode
+        system_msg = {"role": "system", "content": self.system_prompt(prompt_mode)}
 
         # 2. Fetch relevant memories. These go in their OWN system message, NOT
         #    glued onto the front of what the user said.
