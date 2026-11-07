@@ -42,8 +42,8 @@ NOSTR_PORT="${NOSTR_PORT:-7447}"
 PIPER_URL="${PIPER_URL:-http://localhost:18797/}"
 PUBLIC_URL="${SKCHAT_PUBLIC_URL:-https://noroc2027.tail204f0c.ts.net/}"
 
-# livekit + nostr bind the tailnet IP, not loopback (see CLAUDE.md "Systemd
-# Services" and livekit_routes.py TAILNET_HOST_ENV). Resolve it the same way
+# livekit + nostr bind the tailnet IP, not loopback (see systemd/README.md
+# and livekit_routes.py TAILNET_HOST_ENV). Resolve it the same way
 # the app does: explicit env wins, else `tailscale ip -4`, else the known
 # live fallback.
 TAILNET_HOST="${SKCHAT_TAILNET_HOST:-}"

@@ -175,5 +175,5 @@ Any message containing `@opus`, `@claude`, or `@ai` routes through the
 | Messages stuck | `ls ~/.skcomms/outbox/` — inspect pending queue |
 | MCP not visible in Claude | `bash scripts/mcp-config-inject.sh` then restart Claude |
 
-See `CLAUDE.md` in this repo for the full module map, MCP tool list, and
-deeper troubleshooting.
+See `AGENTS.md` in this repo for the agent brief, `docs/ARCHITECTURE.md` for the
+module map, and `docs/mcp-reference.md` for the MCP tool list.

@@ -382,7 +382,7 @@ cd ~/clawd/skcapstone-repos/skchat-app && flutter pub get
 ## 4. Test
 
 ```bash
-# Server-side Spaces + federation tests (run from ~, avoids the skmemory namespace collision, see CLAUDE.md)
+# Server-side Spaces + federation tests (run from ~, avoids the skmemory namespace collision, see AGENTS.md)
 cd ~ && ~/.skenv/bin/python -m pytest tests/test_spaces_*.py tests/test_fed_*.py -q
 
 # Flutter client tests (skchat-app repo)
@@ -487,13 +487,13 @@ All routes are registered on the skchat webui's FastAPI app (`webui.py:132-134`)
 
 ## 9. Maturity-tier + Version reference
 
-**Maturity tier: T0: Classical.** Spaces mints LiveKit JWTs (HS256, classical HMAC) and relies on WebRTC's standard DTLS-SRTP for media, both classical, Grover-only at worst. It carries no PQC claim and none is implied here. The federation layer's FQID assertions are signed with the existing capauth PGP identity (classical RSA/ECC per capauth's current keys, not yet the hybrid target described in skchat's root `CLAUDE.md` crypto section); Spaces inherits capauth's posture rather than defining its own.
+**Maturity tier: T0: Classical.** Spaces mints LiveKit JWTs (HS256, classical HMAC) and relies on WebRTC's standard DTLS-SRTP for media, both classical, Grover-only at worst. It carries no PQC claim and none is implied here. The federation layer's FQID assertions are signed with the existing capauth PGP identity (classical RSA/ECC per capauth's current keys, not yet the hybrid target described in `docs/quantum-resistance-architecture.md`); Spaces inherits capauth's posture rather than defining its own.
 
 **VERSION_LIFECYCLE phase:** Active v1 (the feature is shipped and in production use on `.158`; federation, §2.11a, is an additive layer within the same v1 line, not a separate version track).
 
 **SemVer:** tracks the parent `skchat-sovereign` package version (`pyproject.toml`); Spaces has no independent version number.
 
-**CRYPTOGRAPHY_STANDARD compliance:** N/A for this document's scope, Spaces is not itself a key-management surface (it consumes capauth identity and mints short-lived LiveKit bearer tokens); the applicable crypto posture is documented at the repo root in `docs/crypto-architecture.md` and `CLAUDE.md`'s "Security & Quantum-Resistance" section, which this document does not duplicate or override.
+**CRYPTOGRAPHY_STANDARD compliance:** N/A for this document's scope, Spaces is not itself a key-management surface (it consumes capauth identity and mints short-lived LiveKit bearer tokens); the applicable crypto posture is documented at the repo root in `docs/crypto-architecture.md` and `docs/quantum-resistance-architecture.md`, which this document does not duplicate or override.
 
 ---
 
