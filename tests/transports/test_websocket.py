@@ -115,14 +115,15 @@ def test_real_engine_builds_persona_once_per_connection_and_never_searches():
         for text in ("one", "two"):
             ws.send_text(json.dumps({"type": "text_message", "text": text}))
             _drain_turn(ws)
-        assert builds == ["sacred"]
+        assert builds == ["group"]
         ws.send_text("CLEAR_HISTORY")
         ws.receive()
         ws.send_text(json.dumps({"type": "text_message", "text": "three"}))
         _drain_turn(ws)
 
     assert len(engines) == 1
-    assert builds == ["sacred", "sacred"]  # once, then once more after the refresh
+    assert builds == ["group", "group"]  # once, then once more after the refresh
     assert searches == []
     assert systems[0] == systems[1] == systems[2]
-    assert "test block" in systems[0]
+    # SKMEM-P0-18: the unauthenticated websocket never gets the memory block
+    assert "test block" not in systems[0]
