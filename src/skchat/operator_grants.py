@@ -365,6 +365,7 @@ def grant_operator_capabilities_detailed(
 
     subject = operator_subject(device_fp)
     try:
+        from capauth.identity_class import IdentityClassName, assign_identity_class
         from capauth.pairing import approve, default_base_dir
 
         base = default_base_dir()
@@ -372,6 +373,18 @@ def grant_operator_capabilities_detailed(
             device_pubkey_b64, subject, base, capauth_proof
         )
         approve(enrollment.enrollment_id, "skchat", base_dir=base)
+        # capauth's unclassified-subject compatibility window closed 2026-09-01
+        # (UNCLASSIFIED_MIGRATION_REMOVAL_AT), and it grandfathered exactly one
+        # hardcoded device. Past that instant authz.decide refuses any subject
+        # with no identity class BEFORE it reads a token, so without this every
+        # freshly enrolled device is authenticated and authorized for nothing,
+        # denied with "has no identity class assignment" rather than anything
+        # naming the grant. capauth's own note says to persist the assignment
+        # with assign_identity_class(); this is the one point both the proven
+        # and fallback enrollment paths route through. edge-device is the
+        # correct ceiling: its allowlist is already exactly the skchat bundle
+        # granted here (send / media.write / voice / calls).
+        assign_identity_class(subject, IdentityClassName.EDGE_DEVICE, base_dir=base)
         # Non-expiring: a persistent (revocable) operator device should not need
         # a daily re-grant. Signed where possible; see _issue_bundle_token.
         _issue_bundle_token(base, subject)
