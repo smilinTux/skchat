@@ -13,6 +13,10 @@ standards.
 ## [Unreleased]
 
 ### Security
+
+- Raised `Pillow` to `>=13.0.0`, `PyJWT` to `>=2.15.0`, `cryptography` to `>=50.0.0,<51` and `mcp` to `>=1.30.0,<2.0` to clear the 2026-11-13 dependency sweep findings.
+
+### Security
 - **Group and unknown surfaces no longer read owner-scope memory (SKMEM-P0-18).**
   skmemory's `search` treats an undeclared reader as the owner, so group
   auto-replies (`group_responder.recall`), the voice engine bridge and
