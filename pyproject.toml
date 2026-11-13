@@ -46,7 +46,7 @@ dependencies = [
     # operator_session, coord 3731ae06). Same story as fastapi above: imported
     # at module/call load without ever being declared here.
     "PyJWT>=2.15.0",
-    "cryptography>=50.0.0,<51",
+    "cryptography>=50.0.0",
     # capauth.pairing.operator_session is now the mint/verify/device-standing
     # primitive skchat's operator session runs on (moved out of skchat's own
     # operator_auth.py, coord 3731ae06) -- a core runtime path (guest.py,
