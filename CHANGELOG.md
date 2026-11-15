@@ -12,6 +12,12 @@ standards.
 
 ## [Unreleased]
 
+### Fixed
+- **Dependencies: no fastapi upper cap.** `fastapi<0.136` pulled the shared fleet
+  venv down from 0.141 to 0.135.4. Only tests needed it (they read `.path` off
+  `app.routes`, which fastapi 0.136+ nests as `_IncludedRouter`); they now use
+  `tests/_route_walk.py`, which works on both layouts.
+
 ### Security
 - **Group and unknown surfaces no longer read owner-scope memory (SKMEM-P0-18).**
   skmemory's `search` treats an undeclared reader as the owner, so group
