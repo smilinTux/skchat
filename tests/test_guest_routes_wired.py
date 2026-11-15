@@ -19,12 +19,13 @@ from fastapi import FastAPI  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 from skchat.guest import register_guest_routes  # noqa: E402
+from tests._route_walk import route_paths  # noqa: E402
 
 _SECRET = "test-guest-secret-do-not-use"
 
 
 def _route_paths(app) -> set[str]:
-    return {r.path for r in app.routes}
+    return route_paths(app)
 
 
 # -- Wiring: routes are registered --------------------------------------------

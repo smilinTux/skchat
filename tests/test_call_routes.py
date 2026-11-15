@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 import skchat.call_routes as cr
 from skchat.call_session import build_invite_body, derive_room
+from tests._route_walk import route_paths
 
 
 @pytest.fixture
@@ -404,7 +405,7 @@ def test_incoming_skips_unverified_invite(client, monkeypatch):
 def test_webui_registers_call_routes():
     from skchat.webui import app
 
-    paths = {r.path for r in app.routes}
+    paths = route_paths(app)
     assert "/call/start" in paths
     assert "/call/answer" in paths
     assert "/call/incoming" in paths
