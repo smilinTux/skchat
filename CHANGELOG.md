@@ -13,6 +13,14 @@ standards.
 ## [Unreleased]
 
 ### Fixed
+- **Idle web UI no longer holds a core verifying the same inbox.** The call
+  answerer polls `/call/incoming` every 3 s and each poll unsealed and
+  PGP-verified every inbox envelope again (about 5.6 CPU-s for 13 envelopes),
+  so `skchat-webui@opus` sat at 62 percent of a core idle. `_read_inbox` now
+  reuses the verified result while the inbox listing is unchanged, for at most
+  `SKCHAT_INBOX_CACHE_TTL_S` (600 s). A new or consumed envelope is read and
+  verified fresh on the next poll. Crypto-relevant: verification is skipped
+  only for envelope bytes already verified within the TTL.
 - **Dependencies: no fastapi upper cap.** `fastapi<0.136` pulled the shared fleet
   venv down from 0.141 to 0.135.4. Only tests needed it (they read `.path` off
   `app.routes`, which fastapi 0.136+ nests as `_IncludedRouter`); they now use
