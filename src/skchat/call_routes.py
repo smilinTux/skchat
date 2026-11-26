@@ -79,10 +79,11 @@ def _alert_operator(*, from_fqid: str, to_fqid: str, room: str, topic: str = "")
 # call answerer polls /call/incoming every few seconds, so re-verifying an
 # unchanged inbox each time held a core at about 62 percent on an idle node
 # (noroc2027, 2026-11-26). The result is reused while the inbox listing (name,
-# mtime, size) is unchanged; the TTL bounds how long a key rotation or
+# mtime, size) is unchanged (one uncached read of 13 envelopes is about 5.6
+# CPU-s). The TTL (600 s) bounds how long a key rotation or
 # revocation can go unseen. A new or consumed envelope changes the listing and
 # is seen on the next poll.
-INBOX_CACHE_TTL_S = float(os.getenv("SKCHAT_INBOX_CACHE_TTL_S", "60"))
+INBOX_CACHE_TTL_S = float(os.getenv("SKCHAT_INBOX_CACHE_TTL_S", "600"))
 _INBOX_CACHE: dict = {}
 
 
