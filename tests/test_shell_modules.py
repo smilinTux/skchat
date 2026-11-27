@@ -1,7 +1,7 @@
 """Shell subapp-manifest discovery aggregate: shape, dedupe, best-effort, unauth.
 
 The aggregate fetches are monkeypatched so the test never touches the network or
-a real registry dir. Run from ~ per skchat/CLAUDE.md (skmemory namespace collision).
+a real registry dir. Run from ~ per skchat/AGENTS.md (skmemory namespace collision).
 """
 
 from __future__ import annotations

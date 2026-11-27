@@ -3809,6 +3809,32 @@ async def _handle_capture_chat_to_memory(args: dict) -> list[TextContent]:
     return _json({"captured": len(memory_ids), "memory_ids": memory_ids})
 
 
+def _skcapstone_http_accepts_reader() -> bool:
+    """True when the skcapstone MCP server's memory_search schema has ``reader``."""
+    import json as _j
+    import urllib.request
+
+    from .memory_bridge import _CAPTURE_TIMEOUT, SKCAPSTONE_MCP_URL
+
+    body = _j.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}).encode()
+    req = urllib.request.Request(
+        SKCAPSTONE_MCP_URL,
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=_CAPTURE_TIMEOUT) as resp:
+            tools = _j.loads(resp.read().decode()).get("result", {}).get("tools", [])
+    except Exception:
+        return False
+    return any(
+        t.get("name") == "memory_search"
+        and "reader" in ((t.get("inputSchema") or {}).get("properties") or {})
+        for t in tools
+    )
+
+
 async def _handle_get_context_for_message(args: dict) -> list[TextContent]:
     """Search skcapstone memories relevant to a chat message for AI context injection.
 
@@ -3825,7 +3851,12 @@ async def _handle_get_context_for_message(args: dict) -> list[TextContent]:
     if not query:
         return _error("query is required")
 
-    result = _call_skcapstone("memory_search", {"query": query, "limit": 5})
+    # The MCP caller is unauthenticated, so read as @public (SKMEM-P0-18), and
+    # only if the server advertises ``reader`` (an old one would ignore it).
+    if not _skcapstone_http_accepts_reader():
+        logger.warning("get_context_for_message: skcapstone memory_search has no reader")
+        return _json({"context": "", "count": 0, "error": "reader unsupported"})
+    result = _call_skcapstone("memory_search", {"query": query, "limit": 5, "reader": "@public"})
 
     if "error" in result:
         logger.warning("get_context_for_message: %s", result["error"])

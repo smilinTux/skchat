@@ -54,7 +54,8 @@ across hosts and users.
 - `skchat-telegram-opus.service.d/override.conf`,
   `skchat-telegram-lumina.service.d/override.conf`: rating buttons + skmem-pg
   memory backend; the inline `SKMEMORY_PG_DSN` secret is externalized.
-- `skchat-lumina-call.service.d/`: `fixes.conf`, `musetalk.conf`, `tts.conf`,
+- `skchat-lumina-call.service.d/`: `fixes.conf`, `musetalk.conf`,
+  `operator-token.conf` (operator token from `lumina-call.env`), `tts.conf`,
   `vad.conf`, `webui.conf` (later-loaded drop-ins win: effective TTS is
   localhost:15091, webui 127.0.0.1:8765, MuseTalk disabled).
 - `skchat-nostr-relay.service.d/override.conf`: rebind to the host tailnet IP.
@@ -76,12 +77,16 @@ Provision these on the host before enabling (templates in `examples/env/`):
 | `~/.config/skchat/telegram-lumina.env` | `SKC_BRIDGE_TOKEN` |
 | `~/.config/skchat/webui-<agent>.env` | webui config + LiveKit/TURN secrets (`SKCHAT_PORT` required) |
 | `~/.config/livekit/livekit.yaml` | LiveKit API key/secret pairs |
+| `~/.config/skchat/lumina-call.env` | `SKCHAT_GUEST_OPERATOR_TOKEN` (call agent; same value as the lumina webui) |
 | `~/.config/lumina-creative/env` | `NVIDIA_API_KEY` (call agent) |
 | `~/.skchat/coturn/coturn.secret` | coturn shared secret (0600) |
 
 The two live inline secrets that this reconcile externalized were the two
 `SKCHAT_GUEST_TOKEN_SECRET` drop-ins and the two `SKMEMORY_PG_DSN` bridge
-drop-ins. Rotating the previously-inline PG DSN is plan task P1.2.
+drop-ins. Rotating the previously-inline PG DSN is plan task P1.2. On
+2026-10-26 the hand-made `skchat-lumina-call.service.d/operator-token.conf`
+(inline `SKCHAT_GUEST_OPERATOR_TOKEN`) was moved the same way to
+`lumina-call.env`; the token was not rotated.
 
 `install.sh` runs a preflight and warns (does not fail) for any missing file.
 

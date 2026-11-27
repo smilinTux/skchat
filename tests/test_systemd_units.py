@@ -45,6 +45,7 @@ EXPECTED_UNITS = {
     "skchat-telegram-lumina.service",
     "skchat-telegram@.service",
     "skchat-lumina-call.service",
+    "skchat-call-answerer@.service",
     "skchat-nostr-relay.service",
     "skchat-piper-tts.service",
     "skchat-webui@.service",

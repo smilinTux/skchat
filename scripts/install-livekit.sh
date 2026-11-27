@@ -3,7 +3,7 @@
 # Idempotent — safe to re-run.
 set -euo pipefail
 
-LIVEKIT_VERSION="${LIVEKIT_VERSION:-1.9.1}"
+LIVEKIT_VERSION="${LIVEKIT_VERSION:-1.13.11}"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
 CONFIG_DIR="${CONFIG_DIR:-$HOME/.config/livekit}"
 UNIT_DIR="$HOME/.config/systemd/user"
@@ -40,6 +40,9 @@ port: 7880
 bind_addresses:
   - $TS_IP
 rtc:
+  # WARP (SPED + SNAP), needs livekit-server >= 1.13.8. Negotiated per client;
+  # see docs/runbooks/livekit-1.13-warp-upgrade.md
+  enable_warp: true
   tcp_port: 7881
   port_range_start: 50000
   port_range_end: 50200

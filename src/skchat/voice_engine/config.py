@@ -4,6 +4,20 @@ One place to set models, endpoints, voice, and VAD knobs. Both transports
 construct their clients from this. Defaults match the live, working endpoints
 as of 2026-06-12 (local haiku proxy + qwen3.6-abliterated fallback + kokoro
 TTS proxy + whisper STT).
+
+Session context (Chef's rule, 2026-10-26: persona and memory are injected ONCE
+at session start, never per turn):
+
+    SKVOICE_CONTEXT          1 | 0: load the agent's own memory (whisper.md,
+                             latest reflection, journal tail) into the system
+                             prompt once per session (default 1). See
+                             voice_engine/memory_context.py.
+    SKVOICE_CONTEXT_BUDGET   token budget for that block (default 3000).
+    SKVOICE_CONTEXT_GROUP    1 | 0: include it in group sessions too (default
+                             0; whisper.md is private material).
+    SKVOICE_PER_TURN_RECALL  1 | 0: legacy behaviour, run a skmemory search on
+                             every turn and inject the hits (default 0, OFF).
+                             Off, she recalls on demand via search_memory.
 """
 
 from __future__ import annotations
@@ -29,6 +43,11 @@ class VoiceConfig:
     tts_voice: str
     # identity
     agent: str
+    # session context (built once per session; see module docstring)
+    context_enabled: bool = True
+    context_budget: int = 3000
+    context_group: bool = False
+    per_turn_recall: bool = False
 
     @staticmethod
     def from_env(env: Mapping[str, str] | None = None) -> "VoiceConfig":
@@ -36,6 +55,17 @@ class VoiceConfig:
 
         def g(key: str, default: str) -> str:
             return e.get(key, default)
+
+        def flag(key: str, default: bool) -> bool:
+            raw = (e.get(key) or "").strip().lower()
+            if not raw:
+                return default
+            return raw not in ("0", "false", "no", "off")
+
+        try:
+            budget = int(g("SKVOICE_CONTEXT_BUDGET", "3000"))
+        except ValueError:
+            budget = 3000
 
         return VoiceConfig(
             llm_url=g("SKVOICE_LLM_URL", "http://localhost:18783/v1/chat/completions"),
@@ -50,4 +80,8 @@ class VoiceConfig:
             tts_url=g("SKVOICE_TTS_URL", "http://localhost:15091/audio/speech"),
             tts_voice=g("SKVOICE_TTS_VOICE", "lumina"),
             agent=g("SKVOICE_AGENT", "lumina"),
+            context_enabled=flag("SKVOICE_CONTEXT", True),
+            context_budget=budget,
+            context_group=flag("SKVOICE_CONTEXT_GROUP", False),
+            per_turn_recall=flag("SKVOICE_PER_TURN_RECALL", False),
         )

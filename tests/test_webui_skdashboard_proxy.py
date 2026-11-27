@@ -10,7 +10,7 @@ rewrites those root-absolute asset URLs onto ``/skdashboard/static`` (and
 double-prefix), and that non-HTML bodies are left byte-for-byte untouched.
 
 The upstream ``urlopen`` is monkeypatched so the tests never touch a socket. Run
-from ~ per skchat/CLAUDE.md (skmemory namespace collision).
+from ~ per skchat/AGENTS.md (skmemory namespace collision).
 """
 
 from __future__ import annotations

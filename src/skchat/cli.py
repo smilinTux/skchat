@@ -4438,14 +4438,27 @@ def config_validate() -> None:
     identity_file = Path("~/.skcapstone/identity/identity.json").expanduser()
     memory_dir = Path(SKCHAT_HOME).expanduser() / "memory"
 
+    bridge_peers = []
+    if config_path.is_file():
+        try:
+            import yaml
+
+            configured = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+            bridge_peers = (configured.get("bridge") or {}).get("peers") or []
+        except (OSError, ValueError, yaml.YAMLError) as exc:
+            _print(f"  Invalid config: {exc}")
+            sys.exit(1)
+
     checks = [
         ("Config file", config_path, config_path.is_file()),
         ("Identity file", identity_file, identity_file.is_file()),
         ("Memory dir", memory_dir, memory_dir.is_dir()),
         ("Peers dir", peers_dir, peers_dir.is_dir()),
-        ("lumina peer", peers_dir / "lumina.json", (peers_dir / "lumina.json").is_file()),
-        ("claude peer", peers_dir / "claude.json", (peers_dir / "claude.json").is_file()),
     ]
+    checks.extend(
+        (f"{peer} peer", peers_dir / f"{peer}.json", (peers_dir / f"{peer}.json").is_file())
+        for peer in bridge_peers
+    )
 
     _print("")
     all_ok = True

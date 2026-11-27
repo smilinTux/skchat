@@ -79,7 +79,7 @@ All defaults live in `src/skchat/voice_engine/config.py::VoiceConfig.from_env`.
 
 ## Setup commands
 
-Run from `~` (never from `smilintux-org/` — skmemory namespace collision; see CLAUDE.md).
+Run from `~`, never from a parent directory holding sibling checkouts (skmemory namespace collision; see AGENTS.md "Hazards").
 
 ```bash
 # 0. Sanity: confirm every backend leg is reachable BEFORE touching the WS service.
