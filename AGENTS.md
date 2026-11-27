@@ -35,7 +35,7 @@ CI: `ci.yml` (jobs `lint`, `test`), `pytest.yml`, `qa.yml`, `docs-check.yml`, `s
 # install (CI)
 pip install -e ".[dev]"
 pip install --force-reinstall --no-deps --no-cache-dir \
-  "capauth @ git+https://github.com/smilinTux/capauth@d8942ac86d90" \
+  "capauth @ git+https://github.com/smilinTux/capauth@c64e3eaa9fcf" \
   "skcomms @ git+https://github.com/smilinTux/skcomms@2152e30f8ce7"
 # lint and format (ci.yml lint, ruff pinned to 0.15.4)
 ruff check src/ tests/
