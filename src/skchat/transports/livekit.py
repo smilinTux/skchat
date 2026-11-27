@@ -35,6 +35,13 @@ engine via :class:`skchat.voice_engine.config.VoiceConfig`):
     LUMINA_BARGE_IN_RMS           2000
     LUMINA_FOLLOW_UP_S            60     (roundtable follow-up window)
     LUMINA_AGENT_TURN_CAP         6      (consecutive peer-agent replies)
+    SKVOICE_CONTEXT               1      (memory block in the prompt, once per call)
+    SKVOICE_CONTEXT_BUDGET        3000   (tokens for that block)
+    SKVOICE_CONTEXT_GROUP         0      (include it on group calls)
+    SKVOICE_PER_TURN_RECALL       0      (legacy per-turn skmemory search; off)
+
+Persona and memory are built ONCE per call (one engine per session), never per
+turn; mid-call recall goes through the search_memory tool.
 
 Operator recognition is NOT an environment setting. It is resolved from the
 signature-verified invite FQID by :mod:`skchat.voice_engine.caller_profile`;
@@ -1562,6 +1569,14 @@ async def build_room_session(
                 await mcp.aclose_all()
             except Exception:  # noqa: BLE001 - teardown is best-effort
                 log.debug("MCP teardown failed", exc_info=True)
+        # The session's persona + memory block were built once for this call;
+        # drop them with it.
+        end_session = getattr(engine, "end_session", None)
+        if callable(end_session):
+            try:
+                end_session()
+            except Exception:  # noqa: BLE001 - teardown is best-effort
+                log.debug("engine.end_session failed", exc_info=True)
         try:
             await room.disconnect()
         except Exception:  # pragma: no cover - already gone

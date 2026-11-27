@@ -68,6 +68,16 @@ class TestPingSkcomm:
         assert watchdog.consecutive_failures == 1
         assert watchdog.last_failure_at is not None
 
+    def test_degraded_identity_is_not_healthy(self, watchdog):
+        """An alive API without signing keys must not report healthy transport."""
+        resp = MagicMock(status_code=200)
+        resp.json.return_value = {"status": "degraded", "identity": {"private_key_present": False}}
+        with patch("httpx.get", return_value=resp):
+            result = watchdog.ping_skcomms()
+
+        assert result is False
+        assert watchdog.consecutive_failures == 1
+
     def test_connection_error_increments_failures(self, watchdog):
         """Connection error increments consecutive_failures and returns False."""
         with patch("httpx.get", side_effect=ConnectionError("refused")):

@@ -12,7 +12,71 @@ standards.
 
 ## [Unreleased]
 
+### Fixed
+- **Idle web UI no longer holds a core verifying the same inbox.** The call
+  answerer polls `/call/incoming` every 3 s and each poll unsealed and
+  PGP-verified every inbox envelope again (about 5.6 CPU-s for 13 envelopes),
+  so `skchat-webui@opus` sat at 62 percent of a core idle. `_read_inbox` now
+  reuses the verified result while the inbox listing is unchanged, for at most
+  `SKCHAT_INBOX_CACHE_TTL_S` (600 s). A new or consumed envelope is read and
+  verified fresh on the next poll. Crypto-relevant: verification is skipped
+  only for envelope bytes already verified within the TTL.
+- **Dependencies: no fastapi upper cap.** `fastapi<0.136` pulled the shared fleet
+  venv down from 0.141 to 0.135.4. Only tests needed it (they read `.path` off
+  `app.routes`, which fastapi 0.136+ nests as `_IncludedRouter`); they now use
+  `tests/_route_walk.py`, which works on both layouts.
+
+### Security
+- **Group and unknown surfaces no longer read owner-scope memory (SKMEM-P0-18).**
+  skmemory's `search` treats an undeclared reader as the owner, so group
+  auto-replies (`group_responder.recall`), the voice engine bridge and
+  `search_memory` tool, `advocacy` and `context` could put `@chef-only`
+  memories into replies other people read. New `skchat.memory_reader` declares
+  the reader: `channel:<id>` for a group or thread, `@public` for text DMs
+  (there is no verified-Chef check on that path) and anything unknown, owner
+  only for a verified operator in a 1:1 voice call. A skmemory without
+  `search(reader=...)` or an skcapstone-mcp whose `memory_search` has no
+  `reader` argument now returns nothing instead of an unfiltered search.
+  Needs an skmemory with `search(reader=...)` (0.11.94+); older ones return
+  nothing for group and DM recall instead of leaking.
+- Raised `Pillow` to `>=13.0.0`, `PyJWT` to `>=2.15.0`, `cryptography` to `>=50.0.0` and `mcp` to `>=1.30.0,<2.0` to clear the 2026-11-13 dependency sweep findings.
+- **No whisper.md or journal in text DM prompts, voice websocket is not the
+  operator.** Text DM senders are unauthenticated, so no DM peer gets the
+  whisper/journal block until a verified identity check exists. `/ws/voice` has
+  no auth: it now runs as a non-operator in the group register, and
+  `skchat-voice` binds 127.0.0.1 by default (`SKCHAT_VOICE_HOST` overrides; the
+  voice Dockerfile still sets 0.0.0.0 explicitly). `VoiceEngine` never gives a
+  non-operator the 1:1 register. Advocacy now does the MCP `initialize`
+  handshake, and `get_context_for_message` reads as `@public`.
+
 ### Changed
+- **Text chat: persona and memory context are built once per session, never
+  per message.** The same rule as voice, for the text paths: the daemon's
+  `GroupResponder` (group auto-replies and DMs) rebuilt the soul+FEB prompt and
+  ran a skmemory search on every message, the Telegram bridge injected a
+  `memory_search` recall into every turn, and the app DM brain (`LuminaBrain`
+  behind `daemon_proxy`) froze its persona for the life of the process. New
+  `session_context.py` builds the fixed system prompt (persona plus, for private
+  chats, the `memory_context.py` block) on a conversation's first message and
+  reuses it byte-identical. A session is one conversation key (group thread +
+  sender, DM peer, Telegram chat) and ends after `SKCHAT_CONTEXT_IDLE_HOURS`
+  idle (default 6), on explicit refresh (Telegram `/refresh`), or on restart.
+  Flags: `SKCHAT_CONTEXT`, `SKCHAT_CONTEXT_BUDGET`, `SKCHAT_CONTEXT_GROUP`
+  (default off). The per-message search is behind `SKCHAT_PER_MESSAGE_RECALL=1`,
+  default off; on-demand recall stays via the memory_search tool.
+  `SKCHAT_DM_MEMORY` now only gates the DM brain's skmemory store.
+- **Voice: persona and memory context are built once per session, never per
+  turn.** `VoiceEngine.respond()` rebuilt the persona (soul + FEB from disk)
+  and ran a skmemory search on every turn of every LiveKit call and WebSocket
+  connection. The system prompt (persona, runtime fact, memory block, brevity
+  rule) is now built once per register and cached on the engine, so every turn
+  sends the same prompt. New `voice_engine/memory_context.py` (ported from
+  skcall PR #16) loads whisper.md, the newest reflection under 7 days and the
+  meaningful journal tail under `SKVOICE_CONTEXT_BUDGET` tokens (default 3000);
+  private register only unless `SKVOICE_CONTEXT_GROUP=1`; `SKVOICE_CONTEXT=0`
+  turns it off. The per-turn search is behind `SKVOICE_PER_TURN_RECALL=1`,
+  default off; mid-call recall stays on demand via `search_memory`. The cache is
+  dropped on `CLEAR_HISTORY`, WebSocket disconnect and LiveKit session end.
 - **Docs: the federation boundary is an estate, and today's federation is inside
   one.** `runbooks/federation-fqid-realm.md`, `runbooks/cross-host-federation.md`
   and `docs/WEBAPP-AND-API-ARCHITECTURE.md` now say that the fqid's `<operator>`
@@ -23,6 +87,16 @@ standards.
   tailnet membership. No code, no hostname and no `cluster.json` path changed.
 
 ### Fixed
+- **The MCP connect handler logged through an undefined name, destroying the
+  error it existed to report.** `MCPServerHandle` wrapped `session.initialize()`
+  and `session.list_tools()` in a try/except that called `logger.warning(...)`.
+  This module defines `log` (line 41) and uses it at all 16 other call sites;
+  `logger` was the only one in the repo and does not exist. The branch therefore
+  raised `NameError` on its first line, replacing the real connect failure in
+  the traceback and skipping both `await stack.aclose()` and `errlog.close()`,
+  so a failed connect also leaked the async exit stack and the open error-log
+  handle. Only reachable on the error path, which is why it survived. Note that
+  `ruff`'s `F821` catches this and `pyproject.toml` blanket-ignores it.
 - **`AuthEnforced` no longer collapses Unknown into a confident True (card
   504d0046).** ATLAS Eyes' first real run (PR skcapstone#178) found this CLI's
   `operator_probe.observe()` reporting `AuthEnforced=True` with zero real
@@ -157,6 +231,15 @@ standards.
   The token and wire form are unchanged; no crypto behavior changes.
 
 ### Docs
+- **`CLAUDE.md` is now `AGENTS.md`, per sk-standards `AGENT_INSTRUCTIONS_STANDARD`.**
+  One agent instructions file for every runtime (Claude Code reads `AGENTS.md`
+  natively and skips it when a `CLAUDE.md` sits next to it). Reshaped from 743 to
+  about 120 lines in the standard's eight sections; commands now match CI exactly.
+  The web client deploy procedure moved to `docs/WEB_CLIENT_DEPLOY.md` and the linked
+  devices notes to `docs/LINKED_DEVICES.md`. Module map, MCP tool tables and systemd
+  unit lists are linked (`docs/ARCHITECTURE.md`, `docs/mcp-reference.md`,
+  `systemd/README.md`) instead of copied. Host-specific detail (hosts, IPs, bot
+  names, home paths, model backends) was dropped. References repointed.
 - **Declared a maturity tier for the first time.** skchat is a crypto component and had
   **no** `T0`-`T4` declaration in README or SOP, while `SECURITY.md` pointed at "`SOP.md`
   §9" for one. Now declared and backed by code: **T1 (Agile) + T2 (Hybrid KEM,

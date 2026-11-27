@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 import skchat.call_routes as cr
 from skchat.call_session import build_invite_body, derive_room
+from tests._route_walk import route_paths
 
 
 @pytest.fixture
@@ -404,7 +405,7 @@ def test_incoming_skips_unverified_invite(client, monkeypatch):
 def test_webui_registers_call_routes():
     from skchat.webui import app
 
-    paths = {r.path for r in app.routes}
+    paths = route_paths(app)
     assert "/call/start" in paths
     assert "/call/answer" in paths
     assert "/call/incoming" in paths
@@ -528,3 +529,47 @@ def test_resolve_peer_accepts_capauth_and_drifted_realm(monkeypatch):
     assert CR._resolve_peer("opus") == "opus@chef.skworld.io"
     assert CR._resolve_peer("capauth:opus@skworld.io") == "opus@chef.skworld.io"
     assert CR._resolve_peer("opus@chef.skworld") == "opus@chef.skworld.io"
+
+
+def test_read_inbox_is_cached_while_the_inbox_dir_is_unchanged(monkeypatch, tmp_path):
+    """The answerer polls /call/incoming every 3 s; re-verifying every envelope
+    each time held a core at 62 percent on an idle node. Verify once per change."""
+    import skcomms.mailbox as mailbox
+
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
+    (inbox / "a.json").write_text("{}")
+    calls = []
+    monkeypatch.setattr(mailbox, "read_inbox", lambda *a, **k: calls.append(1) or ["env-a"])
+    monkeypatch.setattr(cr, "_invite_dir", lambda: inbox)
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(cr.time, "monotonic", lambda: clock["t"])
+    cr._INBOX_CACHE.clear()
+
+    assert cr._read_inbox() == ["env-a"]
+    assert cr._read_inbox() == ["env-a"]
+    assert len(calls) == 1  # unchanged dir: served from cache
+
+    (inbox / "b.json").write_text("{}")  # a new envelope arrives
+    cr._read_inbox()
+    assert len(calls) == 2
+
+    clock["t"] += cr.INBOX_CACHE_TTL_S + 1  # TTL bounds staleness (key rotation, revocation)
+    cr._read_inbox()
+    assert len(calls) == 3
+
+
+def test_read_inbox_without_a_listable_dir_never_caches(monkeypatch):
+    import skcomms.mailbox as mailbox
+
+    calls = []
+    monkeypatch.setattr(mailbox, "read_inbox", lambda *a, **k: calls.append(1) or [])
+
+    def boom():
+        raise RuntimeError("no identity")
+
+    monkeypatch.setattr(cr, "_invite_dir", boom)
+    cr._INBOX_CACHE.clear()
+    cr._read_inbox()
+    cr._read_inbox()
+    assert len(calls) == 2

@@ -29,6 +29,7 @@ from skchat.dataplane_auth import (
     route_capability,
 )
 from skchat.dataplane_paths import is_gated
+from tests._route_walk import walk_routes
 
 
 def _served_routes() -> list[tuple[str, str]]:
@@ -41,13 +42,9 @@ def _served_routes() -> list[tuple[str, str]]:
     from skchat.webui import app
 
     out: list[tuple[str, str]] = []
-    for route in app.routes:
-        methods = getattr(route, "methods", None)
+    for path, methods, _route in walk_routes(app.routes):
         if not methods:
             continue  # websocket / mount without HTTP methods
-        path = getattr(route, "path_format", None) or getattr(route, "path", None)
-        if not path:
-            continue
         for method in methods:
             if method in ("HEAD", "OPTIONS"):
                 continue

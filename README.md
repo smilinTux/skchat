@@ -175,7 +175,7 @@ flowchart TD
 | **[Architecture](docs/ARCHITECTURE.md)** | inbound/outbound message lifecycle, the @mention advocacy loop, group key state, voice pipeline, source-map, where-it-lives (mermaids) |
 | **[Spaces](docs/SPACES.md)** | sovereign live-audio-rooms SOP: roles, lifecycle, moderation, HTTP API, connectivity, recording, X Spaces parity, and an honest known-gaps section |
 | **[MCP reference](docs/mcp-reference.md)** | every MCP tool, its arguments, and usage from an agent host |
-| **[CLAUDE.md](CLAUDE.md)** | running the daemon, systemd units, identity, troubleshooting |
+| **[AGENTS.md](AGENTS.md)** | agent operating brief: CI commands, invariants, rules, hazards |
 | **[Crypto architecture](docs/crypto-architecture.md)** | quantum-resistance: honest claim status, current/future/gaps mermaids, SK-wide identity/key flow, per-surface remediation (S5/S6/S11 → Q2/Q3/Q4) |
 | **[Quantum-resistance master plan](docs/quantum-resistance-architecture.md)** | ecosystem source of truth: threat model, 11 surfaces, phased migration, epic `PQC-MIGRATION` |
 

@@ -75,10 +75,49 @@ def _alert_operator(*, from_fqid: str, to_fqid: str, room: str, topic: str = "")
         logger.debug("operator alert skipped: %s", exc)
 
 
+# read_inbox() unseals and PGP-verifies every envelope (pgpy, pure Python). The
+# call answerer polls /call/incoming every few seconds, so re-verifying an
+# unchanged inbox each time held a core at about 62 percent on an idle node
+# (noroc2027, 2026-11-26). The result is reused while the inbox listing (name,
+# mtime, size) is unchanged (one uncached read of 13 envelopes is about 5.6
+# CPU-s). The TTL (600 s) bounds how long a key rotation or
+# revocation can go unseen. A new or consumed envelope changes the listing and
+# is seen on the next poll.
+INBOX_CACHE_TTL_S = float(os.getenv("SKCHAT_INBOX_CACHE_TTL_S", "600"))
+_INBOX_CACHE: dict = {}
+
+
+def _inbox_listing():
+    try:
+        inbox = _invite_dir()
+        return tuple(
+            sorted(
+                (p.name, st.st_mtime_ns, st.st_size)
+                for p in inbox.glob("*.json")
+                for st in [p.stat()]
+            )
+        ), str(inbox)
+    except Exception:  # noqa: BLE001 - no listing means no cache, never a failed read
+        return None
+
+
 def _read_inbox() -> list:
     from skcomms.mailbox import read_inbox
 
-    return read_inbox()
+    key = _inbox_listing()
+    now = time.monotonic()
+    if (
+        key is not None
+        and _INBOX_CACHE.get("key") == key
+        and now - _INBOX_CACHE.get("at", float("-inf")) < INBOX_CACHE_TTL_S
+    ):
+        return _INBOX_CACHE["value"]
+    value = read_inbox()
+    if key is None:
+        _INBOX_CACHE.clear()
+    else:
+        _INBOX_CACHE.update(key=key, at=now, value=value)
+    return value
 
 
 # The reachability model ("can the caller reach us directly, no relay") and the

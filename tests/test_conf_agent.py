@@ -22,6 +22,7 @@ from fastapi.testclient import TestClient
 
 from skchat.conf.room import ConfRegistry
 from skchat.conf.routes import register_conf_routes
+from tests._route_walk import route_paths
 
 _KEY, _SECRET = "test-key", "test-secret-0123456789"
 _HOST = "lumina@chef.skworld"
@@ -331,7 +332,7 @@ def test_remove_agent_stop_failure_degrades(tmp_path, monkeypatch):
 def test_agent_routes_registered_on_app():
     app = FastAPI()
     register_conf_routes(app)
-    paths = {r.path for r in app.routes}
+    paths = route_paths(app)
     assert "/conf/{room}/invite-agent" in paths
     assert "/conf/{room}/remove-agent" in paths
 

@@ -1,0 +1,36 @@
+# SINGLE SOURCE OF TRUTH for skmodels routing (TEST FIXTURE).
+#
+# Deliberately NOT a copy of the operator's ~/.skcapstone/models/registry.yaml.
+# These tests cover the /model swap MECHANISM (write a contexts: toggle, flip
+# resolution, pick up an external edit), not which models the operator happens
+# to run today. Reading the live registry made them fail the moment Chef
+# consolidated sk-vision onto qwen38 and moved the default role to sk-auto:
+# four green tests went red with nothing in this repo having changed.
+#
+# The comment line above is load-bearing: one test asserts comments survive a
+# write, which is what keeps the real registry self-documenting.
+backends:
+  ornith:
+    url: http://192.168.0.100:8082/v1
+    model: ornith-1.5-9b
+    ctx: 65536
+    min_output_tokens: 8192
+    kind: chat
+    vision: false
+    no_failover: true
+  qwen-vl:
+    url: http://100.81.238.58:11436/v1
+    model: Qwen3.6-27b-abliterated-Q4_K_M
+    ctx: 32768
+    kind: chat
+    vision: true
+    no_failover: true
+
+roles:
+  sk-default: ornith
+  sk-vision: qwen-vl
+
+contexts: {}
+
+defaults:
+  role: sk-default
