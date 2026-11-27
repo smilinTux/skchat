@@ -13,6 +13,14 @@ standards.
 ## [Unreleased]
 
 ### Fixed
+- **Watchdog reconnect re-arms instead of latching off.** `check()` set
+  `_reconnect_pending` on the first reconnect and cleared it only on a
+  successful ping, the one path that cannot run while the peer is down, so a
+  failed reconnect was never retried (noroc2027 logged 13954 consecutive
+  failures with a single reconnect attempt). Reconnect now retries on a widening
+  gap of `failure_threshold * 2**attempt` checks, capped at 120 checks, and a
+  successful ping resets the streak and the backoff together. Re-triggers log
+  at ERROR with the attempt count and streak length.
 - **Idle web UI no longer holds a core verifying the same inbox.** The call
   answerer polls `/call/incoming` every 3 s and each poll unsealed and
   PGP-verified every inbox envelope again (about 5.6 CPU-s for 13 envelopes),

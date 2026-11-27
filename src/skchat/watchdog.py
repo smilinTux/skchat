@@ -21,6 +21,11 @@ logger = logging.getLogger("skchat.watchdog")
 
 _FAILURE_THRESHOLD = 3
 _PING_TIMEOUT = 5.0
+#: Ceiling on the gap (in consecutive failures) between reconnect attempts. The
+#: daemon checks roughly every 30s, so 120 is about one retry per hour once a
+#: streak is long. Bounded so a permanently unreachable peer is retried forever
+#: at a sane rate rather than hammered, and never abandoned.
+_MAX_RECONNECT_GAP = 120
 
 
 class TransportWatchdog:
@@ -28,8 +33,16 @@ class TransportWatchdog:
 
     On each check() call, {skcomms_url}/health is polled with an
     HTTP GET (timeout=5s).  Consecutive failures at or above
-    failure_threshold trigger transport.reconnect() -- once per failure
-    streak (rearms on the next successful ping).
+    failure_threshold trigger transport.reconnect(), then again on a
+    widening gap (threshold * 2**attempt, capped at _MAX_RECONNECT_GAP)
+    for as long as the streak lasts.  A successful ping resets the streak
+    and the backoff together.
+
+    The gap matters: reconnect used to fire exactly once per streak and
+    re-arm only on recovery, so a reconnect that did not fix the problem
+    disabled all further reconnects.  Observed on noroc2027 2026-09-15 at
+    consecutive=13954 against a threshold of 3, climbing since 2026-08-16
+    with exactly one reconnect ever attempted.
 
     Args:
         transport: Object with an optional reconnect() method.
@@ -53,6 +66,11 @@ class TransportWatchdog:
         self.last_success_at: Optional[datetime] = None
         self.last_failure_at: Optional[datetime] = None
         self._reconnect_pending: bool = False
+        #: Failure count at which the next reconnect fires. Re-armed with a
+        #: widening gap after every attempt so a reconnect that does not fix
+        #: the problem is retried instead of latching the watchdog off.
+        self._next_reconnect_at: int = failure_threshold
+        self._reconnect_attempts: int = 0
         self._started_at: datetime = datetime.now(timezone.utc)
 
     # ------------------------------------------------------------------
@@ -89,6 +107,8 @@ class TransportWatchdog:
                 self.consecutive_failures = 0
                 self.last_success_at = datetime.now(timezone.utc)
                 self._reconnect_pending = False
+                self._next_reconnect_at = self._failure_threshold
+                self._reconnect_attempts = 0
                 return True
             logger.debug("Watchdog: SKComms health returned HTTP %d", resp.status_code)
         except Exception as exc:
@@ -116,9 +136,23 @@ class TransportWatchdog:
             self.consecutive_failures,
             self._failure_threshold,
         )
-        if self.consecutive_failures >= self._failure_threshold and not self._reconnect_pending:
+        if self.consecutive_failures >= self._next_reconnect_at:
             self._reconnect_pending = True
+            self._reconnect_attempts += 1
+            if self._reconnect_attempts > 1:
+                # The previous reconnect did not restore health. Say so at ERROR:
+                # a streak this long is an outage, not a blip, and the per-check
+                # WARNING above is identical every time so it reads as noise.
+                logger.error(
+                    "Watchdog: SKComms still unreachable after %d reconnect attempt(s) "
+                    "and %d consecutive failed checks. Escalating: this is an outage, "
+                    "not a transient blip.",
+                    self._reconnect_attempts - 1,
+                    self.consecutive_failures,
+                )
             self._trigger_reconnect()
+            gap = min(self._failure_threshold * (2**self._reconnect_attempts), _MAX_RECONNECT_GAP)
+            self._next_reconnect_at = self.consecutive_failures + gap
         return False
 
     def check_webrtc(self) -> dict:
