@@ -18,9 +18,10 @@ standards.
   subject with no identity class before it reads a token, and skchat never assigned
   one. `grant_operator_capabilities_detailed`, the single point both the proven and
   the fallback enrollment paths use, now calls `assign_identity_class()` so a newly
-  enrolled device is no longer denied with "has no identity class assignment". Whether
-  `skchat.prekey` belongs in the edge-device allowlist is a capauth ceiling decision
-  and is not made here.
+  enrolled device is no longer denied with "has no identity class assignment". Chef
+  decided (2026-11-27) that enrolled edge devices may publish prekeys; capauth added
+  `skchat.prekey` to the `edge-device` ceiling (smilinTux/capauth#109, `c64e3eaa9fcf`) and
+  the CI capauth pin (ci, pytest, qa workflows, AGENTS.md) moves to that commit.
 - **Watchdog reconnect re-arms instead of latching off.** `check()` set
   `_reconnect_pending` on the first reconnect and cleared it only on a
   successful ping, the one path that cannot run while the peer is down, so a
