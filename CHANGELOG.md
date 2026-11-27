@@ -13,6 +13,14 @@ standards.
 ## [Unreleased]
 
 ### Fixed
+- **Enrolled operator devices get an identity class.** capauth's unclassified-subject
+  compatibility window closed on 2026-09-01, after which `authz.decide` refuses any
+  subject with no identity class before it reads a token, and skchat never assigned
+  one. `grant_operator_capabilities_detailed`, the single point both the proven and
+  the fallback enrollment paths use, now calls `assign_identity_class()` so a newly
+  enrolled device is no longer denied with "has no identity class assignment". Whether
+  `skchat.prekey` belongs in the edge-device allowlist is a capauth ceiling decision
+  and is not made here.
 - **Watchdog reconnect re-arms instead of latching off.** `check()` set
   `_reconnect_pending` on the first reconnect and cleared it only on a
   successful ping, the one path that cannot run while the peer is down, so a
